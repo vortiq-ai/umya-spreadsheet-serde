@@ -374,10 +374,14 @@ impl CellFormula {
 
         let formula_type_str = self.formula_type.value_string();
         if self.formula_type.has_value() {
-            // Not SUPPORT Array
-            if self.formula_type.value() != &CellFormulaValues::Array {
-                attributes.push(("t", formula_type_str).into());
-            }
+            // `t="array"` used to be suppressed here ("Not SUPPORT Array"),
+            // which silently downgraded every Ctrl-Shift-Enter array to a plain
+            // formula on write. That is not harmless: the members of the array
+            // `ref` rectangle are ordinary cells in the file, so Excel 365 reads
+            // the bare `<f>` as a SPILLING formula, finds them occupied and
+            // returns `#SPILL!`. The `ref` itself already reaches the output
+            // through the `self.reference` branch below.
+            attributes.push(("t", formula_type_str).into());
         }
 
         let input_1deleted_str = self.input_1deleted.value_string();
