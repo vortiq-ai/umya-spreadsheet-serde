@@ -28,6 +28,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -229,32 +230,32 @@ impl LineChart {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().into_inner() {
-                b"c:ser" => {
+            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+                b"ser" => {
                     let mut obj = AreaChartSeries::default();
                     obj.set_attributes(reader, e);
                     self.area_chart_series_list_mut()
                         .add_area_chart_series(obj);
                 }
-                b"c:dLbls" => {
+                b"dLbls" => {
                     self.data_labels.set_attributes(reader, e);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match e.name().into_inner() {
-                b"c:grouping" => {
+            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+                b"grouping" => {
                     self.grouping.set_attributes(reader, e);
                 }
-                b"c:varyColors" => {
+                b"varyColors" => {
                     self.vary_colors.set_attributes(reader, e);
                 }
-                b"c:marker" => {
+                b"marker" => {
                     self.show_marker.set_attributes(reader, e);
                 }
-                b"c:smooth" => {
+                b"smooth" => {
                     self.smooth.set_attributes(reader, e);
                 }
-                b"c:axId" => {
+                b"axId" => {
                     let mut obj = AxisId::default();
                     obj.set_attributes(reader, e);
                     self.add_axis_id(obj);
@@ -262,7 +263,7 @@ impl LineChart {
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:lineChart" {
+                if local_name(e.name().into_inner()) == b"lineChart" {
                     return;
                 }
             },

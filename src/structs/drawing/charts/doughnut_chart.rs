@@ -26,6 +26,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -170,32 +171,32 @@ impl DoughnutChart {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().into_inner() {
-                b"c:ser" => {
+            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+                b"ser" => {
                     let mut obj = AreaChartSeries::default();
                     obj.set_attributes(reader, e);
                     self.area_chart_series_list_mut()
                         .add_area_chart_series(obj);
                 }
-                b"c:dLbls" => {
+                b"dLbls" => {
                     self.data_labels.set_attributes(reader, e);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match e.name().into_inner() {
-                b"c:varyColors" => {
+            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+                b"varyColors" => {
                     self.vary_colors.set_attributes(reader, e);
                 }
-                b"c:firstSliceAng" => {
+                b"firstSliceAng" => {
                     self.first_slice_angle.set_attributes(reader, e);
                 }
-                b"c:holeSize" => {
+                b"holeSize" => {
                     self.hole_size.set_attributes(reader, e);
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:doughnutChart" {
+                if local_name(e.name().into_inner()) == b"doughnutChart" {
                     return;
                 }
             },

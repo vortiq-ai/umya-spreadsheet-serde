@@ -30,6 +30,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -77,7 +78,7 @@ impl GraphicData {
         xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
-                if e.name().into_inner() == b"c:chart" {
+                if local_name(e.name().into_inner()) == b"chart" {
                     let chart_id = get_attribute(e, b"r:id").unwrap();
                     let relationship = drawing_relationships
                         .unwrap()

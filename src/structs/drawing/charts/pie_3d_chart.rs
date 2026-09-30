@@ -24,6 +24,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -117,26 +118,26 @@ impl Pie3DChart {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().0 {
-                    b"c:ser" => {
+                match local_name(e.name().0) {
+                    b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e);
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
-                    b"c:dLbls" => {
+                    b"dLbls" => {
                         self.data_labels.set_attributes(reader, e);
                     }
                     _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                if e.name().0 == b"c:varyColors" {
+                if local_name(e.name().0) == b"varyColors" {
                     self.vary_colors.set_attributes(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:pie3DChart" {
+                if local_name(e.name().0) == b"pie3DChart" {
                     return;
                 }
             },

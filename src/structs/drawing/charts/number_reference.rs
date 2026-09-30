@@ -20,6 +20,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -86,17 +87,17 @@ impl NumberReference {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().0 {
-                b"c:f" => {
+            Event::Start(ref e) => match local_name(e.name().0) {
+                b"f" => {
                     self.formula.set_attributes(reader, e);
                 }
-                b"c:numCache" => {
+                b"numCache" => {
                     self.numbering_cache.set_attributes(reader, e);
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:numRef" {
+                if local_name(e.name().0) == b"numRef" {
                     return;
                 }
             },

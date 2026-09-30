@@ -119,24 +119,24 @@ impl NonVisualGraphicFrameProperties {
             reader,
             Event::Empty(ref e) => {
                 match e.name().into_inner() {
-                    b"xdr:cNvPr" => {
+                    b"xdr:cNvPr" | b"cNvPr" => {
                         self.non_visual_drawing_properties
                             .set_attributes(reader, e, true);
                     },
-                    b"xdr:cNvGraphicFramePr" => {
+                    b"xdr:cNvGraphicFramePr" | b"cNvGraphicFramePr" => {
                         NonVisualGraphicFrameDrawingProperties::set_attributes(reader, e);
                     },
                     _ => (),
                 }
             },
             Event::Start(ref e) => {
-                if e.name().into_inner() == b"xdr:cNvPr" {
+                if matches!(e.name().into_inner(), b"xdr:cNvPr" | b"cNvPr") {
                     self.non_visual_drawing_properties
                         .set_attributes(reader, e, false);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"xdr:nvGraphicFramePr" {
+                if matches!(e.name().into_inner(), b"xdr:nvGraphicFramePr" | b"nvGraphicFramePr") {
                     return
                 }
             },

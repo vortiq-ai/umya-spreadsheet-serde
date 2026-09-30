@@ -21,6 +21,7 @@ use crate::{
         write_text_node,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -31,7 +32,7 @@ impl StringCache {
         xml_read_loop!(
             reader,
             Event::End(ref e) => {
-                if e.name().0 == b"c:strCache" {
+                if local_name(e.name().0) == b"strCache" {
                     return;
                 }
             },

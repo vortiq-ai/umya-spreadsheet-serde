@@ -22,6 +22,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -115,23 +116,23 @@ impl PrintSettings {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().0 {
-                b"c:headerFooter" => {
+                match local_name(e.name().0) {
+                b"headerFooter" => {
                     HeaderFooter::set_attributes(reader, e);
                 }
-                b"c:pageSetup" => {
+                b"pageSetup" => {
                     PageSetup::set_attributes(reader, e);
                 }
                 _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                if e.name().0 == b"c:pageMargins" {
+                if local_name(e.name().0) == b"pageMargins" {
                     self.page_margins.set_attributes(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:printSettings" {
+                if local_name(e.name().0) == b"printSettings" {
                     return;
                 }
             },

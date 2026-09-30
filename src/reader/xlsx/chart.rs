@@ -10,6 +10,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 pub(crate) fn read(raw_file: &RawFile, chart_space: &mut ChartSpace) {
     let data = std::io::Cursor::new(raw_file.file_data());
@@ -20,7 +21,7 @@ pub(crate) fn read(raw_file: &RawFile, chart_space: &mut ChartSpace) {
     xml_read_loop!(
         reader,
         Event::Start(ref e) => {
-            if e.name().into_inner() == b"c:chartSpace" {
+            if local_name(e.name().into_inner()) == b"chartSpace" {
                 chart_space.set_attributes(&mut reader, e);
             }
         },

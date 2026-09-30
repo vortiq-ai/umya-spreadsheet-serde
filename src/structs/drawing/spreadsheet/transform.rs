@@ -176,7 +176,7 @@ impl Transform {
                 }
             },
             Event::End(ref e) => {
-                if  e.name().into_inner() == b"xdr:xfrm" {
+                if matches!(e.name().into_inner(), b"xdr:xfrm" | b"xfrm") {
                     return;
                 }
             },

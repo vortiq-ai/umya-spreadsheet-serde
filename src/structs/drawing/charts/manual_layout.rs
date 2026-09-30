@@ -28,6 +28,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -289,48 +290,48 @@ impl ManualLayout {
     ) {
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => match e.name().0 {
-                b"c:h" => {
+            Event::Empty(ref e) => match local_name(e.name().0) {
+                b"h" => {
                     let mut obj = Height::default();
                     obj.set_attributes(reader, e);
                     self.set_height(obj);
                 }
-                b"c:hMode" => {
+                b"hMode" => {
                     let mut obj = HeightMode::default();
                     obj.set_attributes(reader, e);
                     self.set_height_mode(obj);
                 }
-                b"c:layoutTarget" => {
+                b"layoutTarget" => {
                     let mut obj = LayoutTarget::default();
                     obj.set_attributes(reader, e);
                     self.set_layout_target(obj);
                 }
-                b"c:x" => {
+                b"x" => {
                     let mut obj = Left::default();
                     obj.set_attributes(reader, e);
                     self.set_left(obj);
                 }
-                b"c:xMode" => {
+                b"xMode" => {
                     let mut obj = LeftMode::default();
                     obj.set_attributes(reader, e);
                     self.set_left_mode(obj);
                 }
-                b"c:y" => {
+                b"y" => {
                     let mut obj = Top::default();
                     obj.set_attributes(reader, e);
                     self.set_top(obj);
                 }
-                b"c:yMode" => {
+                b"yMode" => {
                     let mut obj = TopMode::default();
                     obj.set_attributes(reader, e);
                     self.set_top_mode(obj);
                 }
-                b"c:w" => {
+                b"w" => {
                     let mut obj = Width::default();
                     obj.set_attributes(reader, e);
                     self.set_width(obj);
                 }
-                b"c:wMode" => {
+                b"wMode" => {
                     let mut obj = WidthMode::default();
                     obj.set_attributes(reader, e);
                     self.set_width_mode(obj);
@@ -338,7 +339,7 @@ impl ManualLayout {
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:manualLayout" {
+                if local_name(e.name().0) == b"manualLayout" {
                     return;
                 }
             },

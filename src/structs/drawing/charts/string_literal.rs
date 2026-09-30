@@ -18,6 +18,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -59,14 +60,14 @@ impl StringLiteral {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                if e.name().0 == b"c:pt" {
+                if local_name(e.name().0) == b"pt" {
                     let mut obj = StringPoint::default();
                     obj.set_attributes(reader, e);
                     self.add_string_point_list(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:strLit" {
+                if local_name(e.name().0) == b"strLit" {
                     return;
                 }
             },

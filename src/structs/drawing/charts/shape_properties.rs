@@ -28,6 +28,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -277,43 +278,43 @@ impl ShapeProperties {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().0 {
-                    b"a:pattFill" => {
+                match local_name(e.name().0) {
+                    b"pattFill" => {
                         let mut obj = PatternFill::default();
                         obj.set_attributes(reader, e);
                         self.set_pattern_fill(obj);
                     }
-                    b"a:xfrm" => {
+                    b"xfrm" => {
                         let mut obj = Transform2D::default();
                         obj.set_attributes(reader, e);
                         self.set_transform2d(obj);
                     }
-                    b"a:prstGeom" => {
+                    b"prstGeom" => {
                         let mut obj = PresetGeometry::default();
                         obj.set_attributes(reader, e);
                         self.set_geometry(obj);
                     }
-                    b"a:ln" => {
+                    b"ln" => {
                         let mut obj = Outline::default();
                         obj.set_attributes(reader, e);
                         self.set_outline(obj);
                     }
-                    b"a:solidFill" => {
+                    b"solidFill" => {
                         let mut obj = SolidFill::default();
                         obj.set_attributes(reader, e);
                         self.set_solid_fill(obj);
                     }
-                    b"a:effectLst" => {
+                    b"effectLst" => {
                         let mut obj = EffectList::default();
                         obj.set_attributes(reader, e, false);
                         self.set_effect_list(obj);
                     }
-                    b"a:scene3d" => {
+                    b"scene3d" => {
                         let mut obj = Scene3DType::default();
                         obj.set_attributes(reader, e);
                         self.set_scene_3d_type(obj);
                     }
-                    b"a:sp3d" => {
+                    b"sp3d" => {
                         let mut obj = Shape3DType::default();
                         obj.set_attributes(reader, e);
                         self.set_shape_3d_type(obj);
@@ -322,14 +323,14 @@ impl ShapeProperties {
                 }
             },
             Event::Empty(ref e) => {
-                if e.name().0 == b"a:noFill" {
+                if local_name(e.name().0) == b"noFill" {
                     let obj = NoFill::default();
                     NoFill::set_attributes(reader, e, true);
                     self.set_no_fill(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:spPr" {
+                if local_name(e.name().0) == b"spPr" {
                     return;
                 }
             },

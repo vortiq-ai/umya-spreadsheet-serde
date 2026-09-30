@@ -32,6 +32,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
@@ -401,58 +402,58 @@ impl Chart {
         self.legend_present = false;
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().into_inner() {
-                b"c:title" => {
+            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+                b"title" => {
                     let mut obj = Title::default();
                     obj.set_attributes(reader, e);
                     self.set_title(obj);
                 }
-                b"c:view3D" => {
+                b"view3D" => {
                     let mut obj = View3D::default();
                     obj.set_attributes(reader, e);
                     self.set_view_3d(obj);
                 }
-                b"c:floor" => {
+                b"floor" => {
                     let mut obj = Floor::default();
                     obj.set_attributes(reader, e);
                     self.set_floor(obj);
                 }
-                b"c:sideWall" => {
+                b"sideWall" => {
                     let mut obj = SideWall::default();
                     obj.set_attributes(reader, e);
                     self.set_side_wall(obj);
                 }
-                b"c:backWall" => {
+                b"backWall" => {
                     let mut obj = BackWall::default();
                     obj.set_attributes(reader, e);
                     self.set_back_wall(obj);
                 }
-                b"c:plotArea" => {
+                b"plotArea" => {
                     self.plot_area.set_attributes(reader, e);
                 }
-                b"c:legend" => {
+                b"legend" => {
                     self.legend.set_attributes(reader, e);
                     self.legend_present = true;
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match e.name().into_inner() {
-                b"c:autoTitleDeleted" => {
+            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+                b"autoTitleDeleted" => {
                     self.auto_title_deleted.set_attributes(reader, e);
                 }
-                b"c:plotVisOnly" => {
+                b"plotVisOnly" => {
                     self.plot_visible_only.set_attributes(reader, e);
                 }
-                b"c:dispBlanksAs" => {
+                b"dispBlanksAs" => {
                     self.display_blanks_as.set_attributes(reader, e);
                 }
-                b"c:showDLblsOverMax" => {
+                b"showDLblsOverMax" => {
                     self.show_data_labels_over_maximum.set_attributes(reader, e);
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:chart" {
+                if local_name(e.name().into_inner()) == b"chart" {
                     return;
                 }
             },

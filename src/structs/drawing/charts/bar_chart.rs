@@ -29,6 +29,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -257,37 +258,37 @@ impl BarChart {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"c:ser" => {
+                match local_name(e.name().into_inner()) {
+                    b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e);
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
-                    b"c:dLbls" => {
+                    b"dLbls" => {
                         self.data_labels.set_attributes(reader, e);
                     }
                     _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"c:barDir" => {
+                match local_name(e.name().into_inner()) {
+                    b"barDir" => {
                         self.bar_direction.set_attributes(reader, e);
                     }
-                    b"c:grouping" => {
+                    b"grouping" => {
                         self.grouping.set_attributes(reader, e);
                     }
-                    b"c:varyColors" => {
+                    b"varyColors" => {
                         self.vary_colors.set_attributes(reader, e);
                     }
-                    b"c:gapWidth" => {
+                    b"gapWidth" => {
                         self.gap_width.set_attributes(reader, e);
                     }
-                    b"c:overlap" => {
+                    b"overlap" => {
                         self.overlap.set_attributes(reader, e);
                     }
-                    b"c:axId" => {
+                    b"axId" => {
                         let mut obj = AxisId::default();
                         obj.set_attributes(reader, e);
                         self.add_axis_id(obj);
@@ -296,7 +297,7 @@ impl BarChart {
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:barChart" {
+                if local_name(e.name().into_inner()) == b"barChart" {
                     return;
                 }
             },

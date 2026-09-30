@@ -27,6 +27,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -250,33 +251,33 @@ impl DataLabels {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                if e.name().into_inner() == b"c:txPr" {
+                if local_name(e.name().into_inner()) == b"txPr" {
                     let mut obj = TextProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_text_properties(obj);
                 }
             },
             Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"c:showLegendKey" => {
+                match local_name(e.name().into_inner()) {
+                    b"showLegendKey" => {
                         self.show_legend_key.set_attributes(reader, e);
                     }
-                    b"c:showVal" => {
+                    b"showVal" => {
                         self.show_value.set_attributes(reader, e);
                     }
-                    b"c:showCatName" => {
+                    b"showCatName" => {
                         self.show_category_name.set_attributes(reader, e);
                     }
-                    b"c:showSerName" => {
+                    b"showSerName" => {
                         self.show_series_name.set_attributes(reader, e);
                     }
-                    b"c:showPercent" => {
+                    b"showPercent" => {
                         self.show_percent.set_attributes(reader, e);
                     }
-                    b"c:showBubbleSize" => {
+                    b"showBubbleSize" => {
                         self.show_bubble_size.set_attributes(reader, e);
                     }
-                    b"c:showLeaderLines" => {
+                    b"showLeaderLines" => {
                         let mut obj = ShowLeaderLines::default();
                         obj.set_attributes(reader, e);
                         self.set_show_leader_lines(obj);
@@ -285,7 +286,7 @@ impl DataLabels {
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:dLbls" {
+                if local_name(e.name().into_inner()) == b"dLbls" {
                     return
                 }
             },

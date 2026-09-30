@@ -22,6 +22,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -120,26 +121,26 @@ impl Marker {
         xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
-                if e.name().0 == b"c:symbol" {
+                if local_name(e.name().0) == b"symbol" {
                     let mut obj = Symbol::default();
                     obj.set_attributes(reader, e);
                     self.set_symbol(obj);
                 }
-                if e.name().0 == b"c:size" {
+                if local_name(e.name().0) == b"size" {
                     let mut obj = Size::default();
                     obj.set_attributes(reader, e);
                     self.set_size(obj);
                 }
             },
             Event::Start(ref e) => {
-                if e.name().0 == b"c:spPr" {
+                if local_name(e.name().0) == b"spPr" {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:marker" {
+                if local_name(e.name().0) == b"marker" {
                     return;
                 }
             },

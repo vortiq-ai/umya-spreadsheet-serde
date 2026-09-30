@@ -36,6 +36,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -469,75 +470,93 @@ impl AreaChartSeries {
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let _is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"c:tx" => {
+                // A self-closing element has no subtree, so nothing may descend into it.
+                // `<c:errBars>` is not parsed here, so its children surface in THIS loop,
+                // and one of them is `<c:val val="10"/>` - the same name the series uses
+                // for its values, but an attribute-only element. Descending into it sent
+                // `Values::set_attributes` looking for a `</c:val>` that never comes; it
+                // consumed the rest of the part and died on `Eof`.
+                let is_empty_element = matches!(n, Event::Empty(_));
+                match local_name(e.name().into_inner()) {
+                    b"tx" => {
                         let mut obj = ChartText::default();
                         obj.set_attributes(reader, e);
                         self.set_chart_text(obj);
                     }
-                    b"c:marker" => {
+                    b"marker" => {
                         let mut obj = Marker::default();
                         obj.set_attributes(reader, e, false);
                         self.set_marker(obj);
                     }
-                b"c:spPr" => {
+                b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
-                b"c:cat" => {
-                    let mut obj = CategoryAxisData::default();
-                    obj.set_attributes(reader, e);
-                    self.set_category_axis_data(obj);
+                b"cat" => {
+                    // `continue` here would skip the loop's `buf.clear()`.
+                    if !is_empty_element {
+                        let mut obj = CategoryAxisData::default();
+                        obj.set_attributes(reader, e);
+                        self.set_category_axis_data(obj);
+                    }
                 }
-                b"c:val" => {
-                    let mut obj = Values::default();
-                    obj.set_attributes(reader, e);
-                    self.set_values(obj);
+                b"val" => {
+                    // `continue` here would skip the loop's `buf.clear()`.
+                    if !is_empty_element {
+                        let mut obj = Values::default();
+                        obj.set_attributes(reader, e);
+                        self.set_values(obj);
+                    }
                 }
-                b"c:xVal" => {
-                    let mut obj = XValues::default();
-                    obj.set_attributes(reader, e);
-                    self.set_x_values(obj);
+                b"xVal" => {
+                    // `continue` here would skip the loop's `buf.clear()`.
+                    if !is_empty_element {
+                        let mut obj = XValues::default();
+                        obj.set_attributes(reader, e);
+                        self.set_x_values(obj);
+                    }
                 }
-                b"c:yVal" => {
-                    let mut obj = YValues::default();
-                    obj.set_attributes(reader, e);
-                    self.set_y_values(obj);
+                b"yVal" => {
+                    // `continue` here would skip the loop's `buf.clear()`.
+                    if !is_empty_element {
+                        let mut obj = YValues::default();
+                        obj.set_attributes(reader, e);
+                        self.set_y_values(obj);
+                    }
                 }
-                b"c:bubbleSize" => {
+                b"bubbleSize" => {
                     let mut obj = BubbleSize::default();
                     obj.set_attributes(reader, e);
                     self.set_bubble_size(obj);
                 }
-                b"c:dLbls" => {
+                b"dLbls" => {
                     let mut obj = DataLabels::default();
                     obj.set_attributes(reader, e);
                     self.set_data_labels(obj);
                 }
-                b"c:idx" => {
+                b"idx" => {
                     self.index.set_attributes(reader, e);
                 }
-                b"c:order" => {
+                b"order" => {
                     self.order.set_attributes(reader, e);
                 }
-                b"c:explosion" => {
+                b"explosion" => {
                     let mut obj = Explosion::default();
                     obj.set_attributes(reader, e);
                     self.set_explosion(obj);
                 }
-                b"c:invertIfNegative" => {
+                b"invertIfNegative" => {
                     let mut obj = InvertIfNegative::default();
                     obj.set_attributes(reader, e);
                     self.set_invert_if_negative(obj);
                 }
-                b"c:bubble3D" => {
+                b"bubble3D" => {
                     let mut obj = Bubble3D::default();
                     obj.set_attributes(reader, e);
                     self.set_bubble_3d(obj);
                 }
-                b"c:smooth" => {
+                b"smooth" => {
                     let mut obj = Smooth::default();
                     obj.set_attributes(reader, e);
                     self.set_smooth(obj);
@@ -546,7 +565,7 @@ impl AreaChartSeries {
             }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:ser" {
+                if local_name(e.name().into_inner()) == b"ser" {
                     return;
                 }
             },

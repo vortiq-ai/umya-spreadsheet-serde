@@ -22,6 +22,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -115,13 +116,13 @@ impl TextProperties {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().0 {
-                    b"a:p" => {
+                match local_name(e.name().0) {
+                    b"p" => {
                         let mut paragraph = Paragraph::default();
                         paragraph.set_attributes(reader, e);
                         self.add_paragraph(paragraph);
                     }
-                    b"a:bodyPr" => {
+                    b"bodyPr" => {
                         let mut body_properties = BodyProperties::default();
                         body_properties.set_attributes(reader, e, false);
                         self.set_body_properties(body_properties);
@@ -130,14 +131,14 @@ impl TextProperties {
                 }
             },
             Event::Empty(ref e) => {
-                if e.name().0 == b"a:bodyPr" {
+                if local_name(e.name().0) == b"bodyPr" {
                     let mut body_properties = BodyProperties::default();
                     body_properties.set_attributes(reader, e, true);
                     self.set_body_properties(body_properties);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:txPr" {
+                if local_name(e.name().0) == b"txPr" {
                     return;
                 }
             },

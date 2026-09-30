@@ -43,6 +43,26 @@ macro_rules! set_string_from_xml {
 
 pub(crate) use crate::set_string_from_xml;
 
+/// The element name with any namespace prefix removed.
+///
+/// The readers run non-namespace-aware (`read_event_into`, not
+/// `read_resolved_event`), so an element arrives under whatever prefix the
+/// PRODUCER chose. Excel writes `<c:chartSpace>`; a writer that declares the
+/// chart namespace as the default one writes `<chartSpace>`. Comparing against
+/// a prefixed byte literal silently fails to match the second form, and a
+/// chart part that matches nothing parses to an empty plot area, which
+/// `TwoCellAnchor::is_support` then drops without a word.
+///
+/// Safe to compare on within one part: the chart readers use 137 distinct
+/// local names and not one of them appears under two different prefixes.
+#[inline]
+pub(crate) fn local_name(name: &[u8]) -> &[u8] {
+    match name.iter().position(|&b| b == b':') {
+        Some(i) => &name[i + 1..],
+        None => name,
+    }
+}
+
 pub(crate) fn normalize_path(path: &str) -> PathBuf {
     let path = Path::new(path);
     let mut components = path.components().peekable();

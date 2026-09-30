@@ -23,6 +23,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -116,18 +117,18 @@ impl ChartText {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"c:rich" => {
+                match local_name(e.name().into_inner()) {
+                    b"rich" => {
                         let mut obj = RichText::default();
                         obj.set_attributes(reader, e);
                         self.set_rich_text(obj);
                     }
-                    b"c:strRef" => {
+                    b"strRef" => {
                         let mut obj = StringReference::default();
                         obj.set_attributes(reader, e);
                         self.set_string_reference(obj);
                     }
-                    b"c:v" => {
+                    b"v" => {
                         let mut obj = NumericValue::default();
                         obj.set_attributes(reader, e);
                         self.set_numeric_value(obj);
@@ -136,7 +137,7 @@ impl ChartText {
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:tx" {
+                if local_name(e.name().into_inner()) == b"tx" {
                     return;
                 }
             },

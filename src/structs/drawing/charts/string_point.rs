@@ -18,6 +18,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -59,12 +60,12 @@ impl StringPoint {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                if e.name().0 == b"c:v" {
+                if local_name(e.name().0) == b"v" {
                     self.numeric_value.set_attributes(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:pt" {
+                if local_name(e.name().0) == b"pt" {
                     return;
                 }
             },

@@ -21,6 +21,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -89,19 +90,19 @@ impl BackWall {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let _is_empty = matches!(n, Event::Empty(_));
-                if e.name().into_inner() == b"c:thickness" {
+                if local_name(e.name().into_inner()) == b"thickness" {
                     let mut obj = Thickness::default();
                     obj.set_attributes(reader, e);
                     self.set_thickness(obj);
                 }
-                if e.name().into_inner() == b"c:spPr" {
+                if local_name(e.name().into_inner()) == b"spPr" {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:backWall" {
+                if local_name(e.name().into_inner()) == b"backWall" {
                     return;
                 }
             },

@@ -230,7 +230,7 @@ impl OneCellAnchor {
                         obj.set_attributes(reader, e, drawing_relationships);
                         self.set_group_shape(obj);
                     }
-                    b"xdr:graphicFrame" => {
+                    b"xdr:graphicFrame" | b"graphicFrame" => {
                         let mut obj = GraphicFrame::default();
                         obj.set_attributes(reader, e, drawing_relationships);
                         self.set_graphic_frame(obj);

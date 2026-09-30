@@ -19,6 +19,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -60,12 +61,12 @@ impl XValues {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                if e.name().0 == b"c:numRef" {
+                if local_name(e.name().0) == b"numRef" {
                     self.number_reference.set_attributes(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:xVal" {
+                if local_name(e.name().0) == b"xVal" {
                     return;
                 }
             },

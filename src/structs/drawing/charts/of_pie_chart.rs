@@ -28,6 +28,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -225,41 +226,41 @@ impl OfPieChart {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().0 {
-                    b"c:ser" => {
+                match local_name(e.name().0) {
+                    b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e);
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
-                    b"c:dLbls" => {
+                    b"dLbls" => {
                         self.data_labels.set_attributes(reader, e);
                     }
-                    b"c:serLines" => {
+                    b"serLines" => {
                         SeriesLines::set_attributes(reader, e);
                     }
                     _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                match e.name().0 {
-                    b"c:ofPieType" => {
+                match local_name(e.name().0) {
+                    b"ofPieType" => {
                         self.of_pie_type.set_attributes(reader, e);
                     }
-                    b"c:varyColors" => {
+                    b"varyColors" => {
                         self.vary_colors.set_attributes(reader, e);
                     }
-                    b"c:gapWidth" => {
+                    b"gapWidth" => {
                         self.gap_width.set_attributes(reader, e);
                     }
-                    b"c:secondPieSize" => {
+                    b"secondPieSize" => {
                         self.second_pie_size.set_attributes(reader, e);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:ofPieChart" {
+                if local_name(e.name().0) == b"ofPieChart" {
                     return;
                 }
             },

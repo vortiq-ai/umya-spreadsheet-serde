@@ -18,6 +18,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -59,12 +60,12 @@ impl Scaling {
         xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
-                if e.name().0 == b"c:orientation" {
+                if local_name(e.name().0) == b"orientation" {
                     self.orientation.set_attributes(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:scaling" {
+                if local_name(e.name().0) == b"scaling" {
                     return;
                 }
             },

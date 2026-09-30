@@ -21,6 +21,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -88,21 +89,21 @@ impl SideWall {
         xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
-                if e.name().0 == b"c:thickness" {
+                if local_name(e.name().0) == b"thickness" {
                     let mut obj = Thickness::default();
                     obj.set_attributes(reader, e);
                     self.set_thickness(obj);
                 }
             },
             Event::Start(ref e) => {
-                if  e.name().0 == b"c:spPr" {
+                if  local_name(e.name().0) == b"spPr" {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:sideWall" {
+                if local_name(e.name().0) == b"sideWall" {
                     return;
                 }
             },

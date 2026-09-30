@@ -43,6 +43,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -701,96 +702,96 @@ impl PlotArea {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().0 {
-                b"c:layout" => {
+            Event::Start(ref e) => match local_name(e.name().0) {
+                b"layout" => {
                     self.layout.set_attributes(reader, e, false);
                 }
-                b"c:lineChart" => {
+                b"lineChart" => {
                     let mut obj = LineChart::default();
                     obj.set_attributes(reader, e);
                     self.set_line_chart(obj);
                 }
-                b"c:line3DChart" => {
+                b"line3DChart" => {
                     let mut obj = Line3DChart::default();
                     obj.set_attributes(reader, e);
                     self.set_line_3d_chart(obj);
                 }
-                b"c:pieChart" => {
+                b"pieChart" => {
                     let mut obj = PieChart::default();
                     obj.set_attributes(reader, e);
                     self.set_pie_chart(obj);
                 }
-                b"c:pie3DChart" => {
+                b"pie3DChart" => {
                     let mut obj = Pie3DChart::default();
                     obj.set_attributes(reader, e);
                     self.set_pie_3d_chart(obj);
                 }
-                b"c:doughnutChart" => {
+                b"doughnutChart" => {
                     let mut obj = DoughnutChart::default();
                     obj.set_attributes(reader, e);
                     self.set_doughnut_chart(obj);
                 }
-                b"c:scatterChart" => {
+                b"scatterChart" => {
                     let mut obj = ScatterChart::default();
                     obj.set_attributes(reader, e);
                     self.set_scatter_chart(obj);
                 }
-                b"c:barChart" => {
+                b"barChart" => {
                     let mut obj = BarChart::default();
                     obj.set_attributes(reader, e);
                     self.set_bar_chart(obj);
                 }
-                b"c:bar3DChart" => {
+                b"bar3DChart" => {
                     let mut obj = Bar3DChart::default();
                     obj.set_attributes(reader, e);
                     self.set_bar_3d_chart(obj);
                 }
-                b"c:radarChart" => {
+                b"radarChart" => {
                     let mut obj = RadarChart::default();
                     obj.set_attributes(reader, e);
                     self.set_radar_chart(obj);
                 }
-                b"c:bubbleChart" => {
+                b"bubbleChart" => {
                     let mut obj = BubbleChart::default();
                     obj.set_attributes(reader, e);
                     self.set_bubble_chart(obj);
                 }
-                b"c:areaChart" => {
+                b"areaChart" => {
                     let mut obj = AreaChart::default();
                     obj.set_attributes(reader, e);
                     self.set_area_chart(obj);
                 }
-                b"c:area3DChart" => {
+                b"area3DChart" => {
                     let mut obj = Area3DChart::default();
                     obj.set_attributes(reader, e);
                     self.set_area_3d_chart(obj);
                 }
-                b"c:ofPieChart" => {
+                b"ofPieChart" => {
                     let mut obj = OfPieChart::default();
                     obj.set_attributes(reader, e);
                     self.set_of_pie_chart(obj);
                 }
-                b"c:catAx" => {
+                b"catAx" => {
                     let mut obj = CategoryAxis::default();
                     obj.set_attributes(reader, e);
                     self.add_category_axis(obj);
                 }
-                b"c:dateAx" => {
+                b"dateAx" => {
                     let mut obj = DateAxis::default();
                     obj.set_attributes(reader, e);
                     self.add_date_axis(obj);
                 }
-                b"c:valAx" => {
+                b"valAx" => {
                     let mut obj = ValueAxis::default();
                     obj.set_attributes(reader, e);
                     self.add_value_axis(obj);
                 }
-                b"c:serAx" => {
+                b"serAx" => {
                     let mut obj = SeriesAxis::default();
                     obj.set_attributes(reader, e);
                     self.add_series_axis(obj);
                 }
-                b"c:spPr" => {
+                b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
@@ -798,7 +799,7 @@ impl PlotArea {
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:plotArea" {
+                if local_name(e.name().0) == b"plotArea" {
                     return;
                 }
             },

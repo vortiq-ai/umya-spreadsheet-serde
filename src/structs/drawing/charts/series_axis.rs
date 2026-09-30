@@ -31,6 +31,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -332,16 +333,16 @@ impl SeriesAxis {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().0 {
-                    b"c:scaling" => {
+                match local_name(e.name().0) {
+                    b"scaling" => {
                         self.scaling.set_attributes(reader, e);
                     }
-                    b"c:title" => {
+                    b"title" => {
                         let mut obj = Title::default();
                         obj.set_attributes(reader, e);
                         self.set_title(obj);
                     }
-                    b"c:majorGridlines" => {
+                    b"majorGridlines" => {
                         let mut obj = MajorGridlines::default();
                         obj.set_attributes(reader, e, false);
                         self.set_major_gridlines(obj);
@@ -350,41 +351,41 @@ impl SeriesAxis {
                 }
             },
             Event::Empty(ref e) => {
-                match e.name().0 {
-                    b"c:axId" => {
+                match local_name(e.name().0) {
+                    b"axId" => {
                         self.axis_id.set_attributes(reader, e);
                     }
-                    b"c:delete" => {
+                    b"delete" => {
                         self.delete.set_attributes(reader, e);
                     }
-                    b"c:axPos" => {
+                    b"axPos" => {
                         self.axis_position.set_attributes(reader, e);
                     }
-                    b"c:majorGridlines" => {
+                    b"majorGridlines" => {
                         let mut obj = MajorGridlines::default();
                         obj.set_attributes(reader, e, true);
                         self.set_major_gridlines(obj);
                     }
-                    b"c:majorTickMark" => {
+                    b"majorTickMark" => {
                         self.major_tick_mark.set_attributes(reader, e);
                     }
-                    b"c:minorTickMark" => {
+                    b"minorTickMark" => {
                         self.minor_tick_mark.set_attributes(reader, e);
                     }
-                    b"c:tickLblPos" => {
+                    b"tickLblPos" => {
                         self.tick_label_position.set_attributes(reader, e);
                     }
-                    b"c:crossAx" => {
+                    b"crossAx" => {
                         self.crossing_axis.set_attributes(reader, e);
                     }
-                    b"c:crosses" => {
+                    b"crosses" => {
                         self.crosses.set_attributes(reader, e);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:serAx" {
+                if local_name(e.name().0) == b"serAx" {
                     return;
                 }
             },

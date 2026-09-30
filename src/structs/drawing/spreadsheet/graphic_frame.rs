@@ -173,22 +173,30 @@ impl GraphicFrame {
             reader,
             Event::Start(ref e) => {
                 match e.name().into_inner() {
-                    b"xdr:nvGraphicFramePr" => {
+                    b"xdr:nvGraphicFramePr" | b"nvGraphicFramePr" => {
                         self.non_visual_graphic_frame_properties
                             .set_attributes(reader, e);
                         }
-                    b"xdr:xfrm" => {
+                    b"xdr:xfrm" | b"xfrm" => {
                         self.transform.set_attributes(reader, e);
                     }
-                    b"a:graphic" => {
+                    b"a:graphic" | b"graphic" => {
                         self.graphic
                             .set_attributes(reader, e, drawing_relationships);
                         }
                     _ => (),
                 }
             },
+            // The reader is not namespace-aware (`read_event_into`, not
+            // `read_resolved_event`), so every element arrives under whatever
+            // prefix the producer wrote. A writer that declares the
+            // SpreadsheetDrawing namespace as the DEFAULT one emits a bare
+            // `<graphicFrame>`; `WorksheetDrawing` and `TwoCellAnchor` already
+            // accept both spellings, but this loop did not, so it never met its
+            // own end tag, consumed the rest of the document and died on `Eof`.
+            // Six SpreadsheetBench-v2 workbooks failed to open for that alone.
             Event::End(ref e) => {
-                if  e.name().into_inner() == b"xdr:graphicFrame" {
+                if matches!(e.name().into_inner(), b"xdr:graphicFrame" | b"graphicFrame") {
                     return
                 }
             },

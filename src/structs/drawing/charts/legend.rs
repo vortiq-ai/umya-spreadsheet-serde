@@ -23,6 +23,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -167,40 +168,40 @@ impl Legend {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().into_inner() {
-                b"c:layout" => {
+            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+                b"layout" => {
                     let mut obj = Layout::default();
                     obj.set_attributes(reader, e, false);
                     self.set_layout(obj);
                 }
-                b"c:spPr" => {
+                b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
-                b"c:txPr" => {
+                b"txPr" => {
                     let mut obj = TextProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_text_properties(obj);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match e.name().into_inner() {
-                b"c:legendPos" => {
+            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+                b"legendPos" => {
                     self.legend_position.set_attributes(reader, e);
                 }
-                b"c:layout" => {
+                b"layout" => {
                     let mut obj = Layout::default();
                     obj.set_attributes(reader, e, true);
                     self.set_layout(obj);
                 }
-                b"c:overlay" => {
+                b"overlay" => {
                     self.overlay.set_attributes(reader, e);
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if  e.name().into_inner() == b"c:legend" {
+                if  local_name(e.name().into_inner()) == b"legend" {
                     return;
                 }
             },

@@ -23,6 +23,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -142,23 +143,23 @@ impl View3D {
         xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
-                match e.name().0 {
-                    b"c:rotX" => {
+                match local_name(e.name().0) {
+                    b"rotX" => {
                         let mut obj = RotateX::default();
                         obj.set_attributes(reader, e);
                         self.set_rotate_x(obj);
                     }
-                    b"c:rotY" => {
+                    b"rotY" => {
                         let mut obj = RotateY::default();
                         obj.set_attributes(reader, e);
                         self.set_rotate_y(obj);
                     }
-                    b"c:rAngAx" => {
+                    b"rAngAx" => {
                         let mut obj = RightAngleAxes::default();
                         obj.set_attributes(reader, e);
                         self.set_right_angle_axes(obj);
                     }
-                    b"c:perspective" => {
+                    b"perspective" => {
                         let mut obj = Perspective::default();
                         obj.set_attributes(reader, e);
                         self.set_perspective(obj);
@@ -167,7 +168,7 @@ impl View3D {
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:view3D" {
+                if local_name(e.name().0) == b"view3D" {
                     return;
                 }
             },

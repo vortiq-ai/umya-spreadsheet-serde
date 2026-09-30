@@ -35,6 +35,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -439,72 +440,72 @@ impl ValueAxis {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().0 {
-                b"c:scaling" => {
+            Event::Start(ref e) => match local_name(e.name().0) {
+                b"scaling" => {
                     self.scaling.set_attributes(reader, e);
                 }
-                b"c:title" => {
+                b"title" => {
                     let mut obj = Title::default();
                     obj.set_attributes(reader, e);
                     self.set_title(obj);
                 }
-                b"c:spPr" => {
+                b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
-                b"c:txPr" => {
+                b"txPr" => {
                     let mut obj = TextProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_text_properties(obj);
                 }
-                b"c:majorGridlines" => {
+                b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
                     obj.set_attributes(reader, e, false);
                     self.set_major_gridlines(obj);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match e.name().0 {
-                b"c:axId" => {
+            Event::Empty(ref e) => match local_name(e.name().0) {
+                b"axId" => {
                     self.axis_id.set_attributes(reader, e);
                 }
-                b"c:delete" => {
+                b"delete" => {
                     self.delete.set_attributes(reader, e);
                 }
-                b"c:axPos" => {
+                b"axPos" => {
                     self.axis_position.set_attributes(reader, e);
                 }
-                b"c:majorGridlines" => {
+                b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
                     obj.set_attributes(reader, e, true);
                     self.set_major_gridlines(obj);
                 }
-                b"c:numFmt" => {
+                b"numFmt" => {
                     self.numbering_format.set_attributes(reader, e);
                 }
-                b"c:majorTickMark" => {
+                b"majorTickMark" => {
                     self.major_tick_mark.set_attributes(reader, e);
                 }
-                b"c:minorTickMark" => {
+                b"minorTickMark" => {
                     self.minor_tick_mark.set_attributes(reader, e);
                 }
-                b"c:tickLblPos" => {
+                b"tickLblPos" => {
                     self.tick_label_position.set_attributes(reader, e);
                 }
-                b"c:crossAx" => {
+                b"crossAx" => {
                     self.crossing_axis.set_attributes(reader, e);
                 }
-                b"c:crosses" => {
+                b"crosses" => {
                     self.crosses.set_attributes(reader, e);
                 }
-                b"c:crossBetween" => {
+                b"crossBetween" => {
                     self.cross_between.set_attributes(reader, e);
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:valAx" {
+                if local_name(e.name().0) == b"valAx" {
                     return;
                 }
             },

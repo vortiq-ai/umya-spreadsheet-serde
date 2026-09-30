@@ -18,6 +18,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -64,14 +65,14 @@ impl MajorGridlines {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                if e.name().into_inner() == b"c:spPr" {
+                if local_name(e.name().into_inner()) == b"spPr" {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:majorGridlines" {
+                if local_name(e.name().into_inner()) == b"majorGridlines" {
                     return
                 }
             },

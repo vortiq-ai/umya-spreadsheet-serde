@@ -23,6 +23,7 @@ use crate::{
         write_start_tag,
     },
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -131,18 +132,18 @@ impl CategoryAxisData {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"c:strRef" => {
+                match local_name(e.name().into_inner()) {
+                    b"strRef" => {
                         let mut obj = StringReference::default();
                         obj.set_attributes(reader, e);
                         self.set_string_reference(obj);
                     }
-                    b"c:strLit" => {
+                    b"strLit" => {
                         let mut obj = StringLiteral::default();
                         obj.set_attributes(reader, e);
                         self.set_string_literal(obj);
                     }
-                    b"c:numRef" => {
+                    b"numRef" => {
                         let mut obj = NumberReference::default();
                         obj.set_attributes(reader, e);
                         self.set_number_reference(obj);
@@ -151,7 +152,7 @@ impl CategoryAxisData {
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:cat" {
+                if local_name(e.name().into_inner()) == b"cat" {
                     return;
                 }
             },

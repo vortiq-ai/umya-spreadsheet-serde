@@ -24,6 +24,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -142,29 +143,29 @@ impl Title {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match e.name().0 {
-                b"c:tx" => {
+            Event::Start(ref e) => match local_name(e.name().0) {
+                b"tx" => {
                     let mut obj = ChartText::default();
                     obj.set_attributes(reader, e);
                     self.set_chart_text(obj);
                 }
-                b"c:layout" => {
+                b"layout" => {
                     let mut obj = Layout::default();
                     obj.set_attributes(reader, e, false);
                     self.set_layout(obj);
                 }
-                b"c:spPr" => {
+                b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match e.name().0 {
-                b"c:overlay" => {
+            Event::Empty(ref e) => match local_name(e.name().0) {
+                b"overlay" => {
                     self.overlay.set_attributes(reader, e);
                 }
-                b"c:layout" => {
+                b"layout" => {
                     let mut obj = Layout::default();
                     obj.set_attributes(reader, e, true);
                     self.set_layout(obj);
@@ -172,7 +173,7 @@ impl Title {
                 _ => (),
             },
             Event::End(ref e) => {
-                if e.name().0 == b"c:title" {
+                if local_name(e.name().0) == b"title" {
                     return;
                 }
             },

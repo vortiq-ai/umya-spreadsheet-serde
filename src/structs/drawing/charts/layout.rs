@@ -18,6 +18,7 @@ use crate::{
     },
     xml_read_loop,
 };
+use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -69,14 +70,14 @@ impl Layout {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                if e.name().into_inner() == b"c:manualLayout" {
+                if local_name(e.name().into_inner()) == b"manualLayout" {
                     let mut obj = ManualLayout::default();
                     obj.set_attributes(reader, e);
                     self.set_manual_layout(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"c:layout" {
+                if local_name(e.name().into_inner()) == b"layout" {
                     return;
                 }
             },
