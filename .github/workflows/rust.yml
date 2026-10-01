@@ -54,6 +54,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust 1.98.0
+        id: toolchain
         run: |
           rustup toolchain install 1.98.0 --profile minimal --no-self-update
           rustup default 1.98.0
@@ -61,8 +62,75 @@ jobs:
           cargo --version
 
       - name: Build
+        id: build
         run: cargo build --features serde
 
       # Not --all-targets: that skips the doc-tests, which are 79 of the 360.
       - name: Test
+        id: test
         run: cargo test --features serde
+
+      # One message to the vortiq-ai CI/CD Slack channel, the same message the
+      # dev-tools slack-notify action posts for every other repository. Inline,
+      # because this repository is public and a public repository cannot use an
+      # action from a private one. Same rule: pushes and manual runs always,
+      # pull requests only when they fail, cancelled runs never. A pull request
+      # from a fork gets no secrets, so it skips. Nothing from the event is
+      # interpolated into the script: it reads the commit from GITHUB_EVENT_PATH.
+      # Best effort: it cannot fail this job.
+      - name: Report to Slack
+        if: always() && job.status != 'cancelled' && (github.event_name != 'pull_request' || job.status == 'failure')
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: C0C5N5WQZCP
+          RESULT: ${{ job.status }}
+          STEPS: >-
+            Install Rust 1.98.0=${{ steps.toolchain.conclusion }};
+            Build=${{ steps.build.conclusion }};
+            Test=${{ steps.test.conclusion }}
+        run: |
+          python3 - <<'PY' || echo "::warning::Slack report failed; ignored"
+          import json, os, subprocess, urllib.request
+          e = os.environ
+          if not e.get("SLACK_BOT_TOKEN"):
+              print("SLACK_BOT_TOKEN is not available to this run; not posted")
+              raise SystemExit(0)
+          event = json.load(open(e["GITHUB_EVENT_PATH"], encoding="utf-8"))
+          server, repo, result = e["GITHUB_SERVER_URL"], e["GITHUB_REPOSITORY"], e["RESULT"]
+          pr, extra = event.get("pull_request"), ""
+          if pr:
+              sha, subject = pr["head"]["sha"], pr.get("title", "")
+              extra = f" · <{pr['html_url']}|PR #{pr['number']}>"
+          else:
+              sha, head = e["GITHUB_SHA"], event.get("head_commit") or {}
+              subject = (head.get("message") or "").split("\n")[0] if head.get("id") == sha else ""
+              if not subject:
+                  subject = subprocess.run(["git", "log", "-1", "--format=%s", sha],
+                                           capture_output=True, text=True).stdout.strip()
+          # Slack reads <, > and & as markup: `Vec<Cell>` would render broken and
+          # `<!here>` in a pull-request title would ping the channel.
+          esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+          subject = esc(subject)
+          failed = next((n.strip() for n, _, o in (p.rpartition("=") for p in e["STEPS"].split(";"))
+                         if o.strip() == "failure"), "")
+          at = f" at *{failed}*" if failed and result != "success" else ""
+          icon = ":white_check_mark:" if result == "success" else ":x:"
+          ref = esc(e.get("GITHUB_HEAD_REF") or e["GITHUB_REF_NAME"])
+          actor = e.get("GITHUB_TRIGGERING_ACTOR") or e["GITHUB_ACTOR"]
+          text = "\n".join([
+              f"{icon} *{repo.split('/')[-1]}* · `{ref}` · CI {result}{at} · by {actor}",
+              f"<{server}/{repo}/commit/{sha}|`{sha[:8]}`> {subject}{extra}".rstrip(),
+              f"<{server}/{repo}/actions/runs/{e['GITHUB_RUN_ID']}|CI run>",
+          ])
+          if e.get("NOTIFY_DRY_RUN") == "1":
+              print(text)
+              raise SystemExit(0)
+          req = urllib.request.Request(
+              "https://slack.com/api/chat.postMessage", method="POST",
+              data=json.dumps({"channel": e["SLACK_CHANNEL"], "text": text,
+                               "unfurl_links": False, "unfurl_media": False}).encode(),
+              headers={"Authorization": f"Bearer {e['SLACK_BOT_TOKEN']}",
+                       "Content-Type": "application/json; charset=utf-8"})
+          reply = json.load(urllib.request.urlopen(req, timeout=15))
+          print("posted" if reply.get("ok") else f"::warning::Slack refused the message: {reply.get('error')}")
+          PY
