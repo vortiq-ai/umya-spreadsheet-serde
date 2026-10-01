@@ -30,6 +30,8 @@ on:
   pull_request:
   push:
     branches: [master]
+  # Run it by hand from the Actions tab, e.g. after a toolchain or runner change.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
