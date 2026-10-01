@@ -1068,12 +1068,14 @@ impl Workbook {
 
     /// Whether iterative calculation is enabled (`<calcPr iterate="1">`).
     #[inline]
+    #[must_use]
     pub fn iterate_enabled(&self) -> bool {
         self.iterate_enabled
     }
 
     /// `(iterateCount, iterateDelta)` when the workbook specifies them.
     #[inline]
+    #[must_use]
     pub fn iterative_calc(&self) -> Option<(u32, f64)> {
         self.iterative_calc
     }

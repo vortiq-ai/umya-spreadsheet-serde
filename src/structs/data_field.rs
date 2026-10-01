@@ -29,7 +29,7 @@ pub struct DataField {
     base_item:   UInt32Value,
     /// ECMA-376 `ST_DataConsolidateFunction` — a STRING enum, not an index:
     /// average, count, countNums, max, min, product, stdDev, stdDevp, sum,
-    /// var, varp. It was typed UInt32Value against the spec's prose list
+    /// var, varp. It was typed `UInt32Value` against the spec's prose list
     /// ("0=sum, 1=count, ..."), so any pivot whose data field used a
     /// non-default aggregation panicked the reader: `subtotal="count"`
     /// hit `UInt32Value::set_value_string` -> `parse::<u32>().unwrap()`.
