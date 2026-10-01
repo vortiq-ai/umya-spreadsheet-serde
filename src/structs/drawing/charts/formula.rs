@@ -15,7 +15,7 @@ use crate::{
     writer::driver::{
         write_end_tag,
         write_start_tag,
-        write_text_node_no_escape,
+        write_text_node_conversion,
     },
 };
 
@@ -100,7 +100,12 @@ impl Formula {
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
         // c:f
         write_start_tag(writer, "c:f", vec![], false);
-        write_text_node_no_escape(writer, self.address_str());
+        // `set_attributes` above already unescapes what it reads, and the two
+        // sibling formula-text nodes - <f> (cell_formula.rs) and <definedName>
+        // (defined_name.rs) - both write through this helper. Writing the
+        // address raw made <c:f> the one asymmetric node in the crate: a sheet
+        // name or literal label containing & < > produced XML Excel rejects.
+        write_text_node_conversion(writer, self.address_str());
         write_end_tag(writer, "c:f");
     }
 }
