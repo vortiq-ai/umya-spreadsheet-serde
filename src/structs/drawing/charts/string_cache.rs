@@ -13,7 +13,10 @@ use quick_xml::{
 use crate::{
     CellValue,
     drawing::charts::Formula,
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        local_name,
+        xml_read_loop,
+    },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
@@ -21,7 +24,6 @@ use crate::{
         write_text_node,
     },
 };
-use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]

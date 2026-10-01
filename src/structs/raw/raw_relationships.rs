@@ -104,9 +104,9 @@ impl RawRelationships {
     /// Real workbooks ship dangling optional r:ids. Converters and export tools
     /// routinely strip `printerSettings*.bin` and its `<Relationship>` entry
     /// while leaving `<pageSetup r:id="rId1"/>` behind, so the sheet references
-    /// an rId its .rels never defines. Excel opens such files without complaint.
-    /// Panicking there discards an entire workbook because a print-layout blob
-    /// for a printer nobody has is missing.
+    /// an rId its .rels never defines. Excel opens such files without
+    /// complaint. Panicking there discards an entire workbook because a
+    /// print-layout blob for a printer nobody has is missing.
     pub(crate) fn try_relationship_by_rid(&self, r_id: &str) -> Option<&RawRelationship> {
         self.relationship_list()
             .iter()
@@ -226,15 +226,15 @@ impl RawRelationships {
 mod tests {
     use super::*;
 
-    /// `try_relationship_by_rid` must return `None` for an absent id rather than
-    /// panicking like its strict sibling.
+    /// `try_relationship_by_rid` must return `None` for an absent id rather
+    /// than panicking like its strict sibling.
     ///
     /// Real workbooks ship dangling OPTIONAL relationships: a tool rewrites the
     /// file, drops `printerSettings*.bin` and its `<Relationship>` entry, and
     /// leaves `<pageSetup r:id="rId1"/>` pointing at nothing. Excel opens those
     /// files. Panicking there discarded the entire workbook -- observed
-    /// 2026-09-07 on two customer files whose eight worksheets each referenced an
-    /// rId1 that no .rels defined and no printerSettings part backed.
+    /// 2026-09-07 on two customer files whose eight worksheets each referenced
+    /// an rId1 that no .rels defined and no printerSettings part backed.
     #[test]
     fn try_relationship_by_rid_returns_none_when_absent() {
         let mut rels = RawRelationships::default();
@@ -251,7 +251,9 @@ mod tests {
             "a dangling relationship must be None, not a panic"
         );
         assert!(
-            RawRelationships::default().try_relationship_by_rid("rId1").is_none(),
+            RawRelationships::default()
+                .try_relationship_by_rid("rId1")
+                .is_none(),
             "an empty .rels must also yield None"
         );
     }

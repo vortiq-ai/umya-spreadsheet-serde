@@ -18,13 +18,13 @@ use super::{
 use crate::{
     Workbook,
     drawing::charts::ShapeProperties,
+    reader::driver::local_name,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
     xml_read_loop,
 };
-use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]

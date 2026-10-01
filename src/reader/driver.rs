@@ -197,4 +197,3 @@ pub(crate) fn get_attribute(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -
 pub(crate) fn get_attribute_value(attr: &Attribute) -> Result<String, FromUtf8Error> {
     String::from_utf8(attr.value.to_vec())
 }
-

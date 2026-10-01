@@ -25,6 +25,7 @@ use crate::{
         DRAWINGML_MAIN_NS,
         REL_OFC_NS,
     },
+    reader::driver::local_name,
     structs::{
         Workbook,
         office2010::drawing::charts::Style,
@@ -36,7 +37,6 @@ use crate::{
     },
     xml_read_loop,
 };
-use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]

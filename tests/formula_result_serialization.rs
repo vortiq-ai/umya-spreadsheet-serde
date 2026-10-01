@@ -1,6 +1,10 @@
 use std::io::Read as _;
 
-use umya_spreadsheet::{CellErrorType, new_file, writer};
+use umya_spreadsheet::{
+    CellErrorType,
+    new_file,
+    writer,
+};
 
 #[test]
 fn formula_cached_results_are_written_with_their_explicit_types() {

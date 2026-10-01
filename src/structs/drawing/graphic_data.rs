@@ -19,6 +19,7 @@ use crate::{
     reader::{
         driver::{
             get_attribute,
+            local_name,
             xml_read_loop,
         },
         xlsx::chart,
@@ -30,7 +31,6 @@ use crate::{
         write_start_tag,
     },
 };
-use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]

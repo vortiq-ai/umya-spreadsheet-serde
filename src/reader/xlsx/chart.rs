@@ -4,13 +4,13 @@ use quick_xml::{
 };
 
 use crate::{
+    reader::driver::local_name,
     structs::{
         drawing::charts::ChartSpace,
         raw::RawFile,
     },
     xml_read_loop,
 };
-use crate::reader::driver::local_name;
 
 pub(crate) fn read(raw_file: &RawFile, chart_space: &mut ChartSpace) {
     let data = std::io::Cursor::new(raw_file.file_data());

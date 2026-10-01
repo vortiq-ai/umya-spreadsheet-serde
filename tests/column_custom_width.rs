@@ -1,13 +1,15 @@
 //! Round-trip tests for the `customWidth` column attribute.
 //!
-//! `customWidth` tells Excel whether a column's width was AUTHORED or merely inherited
-//! from the sheet default. Excel autofits an inherited column and leaves an authored one
-//! alone, so the flag decides layout behaviour, not just a byte in the XML.
+//! `customWidth` tells Excel whether a column's width was AUTHORED or merely
+//! inherited from the sheet default. Excel autofits an inherited column and
+//! leaves an authored one alone, so the flag decides layout behaviour, not just
+//! a byte in the XML.
 //!
-//! The writer used to stamp `customWidth="1"` on every column unconditionally. Once the
-//! reader began preserving the attribute, open-and-save started rewriting every inherited
-//! width as authored -- changing the layout of columns the user never touched. Nothing in
-//! the suite covered the attribute, on either side, which is why the asymmetry survived.
+//! The writer used to stamp `customWidth="1"` on every column unconditionally.
+//! Once the reader began preserving the attribute, open-and-save started
+//! rewriting every inherited width as authored -- changing the layout of
+//! columns the user never touched. Nothing in the suite covered the attribute,
+//! on either side, which is why the asymmetry survived.
 
 extern crate umya_spreadsheet;
 extern crate zip;
@@ -30,8 +32,9 @@ fn to_bytes(book: &Workbook) -> Vec<u8> {
     out
 }
 
-/// The raw `sheet1.xml`. Asserting on the bytes is the point: the reader could agree with
-/// the writer about a wrong value and a round-trip-only test would never notice.
+/// The raw `sheet1.xml`. Asserting on the bytes is the point: the reader could
+/// agree with the writer about a wrong value and a round-trip-only test would
+/// never notice.
 fn sheet1_xml(bytes: &[u8]) -> String {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes.to_vec())).expect("valid zip");
     let mut f = zip
@@ -55,9 +58,9 @@ fn col_elements(xml: &str) -> Vec<String> {
 
 #[test]
 fn set_width_marks_the_width_as_authored() {
-    // Mirrors `Row::set_height`, which has always set `custom_height`. A caller that sets
-    // a width means it; without this the conditional writer would emit the width and then
-    // tell Excel it was free to autofit over it.
+    // Mirrors `Row::set_height`, which has always set `custom_height`. A caller
+    // that sets a width means it; without this the conditional writer would
+    // emit the width and then tell Excel it was free to autofit over it.
     let mut book = new_file();
     let sheet = book.sheet_by_name_mut("Sheet1").unwrap();
     sheet.column_dimension_mut("A").set_width(24.0);
@@ -84,7 +87,8 @@ fn an_inherited_width_is_not_written_as_authored() {
         "an inherited width was stamped as authored: {}",
         cols[0]
     );
-    // The width itself is still written -- it is the default the column inherits.
+    // The width itself is still written -- it is the default the column
+    // inherits.
     assert!(cols[0].contains("width="), "{}", cols[0]);
 }
 
@@ -108,12 +112,14 @@ fn custom_width_survives_a_full_round_trip() {
 
 /// 🚨 The reason `custom_width` had to join `Column::hash_code`.
 ///
-/// Adjacent columns coalesce into a single `<col min= max=>` run when their hashes match,
-/// and the run is written from the FIRST column of the group. Two columns identical in
-/// width, hidden and bestFit but differing in `customWidth` would therefore collapse into
-/// one element, and the second column would silently take the first's flag.
+/// Adjacent columns coalesce into a single `<col min= max=>` run when their
+/// hashes match, and the run is written from the FIRST column of the group. Two
+/// columns identical in width, hidden and bestFit but differing in
+/// `customWidth` would therefore collapse into one element, and the second
+/// column would silently take the first's flag.
 ///
-/// Before `custom_width` was added to the hash this test read back B as authored.
+/// Before `custom_width` was added to the hash this test read back B as
+/// authored.
 #[test]
 fn columns_differing_only_in_custom_width_do_not_coalesce() {
     let mut book = new_file();
@@ -143,8 +149,8 @@ fn columns_differing_only_in_custom_width_do_not_coalesce() {
     );
 }
 
-/// Columns that agree on every written attribute must still coalesce -- the hash change
-/// must not split runs that Excel expects to be merged.
+/// Columns that agree on every written attribute must still coalesce -- the
+/// hash change must not split runs that Excel expects to be merged.
 #[test]
 fn identical_columns_still_coalesce_into_one_run() {
     let mut book = new_file();

@@ -31,13 +31,15 @@ use super::{
 use crate::{
     Workbook,
     drawing::charts::BaseTimeUnit,
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        local_name,
+        xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
 };
-use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]

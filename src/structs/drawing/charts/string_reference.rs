@@ -13,6 +13,7 @@ use quick_xml::{
 use super::Formula;
 use super::StringCache;
 use crate::{
+    reader::driver::local_name,
     structs::Workbook,
     writer::driver::{
         write_end_tag,
@@ -20,7 +21,6 @@ use crate::{
     },
     xml_read_loop,
 };
-use crate::reader::driver::local_name;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
