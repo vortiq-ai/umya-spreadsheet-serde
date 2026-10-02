@@ -14,12 +14,13 @@
 #
 # Rust 1.98.0, pinned: the version the consumers' build image (vq-builder) uses.
 #
-# DELIBERATELY NOT GATED: rustfmt and clippy. Measured 2026-09-30: nightly rustfmt
-# reports 14 hunks in 5 files, and clippy -D warnings (the crate enables
-# clippy::pedantic) fails with 3 errors on 1.95, 1.98 and 1.100-beta. Every one
-# is on a line this fork added; upstream's base 35bbffa4 passes both. Fixing them
-# is the code owners' call. A gate that is red on arrival teaches everyone to
-# ignore CI.
+# GATED SINCE 2026-10-02: rustfmt and clippy on the library. Both were red on
+# lines this fork added (14 rustfmt hunks, 3 clippy errors, measured 2026-09-30)
+# until 7eedccb7 and 3e3fdedc cleared them; master 29e0714b passes both, so the
+# gates start green. NOT gated: clippy on the test targets, which still carry 8
+# findings (strict float comparisons, a deprecated getter, an inline format
+# argument). Fixing them is the code owners' call; a gate that is red on arrival
+# teaches everyone to ignore CI.
 #
 # NOT BUILT HERE: wasm32. umya alone cannot build for it, because getrandom 0.4
 # needs the `wasm_js` opt-in that beyondcell-frontend/codec-wasm declares. That
@@ -56,10 +57,25 @@ jobs:
       - name: Install Rust 1.98.0
         id: toolchain
         run: |
-          rustup toolchain install 1.98.0 --profile minimal --no-self-update
+          rustup toolchain install 1.98.0 --profile minimal -c clippy --no-self-update
           rustup default 1.98.0
           rustc --version
           cargo --version
+
+      # rustfmt.toml turns on unstable options, so it needs a nightly rustfmt. A
+      # DATED nightly, so a new nightly cannot turn this red on a day nothing here
+      # changed. Move the date deliberately, and reformat in the same commit.
+      - name: Check formatting
+        id: fmt
+        run: |
+          rustup toolchain install nightly-2026-10-01 --profile minimal -c rustfmt --no-self-update
+          cargo +nightly-2026-10-01 fmt --all -- --check
+
+      # The library as the consumers compile it (`--features serde`), with every
+      # lint src/lib.rs enables (pedantic among them), warnings as errors.
+      - name: Clippy
+        id: clippy
+        run: cargo clippy --features serde -- -D warnings
 
       - name: Build
         id: build
@@ -86,6 +102,8 @@ jobs:
           RESULT: ${{ job.status }}
           STEPS: >-
             Install Rust 1.98.0=${{ steps.toolchain.conclusion }};
+            Check formatting=${{ steps.fmt.conclusion }};
+            Clippy=${{ steps.clippy.conclusion }};
             Build=${{ steps.build.conclusion }};
             Test=${{ steps.test.conclusion }}
         run: |
