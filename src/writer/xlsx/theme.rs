@@ -24,6 +24,11 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     theme: &Theme,
     writer_mng: &mut WriterManager<W>,
 ) -> Result<(), XlsxError> {
+    if let Some(xml) = theme.source_xml() {
+        let writer = Writer::new(io::Cursor::new(xml.as_bytes().to_vec()));
+        return writer_mng.add_writer(PKG_THEME, writer);
+    }
+
     let mut writer = Writer::new(io::Cursor::new(Vec::new()));
     // XML header
     writer

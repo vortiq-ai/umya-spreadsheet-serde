@@ -49,9 +49,40 @@ use crate::{
 pub struct Theme {
     name:           StringValue,
     theme_elements: ThemeElements,
+    /// The part as it was read. The model above holds only part of a theme,
+    /// so an unchanged theme is written back from this text; any change
+    /// through a setter or `*_mut` accessor drops it.
+    source_xml:     Option<String>,
 }
 
 impl Theme {
+    /// Parse a theme part and keep its text, so that writing the theme
+    /// unchanged reproduces the part exactly.
+    #[must_use]
+    pub fn from_xml(xml: &str) -> Self {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut theme = Theme::default();
+        xml_read_loop!(
+            reader,
+            Event::Start(ref e) => {
+                if e.name().into_inner() == b"a:theme" {
+                    theme.set_attributes(&mut reader, e);
+                }
+            },
+            Event::Eof => break,
+        );
+        theme.source_xml = Some(xml.to_string());
+        theme
+    }
+
+    /// The part as it was read, while the theme is unchanged.
+    #[inline]
+    #[must_use]
+    pub fn source_xml(&self) -> Option<&str> {
+        self.source_xml.as_deref()
+    }
+
     #[inline]
     #[must_use]
     pub fn name(&self) -> &str {
@@ -67,6 +98,7 @@ impl Theme {
 
     #[inline]
     pub fn set_name<S: Into<String>>(&mut self, value: S) -> &mut Self {
+        self.source_xml = None;
         self.name.set_value(value);
         self
     }
@@ -86,6 +118,7 @@ impl Theme {
 
     #[inline]
     pub fn theme_elements_mut(&mut self) -> &mut ThemeElements {
+        self.source_xml = None;
         &mut self.theme_elements
     }
 
@@ -97,6 +130,7 @@ impl Theme {
 
     #[inline]
     pub fn set_theme_elements(&mut self, value: ThemeElements) -> &mut Self {
+        self.source_xml = None;
         self.theme_elements = value;
         self
     }

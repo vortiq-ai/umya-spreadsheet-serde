@@ -416,3 +416,28 @@ fn automatic_selectors_survive_every_style_consumer() {
         vec![expected("auto", "1", None), expected("auto", "0", None)],
     );
 }
+
+#[test]
+fn a_read_color_reports_its_selector() {
+    let colors = vec![
+        Color::default().set_theme_index(0).to_owned(),
+        Color::default().set_indexed(0).to_owned(),
+        Color::default().set_argb_str("FF000000").to_owned(),
+    ];
+    let book =
+        umya::reader::xlsx::read_reader(Cursor::new(save(&fixture(&colors, false))), true).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    let selector = |column: u32| {
+        let color = sheet
+            .cell((column, 1))
+            .unwrap()
+            .style()
+            .font()
+            .unwrap()
+            .color();
+        (color.has_theme_index(), color.has_indexed())
+    };
+    assert_eq!(selector(1), (true, false));
+    assert_eq!(selector(2), (false, true));
+    assert_eq!(selector(3), (false, false));
+}

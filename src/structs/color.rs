@@ -355,6 +355,14 @@ impl Color {
         self.indexed()
     }
 
+    /// Whether the color is an entry of the indexed palette. `indexed()` reads 0
+    /// for a color that is not.
+    #[inline]
+    #[must_use]
+    pub fn has_indexed(&self) -> bool {
+        self.indexed.is_some()
+    }
+
     #[inline]
     pub fn set_indexed(&mut self, index: u32) -> &mut Self {
         self.automatic = None;
@@ -375,6 +383,14 @@ impl Color {
     #[deprecated(since = "3.0.0", note = "Use theme_index()")]
     pub fn get_theme_index(&self) -> u32 {
         self.theme_index()
+    }
+
+    /// Whether the color is a theme color slot. `theme_index()` reads 0 for a
+    /// color that is not.
+    #[inline]
+    #[must_use]
+    pub fn has_theme_index(&self) -> bool {
+        self.theme_index.is_some()
     }
 
     #[inline]
