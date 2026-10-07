@@ -73,14 +73,18 @@ impl DefinedName {
         self.address()
     }
 
+    /// Set what the name refers to. A list of cell references
+    /// (`Sheet1!$A$1,Sheet1!$C$3`) is kept as addresses; anything else, such as
+    /// a constant, a quoted text or a formula, is kept exactly as written.
     pub fn set_address<S: Into<String>>(&mut self, value: S) -> &mut Self {
-        let list = Self::split_str(value);
-        for v in &list {
-            if is_address(v) {
+        let value = value.into();
+        let list = Self::split_str(value.as_str());
+        if list.iter().all(is_address) {
+            for v in &list {
                 self.add_address(v);
-            } else {
-                self.set_string_value(v);
             }
+        } else {
+            self.set_string_value(value);
         }
         self
     }
@@ -176,9 +180,7 @@ impl DefinedName {
                 }
                 '"' => {
                     is_pass_d = !is_pass_d;
-                    if is_pass_s || is_pass_b != 0 {
-                        string.push(c);
-                    }
+                    string.push(c);
                 }
                 ',' => {
                     if !is_pass_s && !is_pass_d && is_pass_b == 0 {
@@ -303,5 +305,40 @@ impl AdjustmentCoordinateWithSheet for DefinedName {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refers_to(value: &str) -> DefinedName {
+        let mut name = DefinedName::default();
+        name.set_address(value);
+        name
+    }
+
+    #[test]
+    fn a_list_of_references_is_kept_as_addresses() {
+        let name = refers_to("Sheet1!$A$1,'My Sheet'!$C$3:$D$4");
+        assert_eq!(name.address.len(), 2);
+        assert!(!name.string_value.has_value());
+    }
+
+    #[test]
+    fn anything_else_is_kept_exactly_as_written() {
+        for value in [
+            r#""LBO Analysis - Monro VF.xlsx""#,
+            r#""a, b""#,
+            "0.25",
+            "{1,2,3}",
+            "Sheet1!$A$1*2",
+            r#"IF(Sheet1!$A$1>0,"yes","no")"#,
+            "Sheet1!$A$1,#REF!",
+        ] {
+            let name = refers_to(value);
+            assert_eq!(name.address(), value);
+            assert!(name.address.is_empty(), "{value}");
+        }
     }
 }
