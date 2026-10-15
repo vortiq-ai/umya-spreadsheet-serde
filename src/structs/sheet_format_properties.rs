@@ -80,11 +80,13 @@ impl SheetFormatProperties {
         self.default_column_width.value()
     }
 
-    /// `defaultColWidth` as the sheet states it, or `None` when the sheet omits it.
+    /// `defaultColWidth` as the sheet states it, or `None` when the sheet omits
+    /// it.
     ///
-    /// [`Self::default_column_width`] returns `0.0` for an absent attribute, which a caller
-    /// cannot tell from a sheet that really does declare `defaultColWidth="0"`. The difference
-    /// matters to anyone deciding whether a column inherits a sheet default or an application
+    /// [`Self::default_column_width`] returns `0.0` for an absent attribute,
+    /// which a caller cannot tell from a sheet that really does declare
+    /// `defaultColWidth="0"`. The difference matters to anyone deciding
+    /// whether a column inherits a sheet default or an application
     /// one: reading the `0` as a width collapses every column to nothing.
     #[inline]
     #[must_use]
@@ -111,6 +113,15 @@ impl SheetFormatProperties {
     #[must_use]
     pub fn default_row_height(&self) -> f64 {
         self.default_row_height.value()
+    }
+
+    /// The declared default, or `None` when the worksheet omits it.
+    #[inline]
+    #[must_use]
+    pub fn default_row_height_opt(&self) -> Option<f64> {
+        self.default_row_height
+            .has_value()
+            .then(|| self.default_row_height.value())
     }
 
     #[inline]
@@ -319,9 +330,10 @@ mod tests {
 
     /// An absent `defaultColWidth` is not a width of zero.
     ///
-    /// `default_column_width` folds both to `0.0`, so a caller deciding whether a column
-    /// inherits a sheet default or an application one cannot tell them apart -- and reading the
-    /// absent case as a width collapses every inheriting column to nothing.
+    /// `default_column_width` folds both to `0.0`, so a caller deciding whether
+    /// a column inherits a sheet default or an application one cannot tell
+    /// them apart -- and reading the absent case as a width collapses every
+    /// inheriting column to nothing.
     #[test]
     fn default_column_width_opt_separates_absent_from_zero() {
         assert_eq!(

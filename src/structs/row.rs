@@ -86,6 +86,33 @@ impl Row {
         self.height.value()
     }
 
+    /// The declared height, distinguishing an absent attribute from zero.
+    #[inline]
+    #[must_use]
+    pub fn height_opt(&self) -> Option<f64> {
+        self.height.has_value().then(|| self.height.value())
+    }
+
+    /// Restore the two independent OOXML attributes without marking an
+    /// inherited height as custom. `None` removes the corresponding
+    /// attribute.
+    #[inline]
+    pub fn set_height_attributes(
+        &mut self,
+        height: Option<f64>,
+        custom_height: Option<bool>,
+    ) -> &mut Self {
+        self.height = DoubleValue::default();
+        if let Some(value) = height {
+            self.height.set_value(value);
+        }
+        self.custom_height = BooleanValue::default();
+        if let Some(value) = custom_height {
+            self.custom_height.set_value(value);
+        }
+        self
+    }
+
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use height()")]
@@ -161,6 +188,15 @@ impl Row {
     #[must_use]
     pub fn custom_height(&self) -> bool {
         self.custom_height.value()
+    }
+
+    /// The declared flag, distinguishing explicit false from absence.
+    #[inline]
+    #[must_use]
+    pub fn custom_height_opt(&self) -> Option<bool> {
+        self.custom_height
+            .has_value()
+            .then(|| self.custom_height.value())
     }
 
     #[inline]
@@ -320,7 +356,7 @@ impl Row {
             attributes.push(("spans", spans).into());
         }
         let height = self.height.value_string();
-        if self.height.value() != 0f64 {
+        if self.height.has_value() {
             attributes.push(("ht", &height).into());
         }
         if self.thick_top.value() {
@@ -329,7 +365,7 @@ impl Row {
         if self.thick_bot.value() {
             attributes.push(("thickBot", self.thick_bot.value_string()).into());
         }
-        if self.custom_height.value() {
+        if self.custom_height.has_value() {
             attributes.push(("customHeight", self.custom_height.value_string()).into());
         }
         if xf_index > 0 {
@@ -355,16 +391,14 @@ impl AdjustmentValue for Row {
     #[inline]
     fn adjustment_insert_value(&mut self, root_num: u32, offset_num: u32) {
         if self.row_num.value() >= root_num {
-            self.row_num
-                .set_value(self.row_num.value() + offset_num);
+            self.row_num.set_value(self.row_num.value() + offset_num);
         }
     }
 
     #[inline]
     fn adjustment_remove_value(&mut self, root_num: u32, offset_num: u32) {
         if self.row_num.value() >= root_num {
-            self.row_num
-                .set_value(self.row_num.value() - offset_num);
+            self.row_num.set_value(self.row_num.value() - offset_num);
         }
     }
 
