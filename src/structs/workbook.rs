@@ -68,6 +68,7 @@ pub struct Workbook {
 impl Workbook {
     /// Returns whether a one-based cell `cm` index identifies a native dynamic array.
     /// Unrelated cell metadata must not be treated as dynamic-array identity.
+    #[must_use]
     pub fn is_dynamic_array_metadata(&self, cell_meta_index: u32) -> bool {
         self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_dynamic(cell_meta_index))
     }
@@ -86,6 +87,7 @@ impl Workbook {
     }
 
     /// Resolve a cell cm index to a property of a named metadata extension.
+    #[must_use]
     pub fn is_cell_metadata_extension(&self, cm: u32, type_name: &str, namespace: &str, local_name: &str) -> bool {
         self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_extension(cm, type_name, namespace, local_name))
     }

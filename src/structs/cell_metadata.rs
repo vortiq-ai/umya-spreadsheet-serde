@@ -1,13 +1,20 @@
 //! Spreadsheet cell metadata. Unknown records and XML extensions are retained.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{
+        HashMap,
+        HashSet,
+    },
     sync::Arc,
 };
 pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_METADATA_EVENTS: usize = 250_000;
 use quick_xml::{
-    NsReader, Writer,
-    events::{BytesStart, Event},
+    NsReader,
+    Writer,
+    events::{
+        BytesStart,
+        Event,
+    },
     name::ResolveResult,
 };
 
@@ -21,8 +28,8 @@ pub(crate) const CONTENT_TYPE: &str =
 
 #[derive(Clone, Debug)]
 struct Node {
-    start: BytesStart<'static>,
-    ns: Arc<str>,
+    start:    BytesStart<'static>,
+    ns:       Arc<str>,
     children: Vec<Item>,
 }
 #[derive(Clone, Debug)]
@@ -34,6 +41,7 @@ impl Node {
     fn is(&self, name: &[u8]) -> bool {
         self.ns.as_ref() == MAIN && self.start.local_name().as_ref() == name
     }
+
     fn attr(&self, name: &[u8]) -> Option<String> {
         self.start
             .attributes()
@@ -42,21 +50,25 @@ impl Node {
             .and_then(|a| {
                 a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
                     .ok()
-                    .map(|v| v.into_owned())
+                    .map(std::borrow::Cow::into_owned)
             })
     }
+
     fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.children.iter().filter_map(|x| match x {
             Item::Node(n) => Some(n),
-            _ => None,
+            Item::Event(_) => None,
         })
     }
+
     fn count(&self, name: &[u8]) -> usize {
         self.nodes().filter(|n| n.is(name)).count()
     }
+
     fn push(&mut self, node: Node) {
         self.children.push(Item::Node(node));
     }
+
     fn count_attr(&mut self, name: &[u8]) {
         let count = self.count(name).to_string();
         let name = String::from_utf8_lossy(self.start.name().as_ref()).into_owned();
@@ -69,6 +81,7 @@ impl Node {
         start.push_attribute(("count", count.as_str()));
         self.start = start;
     }
+
     fn write(&self, writer: &mut Writer<Vec<u8>>) {
         writer
             .write_event(Event::Start(self.start.borrow()))
@@ -127,8 +140,9 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
                         ));
                     }
                 }
-                // Unknown extension XML is retained as a tree and written/dropped
-                // recursively. Bound its depth before building that tree so a
+                // Unknown extension XML is retained as a tree and
+                // written/dropped recursively. Bound its depth
+                // before building that tree so a
                 // hostile metadata part cannot exhaust the process stack later.
                 if stack.len() >= 128 {
                     return Err(crate::XlsxError::CellError(
@@ -207,26 +221,28 @@ fn node(xml: &str) -> Node {
     parse(xml.as_bytes()).expect("static metadata XML")
 }
 
+type ExtensionNames = HashSet<(Arc<str>, String)>;
+
 #[derive(Clone, Debug, Default)]
 struct MetadataIndex {
-    dynamic: HashSet<u32>,
+    dynamic:      HashSet<u32>,
     pure_dynamic: Option<u32>,
-    types: Vec<Arc<str>>,
-    records: HashMap<u32, Vec<(usize, usize)>>,
-    extensions: HashMap<(usize, usize), HashSet<(Arc<str>, String)>>,
-    reusable: HashMap<(usize, Arc<str>, Vec<u8>), u32>,
+    types:        Vec<Arc<str>>,
+    records:      HashMap<u32, Vec<(usize, usize)>>,
+    extensions:   HashMap<(usize, usize), ExtensionNames>,
+    reusable:     HashMap<(usize, Arc<str>, Vec<u8>), u32>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct CellMetadata {
-    root: Node,
+    root:            Node,
     pub(crate) path: String,
-    index: MetadataIndex,
+    index:           MetadataIndex,
 }
 impl Default for CellMetadata {
     fn default() -> Self {
         Self {
-            root: node(&format!(r#"<metadata xmlns="{MAIN}"/>"#)),
-            path: "xl/metadata.xml".into(),
+            root:  node(&format!(r#"<metadata xmlns="{MAIN}"/>"#)),
+            path:  "xl/metadata.xml".into(),
             index: MetadataIndex::default(),
         }
     }
@@ -267,11 +283,13 @@ impl CellMetadata {
         metadata.reindex();
         Ok(metadata)
     }
+
     pub(crate) fn xml(&self) -> Vec<u8> {
         let mut w = Writer::new(Vec::new());
         self.root.write(&mut w);
         w.into_inner()
     }
+
     fn reindex(&mut self) {
         let mut index = MetadataIndex::default();
         let types: Vec<_> = self
@@ -328,7 +346,7 @@ impl CellMetadata {
         }
         if let Some(cells) = self.root.nodes().find(|n| n.is(b"cellMetadata")) {
             for (at, block) in cells.nodes().filter(|n| n.is(b"bk")).enumerate() {
-                let cm = (at + 1) as u32;
+                let cm = u32::try_from(at + 1).expect("bounded cell metadata index fits u32");
                 let children: Vec<_> = block.nodes().collect();
                 let pure = children.len() == 1 && children[0].is(b"rc");
                 for record in children.iter().filter(|n| n.is(b"rc")) {
@@ -368,9 +386,11 @@ impl CellMetadata {
         index.types = types;
         self.index = index;
     }
+
     pub(crate) fn is_dynamic(&self, cm: u32) -> bool {
         self.index.dynamic.contains(&cm)
     }
+
     pub(crate) fn ensure_dynamic(&mut self) -> u32 {
         if let Some(cm) = self.index.pure_dynamic {
             return cm;
@@ -384,6 +404,7 @@ impl CellMetadata {
             properties,
         )
     }
+
     pub(crate) fn is_extension(
         &self,
         cm: u32,
@@ -405,6 +426,7 @@ impl CellMetadata {
             })
         })
     }
+
     pub(crate) fn ensure_extension(
         &mut self,
         type_name: &str,
@@ -440,6 +462,7 @@ impl CellMetadata {
         }
         Ok(self.append_record(type_name, extension_uri, property))
     }
+
     fn append_record(&mut self, type_name: &str, extension_uri: &str, property: Node) -> u32 {
         if !self.root.nodes().any(|n| n.is(b"metadataTypes")) {
             self.root
@@ -548,7 +571,7 @@ impl CellMetadata {
         ));
         cells.push(block);
         cells.count_attr(b"bk");
-        let cm = cells.count(b"bk") as u32;
+        let cm = u32::try_from(cells.count(b"bk")).expect("cell metadata index fits u32");
         self.reindex();
         cm
     }
@@ -569,7 +592,7 @@ fn extension_properties(block: &Node) -> impl Iterator<Item = (Arc<str>, &Node)>
     block
         .nodes()
         .filter(|n| n.is(b"extLst"))
-        .flat_map(|n| n.nodes())
+        .flat_map(Node::nodes)
         .filter(|n| n.is(b"ext"))
         .flat_map(|extension| {
             let uri = Arc::<str>::from(extension.attr(b"uri").unwrap_or_default());
@@ -580,12 +603,13 @@ fn extension_properties(block: &Node) -> impl Iterator<Item = (Arc<str>, &Node)>
 }
 
 fn has_dynamic_property(n: &Node) -> bool {
-    // Only the standard extension path counts; a similarly named foreign element does not.
+    // Only the standard extension path counts; a similarly named foreign
+    // element does not.
     n.nodes()
         .filter(|n| n.is(b"extLst"))
-        .flat_map(|n| n.nodes())
+        .flat_map(Node::nodes)
         .filter(|n| n.is(b"ext"))
-        .flat_map(|n| n.nodes())
+        .flat_map(Node::nodes)
         .any(|n| {
             n.ns.as_ref() == DYNAMIC
                 && n.start.local_name().as_ref() == b"dynamicArrayProperties"
@@ -595,8 +619,12 @@ fn has_dynamic_property(n: &Node) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{
+        Cursor,
+        Read,
+    };
+
     use super::*;
-    use std::io::{Cursor, Read};
 
     #[test]
     fn cell_metadata_rejects_excessive_unknown_extension_depth() {
@@ -610,8 +638,8 @@ mod tests {
 
     #[test]
     fn cell_metadata_resolves_indices_and_preserves_unknown_records() {
-        // Prefixes, an unrelated first type/block, a false record, and a foreign
-        // lookalike ensure cm != 0 alone never means dynamic.
+        // Prefixes, an unrelated first type/block, a false record, and a
+        // foreign lookalike ensure cm != 0 alone never means dynamic.
         let xml = format!(
             r#"<s:metadata xmlns:s="{MAIN}" xmlns:d="{DYNAMIC}" xmlns:u="urn:other">
           <s:metadataTypes count="2"><s:metadataType name="OTHER"/><s:metadataType name="XLDAPR"/></s:metadataTypes>
@@ -691,7 +719,8 @@ mod tests {
         let xml = format!(
             r#"<metadata xmlns="{MAIN}" xmlns:d="{DYNAMIC}"><metadataTypes count="1"><metadataType name="XLDAPR"/></metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst><ext uri="existing"><d:dynamicArrayProperties fDynamic="1"/></ext><ext uri="urn:foreign"><opaque xmlns="urn:foreign"/></ext></extLst></bk></futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>"#
         );
-        let mut metadata = CellMetadata::from_xml(xml.as_bytes(), "xl/metadata.xml".into()).unwrap();
+        let mut metadata =
+            CellMetadata::from_xml(xml.as_bytes(), "xl/metadata.xml".into()).unwrap();
         assert!(metadata.is_dynamic(1));
         assert!(metadata.is_extension(1, "XLDAPR", "urn:foreign", "opaque"));
         let new_cm = metadata.ensure_dynamic();
@@ -803,16 +832,25 @@ mod tests {
                 let mut contents = Vec::new();
                 file.read_to_end(&mut contents).unwrap();
                 let root_part = target != "/xl/metadata.xml";
-                let output_name = if root_part && name == "xl/metadata.xml" { "metadata.xml" } else { &name };
+                let output_name = if root_part && name == "xl/metadata.xml" {
+                    "metadata.xml"
+                } else {
+                    &name
+                };
                 if name == "xl/_rels/workbook.xml.rels" {
-                    contents = String::from_utf8(contents).unwrap()
+                    contents = String::from_utf8(contents)
+                        .unwrap()
                         .replace("Target=\"metadata.xml\"", &format!("Target=\"{target}\""))
                         .into_bytes();
                 } else if root_part && name == "[Content_Types].xml" {
-                    contents = String::from_utf8(contents).unwrap()
-                        .replace("/xl/metadata.xml", "/metadata.xml").into_bytes();
+                    contents = String::from_utf8(contents)
+                        .unwrap()
+                        .replace("/xl/metadata.xml", "/metadata.xml")
+                        .into_bytes();
                 }
-                output.start_file(output_name, zip::write::SimpleFileOptions::default()).unwrap();
+                output
+                    .start_file(output_name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
                 output.write_all(&contents).unwrap();
             }
             let bytes = output.finish().unwrap().into_inner();

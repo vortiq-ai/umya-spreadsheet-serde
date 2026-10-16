@@ -85,13 +85,19 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
             let part = driver::zip_by_name(&mut arv, &path)?;
             let cap = crate::structs::cell_metadata::MAX_METADATA_BYTES;
             if part.size() > cap {
-                return Err(XlsxError::CellError("Spreadsheet metadata exceeds the size limit".into()));
+                return Err(XlsxError::CellError(
+                    "Spreadsheet metadata exceeds the size limit".into(),
+                ));
             }
             io::Read::read_to_end(&mut io::Read::take(part, cap + 1), &mut xml)?;
             if xml.len() as u64 > cap {
-                return Err(XlsxError::CellError("Spreadsheet metadata exceeds the size limit".into()));
+                return Err(XlsxError::CellError(
+                    "Spreadsheet metadata exceeds the size limit".into(),
+                ));
             }
-            book.cell_metadata = Some(crate::structs::cell_metadata::CellMetadata::from_xml(&xml, path)?);
+            book.cell_metadata = Some(crate::structs::cell_metadata::CellMetadata::from_xml(
+                &xml, path,
+            )?);
         }
     }
 

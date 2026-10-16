@@ -68,10 +68,17 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     }
 
     if let Some(metadata) = &wb.cell_metadata {
-        let target = metadata.path.strip_prefix("xl/").map(str::to_owned)
-            .unwrap_or_else(|| format!("/{}", metadata.path.trim_start_matches('/')));
-        write_relationship(&mut writer, &index.to_string(), crate::structs::cell_metadata::REL,
-            &target, "");
+        let target = metadata.path.strip_prefix("xl/").map_or_else(
+            || format!("/{}", metadata.path.trim_start_matches('/')),
+            str::to_owned,
+        );
+        write_relationship(
+            &mut writer,
+            &index.to_string(),
+            crate::structs::cell_metadata::REL,
+            &target,
+            "",
+        );
         index += 1;
     }
 
