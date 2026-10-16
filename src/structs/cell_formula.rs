@@ -28,11 +28,17 @@ use crate::{
     structs::{
         BooleanValue,
         CellFormulaValues,
+        ColumnReference,
         EnumValue,
+        Range,
+        RowReference,
         StringValue,
         UInt32Value,
     },
-    traits::AdjustmentCoordinateWith2Sheet,
+    traits::{
+        AdjustmentCoordinate,
+        AdjustmentCoordinateWith2Sheet,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -225,6 +231,73 @@ impl CellFormula {
     pub fn set_reference<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.reference.set_value(value);
         self
+    }
+
+    fn array_reference_range(&self) -> Option<Range> {
+        if self.formula_type() != &CellFormulaValues::Array {
+            return None;
+        }
+        let reference = self.reference.value()?;
+        let (start, end) = reference.split_once(':').unwrap_or((reference, reference));
+        let (Some(start_col), Some(start_row), ..) = index_from_coordinate(start) else {
+            return None;
+        };
+        let (Some(end_col), Some(end_row), ..) = index_from_coordinate(end) else {
+            return None;
+        };
+        if start_col == 0 || start_row == 0 || start_col > end_col || start_row > end_row {
+            return None;
+        }
+        let mut range = Range::default();
+        range.set_range(reference);
+        Some(range)
+    }
+
+    fn array_reference_after_removal(
+        &self,
+        root_col_num: u32,
+        offset_col_num: u32,
+        root_row_num: u32,
+        offset_row_num: u32,
+    ) -> Option<String> {
+        // Cells removes a deleted top-left anchor before formula adjustments.
+        // Do not fabricate a replacement owner if the start of either
+        // axis is deleted.
+        fn remove_axis(start: u32, end: u32, root: u32, count: u32) -> Option<(u32, u32)> {
+            if root == 0 || count == 0 || root > end {
+                return Some((start, end));
+            }
+            if root <= start {
+                if count > start - root {
+                    return None;
+                }
+                return Some((start - count, end - count));
+            }
+            // Clip the deleted tail to this range, including oversized
+            // removals.
+            Some((start, end - count.min(end - root + 1)))
+        }
+
+        let mut range = self.array_reference_range()?;
+        let start_col = range.coordinate_start_col()?.num();
+        let start_row = range.coordinate_start_row()?.num();
+        let end_col = range
+            .coordinate_end_col()
+            .map_or(start_col, ColumnReference::num);
+        let end_row = range
+            .coordinate_end_row()
+            .map_or(start_row, RowReference::num);
+        let (start_col, end_col) = remove_axis(start_col, end_col, root_col_num, offset_col_num)?;
+        let (start_row, end_row) = remove_axis(start_row, end_row, root_row_num, offset_row_num)?;
+        range.coordinate_start_col_mut()?.set_num(start_col);
+        range.coordinate_start_row_mut()?.set_num(start_row);
+        if let Some(value) = range.coordinate_end_col_mut() {
+            value.set_num(end_col);
+        }
+        if let Some(value) = range.coordinate_end_row_mut() {
+            value.set_num(end_row);
+        }
+        Some(range.range())
     }
 
     #[inline]
@@ -454,6 +527,19 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        // An array's ref describes owned cells on this sheet, not references in
+        // the formula text. Its geometry moves even when its coordinates use $.
+        if self_sheet_name == sheet_name {
+            if let Some(mut range) = self.array_reference_range() {
+                range.adjustment_insert_coordinate(
+                    root_col_num,
+                    offset_col_num,
+                    root_row_num,
+                    offset_row_num,
+                );
+                self.reference.set_value(range.range());
+            }
+        }
         if let Some(v) = self.text.value() {
             let formula = adjustment_insert_formula_coordinate(
                 &mut parse_to_tokens(format!("={v}")),
@@ -492,6 +578,16 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        if self_sheet_name == sheet_name {
+            if let Some(reference) = self.array_reference_after_removal(
+                root_col_num,
+                offset_col_num,
+                root_row_num,
+                offset_row_num,
+            ) {
+                self.reference.set_value(reference);
+            }
+        }
         if let Some(v) = self.text.value() {
             let formula = adjustment_remove_formula_coordinate(
                 &mut parse_to_tokens(format!("={v}")),
@@ -518,5 +614,99 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
             );
             self.text_view.set_value(formula);
         }
+    }
+}
+
+#[cfg(test)]
+mod array_reference_adjustment_tests {
+    use super::*;
+
+    fn array_formula(reference: &str) -> CellFormula {
+        let mut formula = CellFormula::default();
+        formula.set_formula_type(CellFormulaValues::Array);
+        formula.set_reference(reference);
+        formula.set_text("_xludf.rri(3,100,200)");
+        formula
+    }
+
+    #[test]
+    fn array_geometry_moves_locked_and_single_cell_references() {
+        for (reference, expected) in [
+            ("$C$4:$E$7", "$D$6:$F$9"),
+            ("C4", "D6"),
+            ("C$4:$E7", "D$6:$F9"),
+        ] {
+            let mut formula = array_formula(reference);
+            formula.adjustment_insert_coordinate_with_2sheet("Main", "Main", 2, 1, 2, 2);
+            assert_eq!(formula.reference(), expected);
+            assert_eq!(formula.text(), "_xludf.rri(3,100,200)");
+            formula.adjustment_remove_coordinate_with_2sheet("Main", "Main", 2, 1, 2, 2);
+            assert_eq!(formula.reference(), reference);
+        }
+    }
+
+    #[test]
+    fn array_removal_clips_deleted_members_without_zero_coordinates() {
+        let formula = array_formula("$C$4:$E$7");
+        for (root_col, col_count, root_row, row_count, expected) in [
+            (2, 1, 2, 1, "$B$3:$D$6"),
+            (4, 1, 5, 1, "$C$4:$D$6"),
+            (5, 100, 7, 100, "$C$4:$D$6"),
+            (4, u32::MAX, 5, u32::MAX, "$C$4:$C$4"),
+            (6, 100, 8, 100, "$C$4:$E$7"),
+            (0, 0, 0, 0, "$C$4:$E$7"),
+        ] {
+            assert_eq!(
+                formula.array_reference_after_removal(root_col, col_count, root_row, row_count),
+                Some(expected.to_string()),
+            );
+        }
+        assert_eq!(formula.array_reference_after_removal(3, 1, 0, 0), None);
+        assert_eq!(formula.array_reference_after_removal(0, 0, 4, 1), None);
+    }
+
+    #[test]
+    fn malformed_array_references_are_preserved_without_panicking() {
+        for reference in [
+            "",
+            "A0:B2",
+            "B2:A3",
+            "A2:B1",
+            "Sheet1!A1:B2",
+            "A1:B2:C3",
+            "A:B",
+            "1:3",
+        ] {
+            let mut formula = array_formula(reference);
+            formula.adjustment_insert_coordinate_with_2sheet("Main", "Main", 1, 1, 1, 1);
+            assert_eq!(formula.reference(), reference);
+            formula.adjustment_remove_coordinate_with_2sheet("Main", "Main", 1, 1, 1, 1);
+            assert_eq!(formula.reference(), reference);
+        }
+    }
+
+    #[test]
+    fn only_same_sheet_array_metadata_is_adjusted() {
+        for formula_type in [
+            CellFormulaValues::Shared,
+            CellFormulaValues::DataTable,
+            CellFormulaValues::Normal,
+        ] {
+            let mut formula = array_formula("C4:E7");
+            formula.set_formula_type(formula_type);
+            formula.adjustment_insert_coordinate_with_2sheet("Main", "Main", 2, 1, 2, 1);
+            assert_eq!(formula.reference(), "C4:E7");
+            formula.adjustment_remove_coordinate_with_2sheet("Main", "Main", 2, 1, 2, 1);
+            assert_eq!(formula.reference(), "C4:E7");
+        }
+
+        let mut formula = array_formula("C4:E7");
+        formula.set_text("_xludf.rri(Other!A1,100,200)");
+        formula.adjustment_insert_coordinate_with_2sheet("Main", "Other", 0, 0, 1, 1);
+        assert_eq!(formula.reference(), "C4:E7");
+        assert_eq!(formula.text(), "_xludf.rri(Other!A2,100,200)");
+        formula.adjustment_remove_coordinate_with_2sheet("Main", "Other", 0, 0, 1, 1);
+        assert_eq!(formula.reference(), "C4:E7");
+        assert_eq!(formula.text(), "_xludf.rri(Other!A1,100,200)");
     }
 }

@@ -1153,12 +1153,14 @@ impl AdjustmentCoordinateWithSheet for Workbook {
     ) {
         self.read_sheet_collection();
         for worksheet in &mut self.work_sheet_collection {
-            worksheet.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
+            if worksheet.name() == sheet_name {
+                worksheet.adjustment_insert_coordinate(
+                    root_col_num,
+                    offset_col_num,
+                    root_row_num,
+                    offset_row_num,
+                );
+            }
             worksheet.adjustment_insert_coordinate_with_sheet(
                 sheet_name,
                 root_col_num,
@@ -1179,12 +1181,14 @@ impl AdjustmentCoordinateWithSheet for Workbook {
     ) {
         self.read_sheet_collection();
         for worksheet in &mut self.work_sheet_collection {
-            worksheet.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
+            if worksheet.name() == sheet_name {
+                worksheet.adjustment_remove_coordinate(
+                    root_col_num,
+                    offset_col_num,
+                    root_row_num,
+                    offset_row_num,
+                );
+            }
             worksheet.adjustment_remove_coordinate_with_sheet(
                 sheet_name,
                 root_col_num,
