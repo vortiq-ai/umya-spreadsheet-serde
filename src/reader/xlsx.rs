@@ -78,6 +78,23 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
     content_types::read(&mut arv, &mut book)?;
     let workbook_rel = workbook_rels::read(&mut arv, &mut book)?;
 
+    for (_, rel_type, target) in &workbook_rel {
+        if rel_type == crate::structs::cell_metadata::REL {
+            let path = driver::join_paths("xl", target);
+            let mut xml = Vec::new();
+            let part = driver::zip_by_name(&mut arv, &path)?;
+            let cap = crate::structs::cell_metadata::MAX_METADATA_BYTES;
+            if part.size() > cap {
+                return Err(XlsxError::CellError("Spreadsheet metadata exceeds the size limit".into()));
+            }
+            io::Read::read_to_end(&mut io::Read::take(part, cap + 1), &mut xml)?;
+            if xml.len() as u64 > cap {
+                return Err(XlsxError::CellError("Spreadsheet metadata exceeds the size limit".into()));
+            }
+            book.cell_metadata = Some(crate::structs::cell_metadata::CellMetadata::from_xml(&xml, path)?);
+        }
+    }
+
     book.set_theme(Theme::default_value());
     for (_, type_value, rel_target) in &workbook_rel {
         if type_value == THEME_NS {

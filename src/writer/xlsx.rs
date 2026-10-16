@@ -55,6 +55,11 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
     {
         writer_manager.set_is_light(is_light);
 
+        if let Some(metadata) = &wb.cell_metadata {
+            let writer = quick_xml::Writer::new(io::Cursor::new(metadata.xml()));
+            writer_manager.add_writer(&metadata.path, writer)?;
+        }
+
         // Add docProps
         doc_props_app::write(wb, &mut writer_manager)?;
         doc_props_core::write(wb, &mut writer_manager)?;

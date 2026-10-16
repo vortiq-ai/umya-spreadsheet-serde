@@ -1,3 +1,4 @@
+pub(crate) mod cell_metadata;
 /// A macro to simplify module usage and visibility.
 ///
 /// This macro takes a list of modules, makes them private,

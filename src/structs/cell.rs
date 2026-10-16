@@ -700,7 +700,7 @@ impl Cell {
     ) {
         let empty_flag_value = self.cell_value.is_empty();
         let empty_flag_style = self.style.is_empty();
-        if empty_flag_value && empty_flag_style {
+        if empty_flag_value && empty_flag_style && !self.cell_meta_index.has_value() {
             return;
         }
 
@@ -722,11 +722,10 @@ impl Cell {
             attributes.push(("s", &xf_index_str).into());
         }
 
-        // NOT SUPPORTED
-        // let cell_meta_index_str = self.cell_meta_index.get_value_string();
-        // if self.cell_meta_index.has_value() {
-        //    attributes.push(("cm", &cell_meta_index_str).into());
-        // }
+        let cell_meta_index_str = self.cell_meta_index.value_string();
+        if self.cell_meta_index.has_value() {
+            attributes.push(("cm", &cell_meta_index_str).into());
+        }
 
         if empty_flag_value {
             write_start_tag(writer, "c", attributes, true);

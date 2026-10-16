@@ -62,9 +62,34 @@ pub struct Workbook {
     /// produced by a different calculation engine. Cached values still serve
     /// readers that do not recalculate.
     full_calc_on_load:     bool,
+    pub(crate) cell_metadata: Option<super::cell_metadata::CellMetadata>,
 }
 
 impl Workbook {
+    /// Returns whether a one-based cell `cm` index identifies a native dynamic array.
+    /// Unrelated cell metadata must not be treated as dynamic-array identity.
+    pub fn is_dynamic_array_metadata(&self, cell_meta_index: u32) -> bool {
+        self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_dynamic(cell_meta_index))
+    }
+
+    /// Ensure a standard XLDAPR dynamic-array record exists and return its
+    /// one-based cell metadata index. Assign this to the array anchor's `cm`.
+    /// Existing records and their indices are retained.
+    pub fn ensure_dynamic_array_metadata(&mut self) -> u32 {
+        self.cell_metadata.get_or_insert_with(Default::default).ensure_dynamic()
+    }
+
+    /// Ensure a namespaced cell-metadata extension exists without replacing
+    /// existing types or records. Properties must be a single XML element.
+    pub fn ensure_cell_metadata_extension(&mut self, type_name: &str, extension_uri: &str, properties_xml: &str) -> Result<u32, XlsxError> {
+        self.cell_metadata.get_or_insert_with(Default::default).ensure_extension(type_name, extension_uri, properties_xml)
+    }
+
+    /// Resolve a cell cm index to a property of a named metadata extension.
+    pub fn is_cell_metadata_extension(&self, cm: u32, type_name: &str, namespace: &str, local_name: &str) -> bool {
+        self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_extension(cm, type_name, namespace, local_name))
+    }
+
     // ************************
     // update Coordinate
     // ************************

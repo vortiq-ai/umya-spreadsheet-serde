@@ -430,6 +430,10 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
                 content_type = CUSTOM_PROPS_TYPE;
             }
 
+            if wb.cell_metadata.as_ref().is_some_and(|metadata| file == format!("/{}", metadata.path)) {
+                content_type = crate::structs::cell_metadata::CONTENT_TYPE;
+            }
+
             // Override Unsupported
             if content_type.is_empty() {
                 for (old_part_name, old_content_type) in wb.backup_context_types() {
