@@ -39,6 +39,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 hex-literal = "1.1"
 rstest = { version = "0.26.1", default-features = false }
+serde_json = "1.0"
 
 
 [features]

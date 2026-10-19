@@ -244,6 +244,9 @@ pub use self::shape_properties::*;
 mod category_axis_data;
 pub use self::category_axis_data::*;
 
+mod multi_level_string_reference;
+pub use self::multi_level_string_reference::*;
+
 mod string_reference;
 pub use self::string_reference::*;
 

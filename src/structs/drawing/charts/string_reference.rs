@@ -27,9 +27,18 @@ use crate::{
 pub struct StringReference {
     formula:      Formula,
     string_cache: StringCache,
+    #[cfg_attr(feature = "serde", serde(default))]
+    cached_value: Option<String>,
 }
 
 impl StringReference {
+    /// The imported label at cache index zero, before workbook values are
+    /// resolved.
+    #[must_use]
+    pub fn cached_value(&self) -> Option<&str> {
+        self.cached_value.as_deref()
+    }
+
     #[must_use]
     pub fn formula(&self) -> &Formula {
         &self.formula
@@ -92,7 +101,7 @@ impl StringReference {
                     self.formula.set_attributes(reader, e);
                 }
                 b"strCache" => {
-                    StringCache::set_attributes(reader, e);
+                    self.cached_value = StringCache::set_attributes(reader, e);
                 }
                 _ => (),
             },

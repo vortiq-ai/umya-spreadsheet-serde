@@ -21,6 +21,41 @@ use crate::{
 pub struct Grouping {
     val: EnumValue<GroupingValues>,
 }
+
+#[cfg(test)]
+mod tests {
+    use quick_xml::events::Event;
+
+    use super::*;
+
+    #[test]
+    fn clustered_grouping_roundtrips_instead_of_defaulting_to_percent_stacked() {
+        let mut reader = Reader::from_reader(b"<c:grouping val=\"clustered\"/>".as_slice());
+        let mut buf = Vec::new();
+        let Event::Empty(e) = reader.read_event_into(&mut buf).unwrap() else {
+            panic!("missing grouping element");
+        };
+        let mut grouping = Grouping::default();
+        grouping.set_attributes(&mut reader, &e);
+        assert!(matches!(grouping.val(), GroupingValues::Clustered));
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        grouping.write_to(&mut writer);
+        assert_eq!(
+            String::from_utf8(writer.into_inner().into_inner()).unwrap(),
+            "<c:grouping val=\"clustered\"/>"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn clustered_grouping_survives_serde_roundtrip() {
+        let mut grouping = Grouping::default();
+        grouping.set_val(GroupingValues::Clustered);
+        let serialized = serde_json::to_string(&grouping).unwrap();
+        let restored: Grouping = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(restored.val(), GroupingValues::Clustered));
+    }
+}
 impl Grouping {
     #[must_use]
     pub fn val(&self) -> &GroupingValues {

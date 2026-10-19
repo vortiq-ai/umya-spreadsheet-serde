@@ -11,6 +11,7 @@ use quick_xml::{
 };
 
 use super::{
+    MultiLevelStringReference,
     StringLiteral,
     StringReference,
 };
@@ -30,12 +31,36 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct CategoryAxisData {
-    string_reference: Option<StringReference>,
-    string_literal:   Option<StringLiteral>,
-    number_reference: Option<NumberReference>,
+    string_reference:             Option<StringReference>,
+    string_literal:               Option<StringLiteral>,
+    number_reference:             Option<NumberReference>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    multi_level_string_reference: Option<MultiLevelStringReference>,
 }
 
 impl CategoryAxisData {
+    #[must_use]
+    pub fn multi_level_string_reference(&self) -> Option<&MultiLevelStringReference> {
+        self.multi_level_string_reference.as_ref()
+    }
+
+    pub fn multi_level_string_reference_mut(&mut self) -> Option<&mut MultiLevelStringReference> {
+        self.multi_level_string_reference.as_mut()
+    }
+
+    pub fn set_multi_level_string_reference(
+        &mut self,
+        value: MultiLevelStringReference,
+    ) -> &mut Self {
+        self.multi_level_string_reference = Some(value);
+        self
+    }
+
+    pub fn remove_multi_level_string_reference(&mut self) -> &mut Self {
+        self.multi_level_string_reference = None;
+        self
+    }
+
     #[must_use]
     pub fn string_reference(&self) -> Option<&StringReference> {
         self.string_reference.as_ref()
@@ -135,6 +160,11 @@ impl CategoryAxisData {
             reader,
             Event::Start(ref e) => {
                 match local_name(e.name().into_inner()) {
+                    b"multiLvlStrRef" => {
+                        let mut obj = MultiLevelStringReference::default();
+                        obj.set_attributes(reader, e);
+                        self.set_multi_level_string_reference(obj);
+                    }
                     b"strRef" => {
                         let mut obj = StringReference::default();
                         obj.set_attributes(reader, e);
@@ -165,6 +195,12 @@ impl CategoryAxisData {
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
         // c:cat
         write_start_tag(writer, "c:cat", vec![], false);
+
+        // Keep hierarchy and sparse point indices in their native
+        // representation.
+        if let Some(v) = &self.multi_level_string_reference {
+            v.write_to(writer);
+        }
 
         // c:strRef
         if let Some(v) = &self.string_reference {

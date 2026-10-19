@@ -8,6 +8,7 @@ pub enum GroupingValues {
     PercentStacked,
     Stacked,
     Standard,
+    Clustered,
 }
 impl EnumTrait for GroupingValues {
     fn value_string(&self) -> &str {
@@ -15,6 +16,7 @@ impl EnumTrait for GroupingValues {
             Self::PercentStacked => "percentStacked",
             Self::Stacked => "stacked",
             Self::Standard => "standard",
+            Self::Clustered => "clustered",
         }
     }
 }
@@ -26,6 +28,7 @@ impl FromStr for GroupingValues {
             "percentStacked" => Ok(Self::PercentStacked),
             "stacked" => Ok(Self::Stacked),
             "standard" => Ok(Self::Standard),
+            "clustered" => Ok(Self::Clustered),
             _ => Err(()),
         }
     }
