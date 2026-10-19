@@ -35,6 +35,7 @@ mod doc_props_app;
 mod doc_props_core;
 mod doc_props_custom;
 pub(crate) mod drawing;
+pub(crate) mod iso_date;
 mod jsa_project_bin;
 mod pivot_cache;
 mod pivot_table;

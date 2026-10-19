@@ -166,6 +166,14 @@ pub(crate) fn get_attribute(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -
         return result;
     }
 
+    if e.try_get_attribute(super::spreadsheet_xml::RESOLVED_ATTRIBUTES)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return None;
+    }
+
     // 2. For namespaced keys like "r:id", fall back to matching the local name
     //    ("id") against any attribute whose local name matches. Returns early
     //    if ':' is not found.

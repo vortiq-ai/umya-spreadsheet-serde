@@ -24,8 +24,11 @@ use crate::{
 pub(crate) fn read<R: io::Read + io::Seek>(
     arv: &mut zip::read::ZipArchive<R>,
 ) -> Result<Workbook, XlsxError> {
+    crate::reader::spreadsheet_xml::validate_workbook(io::BufReader::new(
+        super::driver::zip_by_name(arv, PKG_WORKBOOK)?,
+    ))?;
     let r = io::BufReader::new(super::driver::zip_by_name(arv, PKG_WORKBOOK)?);
-    let mut reader = Reader::from_reader(r);
+    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(r));
     reader.config_mut().trim_text(true);
     let mut wb = Workbook::default();
 

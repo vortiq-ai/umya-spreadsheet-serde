@@ -28,7 +28,7 @@ pub fn read<R: io::Read + io::Seek>(
             return Err(e.into());
         }
     });
-    let mut reader = Reader::from_reader(r);
+    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(r));
     reader.config_mut().trim_text(true);
 
     xml_read_loop!(
