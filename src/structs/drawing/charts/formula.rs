@@ -10,7 +10,11 @@ use quick_xml::{
 use super::super::super::Address;
 use super::super::super::StringValue;
 use crate::{
-    helper::address::is_address,
+    helper::address::{
+        is_address,
+        sheet_name_needs_quoting,
+        unescape_sheet_name,
+    },
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
         write_end_tag,
@@ -38,6 +42,10 @@ impl Formula {
         self.address()
     }
 
+    /// The sheet name is kept in formula-text form, as the reader,
+    /// `set_address_str` and older serialized data produce it: an apostrophe is
+    /// written `''`. A raw name is accepted too, unless it contains a literal
+    /// `''`, which reads as one escaped apostrophe.
     pub fn address_mut(&mut self) -> &mut Address {
         &mut self.address
     }
@@ -47,12 +55,22 @@ impl Formula {
         self.address_mut()
     }
 
+    /// The reference as Excel needs it in `<c:f>`: the sheet name is quoted,
+    /// with apostrophes doubled, whenever it requires quotes.
     #[must_use]
     pub fn address_str(&self) -> String {
         if self.string_value.has_value() {
             return self.string_value.value_str().to_string();
         }
-        self.address.address()
+        let real = unescape_sheet_name(self.address.sheet_name());
+        let range = self.address.range().range();
+        if real.is_empty() {
+            return range;
+        }
+        if sheet_name_needs_quoting(&real) {
+            return format!("'{}'!{range}", real.replace('\'', "''"));
+        }
+        format!("{real}!{range}")
     }
 
     #[must_use]

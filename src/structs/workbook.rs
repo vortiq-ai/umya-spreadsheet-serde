@@ -7,7 +7,10 @@ use crate::{
     StringValue,
     XlsxError,
     helper::{
-        address::split_address,
+        address::{
+            split_address,
+            unescape_sheet_name,
+        },
         coordinate::column_index_from_string,
     },
     reader::xlsx::raw_to_deserialize_by_worksheet,
@@ -230,7 +233,8 @@ impl Workbook {
     /// *`Vec<&CellValue>` - `CellValue` List.
     #[inline]
     pub(crate) fn cell_value_by_address_crate(&self, address: &Address) -> Vec<&CellValue> {
-        match self.sheet_by_name(address.sheet_name()) {
+        // A chart address holds its sheet name in formula-text form.
+        match self.sheet_by_name(&unescape_sheet_name(address.sheet_name())) {
             Ok(sheet) => sheet.cell_value_by_range(&address.range().range()),
             Err(_) => vec![],
         }
