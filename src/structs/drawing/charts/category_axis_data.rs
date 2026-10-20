@@ -28,85 +28,14 @@ use crate::{
     },
 };
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct CategoryAxisData {
     string_reference:             Option<StringReference>,
     string_literal:               Option<StringLiteral>,
     number_reference:             Option<NumberReference>,
+    #[cfg_attr(feature = "serde", serde(default))]
     multi_level_string_reference: Option<MultiLevelStringReference>,
-}
-
-#[cfg(feature = "serde")]
-mod serde_impl {
-    use serde::{
-        Deserialize,
-        Deserializer,
-        Serialize,
-        Serializer,
-        ser::SerializeStruct,
-    };
-
-    use super::{
-        CategoryAxisData,
-        MultiLevelStringReference,
-        NumberReference,
-        StringLiteral,
-        StringReference,
-    };
-
-    // The browser's binary chart model predates multi-level references. Keep
-    // its exact field count and order while retaining native data in JSON.
-    #[derive(Deserialize)]
-    #[serde(rename = "CategoryAxisData")]
-    struct Legacy {
-        string_reference: Option<StringReference>,
-        string_literal:   Option<StringLiteral>,
-        number_reference: Option<NumberReference>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename = "CategoryAxisData")]
-    struct HumanReadable {
-        #[serde(flatten)]
-        legacy:                       Legacy,
-        #[serde(default)]
-        multi_level_string_reference: Option<MultiLevelStringReference>,
-    }
-
-    impl Serialize for CategoryAxisData {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let human_readable = serializer.is_human_readable();
-            let mut state = serializer
-                .serialize_struct("CategoryAxisData", if human_readable { 4 } else { 3 })?;
-            state.serialize_field("string_reference", &self.string_reference)?;
-            state.serialize_field("string_literal", &self.string_literal)?;
-            state.serialize_field("number_reference", &self.number_reference)?;
-            if human_readable {
-                state.serialize_field(
-                    "multi_level_string_reference",
-                    &self.multi_level_string_reference,
-                )?;
-            }
-            state.end()
-        }
-    }
-
-    impl<'de> Deserialize<'de> for CategoryAxisData {
-        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            let (legacy, multi_level_string_reference) = if deserializer.is_human_readable() {
-                let value = HumanReadable::deserialize(deserializer)?;
-                (value.legacy, value.multi_level_string_reference)
-            } else {
-                (Legacy::deserialize(deserializer)?, None)
-            };
-            Ok(Self {
-                string_reference: legacy.string_reference,
-                string_literal: legacy.string_literal,
-                number_reference: legacy.number_reference,
-                multi_level_string_reference,
-            })
-        }
-    }
 }
 
 impl CategoryAxisData {
