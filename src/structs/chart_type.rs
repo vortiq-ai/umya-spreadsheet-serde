@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use super::EnumTrait;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChartType {
     #[default]
     LineChart,

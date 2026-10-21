@@ -2365,7 +2365,7 @@ impl AdjustmentCoordinateWithSheet for Chart {
     ) {
         self.two_cell_anchor
             .as_mut()
-            .adjustment_insert_coordinate_with_sheet(
+            .adjustment_remove_coordinate_with_sheet(
                 sheet_name,
                 root_col_num,
                 offset_col_num,

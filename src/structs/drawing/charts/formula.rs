@@ -12,7 +12,7 @@ use super::super::super::StringValue;
 use crate::{
     helper::address::{
         is_address,
-        sheet_name_needs_quoting,
+        quote_sheet_name,
         unescape_sheet_name,
     },
     traits::AdjustmentCoordinateWithSheet,
@@ -67,10 +67,7 @@ impl Formula {
         if real.is_empty() {
             return range;
         }
-        if sheet_name_needs_quoting(&real) {
-            return format!("'{}'!{range}", real.replace('\'', "''"));
-        }
-        format!("{real}!{range}")
+        format!("{}!{range}", quote_sheet_name(&real))
     }
 
     #[must_use]
@@ -136,8 +133,12 @@ impl AdjustmentCoordinateWithSheet for Formula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        if unescape_sheet_name(self.address.sheet_name()) != sheet_name {
+            return;
+        }
+        let sheet_name = self.address.sheet_name().to_string();
         self.address.adjustment_insert_coordinate_with_sheet(
-            sheet_name,
+            &sheet_name,
             root_col_num,
             offset_col_num,
             root_row_num,
@@ -153,8 +154,12 @@ impl AdjustmentCoordinateWithSheet for Formula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        if unescape_sheet_name(self.address.sheet_name()) != sheet_name {
+            return;
+        }
+        let sheet_name = self.address.sheet_name().to_string();
         self.address.adjustment_remove_coordinate_with_sheet(
-            sheet_name,
+            &sheet_name,
             root_col_num,
             offset_col_num,
             root_row_num,

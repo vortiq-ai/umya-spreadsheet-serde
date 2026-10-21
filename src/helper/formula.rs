@@ -3,6 +3,7 @@ use crate::{
         address::{
             join_address,
             split_address,
+            unescape_sheet_name,
         },
         coordinate::{
             adjustment_insert_coordinate,
@@ -880,6 +881,7 @@ pub fn adjustment_formula_coordinate(
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
             let (sheet_name, range) = split_address(token.get_value());
+            let sheet_name = unescape_sheet_name(sheet_name);
             let mut coordinate_list_new: Vec<String> = Vec::new();
             let coordinate_list = get_split_range(range);
             let mut has_error = false;
@@ -931,7 +933,7 @@ pub fn adjustment_formula_coordinate(
                 token.set_value("#REF!");
                 token.set_token_sub_type(FormulaTokenSubTypes::Error);
             } else {
-                let new_value = join_address(sheet_name, &get_join_range(&coordinate_list_new));
+                let new_value = join_address(&sheet_name, &get_join_range(&coordinate_list_new));
                 token.set_value(new_value);
             }
         }
@@ -954,6 +956,7 @@ pub fn adjustment_insert_formula_coordinate(
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
             let (sheet_name, range) = split_address(token.get_value());
+            let sheet_name = unescape_sheet_name(sheet_name);
             if ignore_worksheet
                 || (sheet_name.is_empty() && worksheet_name == self_worksheet_name)
                 || (sheet_name == worksheet_name)
@@ -996,7 +999,7 @@ pub fn adjustment_insert_formula_coordinate(
                         coordinate_list_new.push((*coordinate).to_string());
                     }
                 }
-                let new_value = join_address(sheet_name, &get_join_range(&coordinate_list_new));
+                let new_value = join_address(&sheet_name, &get_join_range(&coordinate_list_new));
                 token.set_value(new_value);
             }
         }
@@ -1020,6 +1023,7 @@ pub fn adjustment_remove_formula_coordinate(
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
             let (sheet_name, range) = split_address(token.get_value());
+            let sheet_name = unescape_sheet_name(sheet_name);
             if ignore_worksheet
                 || (sheet_name.is_empty() && worksheet_name == self_worksheet_name)
                 || (sheet_name == worksheet_name)
@@ -1052,7 +1056,7 @@ pub fn adjustment_remove_formula_coordinate(
                         coordinate_list_new.push((*coordinate).to_string());
                     }
                 }
-                let new_value = join_address(sheet_name, &get_join_range(&coordinate_list_new));
+                let new_value = join_address(&sheet_name, &get_join_range(&coordinate_list_new));
                 token.set_value(new_value);
             }
         }

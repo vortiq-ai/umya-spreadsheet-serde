@@ -16,19 +16,28 @@ pub fn join_address(sheet_name: &str, address: &str) -> String {
     if sheet_name.is_empty() {
         return address.to_string();
     }
-    if sheet_name_needs_quoting(sheet_name) {
-        let escaped = sheet_name.replace('\'', "''");
-        return format!("'{escaped}'!{address}");
-    }
-    format!("{sheet_name}!{address}")
+    format!("{}!{address}", quote_sheet_name(sheet_name))
 }
 
-/// A sheet name can appear unquoted in a formula only when it is a bare
-/// identifier: it starts with a letter or underscore and otherwise contains
-/// only letters, digits, underscores or periods, and Excel would not read it as
-/// a cell reference. Anything else (spaces, punctuation such as `(`/`)`, a
-/// leading digit, a name like `FY2024` or `R1C1`, …) must be wrapped in single
-/// quotes when re-serialized.
+/// Returns a sheet name in formula form, quoting and escaping it when needed.
+///
+/// The input is a real sheet title; each apostrophe is doubled when quoted.
+/// An empty name is represented by `''`.
+#[must_use]
+pub fn quote_sheet_name(sheet_name: &str) -> String {
+    if sheet_name.is_empty() {
+        return "''".to_string();
+    }
+    if sheet_name_needs_quoting(sheet_name) {
+        return format!("'{}'", sheet_name.replace('\'', "''"));
+    }
+    sheet_name.to_string()
+}
+
+/// A bare sheet name starts with an ASCII letter or underscore and contains
+/// only ASCII letters, digits, underscores or periods. Every period must be
+/// followed by an ASCII letter or digit. Cell references and boolean literals
+/// need quotes as well.
 pub(crate) fn sheet_name_needs_quoting(sheet_name: &str) -> bool {
     let mut chars = sheet_name.chars();
     match chars.next() {
@@ -40,10 +49,23 @@ pub(crate) fn sheet_name_needs_quoting(sheet_name: &str) -> bool {
             sheet_name
                 .chars()
                 .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+                || sheet_name.eq_ignore_ascii_case("TRUE")
+                || sheet_name.eq_ignore_ascii_case("FALSE")
+                || has_unreadable_dot(sheet_name)
                 || is_a1_cell_like(sheet_name)
                 || is_r1c1_like(sheet_name)
         }
     }
+}
+
+fn has_unreadable_dot(name: &str) -> bool {
+    name.char_indices().any(|(index, character)| {
+        character == '.'
+            && !name[index + 1..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_ascii_alphanumeric())
+    })
 }
 
 /// Column letters up to `XFD`, then digits only (`FY2024`, `a1`, `xfd1`).
@@ -191,6 +213,76 @@ fn sheet_name_needs_quoting_test() {
     ] {
         assert!(!sheet_name_needs_quoting(name), "{name}");
     }
+}
+
+#[test]
+fn quote_sheet_name_test() {
+    for (name, expected) in [
+        ("", "''"),
+        ("Sheet1", "Sheet1"),
+        ("Data_2", "Data_2"),
+        ("_data.v2", "_data.v2"),
+        ("Data.v2", "Data.v2"),
+        ("Q1.x", "Q1.x"),
+        ("T.DIST.2T", "T.DIST.2T"),
+        ("Data.", "'Data.'"),
+        ("a._b", "'a._b'"),
+        ("a..b", "'a..b'"),
+        ("TRUE", "'TRUE'"),
+        ("true", "'true'"),
+        ("TrUe", "'TrUe'"),
+        ("FALSE", "'FALSE'"),
+        ("false", "'false'"),
+        ("FaLsE", "'FaLsE'"),
+        ("TRUE1", "TRUE1"),
+        ("Truex", "Truex"),
+        ("FALSEHOOD", "FALSEHOOD"),
+        ("TRUE.x", "TRUE.x"),
+        ("FY2024", "'FY2024'"),
+        ("Q1", "'Q1'"),
+        ("RC0", "'RC0'"),
+        ("R1C1", "'R1C1'"),
+        ("r1c1", "'r1c1'"),
+        ("RC", "'RC'"),
+        ("R1D", "'R1D'"),
+        ("C3PO", "'C3PO'"),
+        ("Plan2024", "Plan2024"),
+        ("XFE1", "XFE1"),
+        ("R0C0", "R0C0"),
+        ("P&L", "'P&L'"),
+        ("1Q", "'1Q'"),
+        ("Ratio Analysis", "'Ratio Analysis'"),
+        ("Bob's", "'Bob''s'"),
+        ("Bob''s", "'Bob''''s'"),
+        ("'", "''''"),
+        ("'Bob'", "'''Bob'''"),
+        ("a!b", "'a!b'"),
+        ("Donn\u{00e9}es", "'Donn\u{00e9}es'"),
+    ] {
+        assert_eq!(quote_sheet_name(name), expected, "{name}");
+    }
+}
+
+#[test]
+fn join_address_quotes_sheet_names_and_keeps_unqualified_ranges() {
+    assert_eq!(join_address("", "$A$1"), "$A$1");
+    assert_eq!(join_address("Sheet1", "$A$1"), "Sheet1!$A$1");
+    assert_eq!(join_address("TRUE", "$A$1"), "'TRUE'!$A$1");
+    assert_eq!(join_address("Data.", "$A$1"), "'Data.'!$A$1");
+    assert_eq!(join_address("Bob's", "$A$1"), "'Bob''s'!$A$1");
+}
+
+#[test]
+fn formula_adjustment_escapes_an_apostrophe_sheet_once() {
+    use crate::helper::formula::{
+        adjustment_formula_coordinate,
+        parse_to_tokens,
+        render,
+    };
+
+    let mut tokens = parse_to_tokens("='Bob''s'!A1");
+    adjustment_formula_coordinate(&mut tokens, 0, 1);
+    assert_eq!(render(&tokens), "'Bob''s'!A2");
 }
 
 #[test]

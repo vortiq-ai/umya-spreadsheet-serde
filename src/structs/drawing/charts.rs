@@ -10,6 +10,9 @@ pub use self::legend::*;
 mod plot_area;
 pub use self::plot_area::*;
 
+mod chart_group;
+pub use self::chart_group::*;
+
 mod title;
 pub use self::title::*;
 

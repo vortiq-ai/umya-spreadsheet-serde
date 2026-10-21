@@ -5,13 +5,20 @@ use serde::{
     de::DeserializeOwned,
 };
 use umya_spreadsheet::drawing::charts::{
+    AreaChartSeries,
+    BarChart,
     CategoryAxisData,
+    ChartGroup,
+    ChartGroupRef,
     Formula,
     GroupingValues,
+    LineChart,
     MultiLevelStringCache,
     MultiLevelStringPoint,
     MultiLevelStringReference,
+    PlotArea,
     StringReference,
+    Values,
 };
 
 // Charts cross the binary RPC wire as bincode; every field must come back.
@@ -63,4 +70,64 @@ fn clustered_grouping_survives_the_binary_wire() {
         binary_round_trip(&GroupingValues::Clustered),
         GroupingValues::Clustered
     ));
+}
+
+#[test]
+fn binary_round_trip_keeps_repeated_containers_in_native_order() {
+    let mut plot = PlotArea::default();
+    let mut line = LineChart::default();
+    let mut series = AreaChartSeries::default();
+    series.index_mut().set_val(7);
+    series.order_mut().set_val(11);
+    let mut values = Values::default();
+    values
+        .number_reference_mut()
+        .set_formula(formula("Sheet1!$B$2:$B$5"));
+    series.set_values(values);
+    line.area_chart_series_list_mut()
+        .add_area_chart_series(series);
+    plot.add_chart_group(ChartGroup::LineChart(line.clone()));
+    plot.add_chart_group(ChartGroup::BarChart(BarChart::default()));
+    line.area_chart_series_list_mut().area_chart_series_mut()[0]
+        .index_mut()
+        .set_val(9);
+    plot.add_chart_group(ChartGroup::LineChart(line));
+
+    let restored = binary_round_trip(&plot);
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap(),
+        serde_json::to_value(&plot).unwrap()
+    );
+    assert_eq!(
+        restored
+            .chart_groups()
+            .map(ChartGroupRef::kind)
+            .collect::<Vec<_>>(),
+        vec![
+            umya_spreadsheet::ChartType::LineChart,
+            umya_spreadsheet::ChartType::BarChart,
+            umya_spreadsheet::ChartType::LineChart,
+        ]
+    );
+    assert_eq!(
+        restored
+            .chart_groups()
+            .nth(2)
+            .unwrap()
+            .series()
+            .area_chart_series()[0]
+            .index()
+            .val(),
+        9
+    );
+    assert_eq!(
+        restored
+            .line_chart()
+            .unwrap()
+            .area_chart_series_list()
+            .area_chart_series()[0]
+            .index()
+            .val(),
+        7
+    );
 }

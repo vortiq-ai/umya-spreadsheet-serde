@@ -18,6 +18,10 @@ use super::{
     BarChart,
     BubbleChart,
     CategoryAxis,
+    ChartGroup,
+    ChartGroupEntry,
+    ChartGroupMut,
+    ChartGroupRef,
     DoughnutChart,
     Formula,
     GroupingValues,
@@ -36,7 +40,10 @@ use super::{
 use crate::{
     drawing::charts::DateAxis,
     reader::driver::local_name,
-    structs::Workbook,
+    structs::{
+        ChartType,
+        Workbook,
+    },
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
         write_end_tag,
@@ -48,28 +55,255 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct PlotArea {
-    layout:           Layout,
-    line_chart:       Option<LineChart>,
-    line_3d_chart:    Option<Line3DChart>,
-    pie_chart:        Option<PieChart>,
-    pie_3d_chart:     Option<Pie3DChart>,
-    doughnut_chart:   Option<DoughnutChart>,
-    scatter_chart:    Option<ScatterChart>,
-    bar_chart:        Option<BarChart>,
-    bar_3d_chart:     Option<Bar3DChart>,
-    radar_chart:      Option<RadarChart>,
-    bubble_chart:     Option<BubbleChart>,
-    area_chart:       Option<AreaChart>,
-    area_3d_chart:    Option<Area3DChart>,
-    of_pie_chart:     Option<OfPieChart>,
-    category_axis:    Vec<CategoryAxis>,
-    date_axis:        Vec<DateAxis>,
-    value_axis:       Vec<ValueAxis>,
-    series_axis:      Vec<SeriesAxis>,
-    shape_properties: Option<ShapeProperties>,
+    layout:            Layout,
+    line_chart:        Option<LineChart>,
+    line_3d_chart:     Option<Line3DChart>,
+    pie_chart:         Option<PieChart>,
+    pie_3d_chart:      Option<Pie3DChart>,
+    doughnut_chart:    Option<DoughnutChart>,
+    scatter_chart:     Option<ScatterChart>,
+    bar_chart:         Option<BarChart>,
+    bar_3d_chart:      Option<Bar3DChart>,
+    radar_chart:       Option<RadarChart>,
+    bubble_chart:      Option<BubbleChart>,
+    area_chart:        Option<AreaChart>,
+    area_3d_chart:     Option<Area3DChart>,
+    of_pie_chart:      Option<OfPieChart>,
+    category_axis:     Vec<CategoryAxis>,
+    date_axis:         Vec<DateAxis>,
+    value_axis:        Vec<ValueAxis>,
+    series_axis:       Vec<SeriesAxis>,
+    shape_properties:  Option<ShapeProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    chart_group_order: Vec<ChartGroupEntry>,
+}
+
+// Resolve malformed markers identically for borrowed views and owned repair.
+fn order_chart_groups<T>(
+    mut first: [Option<T>; 13],
+    entries: impl Iterator<Item = (ChartType, Option<T>)>,
+) -> Vec<T> {
+    let entries: Vec<_> = entries.collect();
+    let mut marked = [false; 13];
+    for (kind, group) in &entries {
+        if group.is_none() {
+            marked[*kind as usize] = true;
+        }
+    }
+    let mut result = Vec::new();
+    for (kind, group) in entries {
+        let index = kind as usize;
+        if let Some(group) = group {
+            if !marked[index] {
+                result.extend(first[index].take());
+            }
+            result.push(group);
+        } else {
+            result.extend(first[index].take());
+        }
+    }
+    result.extend(first.into_iter().flatten());
+    result
 }
 
 impl PlotArea {
+    /// Every container once, in document order, or legacy order without
+    /// markers.
+    #[must_use = "the iterator must be consumed to visit chart containers"]
+    pub fn chart_groups(&self) -> impl Iterator<Item = ChartGroupRef<'_>> {
+        let first = [
+            self.line_chart.as_ref().map(ChartGroupRef::LineChart),
+            self.line_3d_chart.as_ref().map(ChartGroupRef::Line3DChart),
+            self.pie_chart.as_ref().map(ChartGroupRef::PieChart),
+            self.pie_3d_chart.as_ref().map(ChartGroupRef::Pie3DChart),
+            self.doughnut_chart
+                .as_ref()
+                .map(ChartGroupRef::DoughnutChart),
+            self.scatter_chart.as_ref().map(ChartGroupRef::ScatterChart),
+            self.bar_chart.as_ref().map(ChartGroupRef::BarChart),
+            self.bar_3d_chart.as_ref().map(ChartGroupRef::Bar3DChart),
+            self.radar_chart.as_ref().map(ChartGroupRef::RadarChart),
+            self.bubble_chart.as_ref().map(ChartGroupRef::BubbleChart),
+            self.area_chart.as_ref().map(ChartGroupRef::AreaChart),
+            self.area_3d_chart.as_ref().map(ChartGroupRef::Area3DChart),
+            self.of_pie_chart.as_ref().map(ChartGroupRef::OfPieChart),
+        ];
+        let entries = self.chart_group_order.iter().map(|entry| match entry {
+            ChartGroupEntry::First(kind) => (*kind, None),
+            ChartGroupEntry::Additional(group) => (group.kind(), Some(group.as_group_ref())),
+        });
+        order_chart_groups(first, entries).into_iter()
+    }
+
+    #[must_use = "the iterator must be consumed to visit chart containers"]
+    pub fn chart_groups_mut(&mut self) -> impl Iterator<Item = ChartGroupMut<'_>> {
+        let first = [
+            self.line_chart.as_mut().map(ChartGroupMut::LineChart),
+            self.line_3d_chart.as_mut().map(ChartGroupMut::Line3DChart),
+            self.pie_chart.as_mut().map(ChartGroupMut::PieChart),
+            self.pie_3d_chart.as_mut().map(ChartGroupMut::Pie3DChart),
+            self.doughnut_chart
+                .as_mut()
+                .map(ChartGroupMut::DoughnutChart),
+            self.scatter_chart.as_mut().map(ChartGroupMut::ScatterChart),
+            self.bar_chart.as_mut().map(ChartGroupMut::BarChart),
+            self.bar_3d_chart.as_mut().map(ChartGroupMut::Bar3DChart),
+            self.radar_chart.as_mut().map(ChartGroupMut::RadarChart),
+            self.bubble_chart.as_mut().map(ChartGroupMut::BubbleChart),
+            self.area_chart.as_mut().map(ChartGroupMut::AreaChart),
+            self.area_3d_chart.as_mut().map(ChartGroupMut::Area3DChart),
+            self.of_pie_chart.as_mut().map(ChartGroupMut::OfPieChart),
+        ];
+        let entries = self.chart_group_order.iter_mut().map(|entry| match entry {
+            ChartGroupEntry::First(kind) => (*kind, None),
+            ChartGroupEntry::Additional(group) => (group.kind(), Some(group.as_group_mut())),
+        });
+        order_chart_groups(first, entries).into_iter()
+    }
+
+    fn replace_first_chart_group(&mut self, group: ChartGroup) -> Option<ChartGroup> {
+        match group {
+            ChartGroup::LineChart(chart) => {
+                self.line_chart.replace(chart).map(ChartGroup::LineChart)
+            }
+            ChartGroup::Line3DChart(chart) => self
+                .line_3d_chart
+                .replace(chart)
+                .map(ChartGroup::Line3DChart),
+            ChartGroup::PieChart(chart) => self.pie_chart.replace(chart).map(ChartGroup::PieChart),
+            ChartGroup::Pie3DChart(chart) => {
+                self.pie_3d_chart.replace(chart).map(ChartGroup::Pie3DChart)
+            }
+            ChartGroup::DoughnutChart(chart) => self
+                .doughnut_chart
+                .replace(chart)
+                .map(ChartGroup::DoughnutChart),
+            ChartGroup::ScatterChart(chart) => self
+                .scatter_chart
+                .replace(chart)
+                .map(ChartGroup::ScatterChart),
+            ChartGroup::BarChart(chart) => self.bar_chart.replace(chart).map(ChartGroup::BarChart),
+            ChartGroup::Bar3DChart(chart) => {
+                self.bar_3d_chart.replace(chart).map(ChartGroup::Bar3DChart)
+            }
+            ChartGroup::RadarChart(chart) => {
+                self.radar_chart.replace(chart).map(ChartGroup::RadarChart)
+            }
+            ChartGroup::BubbleChart(chart) => self
+                .bubble_chart
+                .replace(chart)
+                .map(ChartGroup::BubbleChart),
+            ChartGroup::AreaChart(chart) => {
+                self.area_chart.replace(chart).map(ChartGroup::AreaChart)
+            }
+            ChartGroup::Area3DChart(chart) => self
+                .area_3d_chart
+                .replace(chart)
+                .map(ChartGroup::Area3DChart),
+            ChartGroup::OfPieChart(chart) => {
+                self.of_pie_chart.replace(chart).map(ChartGroup::OfPieChart)
+            }
+        }
+    }
+
+    fn set_chart_group(&mut self, group: ChartGroup) -> &mut Self {
+        self.normalize_chart_groups();
+        let kind = group.kind();
+        let previous = self.replace_first_chart_group(group);
+        if previous.is_none() && !self.chart_group_order.is_empty() {
+            self.chart_group_order.push(ChartGroupEntry::First(kind));
+        }
+        self.normalize_chart_groups();
+        self
+    }
+
+    fn push_chart_group(&mut self, group: ChartGroup) {
+        if self.chart_group_order.is_empty() {
+            self.chart_group_order = self
+                .chart_groups()
+                .map(|group| ChartGroupEntry::First(group.kind()))
+                .collect();
+        }
+        let kind = group.kind();
+        let present = match kind {
+            ChartType::LineChart => self.line_chart.is_some(),
+            ChartType::Line3DChart => self.line_3d_chart.is_some(),
+            ChartType::PieChart => self.pie_chart.is_some(),
+            ChartType::Pie3DChart => self.pie_3d_chart.is_some(),
+            ChartType::DoughnutChart => self.doughnut_chart.is_some(),
+            ChartType::ScatterChart => self.scatter_chart.is_some(),
+            ChartType::BarChart => self.bar_chart.is_some(),
+            ChartType::Bar3DChart => self.bar_3d_chart.is_some(),
+            ChartType::RadarChart => self.radar_chart.is_some(),
+            ChartType::BubbleChart => self.bubble_chart.is_some(),
+            ChartType::AreaChart => self.area_chart.is_some(),
+            ChartType::Area3DChart => self.area_3d_chart.is_some(),
+            ChartType::OfPieChart => self.of_pie_chart.is_some(),
+        };
+        if present {
+            self.chart_group_order
+                .push(ChartGroupEntry::Additional(Box::new(group)));
+        } else {
+            drop(self.replace_first_chart_group(group));
+            self.chart_group_order.push(ChartGroupEntry::First(kind));
+        }
+    }
+
+    /// Appends a container while keeping the first of each family in its field.
+    pub fn add_chart_group(&mut self, group: ChartGroup) -> &mut Self {
+        self.normalize_chart_groups();
+        self.push_chart_group(group);
+        self.normalize_chart_groups();
+        self
+    }
+
+    /// Repairs markers and promotes first containers without changing
+    /// traversal.
+    pub fn normalize_chart_groups(&mut self) {
+        let first = [
+            self.line_chart.take().map(ChartGroup::LineChart),
+            self.line_3d_chart.take().map(ChartGroup::Line3DChart),
+            self.pie_chart.take().map(ChartGroup::PieChart),
+            self.pie_3d_chart.take().map(ChartGroup::Pie3DChart),
+            self.doughnut_chart.take().map(ChartGroup::DoughnutChart),
+            self.scatter_chart.take().map(ChartGroup::ScatterChart),
+            self.bar_chart.take().map(ChartGroup::BarChart),
+            self.bar_3d_chart.take().map(ChartGroup::Bar3DChart),
+            self.radar_chart.take().map(ChartGroup::RadarChart),
+            self.bubble_chart.take().map(ChartGroup::BubbleChart),
+            self.area_chart.take().map(ChartGroup::AreaChart),
+            self.area_3d_chart.take().map(ChartGroup::Area3DChart),
+            self.of_pie_chart.take().map(ChartGroup::OfPieChart),
+        ];
+        let entries = std::mem::take(&mut self.chart_group_order)
+            .into_iter()
+            .map(|entry| match entry {
+                ChartGroupEntry::First(kind) => (kind, None),
+                ChartGroupEntry::Additional(group) => (group.kind(), Some(*group)),
+            });
+        let mut seen = [false; 13];
+        let mut previous = None;
+        let mut legacy_order = true;
+        for group in order_chart_groups(first, entries) {
+            let kind = group.kind();
+            let index = kind as usize;
+            if seen[index] {
+                legacy_order = false;
+                self.chart_group_order
+                    .push(ChartGroupEntry::Additional(Box::new(group)));
+            } else {
+                legacy_order &= previous.is_none_or(|previous| previous < index);
+                previous = Some(index);
+                seen[index] = true;
+                drop(self.replace_first_chart_group(group));
+                self.chart_group_order.push(ChartGroupEntry::First(kind));
+            }
+        }
+        if legacy_order {
+            self.chart_group_order.clear();
+        }
+    }
+
     #[must_use]
     pub fn layout(&self) -> &Layout {
         &self.layout
@@ -116,8 +350,7 @@ impl PlotArea {
     }
 
     pub fn set_line_chart(&mut self, value: LineChart) -> &mut Self {
-        self.line_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::LineChart(value))
     }
 
     #[must_use]
@@ -141,8 +374,7 @@ impl PlotArea {
     }
 
     pub fn set_line_3d_chart(&mut self, value: Line3DChart) -> &mut Self {
-        self.line_3d_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::Line3DChart(value))
     }
 
     #[must_use]
@@ -166,8 +398,7 @@ impl PlotArea {
     }
 
     pub fn set_pie_chart(&mut self, value: PieChart) -> &mut Self {
-        self.pie_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::PieChart(value))
     }
 
     #[must_use]
@@ -191,8 +422,7 @@ impl PlotArea {
     }
 
     pub fn set_pie_3d_chart(&mut self, value: Pie3DChart) -> &mut Self {
-        self.pie_3d_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::Pie3DChart(value))
     }
 
     #[must_use]
@@ -216,8 +446,7 @@ impl PlotArea {
     }
 
     pub fn set_doughnut_chart(&mut self, value: DoughnutChart) -> &mut Self {
-        self.doughnut_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::DoughnutChart(value))
     }
 
     #[must_use]
@@ -241,8 +470,7 @@ impl PlotArea {
     }
 
     pub fn set_scatter_chart(&mut self, value: ScatterChart) -> &mut Self {
-        self.scatter_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::ScatterChart(value))
     }
 
     #[must_use]
@@ -266,8 +494,7 @@ impl PlotArea {
     }
 
     pub fn set_bar_chart(&mut self, value: BarChart) -> &mut Self {
-        self.bar_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::BarChart(value))
     }
 
     #[must_use]
@@ -291,8 +518,7 @@ impl PlotArea {
     }
 
     pub fn set_bar_3d_chart(&mut self, value: Bar3DChart) -> &mut Self {
-        self.bar_3d_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::Bar3DChart(value))
     }
 
     #[must_use]
@@ -316,8 +542,7 @@ impl PlotArea {
     }
 
     pub fn set_radar_chart(&mut self, value: RadarChart) -> &mut Self {
-        self.radar_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::RadarChart(value))
     }
 
     #[must_use]
@@ -341,8 +566,7 @@ impl PlotArea {
     }
 
     pub fn set_bubble_chart(&mut self, value: BubbleChart) -> &mut Self {
-        self.bubble_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::BubbleChart(value))
     }
 
     #[must_use]
@@ -366,8 +590,7 @@ impl PlotArea {
     }
 
     pub fn set_area_chart(&mut self, value: AreaChart) -> &mut Self {
-        self.area_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::AreaChart(value))
     }
 
     #[must_use]
@@ -391,8 +614,7 @@ impl PlotArea {
     }
 
     pub fn set_area_3d_chart(&mut self, value: Area3DChart) -> &mut Self {
-        self.area_3d_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::Area3DChart(value))
     }
 
     #[must_use]
@@ -416,8 +638,7 @@ impl PlotArea {
     }
 
     pub fn set_of_pie_chart(&mut self, value: OfPieChart) -> &mut Self {
-        self.of_pie_chart = Some(value);
-        self
+        self.set_chart_group(ChartGroup::OfPieChart(value))
     }
 
     #[must_use]
@@ -642,35 +863,12 @@ impl PlotArea {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        macro_rules! collect_formulas {
-            ($result:expr, $($field:expr),+ $(,)?) => {
-                $(
-                    if let Some(v) = $field {
-                        for ser in v.area_chart_series_list_mut().area_chart_series_mut() {
-                            $result.extend(ser.formula_mut());
-                        }
-                    }
-                )+
-            };
+        let mut result = Vec::new();
+        for group in self.chart_groups_mut() {
+            for series in group.series_mut().area_chart_series_mut() {
+                result.extend(series.formula_mut());
+            }
         }
-
-        let mut result: Vec<&mut Formula> = Vec::default();
-        collect_formulas!(
-            result,
-            &mut self.line_chart,
-            &mut self.line_3d_chart,
-            &mut self.pie_chart,
-            &mut self.pie_3d_chart,
-            &mut self.doughnut_chart,
-            &mut self.scatter_chart,
-            &mut self.bar_chart,
-            &mut self.bar_3d_chart,
-            &mut self.radar_chart,
-            &mut self.bubble_chart,
-            &mut self.area_chart,
-            &mut self.area_3d_chart,
-            &mut self.of_pie_chart,
-        );
         result
     }
 
@@ -680,19 +878,7 @@ impl PlotArea {
     }
 
     pub(crate) fn is_support(&self) -> bool {
-        self.line_chart.is_some()
-            || self.line_3d_chart.is_some()
-            || self.pie_chart.is_some()
-            || self.pie_3d_chart.is_some()
-            || self.doughnut_chart.is_some()
-            || self.scatter_chart.is_some()
-            || self.bar_chart.is_some()
-            || self.bar_3d_chart.is_some()
-            || self.radar_chart.is_some()
-            || self.bubble_chart.is_some()
-            || self.area_chart.is_some()
-            || self.area_3d_chart.is_some()
-            || self.of_pie_chart.is_some()
+        self.chart_groups().next().is_some()
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
@@ -709,67 +895,67 @@ impl PlotArea {
                 b"lineChart" => {
                     let mut obj = LineChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_line_chart(obj);
+                    self.push_chart_group(ChartGroup::LineChart(obj));
                 }
                 b"line3DChart" => {
                     let mut obj = Line3DChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_line_3d_chart(obj);
+                    self.push_chart_group(ChartGroup::Line3DChart(obj));
                 }
                 b"pieChart" => {
                     let mut obj = PieChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_pie_chart(obj);
+                    self.push_chart_group(ChartGroup::PieChart(obj));
                 }
                 b"pie3DChart" => {
                     let mut obj = Pie3DChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_pie_3d_chart(obj);
+                    self.push_chart_group(ChartGroup::Pie3DChart(obj));
                 }
                 b"doughnutChart" => {
                     let mut obj = DoughnutChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_doughnut_chart(obj);
+                    self.push_chart_group(ChartGroup::DoughnutChart(obj));
                 }
                 b"scatterChart" => {
                     let mut obj = ScatterChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_scatter_chart(obj);
+                    self.push_chart_group(ChartGroup::ScatterChart(obj));
                 }
                 b"barChart" => {
                     let mut obj = BarChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_bar_chart(obj);
+                    self.push_chart_group(ChartGroup::BarChart(obj));
                 }
                 b"bar3DChart" => {
                     let mut obj = Bar3DChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_bar_3d_chart(obj);
+                    self.push_chart_group(ChartGroup::Bar3DChart(obj));
                 }
                 b"radarChart" => {
                     let mut obj = RadarChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_radar_chart(obj);
+                    self.push_chart_group(ChartGroup::RadarChart(obj));
                 }
                 b"bubbleChart" => {
                     let mut obj = BubbleChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_bubble_chart(obj);
+                    self.push_chart_group(ChartGroup::BubbleChart(obj));
                 }
                 b"areaChart" => {
                     let mut obj = AreaChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_area_chart(obj);
+                    self.push_chart_group(ChartGroup::AreaChart(obj));
                 }
                 b"area3DChart" => {
                     let mut obj = Area3DChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_area_3d_chart(obj);
+                    self.push_chart_group(ChartGroup::Area3DChart(obj));
                 }
                 b"ofPieChart" => {
                     let mut obj = OfPieChart::default();
                     obj.set_attributes(reader, e);
-                    self.set_of_pie_chart(obj);
+                    self.push_chart_group(ChartGroup::OfPieChart(obj));
                 }
                 b"catAx" => {
                     let mut obj = CategoryAxis::default();
@@ -800,6 +986,7 @@ impl PlotArea {
             },
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"plotArea" {
+                    self.normalize_chart_groups();
                     return;
                 }
             },
@@ -814,69 +1001,8 @@ impl PlotArea {
         // c:layout
         self.layout.write_to(writer);
 
-        // c:lineChart
-        if let Some(v) = &self.line_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:line3DChart
-        if let Some(v) = &self.line_3d_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:pieChart
-        if let Some(v) = &self.pie_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:pie3DChart
-        if let Some(v) = &self.pie_3d_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:doughnutChart
-        if let Some(v) = &self.doughnut_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:scatterChart
-        if let Some(v) = &self.scatter_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:barChart
-        if let Some(v) = &self.bar_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:bar3DChart
-        if let Some(v) = &self.bar_3d_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:radarChart
-        if let Some(v) = &self.radar_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:bubbleChart
-        if let Some(v) = &self.bubble_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:areaChart
-        if let Some(v) = &self.area_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:area3DChart
-        if let Some(v) = &self.area_3d_chart {
-            v.write_to(writer, wb);
-        }
-
-        // c:ofPieChart
-        if let Some(v) = &self.of_pie_chart {
-            v.write_to(writer, wb);
+        for group in self.chart_groups() {
+            group.write_to(writer, wb);
         }
 
         // c:catAx
@@ -943,6 +1069,54 @@ impl AdjustmentCoordinateWithSheet for PlotArea {
                 root_row_num,
                 offset_row_num,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drawing::charts::{
+        AreaChartSeries,
+        Values,
+    };
+
+    #[test]
+    fn removal_adjusts_formulas_in_every_container() {
+        let mut plot = PlotArea::default();
+        for group in [
+            ChartGroup::LineChart(LineChart::default()),
+            ChartGroup::Line3DChart(Line3DChart::default()),
+            ChartGroup::PieChart(PieChart::default()),
+            ChartGroup::Pie3DChart(Pie3DChart::default()),
+            ChartGroup::DoughnutChart(DoughnutChart::default()),
+            ChartGroup::ScatterChart(ScatterChart::default()),
+            ChartGroup::BarChart(BarChart::default()),
+            ChartGroup::Bar3DChart(Bar3DChart::default()),
+            ChartGroup::RadarChart(RadarChart::default()),
+            ChartGroup::BubbleChart(BubbleChart::default()),
+            ChartGroup::AreaChart(AreaChart::default()),
+            ChartGroup::Area3DChart(Area3DChart::default()),
+            ChartGroup::OfPieChart(OfPieChart::default()),
+            ChartGroup::LineChart(LineChart::default()),
+        ] {
+            plot.add_chart_group(group);
+        }
+        for group in plot.chart_groups_mut() {
+            let mut values = Values::default();
+            values
+                .number_reference_mut()
+                .formula_mut()
+                .set_address_str("Sheet1!$B$3:$B$4");
+            let mut series = AreaChartSeries::default();
+            series.set_values(values);
+            group.series_mut().add_area_chart_series(series);
+        }
+        plot.adjustment_remove_coordinate_with_sheet("Sheet1", 0, 0, 2, 1);
+        let formulas = plot.formula_mut();
+        assert_eq!(formulas.len(), 14);
+        for formula in formulas {
+            assert_eq!(formula.address_str(), "Sheet1!$B$2:$B$3");
         }
     }
 }

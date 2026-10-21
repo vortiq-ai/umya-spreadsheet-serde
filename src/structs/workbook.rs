@@ -212,7 +212,7 @@ impl Workbook {
     #[must_use]
     pub fn cell_value_by_address(&self, address: &str) -> Vec<&CellValue> {
         let (sheet_name, range) = split_address(address);
-        match self.sheet_by_name(sheet_name) {
+        match self.sheet_by_name(&unescape_sheet_name(sheet_name)) {
             Ok(sheet) => sheet.cell_value_by_range(range),
             Err(_) => vec![],
         }

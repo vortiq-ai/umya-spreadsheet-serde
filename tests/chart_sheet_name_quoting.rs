@@ -245,3 +245,325 @@ fn sheets_that_differ_only_in_apostrophes_keep_their_own_cache() {
     assert!(series[1].starts_with("<c:f>'Bob''''s'!$A$1</c:f>"), "{xml}");
     assert!(series[1].contains("<c:v>99</c:v>"), "{xml}");
 }
+
+#[test]
+fn chart_formulas_quote_sheet_names_that_need_quotes() {
+    for (reference, expected) in [
+        ("P&L!$A$1", "'P&L'!$A$1"),
+        ("'Bob''s'!$A$1", "'Bob''s'!$A$1"),
+        ("1Q!$A$1", "'1Q'!$A$1"),
+        ("Q1!$A$1", "'Q1'!$A$1"),
+        ("q1!$A$1", "'q1'!$A$1"),
+        ("Ratio Analysis!$A$1", "'Ratio Analysis'!$A$1"),
+        ("Data_2!$A$1", "Data_2!$A$1"),
+        ("Sheet1!$A$1", "Sheet1!$A$1"),
+        ("TRUE!$A$1", "'TRUE'!$A$1"),
+        ("false!$A$1", "'false'!$A$1"),
+        ("TrUe!$A$1", "'TrUe'!$A$1"),
+        ("FaLsE!$A$1", "'FaLsE'!$A$1"),
+        ("FY2024!$A$1", "'FY2024'!$A$1"),
+        ("RC0!$A$1", "'RC0'!$A$1"),
+        ("R1C1!$A$1", "'R1C1'!$A$1"),
+        ("r1c1!$A$1", "'r1c1'!$A$1"),
+        ("RC!$A$1", "'RC'!$A$1"),
+        ("R1D!$A$1", "'R1D'!$A$1"),
+        ("C3PO!$A$1", "'C3PO'!$A$1"),
+        ("Plan2024!$A$1", "Plan2024!$A$1"),
+        ("XFE1!$A$1", "XFE1!$A$1"),
+        ("R0C0!$A$1", "R0C0!$A$1"),
+    ] {
+        assert_eq!(ref_round_trip(reference), expected, "{reference}");
+    }
+}
+
+#[test]
+fn sheet_names_with_a_dot_our_parser_cannot_read_are_quoted() {
+    for (name, expected) in [
+        ("Data.", "'Data.'"),
+        ("a._b", "'a._b'"),
+        ("a..b", "'a..b'"),
+        ("Data.v2", "Data.v2"),
+        ("Q1.x", "Q1.x"),
+        ("_data.v2", "_data.v2"),
+        ("T.DIST.2T", "T.DIST.2T"),
+    ] {
+        let reference = format!("{name}!$A$1");
+        assert_eq!(ref_round_trip(&reference), format!("{expected}!$A$1"));
+        assert_chart_round_trip(name, expected, expected);
+    }
+}
+
+#[test]
+fn chart_sheet_name_quoting_survives_xlsx_round_trips() {
+    for (name, expected) in [
+        ("1Q", "'1Q'"),
+        ("Q1", "'Q1'"),
+        ("q1", "'q1'"),
+        ("Ratio Analysis", "'Ratio Analysis'"),
+        ("R1C1", "'R1C1'"),
+        ("Data_2", "Data_2"),
+        ("TRUE", "'TRUE'"),
+        ("FALSE", "'FALSE'"),
+    ] {
+        assert_chart_round_trip(name, expected, expected);
+    }
+}
+
+#[test]
+fn sheet_name_formatter_is_public() {
+    assert_eq!(
+        umya_spreadsheet::helper::address::quote_sheet_name("Bob's"),
+        "'Bob''s'"
+    );
+}
+
+#[test]
+fn doubled_apostrophes_in_sheet_names_round_trip() {
+    let mut address = Address::default();
+    address.set_address("'Bob''s'!$A$1");
+    assert_eq!(address.sheet_name(), "Bob''s");
+
+    let mut formula = Formula::default();
+    formula.set_address(address);
+    assert_eq!(formula.address().sheet_name(), "Bob''s");
+    assert_eq!(formula.address_str(), "'Bob''s'!$A$1");
+}
+
+#[test]
+fn quoted_sheet_names_resolve_cell_values() {
+    let mut book = umya_spreadsheet::new_file();
+    for (name, coordinate, value, reference) in [
+        ("Bob's", "A1", "Bob's Sales", "'Bob''s'!$A$1"),
+        ("Bob''s", "A1", "Two apostrophes", "'Bob''''s'!$A$1"),
+        ("P&L", "C33", "Profit", "'P&L'!$C$33"),
+    ] {
+        book.new_sheet(name).unwrap();
+        book.sheet_by_name_mut(name)
+            .unwrap()
+            .cell_mut(coordinate)
+            .set_value(value);
+        let values = book.cell_value_by_address(reference);
+        assert_eq!(values.len(), 1, "{reference}");
+        assert_eq!(values[0].value(), value, "{reference}");
+    }
+}
+
+fn workbook_with_apostrophe_sheet_references() -> Workbook {
+    let mut book = umya_spreadsheet::new_file();
+    book.new_sheet("Bob's").unwrap();
+    book.sheet_by_name_mut("Sheet1")
+        .unwrap()
+        .cell_mut("A1")
+        .set_formula("SUM('Bob''s'!A1:A3)");
+    let sheet = book.sheet_by_name_mut("Bob's").unwrap();
+    for row in 1..=3 {
+        sheet.cell_mut((1, row)).set_value_number(row);
+        sheet.cell_mut((2, row)).set_value_number(row);
+    }
+    sheet.cell_mut("C1").set_formula("'Bob''s'!A1*2");
+    let mut chart = Chart::default();
+    chart.new_chart(
+        &ChartType::LineChart,
+        marker("D1"),
+        marker("H10"),
+        vec!["'Bob''s'!$B$1:$B$3"],
+    );
+    book.sheet_by_name_mut("Sheet1").unwrap().add_chart(chart);
+    book
+}
+
+#[test]
+fn cell_formulas_on_an_apostrophe_sheet_follow_a_row_insert_and_escape_once() {
+    let mut book = workbook_with_apostrophe_sheet_references();
+    book.insert_new_row("Bob's", 1, 1);
+    assert_eq!(
+        book.sheet_by_name("Sheet1")
+            .unwrap()
+            .cell("A1")
+            .unwrap()
+            .formula(),
+        "SUM('Bob''s'!A2:A4)"
+    );
+    assert_eq!(
+        book.sheet_by_name("Bob's")
+            .unwrap()
+            .cell("C2")
+            .unwrap()
+            .formula(),
+        "'Bob''s'!A2*2"
+    );
+
+    book.remove_row("Bob's", 1, 1);
+    assert_eq!(
+        book.sheet_by_name("Sheet1")
+            .unwrap()
+            .cell("A1")
+            .unwrap()
+            .formula(),
+        "SUM('Bob''s'!A1:A3)"
+    );
+    assert_eq!(
+        book.sheet_by_name("Bob's")
+            .unwrap()
+            .cell("C1")
+            .unwrap()
+            .formula(),
+        "'Bob''s'!A1*2"
+    );
+}
+
+#[test]
+fn cell_formulas_distinguish_sheets_with_different_apostrophe_counts() {
+    let mut book = umya_spreadsheet::new_file();
+    for name in ["Bob's", "Bob''s"] {
+        book.new_sheet(name).unwrap();
+    }
+    let sheet = book.sheet_by_name_mut("Sheet1").unwrap();
+    sheet.cell_mut("A1").set_formula("'Bob''s'!A1");
+    sheet.cell_mut("A2").set_formula("'Bob''''s'!A1");
+
+    book.insert_new_row("Bob's", 1, 1);
+    let sheet = book.sheet_by_name("Sheet1").unwrap();
+    assert_eq!(sheet.cell("A1").unwrap().formula(), "'Bob''s'!A2");
+    assert_eq!(sheet.cell("A2").unwrap().formula(), "'Bob''''s'!A1");
+
+    book.remove_row("Bob's", 1, 1);
+    let sheet = book.sheet_by_name("Sheet1").unwrap();
+    assert_eq!(sheet.cell("A1").unwrap().formula(), "'Bob''s'!A1");
+    assert_eq!(sheet.cell("A2").unwrap().formula(), "'Bob''''s'!A1");
+}
+
+fn apostrophe_chart_reference(book: &Workbook) -> String {
+    let mut chart = book.sheet_by_name("Sheet1").unwrap().chart_collection()[0].clone();
+    chart.area_chart_series_list_mut().area_chart_series()[0]
+        .values()
+        .unwrap()
+        .number_reference()
+        .formula()
+        .address_str()
+}
+
+#[test]
+fn chart_references_on_an_apostrophe_sheet_follow_a_row_insert() {
+    let mut book = workbook_with_apostrophe_sheet_references();
+    assert_eq!(apostrophe_chart_reference(&book), "'Bob''s'!$B$1:$B$3");
+
+    book.insert_new_row("Bob's", 1, 1);
+    assert_eq!(apostrophe_chart_reference(&book), "'Bob''s'!$B$2:$B$4");
+
+    book.remove_row("Bob's", 1, 1);
+    assert_eq!(apostrophe_chart_reference(&book), "'Bob''s'!$B$1:$B$3");
+}
+
+fn workbook_with_raw_and_parsed_chart_references(raw: &str, replace_address: bool) -> Workbook {
+    let mut book = umya_spreadsheet::new_file();
+    for name in ["Bob's", "Bob''s"] {
+        book.new_sheet(name).unwrap();
+        let sheet = book.sheet_by_name_mut(name).unwrap();
+        for row in 1..=5 {
+            sheet.cell_mut((2, row)).set_value_number(row);
+        }
+    }
+    let mut chart = Chart::default();
+    chart.new_chart(
+        &ChartType::LineChart,
+        marker("D1"),
+        marker("H10"),
+        vec![
+            "'Bob''s'!$B$2:$B$4",
+            "'Bob''''s'!$B$2:$B$4",
+            "Sheet1!$B$2:$B$4",
+        ],
+    );
+    let formula = chart.area_chart_series_list_mut().area_chart_series_mut()[2]
+        .values_mut()
+        .unwrap()
+        .number_reference_mut()
+        .formula_mut();
+    if replace_address {
+        let mut address = Address::default();
+        address.set_address("Sheet1!$B$2:$B$4");
+        address.set_sheet_name(raw);
+        formula.set_address(address);
+    } else {
+        formula.address_mut().set_sheet_name(raw);
+    }
+    book.sheet_by_name_mut("Sheet1").unwrap().add_chart(chart);
+    book
+}
+
+fn assert_raw_and_parsed_chart_references(
+    book: &Workbook,
+    raw: &str,
+    single_apostrophe_range: &str,
+    double_apostrophe_range: &str,
+) {
+    let mut chart = book.sheet_by_name("Sheet1").unwrap().chart_collection()[0].clone();
+    let actual: Vec<(String, String)> = chart
+        .area_chart_series_list_mut()
+        .area_chart_series()
+        .iter()
+        .map(|series| {
+            let formula = series.values().unwrap().number_reference().formula();
+            (
+                formula.address_str(),
+                formula.address().sheet_name().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        vec![
+            (
+                format!("'Bob''s'!{single_apostrophe_range}"),
+                "Bob''s".to_string(),
+            ),
+            (
+                format!("'Bob''''s'!{double_apostrophe_range}"),
+                "Bob''''s".to_string(),
+            ),
+            (
+                format!("'Bob''s'!{single_apostrophe_range}"),
+                raw.to_string()
+            ),
+        ],
+        "{raw}"
+    );
+}
+
+fn assert_raw_chart_references_follow_row_changes(replace_address: bool) {
+    for raw in ["Bob's", "Bob''s"] {
+        let mut book = workbook_with_raw_and_parsed_chart_references(raw, replace_address);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
+
+        book.insert_new_row("Bob's", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$3:$B$5", "$B$2:$B$4");
+        book.remove_row("Bob's", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
+
+        book.remove_row("Bob's", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$1:$B$3", "$B$2:$B$4");
+        book.insert_new_row("Bob's", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
+
+        book.insert_new_row("Bob''s", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$3:$B$5");
+        book.remove_row("Bob''s", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
+
+        book.remove_row("Bob''s", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$1:$B$3");
+        book.insert_new_row("Bob''s", 1, 1);
+        assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
+    }
+}
+
+#[test]
+fn raw_sheet_names_set_through_address_mut_follow_row_changes() {
+    assert_raw_chart_references_follow_row_changes(false);
+}
+
+#[test]
+fn raw_sheet_names_set_through_set_address_follow_row_changes() {
+    assert_raw_chart_references_follow_row_changes(true);
+}
