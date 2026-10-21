@@ -11,11 +11,12 @@ use quick_xml::{
 };
 
 use crate::{
-    CellValue,
+    Cell,
     drawing::charts::{
         Formula,
         StringPoint,
     },
+    helper::address::unescape_sheet_name,
     reader::driver::{
         get_attribute,
         local_name,
@@ -62,12 +63,26 @@ impl StringCache {
     }
 
     pub(crate) fn write_to(writer: &mut Writer<Cursor<Vec<u8>>>, formula: &Formula, wb: &Workbook) {
-        let mut cell = CellValue::default();
         let cell_value_list = if formula.has_string_value() {
-            cell.set_value(formula.address_str());
-            vec![&cell]
+            let value = formula.address_str();
+            let value = match value
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+            {
+                Some(value) => value.replace("\"\"", "\""),
+                None => value,
+            };
+            vec![value]
         } else {
-            wb.cell_value_by_address_crate(formula.address())
+            let address = formula.address();
+            match wb.sheet_by_name(&unescape_sheet_name(address.sheet_name())) {
+                Ok(sheet) => sheet
+                    .cells_crate()
+                    .iter_all_cells_by_range_sorted_by_row(&address.range().range())
+                    .map(|cell| cell.map_or_else(String::new, Cell::formatted_value))
+                    .collect(),
+                Err(_) => vec![],
+            }
         };
         let coll_value_count = cell_value_list.len().to_string();
         // c:strCache
@@ -87,7 +102,7 @@ impl StringCache {
 
             // c:v
             write_start_tag(writer, "c:v", vec![], false);
-            write_text_node(writer, cell_value.value());
+            write_text_node(writer, cell_value);
             write_end_tag(writer, "c:v");
 
             write_end_tag(writer, "c:pt");
