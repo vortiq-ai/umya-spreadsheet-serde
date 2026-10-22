@@ -12,8 +12,10 @@ use quick_xml::{
 
 use crate::{
     StringValue,
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        get_attribute,
+        xml_read_loop,
+    },
     structs::drawing::{
         Point2DType,
         PositiveSize2DType,
@@ -212,15 +214,15 @@ impl Transform2D {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        if let Some(v) = get_unescaped_attribute(e, b"rot") {
+        if let Some(v) = get_attribute(e, b"rot") {
             self.set_rot(v);
         }
 
-        if let Some(v) = get_unescaped_attribute(e, b"flipH") {
+        if let Some(v) = get_attribute(e, b"flipH") {
             self.set_flip_h(v);
         }
 
-        if let Some(v) = get_unescaped_attribute(e, b"flipV") {
+        if let Some(v) = get_attribute(e, b"flipV") {
             self.set_flip_v(v);
         }
 

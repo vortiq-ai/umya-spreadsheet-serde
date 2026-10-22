@@ -101,14 +101,9 @@ impl StringReference {
                     self.formula.set_attributes(reader, e);
                 }
                 b"strCache" => {
-                    (self.string_cache, self.cached_value) = StringCache::set_attributes(reader, e);
+                    self.cached_value = StringCache::set_attributes(reader, e);
                 }
                 _ => (),
-            },
-            Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"strCache" {
-                    self.string_cache = StringCache::empty_source();
-                }
             },
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"strRef" {
@@ -127,7 +122,7 @@ impl StringReference {
         self.formula.write_to(writer);
 
         // c:strCache
-        self.string_cache.write_to(writer, self.formula(), wb);
+        StringCache::write_to(writer, self.formula(), wb);
 
         write_end_tag(writer, "c:strRef");
     }

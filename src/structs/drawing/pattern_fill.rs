@@ -15,8 +15,10 @@ use super::{
     ForegroundColor,
 };
 use crate::{
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        get_attribute,
+        xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -127,7 +129,7 @@ impl PatternFill {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        if let Some(v) = get_unescaped_attribute(e, b"prst") {
+        if let Some(v) = get_attribute(e, b"prst") {
             self.set_preset(v);
         }
 

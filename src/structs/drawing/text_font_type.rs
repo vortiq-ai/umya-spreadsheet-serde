@@ -11,8 +11,10 @@ use quick_xml::{
 
 use super::super::StringValue;
 use crate::{
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        get_attribute,
+        xml_read_loop,
+    },
     writer::driver::write_start_tag,
 };
 
@@ -108,16 +110,16 @@ impl TextFontType {
         e: &BytesStart,
         empty_flag: bool,
     ) {
-        if let Some(v) = get_unescaped_attribute(e, b"typeface") {
+        if let Some(v) = get_attribute(e, b"typeface") {
             self.set_typeface(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"pitchFamily") {
+        if let Some(v) = get_attribute(e, b"pitchFamily") {
             self.set_pitch_family(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"charset") {
+        if let Some(v) = get_attribute(e, b"charset") {
             self.set_charset(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"panose") {
+        if let Some(v) = get_attribute(e, b"panose") {
             self.set_panose(v);
         }
 

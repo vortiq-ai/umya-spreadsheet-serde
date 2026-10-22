@@ -13,10 +13,7 @@ use crate::{
         },
         coordinate::column_index_from_string,
     },
-    reader::xlsx::{
-        capture_chart_baselines,
-        raw_to_deserialize_by_worksheet,
-    },
+    reader::xlsx::raw_to_deserialize_by_worksheet,
     structs::{
         Address,
         CellValue,
@@ -542,12 +539,6 @@ impl Workbook {
         self.sheet_collection_no_check()
     }
 
-    /// The worksheets as they are, without deserializing any of them.
-    #[inline]
-    pub(crate) fn sheet_collection_unchecked_mut(&mut self) -> &mut [Worksheet] {
-        &mut self.work_sheet_collection
-    }
-
     /// Get Work Sheet List in mutable.
     #[inline]
     pub fn sheet_collection_mut(&mut self) -> &mut [Worksheet] {
@@ -589,14 +580,11 @@ impl Workbook {
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
-        let mut deserialized = Vec::new();
-        for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
+        for worksheet in &mut self.work_sheet_collection {
             if !worksheet.is_deserialized() {
                 raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
-                deserialized.push(index);
             }
         }
-        capture_chart_baselines(self, &deserialized);
         self
     }
 
@@ -611,7 +599,6 @@ impl Workbook {
         let stylesheet = self.stylesheet().clone();
         let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
         raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
-        capture_chart_baselines(self, &[index]);
         self
     }
 
@@ -703,8 +690,7 @@ impl Workbook {
         let stylesheet = self.stylesheet().clone();
         let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
         raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
-        capture_chart_baselines(self, &[index]);
-        Ok(self.work_sheet_collection.get_mut(index).unwrap())
+        Ok(worksheet)
     }
 
     #[deprecated(since = "3.0.0", note = "Use sheet_mut()")]

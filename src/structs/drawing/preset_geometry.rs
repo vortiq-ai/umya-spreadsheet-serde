@@ -12,8 +12,10 @@ use quick_xml::{
 
 use super::adjust_value_list::AdjustValueList;
 use crate::{
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        get_attribute,
+        xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -271,7 +273,7 @@ impl PresetGeometry {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        self.set_geometry(get_unescaped_attribute(e, b"prst").unwrap());
+        self.set_geometry(get_attribute(e, b"prst").unwrap());
 
         xml_read_loop!(
             reader,

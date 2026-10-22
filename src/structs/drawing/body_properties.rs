@@ -21,7 +21,6 @@ use super::{
 };
 use crate::{
     StringValue,
-    drawing::unescape_attribute,
     reader::driver::{
         get_attribute_value,
         xml_read_loop,
@@ -286,16 +285,16 @@ impl BodyProperties {
                     self.rotation.set_value_string(value);
                 }
                 b"vertOverflow" => {
-                    self.set_vert_overflow(unescape_attribute(value));
+                    self.set_vert_overflow(value);
                 }
                 b"horzOverflow" => {
-                    self.set_horz_overflow(unescape_attribute(value));
+                    self.set_horz_overflow(value);
                 }
                 b"rtlCol" => {
-                    self.set_rtl_col(unescape_attribute(value));
+                    self.set_rtl_col(value);
                 }
                 b"anchor" => {
-                    self.set_anchor(unescape_attribute(value));
+                    self.set_anchor(value);
                 }
                 b"wrap" => {
                     self.wrap.set_value_string(value);
