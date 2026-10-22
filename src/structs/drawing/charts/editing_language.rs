@@ -9,7 +9,7 @@ use quick_xml::{
 
 use super::super::super::StringValue;
 use crate::{
-    reader::driver::get_attribute,
+    drawing::get_unescaped_attribute,
     writer::driver::write_start_tag,
 };
 
@@ -40,7 +40,8 @@ impl EditingLanguage {
         _reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+        self.val
+            .set_value_string(get_unescaped_attribute(e, b"val").unwrap());
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

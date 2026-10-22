@@ -354,3 +354,496 @@ fn clustered_containers_and_dashed_lines_keep_their_xml() {
         }
     }
 }
+
+fn rewrite_part(bytes: &[u8], name: &str, edit: impl FnOnce(String) -> String) -> Vec<u8> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut edit = Some(edit);
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).unwrap();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if entry.name() == name {
+            data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
+        }
+        output
+            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut output, &data).unwrap();
+    }
+    assert!(edit.is_none(), "{name} was not rewritten");
+    output.finish().unwrap().into_inner()
+}
+
+fn without_part(bytes: &[u8], name: &str) -> Vec<u8> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut removed = false;
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).unwrap();
+        if entry.name() == name {
+            removed = true;
+            continue;
+        }
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        output
+            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut output, &data).unwrap();
+    }
+    assert!(removed, "{name} was not present");
+    output.finish().unwrap().into_inner()
+}
+
+/// Replaces the category `c:strCache` of the written chart part with `cache`.
+fn with_category_cache(bytes: &[u8], cache: &str) -> Vec<u8> {
+    rewrite_part(bytes, "xl/charts/chart1.xml", |xml| {
+        let category = xml.find("<c:cat>").unwrap();
+        let start = category + xml[category..].find("<c:strCache>").unwrap();
+        let end = start + xml[start..].find("</c:strCache>").unwrap() + "</c:strCache>".len();
+        format!("{}{cache}{}", &xml[..start], &xml[end..])
+    })
+}
+
+fn dense_cache(labels: &[&str]) -> String {
+    let mut cache = format!("<c:strCache><c:ptCount val=\"{}\"/>", labels.len());
+    for (index, label) in labels.iter().enumerate() {
+        write!(
+            cache,
+            "<c:pt idx=\"{index}\"><c:v>{}</c:v></c:pt>",
+            escape(*label)
+        )
+        .unwrap();
+    }
+    cache.push_str("</c:strCache>");
+    cache
+}
+
+fn quarter_labels() -> Vec<String> {
+    (1..=12).map(|quarter| format!("Q {quarter}")).collect()
+}
+
+fn as_strs(labels: &[String]) -> Vec<&str> {
+    labels.iter().map(String::as_str).collect()
+}
+
+fn read_book(bytes: &[u8]) -> Workbook {
+    umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap()
+}
+
+/// Two export cycles of the chart part: loaded and written, then reloaded and
+/// written again.
+fn export_cycles(bytes: &[u8]) -> [String; 2] {
+    let once = write(&read_book(bytes));
+    let twice = write(&read_book(&once));
+    [chart_part(&once), chart_part(&twice)]
+}
+
+/// Plain numeric categories 1..12 with a source cache that labels them
+/// `Q 1..Q 12`, which the cell values alone cannot reproduce.
+fn plain_quarter_source(reference: &str, data_sheet: Option<&str>) -> Vec<u8> {
+    let mut book = category_workbook(reference);
+    if let Some(name) = data_sheet {
+        book.new_sheet(name).unwrap();
+    }
+    let sheet = match data_sheet {
+        Some(name) => book.sheet_by_name_mut(name).unwrap(),
+        None => book.sheet_mut(0).unwrap(),
+    };
+    for row in 1..=12 {
+        sheet.cell_mut((1, row)).set_value_number(row);
+    }
+    let labels = quarter_labels();
+    with_category_cache(&write(&book), &dense_cache(&as_strs(&labels)))
+}
+
+#[test]
+fn untouched_categories_keep_every_source_label_without_styles() {
+    let bytes = without_part(
+        &plain_quarter_source("Sheet1!$A$1:$A$12", None),
+        "xl/styles.xml",
+    );
+    let labels = quarter_labels();
+    for xml in export_cycles(&bytes) {
+        assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &as_strs(&labels));
+    }
+}
+
+#[test]
+fn edited_categories_replace_only_the_changed_points_display_text() {
+    let bytes = without_part(
+        &plain_quarter_source("Sheet1!$A$1:$A$12", None),
+        "xl/styles.xml",
+    );
+    let mut book = read_book(&bytes);
+    let cell = book.sheet_mut(0).unwrap().cell_mut("A6");
+    cell.set_value_number(42);
+    cell.style_mut()
+        .number_format_mut()
+        .set_format_code("\"Q \"0");
+    let mut labels = quarter_labels();
+    labels[5] = "Q 42".to_string();
+    for xml in chart_parts_after_round_trip(&book) {
+        assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &as_strs(&labels));
+    }
+}
+
+#[test]
+fn source_string_caches_preserve_counts_sparse_indices_and_empty_values() {
+    let reference = "Sheet1!$A$1:$A$9";
+    let mut book = category_workbook(reference);
+    for row in 1..=9 {
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((1, row))
+            .set_value_number(100 + row);
+    }
+    let bytes = write(&book);
+    for (source, expected) in [
+        (
+            concat!(
+                "<c:strCache><c:ptCount val=\"9\"/>",
+                "<c:pt idx=\"4\"><c:v>Four</c:v></c:pt>",
+                "<c:pt idx=\"1\"><c:v/></c:pt>",
+                "<c:pt idx=\"7\"/>",
+                "<c:pt idx=\"0\"><c:v>A &amp; B</c:v></c:pt>",
+                "</c:strCache>"
+            ),
+            concat!(
+                "<c:strCache><c:ptCount val=\"9\"/>",
+                "<c:pt idx=\"4\"><c:v>Four</c:v></c:pt>",
+                "<c:pt idx=\"1\"><c:v></c:v></c:pt>",
+                "<c:pt idx=\"7\"></c:pt>",
+                "<c:pt idx=\"0\"><c:v>A &amp; B</c:v></c:pt>",
+                "</c:strCache>"
+            ),
+        ),
+        (
+            "<c:strCache><c:pt idx=\"2\"><c:v> Two </c:v></c:pt></c:strCache>",
+            "<c:strCache><c:pt idx=\"2\"><c:v> Two </c:v></c:pt></c:strCache>",
+        ),
+        (
+            concat!(
+                "<c:strCache><c:ptCount val=\"40\"/>",
+                "<c:pt idx=\"30\"><c:v>Far</c:v></c:pt></c:strCache>"
+            ),
+            concat!(
+                "<c:strCache><c:ptCount val=\"40\"/>",
+                "<c:pt idx=\"30\"><c:v>Far</c:v></c:pt></c:strCache>"
+            ),
+        ),
+        (
+            concat!(
+                "<c:strCache><c:ptCount val=\"4\"/>",
+                "<c:pt idx=\"3\"><c:v>First</c:v></c:pt>",
+                "<c:pt idx=\"3\"><c:v>Second</c:v></c:pt></c:strCache>"
+            ),
+            concat!(
+                "<c:strCache><c:ptCount val=\"4\"/>",
+                "<c:pt idx=\"3\"><c:v>First</c:v></c:pt>",
+                "<c:pt idx=\"3\"><c:v>Second</c:v></c:pt></c:strCache>"
+            ),
+        ),
+        (
+            "<c:strCache><c:ptCount val=\"0\"/></c:strCache>",
+            "<c:strCache><c:ptCount val=\"0\"/></c:strCache>",
+        ),
+    ] {
+        let source_bytes = with_category_cache(&bytes, source);
+        for xml in export_cycles(&source_bytes) {
+            assert_eq!(
+                between(&xml, "<c:cat>", "</c:cat>"),
+                format!("<c:strRef><c:f>{reference}</c:f>{expected}</c:strRef>"),
+                "source cache {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_source_caches_stay_empty_in_both_spellings() {
+    let mut book = category_workbook("Sheet1!$A$1:$A$3");
+    for row in 1..=3 {
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((1, row))
+            .set_value_number(row);
+    }
+    let bytes = write(&book);
+    for (source, expected) in [
+        ("<c:strCache/>", "<c:strCache></c:strCache>"),
+        ("<c:strCache></c:strCache>", "<c:strCache></c:strCache>"),
+        (
+            "<c:strCache><c:ptCount val=\"0\"/></c:strCache>",
+            "<c:strCache><c:ptCount val=\"0\"/></c:strCache>",
+        ),
+    ] {
+        let source_bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+            let category = xml.find("<c:cat>").unwrap();
+            let start = category + xml[category..].find("<c:strCache>").unwrap();
+            let end = start + xml[start..].find("</c:strCache>").unwrap() + "</c:strCache>".len();
+            format!("{}{source}{}", &xml[..start], &xml[end..])
+        });
+        for xml in export_cycles(&source_bytes) {
+            assert_eq!(
+                between(&xml, "<c:cat>", "</c:cat>"),
+                format!("<c:strRef><c:f>Sheet1!$A$1:$A$3</c:f>{expected}</c:strRef>"),
+                "source cache {source}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn source_caches(value: &serde_json::Value, found: &mut Vec<serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(source) = map.get("source").filter(|source| source.is_object()) {
+                found.push(source.clone());
+            }
+            for child in map.values() {
+                source_caches(child, found);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                source_caches(child, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(feature = "serde")]
+fn without_source_caches(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("source").is_some_and(serde_json::Value::is_object) {
+                map.remove("source");
+            }
+            for child in map.values_mut() {
+                without_source_caches(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                without_source_caches(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(feature = "serde")]
+fn plain_number_workbook(chart: Chart) -> Workbook {
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.sheet_mut(0).unwrap();
+    for row in 1..=12 {
+        sheet.cell_mut((1, row)).set_value_number(row);
+    }
+    sheet.add_chart(chart);
+    book
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn chart_serde_round_trip_keeps_source_points_and_load_baselines() {
+    let book = read_book(&plain_quarter_source("Sheet1!$A$1:$A$12", None));
+    let json = serde_json::to_value(&book.sheet(0).unwrap().chart_collection()[0]).unwrap();
+
+    let mut caches = Vec::new();
+    source_caches(&json, &mut caches);
+    assert_eq!(caches.len(), 1, "{json}");
+    let cache = &caches[0];
+    assert_eq!(cache["point_count"], 12);
+    assert_eq!(cache["loaded_formula"], "Sheet1!$A$1:$A$12");
+    let points = cache["points"].as_array().unwrap();
+    assert_eq!(points.len(), 12);
+    for (index, point) in points.iter().enumerate() {
+        assert_eq!(point["index"], index);
+        assert_eq!(point["value"], format!("Q {}", index + 1));
+        assert_eq!(point["loaded_display"], (index + 1).to_string());
+    }
+
+    let restored: Chart = serde_json::from_value(json.clone()).unwrap();
+    let untouched = plain_number_workbook(restored.clone());
+    let labels = quarter_labels();
+    for xml in chart_parts_after_round_trip(&untouched) {
+        assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &as_strs(&labels));
+    }
+
+    let mut edited = plain_number_workbook(restored);
+    edited
+        .sheet_mut(0)
+        .unwrap()
+        .cell_mut("A6")
+        .set_value_number(42);
+    let mut labels = quarter_labels();
+    labels[5] = "42".to_string();
+    for xml in chart_parts_after_round_trip(&edited) {
+        assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &as_strs(&labels));
+    }
+
+    let mut legacy = json;
+    without_source_caches(&mut legacy);
+    let mut caches = Vec::new();
+    source_caches(&legacy, &mut caches);
+    assert!(caches.is_empty());
+    let restored: Chart = serde_json::from_value(legacy).unwrap();
+    let numbers: Vec<String> = (1..=12).map(|number| number.to_string()).collect();
+    for xml in chart_parts_after_round_trip(&plain_number_workbook(restored)) {
+        assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &as_strs(&numbers));
+    }
+}
+
+#[test]
+fn category_format_changes_refresh_only_visible_changes() {
+    let mut book = read_book(&plain_quarter_source("Sheet1!$A$1:$A$12", None));
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet
+        .cell_mut("A3")
+        .style_mut()
+        .number_format_mut()
+        .set_format_code("0.00");
+    sheet
+        .cell_mut("A4")
+        .style_mut()
+        .number_format_mut()
+        .set_format_code("0");
+    let mut labels = quarter_labels();
+    labels[2] = "3.00".to_string();
+    for xml in chart_parts_after_round_trip(&book) {
+        assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &as_strs(&labels));
+    }
+}
+
+#[test]
+fn retargeted_category_references_generate_the_new_ranges_display_text() {
+    let mut book = read_book(&plain_quarter_source("Sheet1!$A$1:$A$12", None));
+    let sheet = book.sheet_mut(0).unwrap();
+    for (row, value) in [(1, 7), (2, 8), (3, 9)] {
+        sheet.cell_mut((3, row)).set_value_number(value);
+    }
+    chart_mut(&mut book)
+        .area_chart_series_list_mut()
+        .area_chart_series_mut()[0]
+        .category_axis_data_mut()
+        .unwrap()
+        .string_reference_mut()
+        .unwrap()
+        .formula_mut()
+        .set_address_str("Sheet1!$C$1:$C$3");
+    for xml in chart_parts_after_round_trip(&book) {
+        assert_string_reference(&xml, "cat", "Sheet1!$C$1:$C$3", &["7", "8", "9"]);
+    }
+}
+
+#[test]
+fn later_sheet_category_references_capture_the_loaded_display() {
+    let bytes = plain_quarter_source("Data!$A$1:$A$12", Some("Data"));
+    let labels = quarter_labels();
+    for xml in export_cycles(&bytes) {
+        assert_string_reference(&xml, "cat", "Data!$A$1:$A$12", &as_strs(&labels));
+    }
+
+    let mut book = read_book(&bytes);
+    book.sheet_by_name_mut("Data")
+        .unwrap()
+        .cell_mut("A6")
+        .set_value_number(42);
+    let mut labels = quarter_labels();
+    labels[5] = "42".to_string();
+    for xml in chart_parts_after_round_trip(&book) {
+        assert_string_reference(&xml, "cat", "Data!$A$1:$A$12", &as_strs(&labels));
+    }
+}
+
+#[test]
+fn lazy_category_references_capture_before_mutable_access_returns() {
+    let bytes = plain_quarter_source("Data!$A$1:$A$12", Some("Data"));
+    let mut book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(&bytes), false).unwrap();
+    book.sheet_mut(0).unwrap();
+    // Exporting while the data sheet is still raw keeps every untouched label.
+    let untouched = quarter_labels();
+    assert_string_reference(
+        &chart_part(&write(&book)),
+        "cat",
+        "Data!$A$1:$A$12",
+        &as_strs(&untouched),
+    );
+    book.sheet_by_name_mut("Data")
+        .unwrap()
+        .cell_mut("A6")
+        .set_value_number(42);
+    let mut labels = quarter_labels();
+    labels[5] = "42".to_string();
+    for xml in chart_parts_after_round_trip(&book) {
+        assert_string_reference(&xml, "cat", "Data!$A$1:$A$12", &as_strs(&labels));
+    }
+}
+
+/// Moves the chart of the first one-cell frame into the chart collection, the
+/// only place the writer exports charts from, and returns its written part.
+fn exported_one_cell_chart(book: &mut Workbook) -> String {
+    let sheet = book.sheet_mut(0).unwrap();
+    let chart_space = sheet.worksheet_drawing().one_cell_anchor_collection()[0]
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .clone();
+    let mut chart = Chart::default();
+    chart.new_chart(
+        &ChartType::LineChart,
+        marker("E1"),
+        marker("M18"),
+        vec!["Sheet1!$B$1:$B$12"],
+    );
+    *chart.chart_space_mut() = chart_space;
+    sheet.add_chart(chart);
+    chart_part(&write(book))
+}
+
+#[test]
+fn one_cell_chart_frames_capture_source_category_baselines() {
+    let bytes = rewrite_part(
+        &plain_quarter_source("Sheet1!$A$1:$A$12", None),
+        "xl/drawings/drawing1.xml",
+        |xml| {
+            let start = xml.find("<xdr:to>").unwrap();
+            let end = xml.find("</xdr:to>").unwrap() + "</xdr:to>".len();
+            let xml = format!(
+                "{}<xdr:ext cx=\"4572000\" cy=\"2743200\"/>{}",
+                &xml[..start],
+                &xml[end..]
+            );
+            xml.replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
+        },
+    );
+
+    let mut book = read_book(&bytes);
+    assert!(book.sheet(0).unwrap().chart_collection().is_empty());
+    let labels = quarter_labels();
+    assert_string_reference(
+        &exported_one_cell_chart(&mut book),
+        "cat",
+        "Sheet1!$A$1:$A$12",
+        &as_strs(&labels),
+    );
+
+    let mut book = read_book(&bytes);
+    book.sheet_mut(0)
+        .unwrap()
+        .cell_mut("A6")
+        .set_value_number(42);
+    let mut labels = quarter_labels();
+    labels[5] = "42".to_string();
+    assert_string_reference(
+        &exported_one_cell_chart(&mut book),
+        "cat",
+        "Sheet1!$A$1:$A$12",
+        &as_strs(&labels),
+    );
+}

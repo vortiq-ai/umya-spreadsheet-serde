@@ -12,6 +12,7 @@ use super::super::super::{
     StringValue,
 };
 use crate::{
+    drawing::get_unescaped_attribute,
     reader::driver::get_attribute,
     writer::driver::write_start_tag,
 };
@@ -61,7 +62,7 @@ impl NumberingFormat {
         e: &BytesStart,
     ) {
         self.format_code
-            .set_value_string(get_attribute(e, b"formatCode").unwrap());
+            .set_value_string(get_unescaped_attribute(e, b"formatCode").unwrap());
         self.source_linked
             .set_value_string(get_attribute(e, b"sourceLinked").unwrap());
     }

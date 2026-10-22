@@ -23,7 +23,10 @@ use super::{
 };
 use crate::{
     StringValue,
-    drawing::SystemColor,
+    drawing::{
+        SystemColor,
+        get_unescaped_attribute,
+    },
     reader::driver::{
         get_attribute,
         set_string_from_xml,
@@ -411,11 +414,11 @@ impl Outline {
             self.set_width(v.parse::<u32>().unwrap());
         }
 
-        if let Some(v) = get_attribute(e, b"cap") {
+        if let Some(v) = get_unescaped_attribute(e, b"cap") {
             self.set_cap_type(v);
         }
 
-        if let Some(v) = get_attribute(e, b"cmpd") {
+        if let Some(v) = get_unescaped_attribute(e, b"cmpd") {
             self.set_compound_line_type(v);
         }
 

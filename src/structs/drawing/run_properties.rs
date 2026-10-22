@@ -1,4 +1,7 @@
-use std::io::Cursor;
+use std::{
+    borrow::Cow,
+    io::Cursor,
+};
 
 use quick_xml::{
     Reader,
@@ -33,6 +36,19 @@ use crate::{
         write_start_tag,
     },
 };
+
+/// The attribute value with its XML entities decoded. Attribute text is read
+/// raw, and the writers escape it again, so it is decoded exactly once, here.
+pub(crate) fn unescape_attribute(value: String) -> String {
+    let decoded = quick_xml::escape::unescape(&value)
+        .ok()
+        .map(Cow::into_owned);
+    decoded.unwrap_or(value)
+}
+
+pub(crate) fn get_unescaped_attribute(e: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+    get_attribute(e, key).map(unescape_attribute)
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -494,25 +510,25 @@ impl RunProperties {
         e: &BytesStart,
         empty_flag: bool,
     ) {
-        if let Some(v) = get_attribute(e, b"kumimoji") {
+        if let Some(v) = get_unescaped_attribute(e, b"kumimoji") {
             self.set_kumimoji(v);
         }
-        if let Some(v) = get_attribute(e, b"lang") {
+        if let Some(v) = get_unescaped_attribute(e, b"lang") {
             self.set_language(v);
         }
-        if let Some(v) = get_attribute(e, b"altLang") {
+        if let Some(v) = get_unescaped_attribute(e, b"altLang") {
             self.set_alternative_language(v);
         }
-        if let Some(v) = get_attribute(e, b"b") {
+        if let Some(v) = get_unescaped_attribute(e, b"b") {
             self.set_bold(v);
         }
-        if let Some(v) = get_attribute(e, b"sz") {
+        if let Some(v) = get_unescaped_attribute(e, b"sz") {
             self.set_sz(v);
         }
-        if let Some(v) = get_attribute(e, b"strike") {
+        if let Some(v) = get_unescaped_attribute(e, b"strike") {
             self.set_strike(v);
         }
-        if let Some(v) = get_attribute(e, b"i") {
+        if let Some(v) = get_unescaped_attribute(e, b"i") {
             self.set_italic(v);
         }
         if let Some(v) = get_attribute(e, b"cap") {

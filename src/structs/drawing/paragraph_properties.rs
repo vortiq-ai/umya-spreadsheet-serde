@@ -18,6 +18,7 @@ use super::{
 };
 use crate::{
     StringValue,
+    drawing::get_unescaped_attribute,
     reader::driver::{
         get_attribute,
         set_string_from_xml,
@@ -143,7 +144,7 @@ impl ParagraphProperties {
         e: &BytesStart,
         empty_flag: bool,
     ) {
-        if let Some(v) = get_attribute(e, b"rtl") {
+        if let Some(v) = get_unescaped_attribute(e, b"rtl") {
             self.set_right_to_left(v);
         }
         set_string_from_xml!(self, e, alignment, "algn");

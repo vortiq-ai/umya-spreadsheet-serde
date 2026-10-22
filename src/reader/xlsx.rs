@@ -29,6 +29,7 @@ use crate::{
 };
 
 pub(crate) mod chart;
+mod chart_cache;
 pub(crate) mod comment;
 mod content_types;
 mod doc_props_app;
@@ -50,6 +51,8 @@ pub(crate) mod vml_drawing;
 mod workbook;
 mod workbook_rels;
 pub(crate) mod worksheet;
+
+pub(crate) use self::chart_cache::capture_chart_baselines;
 
 /// read spreadsheet from arbitrary reader.
 /// # Arguments

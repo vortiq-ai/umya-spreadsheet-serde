@@ -16,6 +16,7 @@ use super::super::super::{
     UInt32Value,
 };
 use crate::{
+    drawing::get_unescaped_attribute,
     reader::driver::{
         get_attribute,
         set_string_from_xml,
@@ -101,7 +102,7 @@ impl NonVisualDrawingProperties {
     ) {
         self.id.set_value_string(get_attribute(e, b"id").unwrap());
         self.name
-            .set_value_string(get_attribute(e, b"name").unwrap());
+            .set_value_string(get_unescaped_attribute(e, b"name").unwrap());
         set_string_from_xml!(self, e, hidden, "hidden");
 
         if empty_flg {

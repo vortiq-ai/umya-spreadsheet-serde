@@ -17,10 +17,8 @@ use super::{
 };
 use crate::{
     StringValue,
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    drawing::get_unescaped_attribute,
+    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -269,25 +267,25 @@ impl OuterShadow {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        if let Some(v) = get_attribute(e, b"blurRad") {
+        if let Some(v) = get_unescaped_attribute(e, b"blurRad") {
             self.set_blur_radius(v);
         }
-        if let Some(v) = get_attribute(e, b"dist") {
+        if let Some(v) = get_unescaped_attribute(e, b"dist") {
             self.set_distance(v);
         }
-        if let Some(v) = get_attribute(e, b"dir") {
+        if let Some(v) = get_unescaped_attribute(e, b"dir") {
             self.set_direction(v);
         }
-        if let Some(v) = get_attribute(e, b"sx") {
+        if let Some(v) = get_unescaped_attribute(e, b"sx") {
             self.set_horizontal_ratio(v);
         }
-        if let Some(v) = get_attribute(e, b"sy") {
+        if let Some(v) = get_unescaped_attribute(e, b"sy") {
             self.set_vertical_ratio(v);
         }
-        if let Some(v) = get_attribute(e, b"algn") {
+        if let Some(v) = get_unescaped_attribute(e, b"algn") {
             self.set_alignment(v);
         }
-        if let Some(v) = get_attribute(e, b"rotWithShape") {
+        if let Some(v) = get_unescaped_attribute(e, b"rotWithShape") {
             self.set_rotate_with_shape(v);
         }
 

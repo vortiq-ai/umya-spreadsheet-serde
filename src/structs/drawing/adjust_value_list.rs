@@ -12,10 +12,8 @@ use quick_xml::{
 
 use super::shape_guide::ShapeGuide;
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    drawing::get_unescaped_attribute,
+    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -73,8 +71,8 @@ impl AdjustValueList {
             Event::Empty(ref e) => {
                 if e.name().into_inner() == b"a:gd" {
                     let mut shape_guide = ShapeGuide::default();
-                    shape_guide.set_name(get_attribute(e, b"name").unwrap());
-                    shape_guide.set_fmla(get_attribute(e, b"fmla").unwrap());
+                    shape_guide.set_name(get_unescaped_attribute(e, b"name").unwrap());
+                    shape_guide.set_fmla(get_unescaped_attribute(e, b"fmla").unwrap());
                     self.add_shape_guide_collection(shape_guide);
                 }
             },
