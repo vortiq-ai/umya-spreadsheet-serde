@@ -19,11 +19,8 @@ use super::{
     Transform,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
+    drawing::get_unescaped_attribute,
+    reader::driver::xml_read_loop,
     structs::raw::RawRelationships,
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
@@ -167,7 +164,9 @@ impl GraphicFrame {
         e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
     ) {
-        set_string_from_xml!(self, e, r#macro, "macro");
+        if let Some(v) = get_unescaped_attribute(e, b"macro") {
+            self.r#macro.set_value_string(v);
+        }
 
         xml_read_loop!(
             reader,

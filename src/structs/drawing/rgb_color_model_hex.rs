@@ -16,10 +16,8 @@ use super::{
     PositiveFixedPercentageType,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    drawing::get_unescaped_attribute,
+    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -309,7 +307,8 @@ impl RgbColorModelHex {
         e: &BytesStart,
         empty_flag: bool,
     ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+        self.val
+            .set_value_string(get_unescaped_attribute(e, b"val").unwrap());
 
         if empty_flag {
             return;

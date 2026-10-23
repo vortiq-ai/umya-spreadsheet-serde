@@ -8,7 +8,7 @@ use quick_xml::{
 };
 
 use crate::{
-    reader::driver::get_attribute,
+    drawing::get_unescaped_attribute,
     writer::driver::write_start_tag,
 };
 
@@ -42,7 +42,7 @@ impl Alpha {
         _reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        self.set_val(get_attribute(e, b"val").unwrap());
+        self.set_val(get_unescaped_attribute(e, b"val").unwrap());
     }
 
     #[inline]

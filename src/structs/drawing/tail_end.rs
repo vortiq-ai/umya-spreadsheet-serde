@@ -11,10 +11,8 @@ use quick_xml::{
 };
 
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    drawing::get_unescaped_attribute,
+    reader::driver::xml_read_loop,
     structs::StringValue,
     writer::driver::write_start_tag,
 };
@@ -84,15 +82,15 @@ impl TailEnd {
         e: &BytesStart,
         empty_flag: bool,
     ) {
-        if let Some(v) = get_attribute(e, b"type") {
+        if let Some(v) = get_unescaped_attribute(e, b"type") {
             self.set_type(v);
         }
 
-        if let Some(v) = get_attribute(e, b"w") {
+        if let Some(v) = get_unescaped_attribute(e, b"w") {
             self.set_width(v);
         }
 
-        if let Some(v) = get_attribute(e, b"len") {
+        if let Some(v) = get_unescaped_attribute(e, b"len") {
             self.set_length(v);
         }
 

@@ -18,6 +18,7 @@ use super::{
     SystemColorValues,
 };
 use crate::{
+    drawing::get_unescaped_attribute,
     reader::driver::{
         get_attribute,
         set_string_from_xml,
@@ -79,7 +80,9 @@ impl SystemColor {
         empty_flag: bool,
     ) {
         set_string_from_xml!(self, e, val, "val");
-        set_string_from_xml!(self, e, last_color, "lastClr");
+        if let Some(v) = get_unescaped_attribute(e, b"lastClr") {
+            self.last_color.set_value_string(v);
+        }
 
         if empty_flag {
             return;
