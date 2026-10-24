@@ -19,6 +19,11 @@ pub struct Index {
     val: UInt32Value,
 }
 impl Index {
+    /// Identity only when explicitly present, including an explicit zero.
+    pub(crate) fn explicit_value(&self) -> Option<u32> {
+        self.val.has_value().then(|| self.val.value())
+    }
+
     #[must_use]
     pub fn val(&self) -> u32 {
         self.val.value()

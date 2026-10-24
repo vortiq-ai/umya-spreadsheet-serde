@@ -29,6 +29,7 @@ use crate::{
 };
 
 pub(crate) mod chart;
+mod chart_cache;
 pub(crate) mod comment;
 mod content_types;
 mod doc_props_app;
@@ -50,6 +51,8 @@ pub(crate) mod vml_drawing;
 mod workbook;
 mod workbook_rels;
 pub(crate) mod worksheet;
+
+pub(crate) use self::chart_cache::capture_chart_source_caches;
 
 /// read spreadsheet from arbitrary reader.
 /// # Arguments
@@ -113,7 +116,7 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
     shared_strings::read(&mut arv, &mut book)?;
     styles::read(&mut arv, &mut book)?;
 
-    for sheet in book.sheet_collection_mut() {
+    for sheet in book.sheet_collection_unchecked_mut() {
         for (rel_id, _, rel_target) in &workbook_rel {
             if sheet.r_id() != rel_id {
                 continue;

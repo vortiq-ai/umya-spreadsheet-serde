@@ -1,5 +1,11 @@
 // c:strCache
-use std::io::Cursor;
+use std::{
+    collections::{
+        HashMap,
+        HashSet,
+    },
+    io::Cursor,
+};
 
 use quick_xml::{
     Reader,
@@ -10,11 +16,12 @@ use quick_xml::{
     },
 };
 
+use super::chart_source_caches::SourceCache;
 use crate::{
     Cell,
     drawing::charts::{
         Formula,
-        StringPoint,
+        NumericValue,
     },
     helper::address::unescape_sheet_name,
     reader::driver::{
@@ -22,7 +29,10 @@ use crate::{
         local_name,
         xml_read_loop,
     },
-    structs::Workbook,
+    structs::{
+        Cells,
+        Workbook,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -30,39 +40,253 @@ use crate::{
     },
 };
 
+/// A string cache. A chart is exported with the labels the referenced cells
+/// display; `source` keeps only the labels the file stored that the cells
+/// cannot reproduce, and is `None` for a cache the cells reproduce.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
-pub struct StringCache {}
+pub struct StringCache {
+    #[cfg_attr(feature = "serde", serde(default))]
+    source: Option<Box<SourceCache>>,
+}
+
+/// Maps a cache point index onto a cell of a rectangular range, row by row.
+pub(crate) struct IndexedRange {
+    col_start: u32,
+    row_start: u32,
+    width:     u64,
+    len:       u64,
+}
+
+impl IndexedRange {
+    pub(crate) fn from_formula(formula: &Formula) -> Option<Self> {
+        if formula.has_string_value() {
+            return None;
+        }
+        let range = formula.address().range();
+        let col_start = range.coordinate_start_col()?.num();
+        let row_start = range.coordinate_start_row()?.num();
+        let (col_end, row_end) = match (range.coordinate_end_col(), range.coordinate_end_row()) {
+            (None, None) => (col_start, row_start),
+            (Some(col), Some(row)) => (col.num(), row.num()),
+            _ => return None,
+        };
+        if row_start == 0 || col_start == 0 {
+            return None;
+        }
+        let width = u64::from(col_end.checked_sub(col_start)?) + 1;
+        let height = u64::from(row_end.checked_sub(row_start)?) + 1;
+        Some(Self {
+            col_start,
+            row_start,
+            width,
+            len: width * height,
+        })
+    }
+
+    /// How many cells the range covers.
+    pub(crate) fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// `(col, row)` of the cell a point index refers to, if inside the range.
+    pub(crate) fn coordinate(&self, index: u32) -> Option<(u32, u32)> {
+        let index = u64::from(index);
+        if index >= self.len {
+            return None;
+        }
+        let col = u64::from(self.col_start) + index % self.width;
+        let row = u64::from(self.row_start) + index / self.width;
+        Some((u32::try_from(col).ok()?, u32::try_from(row).ok()?))
+    }
+}
+
+/// The text a literal (non-reference) formula contributes to a cache.
+pub(crate) fn literal_text(formula: &Formula) -> String {
+    let value = formula.address_str();
+    match value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    {
+        Some(value) => value.replace("\"\"", "\""),
+        None => value,
+    }
+}
+
+/// Where the current display text of cache points comes from.
+enum DisplaySource<'a> {
+    Literal(String),
+    Cells {
+        cells: &'a Cells,
+        range: Option<IndexedRange>,
+    },
+    /// A worksheet that is still raw: only the requested cells were read.
+    Streamed {
+        values: HashMap<(u32, u32), String>,
+        range:  Option<IndexedRange>,
+    },
+    Unavailable,
+}
+
+impl<'a> DisplaySource<'a> {
+    fn new(formula: &Formula, wb: &'a Workbook, indices: impl Iterator<Item = u32>) -> Self {
+        if formula.has_string_value() {
+            return Self::Literal(literal_text(formula));
+        }
+        let address = formula.address();
+        let name = unescape_sheet_name(address.sheet_name());
+        let range = IndexedRange::from_formula(formula);
+        if let Ok(sheet) = wb.sheet_by_name(&name) {
+            return Self::Cells {
+                cells: sheet.cells_crate(),
+                range,
+            };
+        }
+        let Some(sheet) = wb
+            .sheet_collection_no_check()
+            .iter()
+            .find(|sheet| sheet.name() == name && !sheet.is_deserialized())
+        else {
+            return Self::Unavailable;
+        };
+        let wanted: HashSet<(u32, u32)> = indices
+            .filter_map(|index| range.as_ref()?.coordinate(index))
+            .collect();
+        let mut values = HashMap::new();
+        let shared_string_table = wb.shared_string_table();
+        let read = crate::reader::xlsx::worksheet::read_cells_stream(
+            sheet.raw_data_of_worksheet(),
+            &shared_string_table.read().unwrap(),
+            wb.stylesheet(),
+            |cell: &Cell| {
+                let coordinate = (cell.coordinate().col_num(), cell.coordinate().row_num());
+                if wanted.contains(&coordinate) {
+                    values.insert(coordinate, cell.formatted_value());
+                }
+            },
+        );
+        if read.is_err() {
+            return Self::Unavailable;
+        }
+        Self::Streamed { values, range }
+    }
+
+    fn display(&self, index: u32) -> Option<String> {
+        match self {
+            Self::Literal(text) => (index == 0).then(|| text.clone()),
+            Self::Cells { cells, range } => {
+                let coordinate = range.as_ref()?.coordinate(index)?;
+                Some(
+                    cells
+                        .get(coordinate)
+                        .map_or_else(String::new, Cell::formatted_value),
+                )
+            }
+            Self::Streamed { values, range } => {
+                let coordinate = range.as_ref()?.coordinate(index)?;
+                Some(values.get(&coordinate).cloned().unwrap_or_default())
+            }
+            Self::Unavailable => None,
+        }
+    }
+}
 
 impl StringCache {
+    /// What the file stored that the cells cannot reproduce, if anything.
+    #[must_use]
+    pub fn source(&self) -> Option<&SourceCache> {
+        self.source.as_deref()
+    }
+
+    pub(crate) fn set_source(&mut self, source: Option<SourceCache>) {
+        self.source = source.map(Box::new);
+    }
+
+    pub(crate) fn take_source(&mut self) -> Option<SourceCache> {
+        self.source.take().map(|source| *source)
+    }
+
+    /// The cache of an imported `c:strCache` that has no points at all.
+    pub(crate) fn empty_source(formula: String) -> Self {
+        Self {
+            source: Some(Box::new(SourceCache::as_read(formula, None, Vec::new()))),
+        }
+    }
+
+    /// Reads a `c:strCache` of the reference `formula`: the label at index
+    /// zero, which series names use, and every point the file stored.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         _e: &BytesStart,
-    ) -> Option<String> {
-        // Series names use the label at index zero. Keep that fallback without
-        // retaining entire category caches, which are regenerated from cells.
+        formula: String,
+    ) -> (Option<String>, Self) {
         let mut cached_value = None;
+        let mut point_count = None;
+        let mut points = Vec::new();
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"pt"
-                    && get_attribute(e, b"idx").as_deref() == Some("0")
-                {
-                    let mut point = StringPoint::default();
-                    point.set_attributes(reader, e);
-                    cached_value = Some(point.numeric_value().text().to_string());
+            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+                b"ptCount" => {
+                    point_count = parse_point_count(e);
                 }
+                b"pt" => {
+                    let index = get_attribute(e, b"idx");
+                    let value = read_point_value(reader);
+                    if index.as_deref() == Some("0") {
+                        cached_value = Some(value.clone().unwrap_or_default());
+                    }
+                    if let Some(index) = index.and_then(|index| index.parse().ok()) {
+                        points.push((index, value));
+                    }
+                }
+                _ => (),
+            },
+            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+                b"ptCount" => {
+                    point_count = parse_point_count(e);
+                }
+                b"pt" => {
+                    if let Some(index) =
+                        get_attribute(e, b"idx").and_then(|index| index.parse().ok())
+                    {
+                        points.push((index, None));
+                    }
+                }
+                _ => (),
             },
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"strCache" {
-                    return cached_value;
+                    let source = SourceCache::as_read(formula, point_count, points);
+                    return (
+                        cached_value,
+                        Self {
+                            source: Some(Box::new(source)),
+                        },
+                    );
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "c:strCache")
         );
     }
 
-    pub(crate) fn write_to(writer: &mut Writer<Cursor<Vec<u8>>>, formula: &Formula, wb: &Workbook) {
+    /// Writes the cache of `formula`. A source cache that was read under the
+    /// same formula keeps the labels the cells cannot reproduce; otherwise
+    /// the cache is generated from the cells.
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        formula: &Formula,
+        wb: &Workbook,
+    ) {
+        match &self.source {
+            Some(source) if source.formula() == formula.address_str() => {
+                Self::write_stored(writer, source, formula, wb);
+            }
+            _ => Self::write_generated(writer, formula, wb),
+        }
+    }
+
+    fn write_generated(writer: &mut Writer<Cursor<Vec<u8>>>, formula: &Formula, wb: &Workbook) {
         let cell_value_list = if formula.has_string_value() {
             let value = formula.address_str();
             let value = match value
@@ -110,6 +334,90 @@ impl StringCache {
 
         write_end_tag(writer, "c:strCache");
     }
+
+    /// Writes the stored points in file order. A point the cells reproduce gets
+    /// its current display text. A stored exception keeps the text the file
+    /// had while its cell still displays what it displayed at load, and
+    /// otherwise gets the current display text too.
+    fn write_stored(
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        cache: &SourceCache,
+        formula: &Formula,
+        wb: &Workbook,
+    ) {
+        let current = DisplaySource::new(formula, wb, cache.indices());
+
+        // c:strCache
+        write_start_tag(writer, "c:strCache", vec![], false);
+
+        // c:ptCount
+        if let Some(count) = cache.point_count() {
+            write_start_tag(
+                writer,
+                "c:ptCount",
+                vec![("val", count.to_string()).into()],
+                true,
+            );
+        }
+
+        let mut exceptions = cache.exceptions().iter().peekable();
+        for index in cache.indices() {
+            let display = current.display(index);
+            let value = match exceptions.next_if(|exception| exception.index() == index) {
+                Some(exception) if display.as_deref() == exception.loaded_display() => {
+                    exception.value().map(str::to_string)
+                }
+                _ => Some(display.unwrap_or_default()),
+            };
+            write_point(writer, &index.to_string(), value.as_deref());
+        }
+
+        write_end_tag(writer, "c:strCache");
+    }
+}
+
+fn parse_point_count(e: &BytesStart) -> Option<u32> {
+    get_attribute(e, b"val").and_then(|value| value.parse().ok())
+}
+
+/// Reads the `c:v` of a `c:pt` up to its end tag: `None` when it has none.
+fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> Option<String> {
+    let mut value = None;
+    xml_read_loop!(
+        reader,
+        Event::Start(ref e) => {
+            if local_name(e.name().into_inner()) == b"v" {
+                let mut text = NumericValue::default();
+                text.set_attributes(reader, e);
+                value = Some(text.text().to_string());
+            }
+        },
+        Event::Empty(ref e) => {
+            if local_name(e.name().into_inner()) == b"v" {
+                value = Some(String::new());
+            }
+        },
+        Event::End(ref e) => {
+            if local_name(e.name().0) == b"pt" {
+                return value;
+            }
+        },
+        Event::Eof => panic!("Error: Could not find {} end element", "c:pt")
+    );
+}
+
+fn write_point(writer: &mut Writer<Cursor<Vec<u8>>>, index: &str, value: Option<&str>) {
+    // c:pt
+    write_start_tag(writer, "c:pt", vec![("idx", index).into()], false);
+
+    // c:v
+    if let Some(value) = value {
+        write_start_tag(writer, "c:v", vec![], false);
+        write_text_node(writer, value);
+        write_end_tag(writer, "c:v");
+    }
+
+    write_end_tag(writer, "c:pt");
 }
 
 #[cfg(test)]

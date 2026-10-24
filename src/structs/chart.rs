@@ -305,6 +305,66 @@ impl Chart {
             .chart_space()
     }
 
+    /// Removes the source caches of every string reference of the chart: the
+    /// labels an imported file stored that the cells cannot reproduce. They
+    /// only matter when the chart is exported to a file, so strip a copy that
+    /// is sent anywhere else; the chart then no longer carries them, however
+    /// many its file stored.
+    pub fn strip_source_caches(&mut self) {
+        if let Some(frame) = self.two_cell_anchor.graphic_frame_mut() {
+            crate::drawing::charts::clear_source_caches(
+                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+            );
+        }
+    }
+
+    /// Removes the source caches of a chart that was not read from a file by
+    /// the server, such as one a client created: only caches the server kept
+    /// are trusted.
+    pub fn clear_source_caches(&mut self) {
+        self.strip_source_caches();
+    }
+
+    /// Discards incoming source caches, then adopts trusted server caches
+    /// from `previous` by exact formula, reference role and existing identity.
+    /// Series categories and series text each use their explicitly present
+    /// series index (`c:idx`); axis titles use an explicitly present `c:axId`.
+    /// Explicit zero is valid. A role/ID must occur exactly once in each chart,
+    /// counting even references without caches or with invalid guards. Missing
+    /// or ambiguous identities do not match. Previous empty slots stay empty.
+    /// Group kind, axis bindings and traversal position do not affect matching.
+    /// Other incoming edits are preserved. Formula guards must still match.
+    /// A surviving ID and formula keep their cache across reordering, group
+    /// changes and axis moves. Reusing or renumbering an ID with the same role
+    /// and formula is indistinguishable from the previous reference: adoption
+    /// prevents transfers across different keys, not undetectable ID reuse.
+    ///
+    /// Persist full charts with ordinary serde. Strip a clone at every browser
+    /// send, adopt on replacement, and clear at client creation boundaries.
+    /// Serde does not make client data trusted: counts and runs drive export
+    /// iteration. Trusted import, reload, undo and server copies keep caches.
+    /// The import budget does not limit subsequent chart copies or snapshots.
+    ///
+    /// Renaming a sheet does not rewrite formulas or guards. Without formula
+    /// updates formerly valid references write unavailable displays as empty
+    /// values. With updated formulas the guard differs and generated output
+    /// uses current displays. Originally unavailable displays keep the
+    /// optional-value equality rule, including `None == None`.
+    pub fn adopt_source_caches(&mut self, previous: &Chart) {
+        let Some(frame) = self.two_cell_anchor.graphic_frame_mut() else {
+            return;
+        };
+        let space = frame.graphic_mut().graphic_data_mut().chart_space_mut();
+        if let Some(previous) = previous.two_cell_anchor.graphic_frame() {
+            crate::drawing::charts::adopt_source_caches(
+                space,
+                previous.graphic().graphic_data().chart_space(),
+            );
+        } else {
+            crate::drawing::charts::clear_source_caches(space);
+        }
+    }
+
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use chart_space()")]

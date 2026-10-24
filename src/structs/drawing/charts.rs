@@ -256,6 +256,9 @@ pub use self::string_reference::*;
 mod string_cache;
 pub use self::string_cache::*;
 
+mod chart_source_caches;
+pub use self::chart_source_caches::*;
+
 mod scatter_chart;
 pub use self::scatter_chart::*;
 

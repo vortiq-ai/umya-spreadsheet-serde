@@ -13,7 +13,10 @@ use crate::{
         },
         coordinate::column_index_from_string,
     },
-    reader::xlsx::raw_to_deserialize_by_worksheet,
+    reader::xlsx::{
+        capture_chart_source_caches,
+        raw_to_deserialize_by_worksheet,
+    },
     structs::{
         Address,
         CellValue,
@@ -25,7 +28,10 @@ use crate::{
         WorkbookProtection,
         WorkbookView,
         Worksheet,
-        drawing::Theme,
+        drawing::{
+            Theme,
+            charts::ChartSourceCacheReport,
+        },
     },
     traits::{
         AdjustmentCoordinate,
@@ -39,6 +45,7 @@ use crate::{
 pub struct Workbook {
     properties:            Properties,
     work_sheet_collection: Vec<Worksheet>,
+    chart_cache_report:    ChartSourceCacheReport,
     macros_code:           Option<Vec<u8>>,
     jsa_macros_code:       Option<Vec<u8>>,
     code_name:             StringValue,
@@ -69,6 +76,24 @@ pub struct Workbook {
 }
 
 impl Workbook {
+    /// Import outcomes, accumulated as sheets materialize. Eager reads finish
+    /// the report before returning; lazy reads finish after all original
+    /// sheets materialize. Repeated access never charges a cache again.
+    ///
+    /// These are historical import costs, not live accounting after chart
+    /// edits, copies or stripping. Budget warnings use `over_cap_caches`.
+    /// Lazy references into previously materialized sheets conservatively
+    /// lose source labels even if those sheets were never edited. See
+    /// [`ChartSourceCacheReport`] for the remaining lazy differences.
+    #[must_use]
+    pub fn chart_source_cache_report(&self) -> &ChartSourceCacheReport {
+        &self.chart_cache_report
+    }
+
+    pub(crate) fn chart_source_cache_report_mut(&mut self) -> &mut ChartSourceCacheReport {
+        &mut self.chart_cache_report
+    }
+
     /// Returns whether a one-based cell `cm` index identifies a native dynamic array.
     /// Unrelated cell metadata must not be treated as dynamic-array identity.
     #[must_use]
@@ -539,6 +564,11 @@ impl Workbook {
         self.sheet_collection_no_check()
     }
 
+    /// Worksheets without materializing them.
+    pub(crate) fn sheet_collection_unchecked_mut(&mut self) -> &mut [Worksheet] {
+        &mut self.work_sheet_collection
+    }
+
     /// Get Work Sheet List in mutable.
     #[inline]
     pub fn sheet_collection_mut(&mut self) -> &mut [Worksheet] {
@@ -580,11 +610,14 @@ impl Workbook {
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
-        for worksheet in &mut self.work_sheet_collection {
+        let mut deserialized = Vec::new();
+        for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
             if !worksheet.is_deserialized() {
                 raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
+                deserialized.push(index);
             }
         }
+        capture_chart_source_caches(self, &deserialized);
         self
     }
 
@@ -599,6 +632,7 @@ impl Workbook {
         let stylesheet = self.stylesheet().clone();
         let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
         raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
+        capture_chart_source_caches(self, &[index]);
         self
     }
 
@@ -690,7 +724,8 @@ impl Workbook {
         let stylesheet = self.stylesheet().clone();
         let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
         raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
-        Ok(worksheet)
+        capture_chart_source_caches(self, &[index]);
+        Ok(self.work_sheet_collection.get_mut(index).unwrap())
     }
 
     #[deprecated(since = "3.0.0", note = "Use sheet_mut()")]
