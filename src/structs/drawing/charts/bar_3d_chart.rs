@@ -24,6 +24,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     structs::Workbook,
@@ -270,7 +271,7 @@ impl Bar3DChart {
                     b"dLbls" => {
                         self.data_labels.set_attributes(reader, e);
                     }
-                    _ => (),
+                    _ => skip_element(reader, e),
                 }
             },
             Event::Empty(ref e) => {

@@ -21,7 +21,10 @@ use super::{
     VaryColors,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
@@ -240,7 +243,7 @@ impl LineChart {
                 b"dLbls" => {
                     self.data_labels.set_attributes(reader, e);
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match local_name(e.name().into_inner()) {
                 b"grouping" => {

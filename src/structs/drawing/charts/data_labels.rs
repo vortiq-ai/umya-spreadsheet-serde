@@ -23,6 +23,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     writer::driver::{
@@ -253,10 +254,14 @@ impl DataLabels {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
+                // Only `c:txPr` is modeled. A `c:dLbl` (one point's label) carries its own
+                // `c:txPr` and `c:show*` flags, which are not these labels' settings.
                 if local_name(e.name().into_inner()) == b"txPr" {
                     let mut obj = TextProperties::default();
                     obj.set_attributes(reader, e);
                     self.set_text_properties(obj);
+                } else {
+                    skip_element(reader, e);
                 }
             },
             Event::Empty(ref e) => {

@@ -63,6 +63,23 @@ pub(crate) fn local_name(name: &[u8]) -> &[u8] {
     }
 }
 
+/// Reads past the end of the element `start` has just opened, discarding
+/// everything inside.
+///
+/// A reader that models only some of an element's children calls this for the
+/// others. Without it their descendants surface in the reader's own loop, under
+/// names the reader does model (`c:dPt/c:idx`, `c:dPt/c:marker`,
+/// `c:minorGridlines/c:spPr`, ...), and overwrite the element's own values.
+/// Call it only for a start tag, never for a self-closing one.
+pub(crate) fn skip_element<R: io::BufRead>(
+    reader: &mut quick_xml::Reader<R>,
+    start: &quick_xml::events::BytesStart,
+) {
+    if let Err(e) = reader.read_to_end_into(start.name(), &mut Vec::new()) {
+        panic!("Error at position {}: {e:?}", reader.buffer_position());
+    }
+}
+
 pub(crate) fn normalize_path(path: &str) -> PathBuf {
     let path = Path::new(path);
     let mut components = path.components().peekable();

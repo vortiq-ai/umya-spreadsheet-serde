@@ -29,7 +29,10 @@ use super::{
 };
 use crate::{
     drawing::charts::ChartText,
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
@@ -471,11 +474,11 @@ impl AreaChartSeries {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 // A self-closing element has no subtree, so nothing may descend into it.
-                // `<c:errBars>` is not parsed here, so its children surface in THIS loop,
-                // and one of them is `<c:val val="10"/>` - the same name the series uses
-                // for its values, but an attribute-only element. Descending into it sent
-                // `Values::set_attributes` looking for a `</c:val>` that never comes; it
-                // consumed the rest of the part and died on `Eof`.
+                // Only the children named below are modeled. Any other child with a subtree
+                // (`c:dPt`, `c:trendline`, `c:errBars`, `c:extLst`, ...) is skipped whole in
+                // the `_` arm: its descendants reuse the names of modeled fields (`c:idx`,
+                // `c:marker`, `c:spPr`, `c:invertIfNegative`, `c:explosion`, `c:bubble3D`,
+                // and `c:errBars`' attribute-only `c:val`) and would overwrite the series' own.
                 let is_empty_element = matches!(n, Event::Empty(_));
                 match local_name(e.name().into_inner()) {
                     b"tx" => {
@@ -561,7 +564,11 @@ impl AreaChartSeries {
                     obj.set_attributes(reader, e);
                     self.set_smooth(obj);
                 }
-                _ => (),
+                _ => {
+                    if !is_empty_element {
+                        skip_element(reader, e);
+                    }
+                }
             }
             },
             Event::End(ref e) => {

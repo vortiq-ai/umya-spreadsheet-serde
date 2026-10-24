@@ -31,7 +31,10 @@ use super::{
 };
 use crate::{
     Workbook,
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -518,7 +521,7 @@ impl CategoryAxis {
                     obj.set_attributes(reader, e, false);
                     self.set_major_gridlines(obj);
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match local_name(e.name().into_inner()) {
                 b"axId" => {

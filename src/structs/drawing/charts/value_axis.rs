@@ -31,6 +31,7 @@ use crate::{
     Workbook,
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     writer::driver::{
@@ -466,7 +467,7 @@ impl ValueAxis {
                     obj.set_attributes(reader, e, false);
                     self.set_major_gridlines(obj);
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match local_name(e.name().0) {
                 b"axId" => {

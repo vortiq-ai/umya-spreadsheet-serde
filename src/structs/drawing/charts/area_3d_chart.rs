@@ -21,6 +21,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     structs::Workbook,
@@ -179,7 +180,7 @@ impl Area3DChart {
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let _is_empty = matches!(n, Event::Empty(_));
+                let is_empty = matches!(n, Event::Empty(_));
                 match local_name(e.name().into_inner()) {
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
@@ -203,7 +204,11 @@ impl Area3DChart {
                         obj.set_attributes(reader, e);
                         self.add_axis_id(obj);
                     }
-                    _ => (),
+                    _ => {
+                        if !is_empty {
+                            skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {

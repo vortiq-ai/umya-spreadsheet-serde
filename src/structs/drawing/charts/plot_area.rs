@@ -39,7 +39,10 @@ use super::{
 };
 use crate::{
     drawing::charts::DateAxis,
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     structs::{
         ChartType,
         Workbook,
@@ -982,7 +985,7 @@ impl PlotArea {
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"plotArea" {

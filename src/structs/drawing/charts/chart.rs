@@ -24,7 +24,10 @@ use super::{
     View3D,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     structs::Workbook,
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
@@ -435,7 +438,7 @@ impl Chart {
                     self.legend.set_attributes(reader, e);
                     self.legend_present = true;
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match local_name(e.name().into_inner()) {
                 b"autoTitleDeleted" => {

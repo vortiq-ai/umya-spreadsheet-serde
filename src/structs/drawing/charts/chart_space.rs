@@ -25,7 +25,10 @@ use crate::{
         DRAWINGML_MAIN_NS,
         REL_OFC_NS,
     },
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     structs::{
         Workbook,
         office2010::drawing::charts::Style,
@@ -252,7 +255,7 @@ impl ChartSpace {
                     obj.set_attributes(reader, e);
                     self.set_shape_properties(obj);
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match local_name(e.name().into_inner()) {
                 b"date1904" => {
