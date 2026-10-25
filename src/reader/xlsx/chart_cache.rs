@@ -20,26 +20,30 @@ use quick_xml::{
     events::Event,
 };
 
+#[cfg(test)]
+use crate::structs::drawing::charts::note_work;
 use crate::{
     helper::address::unescape_sheet_name,
     reader::driver::{
-        get_attribute,
+        attribute_u32,
         local_name,
     },
     structs::{
         Cell,
         Workbook,
         drawing::charts::{
+            DenseSummary,
             IndexRun,
             IndexedRange,
             MAX_SOURCE_CACHE_POINTS,
             MAX_SOURCE_CACHE_TEXT_BYTES,
+            PointScratch,
             SourceCache,
             SourceException,
             StringReference,
             literal_text,
             parse_point_count,
-            read_point_value,
+            read_point_into,
             visit_deferred_indices,
             visit_string_references,
         },
@@ -193,6 +197,8 @@ struct DeferredSource {
     start:   u64,
     end:     u64,
     formula: String,
+    /// What reading the cache proved about its shape, when it proved density.
+    summary: Option<DenseSummary>,
 }
 
 struct ChartPart {
@@ -483,7 +489,32 @@ impl CacheShape {
     }
 }
 
+/// The shape of a cache whose reading proved positive counted density. It is
+/// what `deferred_shape` finds for that cache, without scanning it.
+fn dense_shape(
+    summary: DenseSummary,
+    #[cfg_attr(not(test), allow(unused_variables))] remaining_points: usize,
+) -> CacheShape {
+    CacheShape {
+        point_count:                Some(summary.point_count),
+        index_runs:                 Some(Vec::new()),
+        run_charge:                 0,
+        current_run_len:            0,
+        counted_dense:              true,
+        repeated:                   HashSet::new(),
+        // The scan charges the first run before it recognizes density, so a
+        // cache that cannot afford one records the rejection first.
+        #[cfg(test)]
+        shape_backing:              (remaining_points == 0).then_some(CandidateBacking {
+            index_runs: None,
+            exceptions: None,
+        }),
+    }
+}
+
 fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
+    #[cfg(test)]
+    note_work(|counts| counts.shape_scans += 1);
     let mut shape = CacheShape {
         point_count:                None,
         index_runs:                 Some(Vec::new()),
@@ -500,14 +531,13 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
     let mut reader = Reader::from_reader(std::io::Cursor::new(data));
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
+    let mut skipped = Vec::new();
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).unwrap() {
             Event::Start(e) => match local_name(e.name().into_inner()) {
                 b"pt" => {
-                    if let Some(index) =
-                        get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
-                    {
+                    if let Some(index) = attribute_u32(&e, b"idx") {
                         ascending &= previous.is_none_or(|prior| prior < index);
                         shape.record_index(index, &mut count, &mut previous);
                         if shape.run_charge > remaining_points {
@@ -516,7 +546,7 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
                             shape.observe_shape_rejection();
                         }
                     }
-                    let mut skipped = Vec::new();
+                    skipped.clear();
                     reader.read_to_end_into(e.name(), &mut skipped).unwrap();
                 }
                 b"ptCount" => shape.point_count = parse_point_count(&e),
@@ -524,9 +554,7 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
             },
             Event::Empty(e) => match local_name(e.name().into_inner()) {
                 b"pt" => {
-                    if let Some(index) =
-                        get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
-                    {
+                    if let Some(index) = attribute_u32(&e, b"idx") {
                         ascending &= previous.is_none_or(|prior| prior < index);
                         shape.record_index(index, &mut count, &mut previous);
                         if shape.run_charge > remaining_points {
@@ -573,36 +601,40 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
 
 fn reduce_deferred_cache(
     data: &[u8],
-    formula: String,
+    source: &DeferredSource,
     expected_points: Option<u64>,
     retain_shape: bool,
     remaining_points: usize,
     remaining_text_bytes: usize,
     mut display: impl FnMut(u32) -> Option<String>,
 ) -> DeferredReduction {
-    let mut shape = deferred_shape(data, remaining_points);
+    let mut shape = match source.summary {
+        Some(summary) => dense_shape(summary, remaining_points),
+        None => deferred_shape(data, remaining_points),
+    };
     let mut points = shape.run_charge;
     let mut text_bytes: usize = 0;
     let mut counting = shape.index_runs.is_none();
     let mut exceptions = Vec::new();
     #[cfg(test)]
     let mut exception_rejection_backing = None;
+    #[cfg(test)]
+    note_work(|counts| counts.decode_scans += 1);
     let mut reader = Reader::from_reader(std::io::Cursor::new(data));
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
+    let mut scratch = PointScratch::default();
     loop {
         buffer.clear();
         let event = reader.read_event_into(&mut buffer).unwrap();
         let point = match event {
             Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
-                let index = get_attribute(&e, b"idx").and_then(|index| index.parse().ok());
-                let value = read_point_value(&mut reader);
+                let index = attribute_u32(&e, b"idx");
+                let value = read_point_into(&mut reader, &mut scratch, true).value;
                 index.map(|index| (index, value))
             }
             Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
-                get_attribute(&e, b"idx")
-                    .and_then(|index| index.parse().ok())
-                    .map(|index| (index, None))
+                attribute_u32(&e, b"idx").map(|index| (index, None))
             }
             Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => break,
             Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
@@ -645,7 +677,7 @@ fn reduce_deferred_cache(
     DeferredReduction::Candidate {
         source: (!counting).then(|| {
             SourceCache::from_reduced(
-                formula,
+                source.formula.clone(),
                 shape.point_count,
                 shape.index_runs.unwrap_or_default(),
                 exceptions,
@@ -800,6 +832,7 @@ impl SourceCacheSession {
         &self,
         cache: &mut crate::drawing::charts::StringCache,
         span: Option<(u64, u64)>,
+        summary: Option<DenseSummary>,
     ) {
         let Some(key) = cache.source_key() else {
             return;
@@ -838,6 +871,7 @@ impl SourceCacheSession {
                         start,
                         end,
                         formula,
+                        summary,
                     },
                 );
             }
@@ -1034,8 +1068,9 @@ pub(crate) fn register_parsed_string_cache(
     session: &SourceCacheSession,
     cache: &mut crate::drawing::charts::StringCache,
     span: Option<(u64, u64)>,
+    summary: Option<DenseSummary>,
 ) {
-    session.register_parsed_source(cache, span);
+    session.register_parsed_source(cache, span, summary);
 }
 
 pub(crate) fn finalize_parsed_string_cache(
@@ -1199,7 +1234,7 @@ pub(crate) fn capture_chart_source_caches(
                         };
                         reduced = Some(reduce_deferred_cache(
                             data,
-                            source.formula.clone(),
+                            &source,
                             request.expected_points(),
                             retain_shape,
                             remaining_points,
@@ -1517,6 +1552,7 @@ mod tests {
                 start:   0,
                 end:     0,
                 formula: "stale".into(),
+                summary: None,
             },
         );
 
@@ -2568,5 +2604,880 @@ mod tests {
         assert_eq!(report.dropped_caches, 0);
         assert!(points <= MAX_SOURCE_CACHE_POINTS);
         assert!(bytes <= MAX_SOURCE_CACHE_TEXT_BYTES);
+    }
+
+    type Report = (usize, usize, usize, usize, usize, usize, usize, usize);
+    type Facts = (
+        Option<u32>,
+        Vec<(u32, u32)>,
+        Vec<(u32, Option<String>, Option<String>)>,
+    );
+
+    fn report_of(book: &Workbook) -> Report {
+        let report = book.chart_source_cache_report();
+        (
+            report.kept_caches,
+            report.kept_points,
+            report.kept_text_bytes,
+            report.dropped_caches,
+            report.reduced_caches,
+            report.over_cap_caches,
+            report.over_cap_points,
+            report.over_cap_text_bytes,
+        )
+    }
+
+    fn category_source(book: &Workbook) -> Option<&SourceCache> {
+        book.sheet(0).unwrap().chart_collection()[0]
+            .chart_space()
+            .chart()
+            .plot_area()
+            .chart_groups()
+            .next()
+            .unwrap()
+            .series()
+            .area_chart_series()[0]
+            .category_axis_data()
+            .unwrap()
+            .string_reference()
+            .unwrap()
+            .string_cache()
+            .source()
+    }
+
+    fn facts_of(source: &SourceCache) -> Facts {
+        (
+            source.point_count(),
+            source
+                .index_runs()
+                .iter()
+                .map(|run| (run.start(), run.len()))
+                .collect(),
+            source
+                .exceptions()
+                .iter()
+                .map(|exception| {
+                    (
+                        exception.index(),
+                        exception.value().map(str::to_string),
+                        exception.loaded_display().map(str::to_string),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn facts(
+        point_count: Option<u32>,
+        runs: &[(u32, u32)],
+        exceptions: &[(u32, Option<&str>, Option<&str>)],
+    ) -> Facts {
+        (
+            point_count,
+            runs.to_vec(),
+            exceptions
+                .iter()
+                .map(|(index, value, display)| {
+                    (
+                        *index,
+                        value.map(str::to_string),
+                        display.map(str::to_string),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn string_reference_xml(cache: &str) -> String {
+        format!("<c:strRef><c:f>Sheet1!$A$1</c:f>{cache}</c:strRef>")
+    }
+
+    fn descriptor_summary(
+        session: &SourceCacheSession,
+        reference: &StringReference,
+    ) -> Option<DenseSummary> {
+        let key = reference.string_cache().source_key().unwrap();
+        session.descriptors.borrow().get(&key).unwrap().summary
+    }
+
+    fn descriptor_span(session: &SourceCacheSession, reference: &StringReference) -> Vec<u8> {
+        let key = reference.string_cache().source_key().unwrap();
+        let descriptors = session.descriptors.borrow();
+        let source = descriptors.get(&key).unwrap();
+        let parts = session.parts.borrow();
+        parts[source.part].data.as_deref().unwrap()[source.range().unwrap()].to_vec()
+    }
+
+    /// The workbook after a deferred capture, with the work counters of the
+    /// parsing phase and of the whole capture.
+    fn capture_with_work(
+        cache: &str,
+        kept_points_before: usize,
+    ) -> (
+        Workbook,
+        SourceCacheSession,
+        crate::drawing::charts::WorkCounts,
+        crate::drawing::charts::WorkCounts,
+    ) {
+        let mut book =
+            crate::reader::xlsx::read_reader(Cursor::new(deferred_cache_package(cache)), false)
+                .unwrap();
+        let shared_strings = book.shared_string_table();
+        let stylesheet = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = lazy_provider();
+        note_work(|counts| *counts = crate::drawing::charts::WorkCounts::default());
+        crate::reader::xlsx::raw_to_deserialize_by_worksheet(
+            &mut book.sheet_collection_unchecked_mut()[0],
+            &shared_strings,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        let parsed = crate::drawing::charts::work_counts();
+        book.chart_source_cache_report_mut().kept_points = kept_points_before;
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        (book, session, parsed, crate::drawing::charts::work_counts())
+    }
+
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_string(),
+        }
+    }
+
+    fn unwrap_message(error: &dyn std::fmt::Debug) -> String {
+        format!("called `Result::unwrap()` on an `Err` value: {error:?}")
+    }
+
+    fn read_failure(bytes: Vec<u8>) -> String {
+        use std::panic::catch_unwind as unwind;
+        let outcome =
+            unwind(|| crate::reader::xlsx::read_reader(Cursor::new(bytes), true).map(|_| ()));
+        panic_message(outcome.expect_err("the read should fail"))
+    }
+
+    /// Replaces the first occurrence of `from` in a package part by `to`.
+    fn rewrite_package_bytes(bytes: &[u8], part: &str, from: &[u8], to: &[u8]) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let mut replaced = false;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            if name == part {
+                let at = data
+                    .windows(from.len())
+                    .position(|window| window == from)
+                    .unwrap();
+                data.splice(at..at + from.len(), to.iter().copied());
+                replaced = true;
+            }
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&data).unwrap();
+        }
+        assert!(replaced, "{part} was not rewritten");
+        output.finish().unwrap().into_inner()
+    }
+
+    // Every cache is parsed by the real first pass and then captured. The
+    // summary, the cached name, the kept source and the report are derived by
+    // hand from the shape rules (the chart's range is one cell showing "1"),
+    // and a summary must agree with a scan of the recorded span.
+    #[test]
+    fn first_pass_summaries_name_and_kept_sources_follow_the_cache_shape() {
+        const NO_REPORT: Report = (0, 0, 0, 1, 1, 0, 0, 0);
+        let pt =
+            |index: &str, value: &str| format!("<c:pt idx=\"{index}\"><c:v>{value}</c:v></c:pt>");
+        let cache = |body: &str| format!("<c:strCache>{body}</c:strCache>");
+        let two = format!("{}{}", pt("0", "1"), pt("1", "b"));
+        let cases: Vec<(
+            &str,
+            String,
+            Option<u32>,
+            Option<&str>,
+            Report,
+            Option<Facts>,
+        )> = vec![
+            (
+                "dense",
+                cache(&format!("<c:ptCount val=\"2\"/>{two}")),
+                Some(2),
+                Some("1"),
+                (1, 1, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[], &[(1, Some("b"), None)])),
+            ),
+            (
+                "ptCount mismatch",
+                cache(&format!("<c:ptCount val=\"3\"/>{two}")),
+                None,
+                Some("1"),
+                (1, 2, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(3), &[(0, 2)], &[(1, Some("b"), None)])),
+            ),
+            (
+                "no ptCount",
+                cache(&two),
+                None,
+                Some("1"),
+                (1, 2, 1, 0, 0, 0, 0, 0),
+                Some(facts(None, &[(0, 2)], &[(1, Some("b"), None)])),
+            ),
+            (
+                "two ptCounts",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/><c:ptCount val=\"2\"/>{two}"
+                )),
+                None,
+                Some("1"),
+                (1, 1, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[], &[(1, Some("b"), None)])),
+            ),
+            (
+                "invalid later ptCount after a valid one",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/>{two}<c:ptCount val=\"x\"/>"
+                )),
+                None,
+                Some("1"),
+                (1, 2, 1, 0, 0, 0, 0, 0),
+                Some(facts(None, &[(0, 2)], &[(1, Some("b"), None)])),
+            ),
+            (
+                "duplicated zero index at the end",
+                cache(&format!("<c:ptCount val=\"3\"/>{two}{}", pt("0", "1"))),
+                None,
+                Some("1"),
+                (1, 5, 5, 0, 0, 0, 0, 0),
+                Some(facts(
+                    Some(3),
+                    &[(0, 2), (0, 1)],
+                    &[
+                        (0, Some("1"), Some("1")),
+                        (1, Some("b"), None),
+                        (0, Some("1"), Some("1")),
+                    ],
+                )),
+            ),
+            (
+                "unparseable index",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/>{}{}",
+                    pt("0", "1"),
+                    pt("x", "b")
+                )),
+                None,
+                Some("1"),
+                (1, 1, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[(0, 1)], &[])),
+            ),
+            (
+                "index written as a character reference is not parsed",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/>{}{}",
+                    pt("0", "1"),
+                    pt("&#49;", "b")
+                )),
+                None,
+                Some("1"),
+                (1, 1, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[(0, 1)], &[])),
+            ),
+            (
+                "plus zero parses as zero but is not the cached name",
+                cache(&format!("<c:ptCount val=\"1\"/>{}", pt("+0", "1"))),
+                Some(1),
+                None,
+                NO_REPORT,
+                None,
+            ),
+            (
+                "double zero parses as zero but is not the cached name",
+                cache(&format!("<c:ptCount val=\"1\"/>{}", pt("00", "1"))),
+                Some(1),
+                None,
+                NO_REPORT,
+                None,
+            ),
+            (
+                "first duplicate index attribute wins even when unparseable",
+                cache(&format!(
+                    "<c:ptCount val=\"1\"/><c:pt idx=\"x\" idx=\"0\"><c:v>1</c:v></c:pt>"
+                )),
+                None,
+                None,
+                (1, 1, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(1), &[(0, 0)], &[])),
+            ),
+            (
+                "first duplicate index attribute wins when it is zero",
+                cache(&format!(
+                    "<c:ptCount val=\"1\"/><c:pt idx=\"0\" idx=\"x\"><c:v>1</c:v></c:pt>"
+                )),
+                Some(1),
+                Some("1"),
+                NO_REPORT,
+                None,
+            ),
+            (
+                "prefixed index attribute is not the index",
+                cache(&format!(
+                    "<c:ptCount val=\"1\"/><c:pt x:idx=\"0\"><c:v>1</c:v></c:pt>"
+                )),
+                None,
+                None,
+                (1, 1, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(1), &[(0, 0)], &[])),
+            ),
+            (
+                "index overflowing u32",
+                cache(&format!("<c:ptCount val=\"1\"/>{}", pt("4294967296", "1"))),
+                None,
+                None,
+                (1, 1, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(1), &[(0, 0)], &[])),
+            ),
+            (
+                "self-closing zero point",
+                cache("<c:ptCount val=\"1\"/><c:pt idx=\"0\"/>"),
+                Some(1),
+                None,
+                (1, 1, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(1), &[], &[(0, None, Some("1"))])),
+            ),
+            (
+                "gap",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/>{}{}",
+                    pt("0", "1"),
+                    pt("2", "b")
+                )),
+                None,
+                Some("1"),
+                (1, 3, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[(0, 1), (2, 1)], &[(2, Some("b"), None)])),
+            ),
+            (
+                "non-ascending",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/>{}{}",
+                    pt("1", "b"),
+                    pt("0", "1")
+                )),
+                None,
+                Some("1"),
+                (1, 3, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[(1, 1), (0, 1)], &[(1, Some("b"), None)])),
+            ),
+            (
+                "extension list carrying a point count",
+                cache(&format!(
+                    "<c:ptCount val=\"1\"/>{}<c:extLst><c:ext><c:ptCount \
+                     val=\"1\"/></c:ext></c:extLst>",
+                    pt("0", "1")
+                )),
+                None,
+                Some("1"),
+                NO_REPORT,
+                None,
+            ),
+            (
+                "extension list carrying a point",
+                cache(&format!(
+                    "<c:ptCount val=\"1\"/>{}<c:extLst><c:ext>{}</c:ext></c:extLst>",
+                    pt("0", "1"),
+                    pt("5", "z")
+                )),
+                None,
+                Some("1"),
+                (1, 3, 1, 0, 0, 0, 0, 0),
+                Some(facts(Some(1), &[(0, 1), (5, 1)], &[(5, Some("z"), None)])),
+            ),
+            (
+                "label and point count after a nested empty cache",
+                cache(&format!(
+                    "<c:ptCount val=\"2\"/><c:strCache/>{}<c:ptCount val=\"1\"/>",
+                    pt("0", "Q")
+                )),
+                None,
+                Some("Q"),
+                (1, 1, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(2), &[(0, 0)], &[])),
+            ),
+            (
+                "zero point count in a paired cache",
+                cache("<c:ptCount val=\"0\"/>"),
+                None,
+                None,
+                (1, 0, 0, 0, 0, 0, 0, 0),
+                Some(facts(Some(0), &[], &[])),
+            ),
+            (
+                "zero point count in a self-closing cache",
+                "<c:strCache/>".to_string(),
+                None,
+                None,
+                (1, 0, 0, 0, 0, 0, 0, 0),
+                Some(facts(None, &[], &[])),
+            ),
+        ];
+        for (name, cache, summary, cached, report, source) in cases {
+            let session = SourceCacheSession::deferred();
+            let reference = deferred_reference(&session, &string_reference_xml(&cache));
+            assert_eq!(
+                descriptor_summary(&session, &reference),
+                summary.map(|point_count| DenseSummary { point_count }),
+                "{name}: summary"
+            );
+            assert_eq!(reference.cached_value(), cached, "{name}: cached name");
+            if let Some(summary) = descriptor_summary(&session, &reference) {
+                let span = descriptor_span(&session, &reference);
+                let scanned = deferred_shape(&span, usize::MAX);
+                let dense = dense_shape(summary, usize::MAX);
+                assert_eq!(scanned.point_count, dense.point_count, "{name}: count");
+                assert_eq!(scanned.run_charge, dense.run_charge, "{name}: charge");
+                assert_eq!(scanned.counted_dense, dense.counted_dense, "{name}: dense");
+                assert_eq!(scanned.index_runs, dense.index_runs, "{name}: runs");
+                assert!(scanned.repeated.is_empty() && dense.repeated.is_empty());
+                assert_eq!(
+                    scanned.shape_backing, dense.shape_backing,
+                    "{name}: backing"
+                );
+            }
+            let (book, ..) = capture_with_work(&cache, 0);
+            assert_eq!(report_of(&book), report, "{name}: report");
+            assert_eq!(
+                category_source(&book).map(facts_of),
+                source,
+                "{name}: kept source"
+            );
+        }
+    }
+
+    // A point inside a point ends at the first point end, so the label after
+    // it is still the cached name and the cache takes the scanning path.
+    #[test]
+    fn nested_points_keep_the_cached_name_and_the_scanning_replay() {
+        for inner in ["c:pt", "x:pt"] {
+            let cache = format!(
+                "<c:strCache><c:ptCount val=\"2\"/><c:pt idx=\"1\"><{inner} \
+                 idx=\"7\"></{inner}><c:pt idx=\"0\"><c:v>X</c:v></c:pt></c:pt></c:strCache>"
+            );
+            let session = SourceCacheSession::deferred();
+            let reference = deferred_reference(&session, &string_reference_xml(&cache));
+            assert_eq!(reference.cached_value(), Some("X"), "{inner}");
+            assert_eq!(descriptor_summary(&session, &reference), None, "{inner}");
+            let (book, _, parsed, captured) = capture_with_work(&cache, 0);
+            assert_eq!(captured.shape_scans, 1, "{inner}");
+            assert_eq!(captured.decode_scans, 1, "{inner}");
+            assert_eq!(parsed.kept_values, 1, "{inner}");
+            assert_eq!(report_of(&book), (1, 3, 2, 0, 0, 0, 0, 0), "{inner}");
+            assert_eq!(
+                category_source(&book).map(facts_of),
+                Some(facts(
+                    Some(2),
+                    &[(1, 1)],
+                    &[(1, None, None), (0, Some("X"), Some("1"))],
+                )),
+                "{inner}"
+            );
+        }
+    }
+
+    // A malformed value in a nonzero point fails the read even when a later
+    // cache overwrites the one that holds it.
+    #[test]
+    fn overwritten_cache_fails_on_an_invalid_entity_in_a_nonzero_point() {
+        let cache = concat!(
+            "<c:strCache><c:ptCount val=\"2\"/>",
+            "<c:pt idx=\"0\"><c:v>first</c:v></c:pt>",
+            "<c:pt idx=\"1\"><c:v>&bogus;</c:v></c:pt></c:strCache>",
+            "<c:strCache/>"
+        );
+        assert_eq!(
+            read_failure(deferred_cache_package(cache)),
+            unwrap_message(&quick_xml::escape::unescape("&bogus;").unwrap_err())
+        );
+    }
+
+    #[test]
+    fn overwritten_cache_fails_on_invalid_utf8_in_a_nonzero_point() {
+        let cache = concat!(
+            "<c:strCache><c:ptCount val=\"2\"/>",
+            "<c:pt idx=\"0\"><c:v>first</c:v></c:pt>",
+            "<c:pt idx=\"1\"><c:v>aZZb</c:v></c:pt></c:strCache>",
+            "<c:strCache/>"
+        );
+        let bytes = rewrite_package_bytes(
+            &deferred_cache_package(cache),
+            "xl/charts/chart1.xml",
+            b"ZZ",
+            b"\xFF",
+        );
+        assert_eq!(
+            read_failure(bytes),
+            unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+                std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err()
+            ))
+        );
+    }
+
+    // The index of a paired point is converted to text as it always was, so
+    // invalid UTF-8 there fails with the failure of that conversion.
+    #[test]
+    fn paired_point_index_that_is_not_utf8_fails_as_the_attribute_conversion_does() {
+        let xml = b"<c:strCache><c:pt idx=\"\xFF\"><c:v>x</c:v></c:pt></c:strCache>";
+        let mut reader = Reader::from_reader(&xml[..]);
+        let mut buffer = Vec::new();
+        assert!(matches!(
+            reader.read_event_into(&mut buffer).unwrap(),
+            Event::Start(_)
+        ));
+        use std::panic::{
+            AssertUnwindSafe as Safe,
+            catch_unwind as unwind,
+        };
+        let outcome = unwind(Safe(|| {
+            crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, "F".into()).0
+        }));
+        assert_eq!(
+            panic_message(outcome.expect_err("the read should fail")),
+            unwrap_message(&String::from_utf8(vec![0xFF]).unwrap_err())
+        );
+    }
+
+    // The first pass never read the point count or the index of a
+    // self-closing point, so a cache that is overwritten keeps reading fine
+    // when those attributes are not UTF-8.
+    #[test]
+    fn overwritten_cache_with_attributes_that_are_not_utf8_still_reads() {
+        for (name, cache, placeholder) in [
+            (
+                "point count",
+                concat!(
+                    "<c:strCache><c:ptCount val=\"ZQZQ\"/>",
+                    "<c:pt idx=\"0\"><c:v>1</c:v></c:pt></c:strCache><c:strCache/>"
+                ),
+                &b"ZQZQ"[..],
+            ),
+            (
+                "self-closing point index",
+                concat!(
+                    "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"ZQZQ\"/></c:strCache>",
+                    "<c:strCache/>"
+                ),
+                &b"ZQZQ"[..],
+            ),
+        ] {
+            let bytes = rewrite_package_bytes(
+                &deferred_cache_package(cache),
+                "xl/charts/chart1.xml",
+                placeholder,
+                b"\xFF\xFE",
+            );
+            let book = crate::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
+            assert_eq!(report_of(&book), (1, 0, 0, 0, 0, 0, 0, 0), "{name}");
+        }
+    }
+
+    // A positive dense cache that cannot afford its first run still records
+    // the shape rejection before it is recognized as dense, and its first
+    // exception is then rejected from an empty backing.
+    #[test]
+    fn dense_cache_after_the_point_budget_is_spent_records_both_rejections() {
+        let cache = concat!(
+            "<c:strCache><c:ptCount val=\"1\"/>",
+            "<c:pt idx=\"0\"><c:v>L</c:v></c:pt></c:strCache>"
+        );
+        let (book, session, ..) = capture_with_work(cache, MAX_SOURCE_CACHE_POINTS);
+        assert_eq!(
+            session.rejection_backing().shape,
+            Some(CandidateBacking {
+                index_runs: None,
+                exceptions: None,
+            })
+        );
+        assert_eq!(
+            session.rejection_backing().exception,
+            Some(CandidateBacking {
+                index_runs: None,
+                exceptions: Some((0, 0)),
+            })
+        );
+        assert_eq!(
+            report_of(&book),
+            (0, MAX_SOURCE_CACHE_POINTS, 0, 1, 0, 1, 1, 2)
+        );
+        assert!(category_source(&book).is_none());
+    }
+
+    // The scans that run are those the shape needs: a proven dense cache is
+    // decoded once and never scanned for its shape.
+    #[test]
+    fn replay_scans_only_what_the_cache_shape_needs() {
+        let two = |first: &str, second: &str| {
+            format!(
+                "<c:strCache><c:ptCount val=\"2\"/><c:pt idx=\"{first}\"><c:v>b</c:v></c:pt><c:pt \
+                 idx=\"{second}\"><c:v>b</c:v></c:pt></c:strCache>"
+            )
+        };
+        // (cache, shape scans, index scans) of the replay; every point is
+        // decoded by exactly one decode scan.
+        for (name, cache, shapes, indices) in [
+            ("dense", two("0", "1"), 0, 0),
+            ("sparse ascending", two("0", "2"), 1, 0),
+            ("non-ascending", two("1", "0"), 1, 1),
+        ] {
+            let (_, _, parsed, captured) = capture_with_work(&cache, 0);
+            assert_eq!(
+                parsed.kept_values, 1,
+                "{name}: first pass keeps the zero value"
+            );
+            assert_eq!(
+                (parsed.shape_scans, parsed.decode_scans, parsed.index_scans),
+                (0, 0, 0),
+                "{name}: first pass scans nothing"
+            );
+            assert_eq!(captured.shape_scans, shapes, "{name}: shape scans");
+            assert_eq!(captured.index_scans, indices, "{name}: index scans");
+            assert_eq!(captured.decode_scans, 1, "{name}: decode scans");
+            assert_eq!(
+                captured.kept_values - parsed.kept_values,
+                2,
+                "{name}: each point decoded once"
+            );
+        }
+    }
+
+    // Each paired point at index zero materializes its value in the first
+    // pass, and the last one is the cached name.
+    #[test]
+    fn first_pass_materializes_one_value_per_zero_index_point() {
+        let session = SourceCacheSession::deferred();
+        note_work(|counts| *counts = crate::drawing::charts::WorkCounts::default());
+        let reference = deferred_reference(
+            &session,
+            &string_reference_xml(concat!(
+                "<c:strCache><c:ptCount val=\"5\"/>",
+                "<c:pt idx=\"0\"><c:v>first</c:v></c:pt>",
+                "<c:pt idx=\"1\"><c:v>x</c:v></c:pt>",
+                "<c:pt idx=\"2\"><c:v>y</c:v></c:pt>",
+                "<c:pt idx=\"0\"><c:v>second</c:v></c:pt>",
+                "<c:pt idx=\"3\"><c:v>z</c:v></c:pt></c:strCache>"
+            )),
+        );
+        assert_eq!(reference.cached_value(), Some("second"));
+        let counts = crate::drawing::charts::work_counts();
+        assert_eq!(counts.kept_values, 2);
+        assert_eq!(
+            (counts.shape_scans, counts.decode_scans, counts.index_scans),
+            (0, 0, 0)
+        );
+    }
+
+    fn labeled_cache(order: impl IntoIterator<Item = u32>, count: usize) -> String {
+        let mut cache = format!("<c:strCache><c:ptCount val=\"{count}\"/>");
+        for index in order {
+            cache.push_str(&format!(
+                "<c:pt idx=\"{index}\"><c:v>V{index:05}</c:v></c:pt>"
+            ));
+        }
+        cache.push_str("</c:strCache>");
+        cache
+    }
+
+    fn labels(len: u32) -> Vec<String> {
+        (0..len).map(|index| format!("V{index:05}")).collect()
+    }
+
+    // A buffer reused for every point grows by doubling, so one that never
+    // holds more than 32 bytes allocates at most 1 + log2(32) = 6 times.
+    const BUFFER_GROWTH: usize = 6;
+    // The parser's stacks of open elements grow to the nesting depth.
+    const PARSER_STATE: usize = 8;
+    const POINTS: u32 = 2000;
+    // A vector of 8-byte runs grown by doubling from 4: 1 + log2(2048 / 4).
+    const RUN_GROWTH: usize = 11;
+    // The set of seen indices doubles its table up to 2048 slots.
+    const SEEN_GROWTH: usize = 13;
+
+    fn first_event_consumed(xml: &[u8]) -> Reader<&[u8]> {
+        let mut reader = Reader::from_reader(xml);
+        let mut buffer = Vec::new();
+        assert!(matches!(
+            reader.read_event_into(&mut buffer).unwrap(),
+            Event::Start(_)
+        ));
+        reader
+    }
+
+    // First-pass allocations do not depend on the number of points: besides
+    // the kept name and source box, only the three reused buffers grow. Seen
+    // per point they were: the index text, the point reader's event buffer,
+    // the value text buffer, the decoded value and its copy.
+    #[test]
+    fn first_pass_allocates_nothing_per_point() {
+        let cache = labeled_cache(0..POINTS, POINTS as usize);
+        let mut reader = first_event_consumed(cache.as_bytes());
+        let formula = String::from("Sheet1!$A$1");
+        let ((name, _, summary), seen) = crate::test_alloc::observe(|| {
+            crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, formula)
+        });
+        assert_eq!(name.as_deref(), Some("V00000"));
+        assert_eq!(
+            summary,
+            Some(DenseSummary {
+                point_count: POINTS,
+            })
+        );
+        // Three reused buffers, the cached name, the source box, parser state.
+        let allowed = 3 * BUFFER_GROWTH + 1 + 1 + PARSER_STATE;
+        assert!(
+            seen.total() <= allowed,
+            "{seen:?} exceeds {allowed} for {POINTS} points"
+        );
+    }
+
+    // Discarded values that carry entities and character references are
+    // validated without building their text: the allowance is that of plain
+    // values, the kept name plus the fixed buffers.
+    #[test]
+    fn first_pass_validates_entity_values_without_allocating() {
+        let mut cache = format!("<c:strCache><c:ptCount val=\"{POINTS}\"/>");
+        for index in 0..POINTS {
+            cache.push_str(&format!(
+                "<c:pt idx=\"{index}\"><c:v>A&amp;B&#x42;&lt;&#67;</c:v></c:pt>"
+            ));
+        }
+        cache.push_str("</c:strCache>");
+        let mut reader = first_event_consumed(cache.as_bytes());
+        let formula = String::from("Sheet1!$A$1");
+        let ((name, _, summary), seen) = crate::test_alloc::observe(|| {
+            crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, formula)
+        });
+        assert_eq!(name.as_deref(), Some("A&BB<C"));
+        assert_eq!(
+            summary,
+            Some(DenseSummary {
+                point_count: POINTS,
+            })
+        );
+        // Three reused buffers, the cached name, the source box, parser state.
+        let allowed = 3 * BUFFER_GROWTH + 1 + 1 + PARSER_STATE;
+        assert!(
+            seen.total() <= allowed,
+            "{seen:?} exceeds {allowed} for {POINTS} points"
+        );
+    }
+
+    // The shape scan keeps one run per gap, which grows one vector, and
+    // allocates nothing else per point. It used to allocate the index text and
+    // a skip buffer for every point.
+    #[test]
+    fn shape_scan_allocates_only_its_runs() {
+        let cache = labeled_cache((0..POINTS).map(|index| index * 2), POINTS as usize);
+        let (shape, seen) =
+            crate::test_alloc::observe(|| deferred_shape(cache.as_bytes(), usize::MAX));
+        assert_eq!(shape.index_runs.as_ref().unwrap().len(), POINTS as usize);
+        assert_eq!(shape.run_charge, POINTS as usize);
+        // Event and skip buffers, the runs, the point count text, parser state.
+        let allowed = 2 * BUFFER_GROWTH + RUN_GROWTH + 1 + PARSER_STATE;
+        assert!(
+            seen.total() <= allowed,
+            "{seen:?} exceeds {allowed} for {POINTS} points"
+        );
+    }
+
+    #[test]
+    fn indices_scan_allocates_nothing_per_point() {
+        let cache = labeled_cache((0..POINTS).rev(), POINTS as usize);
+        let mut visited = 0u32;
+        let ((), seen) = crate::test_alloc::observe(|| {
+            visit_deferred_indices(cache.as_bytes(), |_| visited += 1);
+        });
+        assert_eq!(visited, POINTS);
+        // Event and skip buffers, parser state.
+        let allowed = 2 * BUFFER_GROWTH + PARSER_STATE;
+        assert!(
+            seen.total() <= allowed,
+            "{seen:?} exceeds {allowed} for {POINTS} points"
+        );
+    }
+
+    // Replay allocates, per point, the decoded value and the display text it
+    // compares it with, and nothing else that grows with the cache. Each
+    // scan adds only its reused buffers and what it keeps.
+    #[test]
+    fn replay_allocates_only_values_displays_and_kept_runs() {
+        let displays = labels(2 * POINTS);
+        let per_point = 2 * POINTS as usize;
+        let state = 3 * BUFFER_GROWTH + PARSER_STATE;
+        let shape = 2 * BUFFER_GROWTH + RUN_GROWTH + 1 + PARSER_STATE;
+        let indices = 2 * BUFFER_GROWTH + SEEN_GROWTH + PARSER_STATE;
+        // One shrink of the kept runs and one copy of the formula.
+        let shrink = 2;
+        let dense_cache = labeled_cache(0..POINTS, POINTS as usize);
+        let sparse_cache = labeled_cache((0..POINTS).map(|index| index * 2), POINTS as usize);
+        let reverse_cache = labeled_cache((0..POINTS).rev(), POINTS as usize);
+        let cases = [
+            (
+                "dense",
+                &dense_cache,
+                Some(DenseSummary {
+                    point_count: POINTS,
+                }),
+                per_point + state,
+            ),
+            (
+                "sparse ascending",
+                &sparse_cache,
+                None,
+                per_point + state + shape + shrink,
+            ),
+            (
+                "non-ascending",
+                &reverse_cache,
+                None,
+                per_point + state + shape + indices + shrink,
+            ),
+        ];
+        for (name, cache, summary, allowed) in cases {
+            let source = DeferredSource {
+                part: 0,
+                start: 0,
+                end: 0,
+                formula: String::from("F"),
+                summary,
+            };
+            let (reduced, seen) = crate::test_alloc::observe(|| {
+                reduce_deferred_cache(
+                    cache.as_bytes(),
+                    &source,
+                    Some(u64::from(POINTS)),
+                    false,
+                    usize::MAX,
+                    usize::MAX,
+                    |index| Some(displays[index as usize].clone()),
+                )
+            });
+            assert_eq!(
+                matches!(reduced, DeferredReduction::Reduced),
+                summary.is_some(),
+                "{name}"
+            );
+            assert!(
+                seen.total() >= per_point,
+                "{name}: {seen:?} misses the per-point values and displays"
+            );
+            assert!(
+                seen.total() <= allowed,
+                "{name}: {seen:?} exceeds {allowed} for {POINTS} points"
+            );
+        }
     }
 }

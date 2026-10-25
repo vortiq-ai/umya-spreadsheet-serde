@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     io,
     path::{
         Component,
@@ -221,4 +222,57 @@ pub(crate) fn get_attribute(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -
 #[inline]
 pub(crate) fn get_attribute_value(attr: &Attribute) -> Result<String, FromUtf8Error> {
     String::from_utf8(attr.value.to_vec())
+}
+
+/// The raw value of the first attribute whose key is exactly `key`, borrowed
+/// from the element. This selects the attribute `get_attribute` selects for a
+/// key without a prefix, which never takes its local-name fallback.
+#[inline]
+pub(crate) fn raw_attribute<'a>(
+    e: &'a quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Option<Cow<'a, [u8]>> {
+    e.attributes()
+        .with_checks(false)
+        .find_map(|attr| match attr {
+            Ok(attr) if attr.key.into_inner() == key => Some(attr.value),
+            _ => None,
+        })
+}
+
+/// `get_attribute` for a key without a prefix, borrowed. Entities are not
+/// unescaped. An attribute that is not valid UTF-8 fails inside
+/// `get_attribute`, so the failure is the one that function has always raised.
+#[inline]
+pub(crate) fn attribute_str<'a>(
+    e: &'a quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Option<Cow<'a, str>> {
+    match raw_attribute(e, key)? {
+        Cow::Borrowed(raw) => match std::str::from_utf8(raw) {
+            Ok(text) => Some(Cow::Borrowed(text)),
+            Err(_) => unreachable!("{:?}", get_attribute(e, key)),
+        },
+        Cow::Owned(raw) => Some(Cow::Owned(String::from_utf8(raw).unwrap())),
+    }
+}
+
+/// `get_attribute(e, key).and_then(|value| value.parse().ok())` for a key
+/// without a prefix, without allocating.
+#[inline]
+pub(crate) fn attribute_u32(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<u32> {
+    attribute_str(e, key)?.parse().ok()
+}
+
+/// Like `attribute_u32`, for an attribute the readers used to ignore: one that
+/// is not valid UTF-8 is reported to the caller instead of failing.
+#[inline]
+pub(crate) fn try_attribute_u32(
+    e: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Result<Option<u32>, std::str::Utf8Error> {
+    let Some(raw) = raw_attribute(e, key) else {
+        return Ok(None);
+    };
+    Ok(std::str::from_utf8(&raw)?.parse().ok())
 }

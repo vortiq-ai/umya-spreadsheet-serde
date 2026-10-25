@@ -21,6 +21,60 @@ pub(crate) fn unescape_xml_text(e: &quick_xml::events::BytesText<'_>) -> String 
         .into_owned()
 }
 
+/// Runs the checks `unescape_xml_text` makes, without building its result.
+/// Text whose references all check out here is accepted without allocating;
+/// any other text is handed to `unescape`, which raises its own error.
+pub(crate) fn validate_xml_text(e: &quick_xml::events::BytesText<'_>) {
+    let decoded = e.decode().unwrap();
+    if !references_are_valid(decoded.as_ref()) {
+        quick_xml::escape::unescape(decoded.as_ref()).unwrap();
+    }
+}
+
+/// Whether `unescape` accepts `raw`: every `&` starts a reference ended by a
+/// `;` with no `&` between, naming a predefined entity or a valid character
+/// reference.
+fn references_are_valid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut from = 0;
+    while let Some(start) = bytes[from..].iter().position(|&byte| byte == b'&') {
+        let start = from + start;
+        let Some(end) = bytes[start + 1..]
+            .iter()
+            .position(|&byte| byte == b'&' || byte == b';')
+        else {
+            return false;
+        };
+        let end = start + 1 + end;
+        if bytes[end] != b';' {
+            return false;
+        }
+        let name = &raw[start + 1..end];
+        let valid = match name.strip_prefix('#') {
+            Some(number) => character_reference_is_valid(number),
+            None => quick_xml::escape::resolve_predefined_entity(name).is_some(),
+        };
+        if !valid {
+            return false;
+        }
+        from = end + 1;
+    }
+    true
+}
+
+/// The number of a character reference: decimal, or hexadecimal after `x`,
+/// unsigned, not zero, and a scalar value.
+fn character_reference_is_valid(number: &str) -> bool {
+    let (digits, radix) = match number.strip_prefix('x') {
+        Some(hex) => (hex, 16),
+        None => (number, 10),
+    };
+    if matches!(digits.as_bytes().first(), Some(b'+' | b'-')) {
+        return false;
+    }
+    u32::from_str_radix(digits, radix).is_ok_and(|code| code != 0 && char::from_u32(code).is_some())
+}
+
 /// A macro that implements the `From` trait for converting from one error type
 /// to another.
 ///

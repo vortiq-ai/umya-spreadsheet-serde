@@ -237,6 +237,8 @@ extern crate sha2;
 pub mod helper;
 pub mod reader;
 pub mod structs;
+#[cfg(test)]
+mod test_alloc;
 pub mod traits;
 mod version;
 pub mod writer;

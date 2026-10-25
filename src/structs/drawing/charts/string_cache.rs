@@ -15,6 +15,39 @@ thread_local! {
         const { StateCell::new(false) };
     static DEFERRED_HYDRATION_SOURCE_BOXES: StateCell<usize> =
         const { StateCell::new(0) };
+    static WORK_COUNTS: StateCell<WorkCounts> = const {
+        StateCell::new(WorkCounts {
+            shape_scans:  0,
+            decode_scans: 0,
+            index_scans:  0,
+            kept_values:  0,
+        })
+    };
+}
+
+/// How often the cache readers did each kind of per-cache work on this thread.
+/// Each counter sits at the site that does the work.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorkCounts {
+    pub(crate) shape_scans:  usize,
+    pub(crate) decode_scans: usize,
+    pub(crate) index_scans:  usize,
+    pub(crate) kept_values:  usize,
+}
+
+#[cfg(test)]
+pub(crate) fn work_counts() -> WorkCounts {
+    WORK_COUNTS.with(StateCell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn note_work(update: impl FnOnce(&mut WorkCounts)) {
+    WORK_COUNTS.with(|counts| {
+        let mut value = counts.get();
+        update(&mut value);
+        counts.set(value);
+    });
 }
 
 #[cfg(test)]
@@ -63,10 +96,19 @@ use crate::{
         Formula,
         NumericValue,
     },
-    helper::address::unescape_sheet_name,
+    helper::{
+        address::unescape_sheet_name,
+        utils::{
+            unescape_xml_text,
+            validate_xml_text,
+        },
+    },
     reader::driver::{
+        attribute_str,
+        attribute_u32,
         get_attribute,
         local_name,
+        try_attribute_u32,
         xml_read_loop,
     },
     structs::{
@@ -290,25 +332,47 @@ impl StringCache {
 
     /// Consumes a deferred cache while retaining only the lexical cached name.
     /// The source points are replayed from its recorded XML span after the
-    /// workbook has established canonical admission order.
+    /// workbook has established canonical admission order. Every point is read
+    /// with the point grammar of the replay, so a malformed value fails here
+    /// whether or not the cache survives. The summary is `Some` only when the
+    /// cache is provably dense and counted by one `ptCount`.
     pub(crate) fn set_deferred_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         formula: String,
-    ) -> (Option<String>, Self) {
+    ) -> (Option<String>, Self, Option<DenseSummary>) {
         let mut cached_value = None;
+        let mut proof = DenseProof::default();
+        let mut scratch = PointScratch::default();
         let mut buffer = Vec::new();
         loop {
             buffer.clear();
             match reader.read_event_into(&mut buffer).unwrap() {
-                Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
-                    let index = get_attribute(&e, b"idx");
-                    let value = read_point_value(reader);
-                    if index.as_deref() == Some("0") {
-                        cached_value = Some(value.unwrap_or_default());
+                Event::Start(e) => match local_name(e.name().into_inner()) {
+                    b"pt" => {
+                        let index = attribute_str(&e, b"idx");
+                        let zero = index.as_deref() == Some("0");
+                        proof.point(index.as_deref().and_then(|index| index.parse().ok()));
+                        let point = read_point_into(reader, &mut scratch, zero);
+                        proof.broken |= !point.flat;
+                        if zero {
+                            cached_value = Some(point.value.unwrap_or_default());
+                        }
                     }
-                }
+                    b"ptCount" => proof.count(&e),
+                    b"strCache" => proof.broken = true,
+                    _ => (),
+                },
+                Event::Empty(e) => match local_name(e.name().into_inner()) {
+                    b"pt" => match try_attribute_u32(&e, b"idx") {
+                        Ok(index) => proof.point(index),
+                        Err(_) => proof.broken = true,
+                    },
+                    b"ptCount" => proof.count(&e),
+                    b"strCache" => proof.broken = true,
+                    _ => (),
+                },
                 Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => {
-                    return (cached_value, Self::empty_source(formula));
+                    return (cached_value, Self::empty_source(formula), proof.finish());
                 }
                 Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
                 _ => (),
@@ -521,26 +585,145 @@ pub(crate) fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> O
     );
 }
 
+/// What reading a deferred cache proved about its shape: positive density
+/// counted by exactly one `ptCount`. Points are at indices `0..point_count`,
+/// each stored once and in order. A cache with any other shape has no summary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DenseSummary {
+    pub(crate) point_count: u32,
+}
+
+/// Accumulates the evidence for a `DenseSummary` while the cache is read.
+/// Anything unusual makes the cache unproven, never an error.
+#[derive(Default)]
+struct DenseProof {
+    ordinal:     u64,
+    counts:      usize,
+    point_count: Option<u32>,
+    broken:      bool,
+}
+
+impl DenseProof {
+    fn point(&mut self, index: Option<u32>) {
+        if index.is_some_and(|index| u64::from(index) == self.ordinal) {
+            self.ordinal += 1;
+        } else {
+            self.broken = true;
+        }
+    }
+
+    fn count(&mut self, e: &BytesStart) {
+        self.counts += 1;
+        match try_attribute_u32(e, b"val") {
+            Ok(count) => self.point_count = count,
+            Err(_) => self.broken = true,
+        }
+    }
+
+    fn finish(self) -> Option<DenseSummary> {
+        let count = self.point_count?;
+        (!self.broken && self.counts == 1 && count > 0 && u64::from(count) == self.ordinal)
+            .then_some(DenseSummary { point_count: count })
+    }
+}
+
+/// The buffers a scan reuses for every point, so that scanning a cache
+/// allocates for what it keeps and not for each point.
+#[derive(Default)]
+pub(crate) struct PointScratch {
+    events: Vec<u8>,
+    text:   Vec<u8>,
+}
+
+#[cfg(test)]
+impl PointScratch {
+    pub(crate) fn text_capacity(&self) -> usize {
+        self.text.capacity()
+    }
+}
+
+/// A point read by `read_point_into`. `flat` is false when the point held an
+/// element other than `c:v`, which makes the span the point covers
+/// ambiguous between scanners.
+pub(crate) struct PointRead {
+    pub(crate) value: Option<String>,
+    pub(crate) flat:  bool,
+}
+
+/// `read_point_value` with reusable buffers. Every `c:v` is read and checked
+/// exactly as `read_point_value` does; `value` is built only when `keep` is
+/// set, and is then the text `read_point_value` returns.
+pub(crate) fn read_point_into<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    scratch: &mut PointScratch,
+    keep: bool,
+) -> PointRead {
+    let mut value = None;
+    let mut flat = true;
+    loop {
+        scratch.events.clear();
+        let event = match reader.read_event_into(&mut scratch.events) {
+            Ok(event) => event,
+            Err(e) => panic!("Error at position {}: {e:?}", reader.buffer_position()),
+        };
+        match event {
+            Event::Start(ref e) => {
+                if local_name(e.name().into_inner()) == b"v" {
+                    // `read_text_into` appends to its buffer.
+                    scratch.text.clear();
+                    let text = reader.read_text_into(e.name(), &mut scratch.text).unwrap();
+                    if keep {
+                        #[cfg(test)]
+                        note_work(|counts| counts.kept_values += 1);
+                        value = Some(unescape_xml_text(&text));
+                    } else {
+                        validate_xml_text(&text);
+                    }
+                } else {
+                    flat = false;
+                }
+            }
+            Event::Empty(ref e) => {
+                if local_name(e.name().into_inner()) == b"v" {
+                    if keep {
+                        value = Some(String::new());
+                    }
+                } else {
+                    flat = false;
+                }
+            }
+            Event::End(ref e) => {
+                if local_name(e.name().0) == b"pt" {
+                    return PointRead { value, flat };
+                }
+            }
+            Event::Eof => panic!("Error: Could not find {} end element", "c:pt"),
+            _ => (),
+        }
+    }
+}
+
 /// Visit the indices from a complete `c:strCache` XML element without
 /// materializing its points. This is also the lazy raw-sheet request scanner.
 pub(crate) fn visit_deferred_indices(data: &[u8], mut visit: impl FnMut(u32)) {
     let mut reader = Reader::from_reader(Cursor::new(data));
     reader.config_mut().trim_text(true);
+    #[cfg(test)]
+    note_work(|counts| counts.index_scans += 1);
     let mut buffer = Vec::new();
+    let mut skipped = Vec::new();
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).unwrap() {
             Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
-                if let Some(index) = get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
-                {
+                if let Some(index) = attribute_u32(&e, b"idx") {
                     visit(index);
                 }
-                let mut skipped = Vec::new();
+                skipped.clear();
                 reader.read_to_end_into(e.name(), &mut skipped).unwrap();
             }
             Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
-                if let Some(index) = get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
-                {
+                if let Some(index) = attribute_u32(&e, b"idx") {
                     visit(index);
                 }
             }
@@ -640,5 +823,273 @@ mod tests {
         value.as_object_mut().unwrap().remove("cached_value");
         let restored: StringReference = serde_json::from_value(value).unwrap();
         assert_eq!(restored.cached_value(), None);
+    }
+
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_string(),
+        }
+    }
+
+    fn unwrap_message(error: &dyn std::fmt::Debug) -> String {
+        format!("called `Result::unwrap()` on an `Err` value: {error:?}")
+    }
+
+    /// A reader positioned just after the start tag of the first element.
+    fn after_start(xml: &[u8], trim: bool) -> Reader<&[u8]> {
+        let mut reader = Reader::from_reader(xml);
+        reader.config_mut().trim_text(trim);
+        let mut buf = Vec::new();
+        assert!(matches!(
+            reader.read_event_into(&mut buf).unwrap(),
+            Event::Start(_)
+        ));
+        reader
+    }
+
+    fn catch<T>(operation: impl FnOnce() -> T) -> Result<T, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).map_err(panic_message)
+    }
+
+    enum Expect {
+        Value(Option<&'static str>),
+        Panic(String),
+    }
+
+    // The value decoder returns the text `read_point_value` returns, and fails
+    // with the payload it fails with, for every shape of point content. The
+    // expectations are specified by hand and by the XML escaping and encoding
+    // rules; the retained reader is the differential oracle for the trimming
+    // reader configuration.
+    #[test]
+    fn point_value_decoder_matches_the_retained_reader_for_every_content_shape() {
+        let long = "L".repeat(500);
+        let long_then_short = format!("<c:pt idx=\"0\"><c:v>{long}</c:v><c:v>s</c:v></c:pt>");
+        let cases: Vec<(&str, Vec<u8>, Expect)> = vec![
+            (
+                "plain",
+                b"<c:pt idx=\"0\"><c:v>a</c:v></c:pt>".to_vec(),
+                Expect::Value(Some("a")),
+            ),
+            (
+                "repeated value, last wins",
+                b"<c:pt idx=\"0\"><c:v>first</c:v><c:v>second</c:v></c:pt>".to_vec(),
+                Expect::Value(Some("second")),
+            ),
+            (
+                "invalid earlier value still fails",
+                b"<c:pt idx=\"0\"><c:v>&bogus;</c:v><c:v>ok</c:v></c:pt>".to_vec(),
+                Expect::Panic(unwrap_message(
+                    &quick_xml::escape::unescape("&bogus;").unwrap_err(),
+                )),
+            ),
+            (
+                "value prefix differs from point prefix",
+                b"<c:pt idx=\"0\"><x:v>val</x:v></c:pt>".to_vec(),
+                Expect::Value(Some("val")),
+            ),
+            (
+                "nested element of the value name stays in the text",
+                b"<c:pt idx=\"0\"><x:v>a<x:v>b</x:v>c</x:v></c:pt>".to_vec(),
+                Expect::Value(Some("a<x:v>b</x:v>c")),
+            ),
+            (
+                "surrounding whitespace",
+                b"<c:pt idx=\"0\"><c:v>  spaced  </c:v></c:pt>".to_vec(),
+                Expect::Value(Some("  spaced  ")),
+            ),
+            (
+                "unicode",
+                "<c:pt idx=\"0\"><c:v>Zo\u{eb} \u{5317}\u{4eac} \u{1f600}</c:v></c:pt>"
+                    .as_bytes()
+                    .to_vec(),
+                Expect::Value(Some("Zo\u{eb} \u{5317}\u{4eac} \u{1f600}")),
+            ),
+            (
+                "entities",
+                b"<c:pt idx=\"0\"><c:v>a &amp; b &lt;c&gt; &#65;&#x42;</c:v></c:pt>".to_vec(),
+                Expect::Value(Some("a & b <c> AB")),
+            ),
+            (
+                "raw markup inside the value",
+                b"<c:pt idx=\"0\"><c:v>a<b>c</b>d</c:v></c:pt>".to_vec(),
+                Expect::Value(Some("a<b>c</b>d")),
+            ),
+            (
+                "cdata inside the value keeps its markers",
+                b"<c:pt idx=\"0\"><c:v>x<![CDATA[<y>&amp;]]>z</c:v></c:pt>".to_vec(),
+                Expect::Value(Some("x<![CDATA[<y>&]]>z")),
+            ),
+            (
+                "missing value",
+                b"<c:pt idx=\"0\"></c:pt>".to_vec(),
+                Expect::Value(None),
+            ),
+            (
+                "paired empty value",
+                b"<c:pt idx=\"0\"><c:v></c:v></c:pt>".to_vec(),
+                Expect::Value(Some("")),
+            ),
+            (
+                "self-closing value",
+                b"<c:pt idx=\"0\"><c:v/></c:pt>".to_vec(),
+                Expect::Value(Some("")),
+            ),
+            (
+                "long value then a short replacement",
+                long_then_short.into_bytes(),
+                Expect::Value(Some("s")),
+            ),
+            (
+                "invalid entity",
+                b"<c:pt idx=\"0\"><c:v>&bogus;</c:v></c:pt>".to_vec(),
+                Expect::Panic(unwrap_message(
+                    &quick_xml::escape::unescape("&bogus;").unwrap_err(),
+                )),
+            ),
+            (
+                "invalid utf-8",
+                b"<c:pt idx=\"0\"><c:v>a\xFFb</c:v></c:pt>".to_vec(),
+                Expect::Panic(unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+                    std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err(),
+                ))),
+            ),
+            (
+                "point truncated after its value",
+                b"<c:pt idx=\"0\"><c:v>a</c:v>".to_vec(),
+                Expect::Panic("Error: Could not find c:pt end element".into()),
+            ),
+        ];
+        for (name, xml, expect) in cases {
+            let old = catch(|| read_point_value(&mut after_start(&xml, false)));
+            let kept = catch(|| {
+                read_point_into(
+                    &mut after_start(&xml, false),
+                    &mut PointScratch::default(),
+                    true,
+                )
+                .value
+            });
+            let discarded = catch(|| {
+                read_point_into(
+                    &mut after_start(&xml, false),
+                    &mut PointScratch::default(),
+                    false,
+                )
+                .value
+            });
+            match expect {
+                Expect::Value(value) => {
+                    assert_eq!(
+                        old,
+                        Ok(value.map(str::to_string)),
+                        "{name}: retained reader"
+                    );
+                    assert_eq!(kept, old, "{name}: kept value");
+                    assert_eq!(discarded, Ok(None), "{name}: discarded value");
+                }
+                Expect::Panic(message) => {
+                    assert_eq!(old, Err(message.clone()), "{name}: retained reader");
+                    assert_eq!(kept, old, "{name}: kept failure");
+                    assert_eq!(discarded, old.map(|_| None), "{name}: discarded failure");
+                }
+            }
+            let trimmed_old = catch(|| read_point_value(&mut after_start(&xml, true)));
+            let trimmed_new = catch(|| {
+                read_point_into(
+                    &mut after_start(&xml, true),
+                    &mut PointScratch::default(),
+                    true,
+                )
+                .value
+            });
+            assert_eq!(trimmed_new, trimmed_old, "{name}: trimming reader");
+        }
+    }
+
+    // Failures of the point reader and of the value reader keep their exact
+    // messages. Positions are byte offsets after the offending tag: the
+    // points are 14 bytes of start tag, 5 of `<c:v>`, 1 of text and 6 of
+    // `</c:v>` (26), followed by the 6-byte `</c:z>` (32) or 7-byte
+    // `</x:pt>` (33). A value cut off by the end of input misses the end tag
+    // of its own `c:v`.
+    #[test]
+    fn point_value_decoder_keeps_event_and_value_failures() {
+        for (name, xml, message) in [
+            (
+                "value never closed",
+                &b"<c:pt idx=\"0\"><c:v>abc"[..],
+                "called `Result::unwrap()` on an `Err` value: IllFormed(MissingEndTag(\"c:v\"))",
+            ),
+            (
+                "unmatched end event",
+                &b"<c:pt idx=\"0\"><c:v>a</c:v></c:z>"[..],
+                "Error at position 32: IllFormed(MismatchedEndTag { expected: \"c:pt\", found: \
+                 \"c:z\" })",
+            ),
+            (
+                "mismatched point end",
+                &b"<c:pt idx=\"0\"><c:v>a</c:v></x:pt>"[..],
+                "Error at position 33: IllFormed(MismatchedEndTag { expected: \"c:pt\", found: \
+                 \"x:pt\" })",
+            ),
+        ] {
+            let old = catch(|| read_point_value(&mut after_start(xml, false)));
+            let new = catch(|| {
+                read_point_into(
+                    &mut after_start(xml, false),
+                    &mut PointScratch::default(),
+                    true,
+                )
+                .value
+            });
+            assert_eq!(old, Err(message.to_string()), "{name}: retained reader");
+            assert_eq!(new, Err(message.to_string()), "{name}: point decoder");
+        }
+    }
+
+    // The text buffer is cleared before every value, so its capacity follows
+    // the longest value and not the total text of the cache.
+    #[test]
+    fn point_value_scratch_follows_the_longest_value_not_the_total() {
+        let longest = 1500;
+        let mut cache = String::from("<c:strCache>");
+        for index in 0..3000 {
+            let value = if index == 1000 {
+                "M".repeat(longest)
+            } else {
+                "abcdefghij".to_string()
+            };
+            cache.push_str(&format!("<c:pt idx=\"{index}\"><c:v>{value}</c:v></c:pt>"));
+        }
+        cache.push_str("</c:strCache>");
+        let mut reader = Reader::from_reader(cache.as_bytes());
+        let mut buffer = Vec::new();
+        let mut scratch = PointScratch::default();
+        let mut values = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer).unwrap() {
+                Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
+                    values.push(
+                        read_point_into(&mut reader, &mut scratch, true)
+                            .value
+                            .unwrap(),
+                    );
+                }
+                Event::Eof => break,
+                _ => (),
+            }
+        }
+        assert_eq!(values.len(), 3000);
+        assert_eq!(values[1000], "M".repeat(longest));
+        assert_eq!(values[1001], "abcdefghij");
+        assert_eq!(values[2999], "abcdefghij");
+        let total: usize = values.iter().map(String::len).sum();
+        assert_eq!(total, 2999 * 10 + longest);
+        // Growing a buffer at most doubles it past the longest value.
+        assert!(scratch.text_capacity() >= longest);
+        assert!(scratch.text_capacity() <= 2 * longest);
     }
 }

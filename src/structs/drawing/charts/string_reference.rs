@@ -109,7 +109,8 @@ impl StringReference {
                 Event::Start(e) => match local_name(e.name().into_inner()) {
                     b"f" => self.formula.set_attributes(reader, &e),
                     b"strCache" if session.is_deferred() => {
-                        (self.cached_value, self.string_cache) =
+                        let summary;
+                        (self.cached_value, self.string_cache, summary) =
                             StringCache::set_deferred_attributes(
                                 reader,
                                 self.formula.address_str(),
@@ -118,12 +119,13 @@ impl StringReference {
                             session,
                             &mut self.string_cache,
                             Some((start, reader.buffer_position())),
+                            summary,
                         );
                     }
                     b"strCache" => {
                         (self.cached_value, self.string_cache) =
                             StringCache::set_attributes(reader, &e, self.formula.address_str());
-                        register_parsed_string_cache(session, &mut self.string_cache, None);
+                        register_parsed_string_cache(session, &mut self.string_cache, None, None);
                     }
                     _ => (),
                 },
@@ -135,6 +137,7 @@ impl StringReference {
                         session
                             .is_deferred()
                             .then_some((start, reader.buffer_position())),
+                        None,
                     );
                 }
                 Event::End(e) if local_name(e.name().into_inner()) == b"strRef" => {
