@@ -1,4 +1,6 @@
 // c:strCache
+#[cfg(test)]
+use std::cell::Cell as StateCell;
 use std::{
     collections::{
         HashMap,
@@ -6,6 +8,44 @@ use std::{
     },
     io::Cursor,
 };
+
+#[cfg(test)]
+thread_local! {
+    static OBSERVE_DEFERRED_HYDRATION_SOURCE_BOXES: StateCell<bool> =
+        const { StateCell::new(false) };
+    static DEFERRED_HYDRATION_SOURCE_BOXES: StateCell<usize> =
+        const { StateCell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) struct DeferredHydrationSourceBoxObservation;
+
+#[cfg(test)]
+impl DeferredHydrationSourceBoxObservation {
+    pub(crate) fn begin() -> Self {
+        OBSERVE_DEFERRED_HYDRATION_SOURCE_BOXES.with(|observe| observe.set(true));
+        DEFERRED_HYDRATION_SOURCE_BOXES.with(|count| count.set(0));
+        Self
+    }
+
+    pub(crate) fn count() -> usize {
+        DEFERRED_HYDRATION_SOURCE_BOXES.with(StateCell::get)
+    }
+}
+
+#[cfg(test)]
+impl Drop for DeferredHydrationSourceBoxObservation {
+    fn drop(&mut self) {
+        OBSERVE_DEFERRED_HYDRATION_SOURCE_BOXES.with(|observe| observe.set(false));
+    }
+}
+
+#[cfg(test)]
+fn note_deferred_hydration_source_box() {
+    if OBSERVE_DEFERRED_HYDRATION_SOURCE_BOXES.with(StateCell::get) {
+        DEFERRED_HYDRATION_SOURCE_BOXES.with(|count| count.set(count.get() + 1));
+    }
+}
 
 use quick_xml::{
     Reader,
@@ -202,6 +242,37 @@ impl StringCache {
         self.source = source.map(Box::new);
     }
 
+    pub(crate) fn replace_or_set_source(&mut self, source: SourceCache) {
+        if let Some(current) = self.source.as_deref_mut() {
+            *current = source;
+        } else {
+            self.source = Some(Box::new(source));
+        }
+    }
+
+    pub(crate) fn source_key(&self) -> Option<usize> {
+        self.source
+            .as_deref()
+            .map(|source| std::ptr::from_ref(source).addr())
+    }
+
+    pub(crate) fn source_is_deferred(&self) -> bool {
+        self.source()
+            .is_some_and(|source| source.formula().ends_with('\0'))
+    }
+
+    pub(crate) fn replace_source_value(&mut self, source: SourceCache) -> Option<SourceCache> {
+        self.source
+            .as_deref_mut()
+            .map(|current| std::mem::replace(current, source))
+    }
+
+    pub(crate) fn finalize_source_formula(&mut self, formula: String) {
+        if let Some(source) = self.source.as_deref_mut() {
+            source.set_formula(formula);
+        }
+    }
+
     pub(crate) fn take_source(&mut self) -> Option<SourceCache> {
         self.source.take().map(|source| *source)
     }
@@ -209,7 +280,39 @@ impl StringCache {
     /// The cache of an imported `c:strCache` that has no points at all.
     pub(crate) fn empty_source(formula: String) -> Self {
         Self {
-            source: Some(Box::new(SourceCache::as_read(formula, None, Vec::new()))),
+            source: Some({
+                #[cfg(test)]
+                note_deferred_hydration_source_box();
+                Box::new(SourceCache::as_read(formula, None, Vec::new()))
+            }),
+        }
+    }
+
+    /// Consumes a deferred cache while retaining only the lexical cached name.
+    /// The source points are replayed from its recorded XML span after the
+    /// workbook has established canonical admission order.
+    pub(crate) fn set_deferred_attributes<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        formula: String,
+    ) -> (Option<String>, Self) {
+        let mut cached_value = None;
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer).unwrap() {
+                Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
+                    let index = get_attribute(&e, b"idx");
+                    let value = read_point_value(reader);
+                    if index.as_deref() == Some("0") {
+                        cached_value = Some(value.unwrap_or_default());
+                    }
+                }
+                Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => {
+                    return (cached_value, Self::empty_source(formula));
+                }
+                Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+                _ => (),
+            }
         }
     }
 
@@ -220,6 +323,23 @@ impl StringCache {
         _e: &BytesStart,
         formula: String,
     ) -> (Option<String>, Self) {
+        let (cached_value, source) = Self::read_source_attributes(reader, formula);
+        (
+            cached_value,
+            Self {
+                source: Some({
+                    #[cfg(test)]
+                    note_deferred_hydration_source_box();
+                    Box::new(source)
+                }),
+            },
+        )
+    }
+
+    pub(crate) fn read_source_attributes<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        formula: String,
+    ) -> (Option<String>, SourceCache) {
         let mut cached_value = None;
         let mut point_count = None;
         let mut points = Vec::new();
@@ -257,12 +377,7 @@ impl StringCache {
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"strCache" {
                     let source = SourceCache::as_read(formula, point_count, points);
-                    return (
-                        cached_value,
-                        Self {
-                            source: Some(Box::new(source)),
-                        },
-                    );
+                    return (cached_value, source);
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "c:strCache")
@@ -376,12 +491,12 @@ impl StringCache {
     }
 }
 
-fn parse_point_count(e: &BytesStart) -> Option<u32> {
+pub(crate) fn parse_point_count(e: &BytesStart) -> Option<u32> {
     get_attribute(e, b"val").and_then(|value| value.parse().ok())
 }
 
 /// Reads the `c:v` of a `c:pt` up to its end tag: `None` when it has none.
-fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> Option<String> {
+pub(crate) fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> Option<String> {
     let mut value = None;
     xml_read_loop!(
         reader,
@@ -406,6 +521,59 @@ fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> Option<Strin
     );
 }
 
+/// Visit the indices from a complete `c:strCache` XML element without
+/// materializing its points. This is also the lazy raw-sheet request scanner.
+pub(crate) fn visit_deferred_indices(data: &[u8], mut visit: impl FnMut(u32)) {
+    let mut reader = Reader::from_reader(Cursor::new(data));
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer).unwrap() {
+            Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
+                if let Some(index) = get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
+                {
+                    visit(index);
+                }
+                let mut skipped = Vec::new();
+                reader.read_to_end_into(e.name(), &mut skipped).unwrap();
+            }
+            Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
+                if let Some(index) = get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
+                {
+                    visit(index);
+                }
+            }
+            Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => return,
+            Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => return,
+            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+            _ => (),
+        }
+    }
+}
+
+/// The two non-canonical image carriers retain the parser's existing,
+/// unreduced representation. They are deliberately outside deferred
+/// admission and report accounting.
+pub(crate) fn materialize_deferred_cache(data: &[u8], formula: String) -> SourceCache {
+    let mut reader = Reader::from_reader(Cursor::new(data));
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer).unwrap() {
+            Event::Start(e) if local_name(e.name().into_inner()) == b"strCache" => {
+                return StringCache::read_source_attributes(&mut reader, formula).1;
+            }
+            Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => {
+                return SourceCache::as_read(formula, None, Vec::new());
+            }
+            Event::Eof => panic!("Error: Could not find {} start element", "c:strCache"),
+            _ => (),
+        }
+    }
+}
+
 fn write_point(writer: &mut Writer<Cursor<Vec<u8>>>, index: &str, value: Option<&str>) {
     // c:pt
     write_start_tag(writer, "c:pt", vec![("idx", index).into()], false);
@@ -423,7 +591,10 @@ fn write_point(writer: &mut Writer<Cursor<Vec<u8>>>, index: &str, value: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::charts::StringReference;
+    use crate::{
+        drawing::charts::StringReference,
+        reader::xlsx::SourceCacheSession,
+    };
 
     fn parse(xml: &str) -> StringReference {
         let mut reader = Reader::from_reader(xml.as_bytes());
@@ -432,7 +603,8 @@ mod tests {
             panic!("missing string reference root");
         };
         let mut reference = StringReference::default();
-        reference.set_attributes(&mut reader, &e);
+        let session = SourceCacheSession::immediate();
+        reference.set_attributes(&mut reader, &e, &session);
         reference
     }
 

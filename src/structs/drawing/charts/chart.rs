@@ -397,6 +397,7 @@ impl Chart {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         // Reset legend presence so "no legend in source" round-trips through
         // the writer. Default-constructed Charts have `legend_present == true`
@@ -408,7 +409,7 @@ impl Chart {
             Event::Start(ref e) => match local_name(e.name().into_inner()) {
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.set_title(obj);
                 }
                 b"view3D" => {
@@ -432,7 +433,7 @@ impl Chart {
                     self.set_back_wall(obj);
                 }
                 b"plotArea" => {
-                    self.plot_area.set_attributes(reader, e);
+                    self.plot_area.set_attributes(reader, e, session);
                 }
                 b"legend" => {
                     self.legend.set_attributes(reader, e);

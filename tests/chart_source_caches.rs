@@ -1,11 +1,17 @@
 #![cfg(feature = "serde")]
 
 use std::{
+    cell::Cell,
     fmt::Write,
     io::{
         Cursor,
         Read,
     },
+    panic::{
+        AssertUnwindSafe,
+        catch_unwind,
+    },
+    rc::Rc,
 };
 
 use quick_xml::escape::{
@@ -15,6 +21,7 @@ use quick_xml::escape::{
 use umya_spreadsheet::{
     Chart,
     ChartType,
+    OleObject,
     Workbook,
     drawing::{
         charts::{
@@ -41,6 +48,142 @@ fn write(book: &Workbook) -> Vec<u8> {
 
 fn read_book(bytes: &[u8]) -> Workbook {
     umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap()
+}
+
+fn chart_package() -> Vec<u8> {
+    let mut book = umya_spreadsheet::new_file();
+    book.sheet_mut(0).unwrap().cell_mut("A1").set_value("cells");
+    add_chart(&mut book, "Sheet1", &["Sheet1!$A$1".into()]);
+    rewrite_part(&write(&book), "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(&xml, 0, &dense_cache(1, |_| "label".into()))
+    })
+}
+
+fn cache_report(book: &Workbook) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+    let report = book.chart_source_cache_report();
+    (
+        report.kept_caches,
+        report.kept_points,
+        report.kept_text_bytes,
+        report.dropped_caches,
+        report.reduced_caches,
+        report.over_cap_caches,
+        report.over_cap_points,
+        report.over_cap_text_bytes,
+    )
+}
+
+fn corrupt_chart_crc(bytes: &[u8]) -> Vec<u8> {
+    let mut corrupt = bytes.to_vec();
+    let mut offset = 0;
+    while offset + 46 <= corrupt.len() {
+        if corrupt[offset..].starts_with(b"PK\x01\x02") {
+            let name_len =
+                u16::from_le_bytes([corrupt[offset + 28], corrupt[offset + 29]]) as usize;
+            let extra_len =
+                u16::from_le_bytes([corrupt[offset + 30], corrupt[offset + 31]]) as usize;
+            let comment_len =
+                u16::from_le_bytes([corrupt[offset + 32], corrupt[offset + 33]]) as usize;
+            let name_start = offset + 46;
+            let name_end = name_start + name_len;
+            if corrupt[name_start..name_end] == *b"xl/charts/chart1.xml" {
+                corrupt[offset + 16..offset + 20].copy_from_slice(&0u32.to_le_bytes());
+                return corrupt;
+            }
+            offset = name_end + extra_len + comment_len;
+        } else {
+            offset += 1;
+        }
+    }
+    panic!("chart entry was not found in the ZIP directory");
+}
+
+#[test]
+fn missing_chart_parts_keep_the_existing_empty_result() {
+    let bytes = rewrite_part(
+        &chart_package(),
+        "xl/drawings/_rels/drawing1.xml.rels",
+        |xml| xml.replace("../charts/chart1.xml", "../charts/missing.xml"),
+    );
+    let book = read_book(&bytes);
+    assert_eq!(cache_report(&book), (0, 0, 0, 0, 0, 0, 0, 0));
+    let output = write(&book);
+    assert!(
+        zip::ZipArchive::new(Cursor::new(output))
+            .unwrap()
+            .by_name("xl/charts/chart1.xml")
+            .is_err()
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "umya-chart-missing-{}-{}.xlsx",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("reader")
+    ));
+    std::fs::write(&path, &bytes).unwrap();
+    let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
+    lazy.sheet_mut(0).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(cache_report(&lazy), (0, 0, 0, 0, 0, 0, 0, 0));
+    assert!(
+        zip::ZipArchive::new(Cursor::new(write(&lazy)))
+            .unwrap()
+            .by_name("xl/charts/chart1.xml")
+            .is_err()
+    );
+}
+
+#[test]
+fn unreadable_chart_parts_discard_partial_bytes() {
+    let bytes = corrupt_chart_crc(&chart_package());
+    let eager = read_book(&bytes);
+    assert_eq!(cache_report(&eager), (0, 0, 0, 0, 0, 0, 0, 0));
+    assert!(
+        zip::ZipArchive::new(Cursor::new(write(&eager)))
+            .unwrap()
+            .by_name("xl/charts/chart1.xml")
+            .is_err()
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "umya-chart-crc-{}-{}.xlsx",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("reader")
+    ));
+    std::fs::write(&path, &bytes).unwrap();
+    let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
+    lazy.sheet_mut(0).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(cache_report(&lazy), (0, 0, 0, 0, 0, 0, 0, 0));
+    assert!(
+        zip::ZipArchive::new(Cursor::new(write(&lazy)))
+            .unwrap()
+            .by_name("xl/charts/chart1.xml")
+            .is_err()
+    );
+}
+
+#[test]
+fn malformed_chart_xml_keeps_the_existing_failure() {
+    let bytes = rewrite_part(&chart_package(), "xl/charts/chart1.xml", |_| {
+        "<c:chartSpace>".into()
+    });
+    assert!(catch_unwind(AssertUnwindSafe(|| read_book(&bytes))).is_err());
+
+    let path = std::env::temp_dir().join(format!(
+        "umya-chart-malformed-{}-{}.xlsx",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("reader")
+    ));
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
+            lazy.sheet_mut(0).unwrap();
+        }))
+        .is_err()
+    );
+    std::fs::remove_file(&path).unwrap();
 }
 
 fn part(bytes: &[u8], name: &str) -> String {
@@ -74,6 +217,311 @@ fn rewrite_part(bytes: &[u8], name: &str, edit: impl FnOnce(String) -> String) -
     output.finish().unwrap().into_inner()
 }
 
+fn rename_part(bytes: &[u8], name: &str, renamed: &str) -> Vec<u8> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut renamed_part = false;
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).unwrap();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        let output_name = if entry.name() == name {
+            renamed_part = true;
+            renamed
+        } else {
+            entry.name()
+        };
+        output
+            .start_file(output_name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut output, &data).unwrap();
+    }
+    assert!(renamed_part, "{name} was not renamed");
+    output.finish().unwrap().into_inner()
+}
+
+struct FailChartOpen {
+    inner:            Cursor<Vec<u8>>,
+    chart_data_start: u64,
+    opens:            Rc<Cell<usize>>,
+    fail_at:          Option<usize>,
+    fail_reads:       bool,
+}
+
+impl Read for FailChartOpen {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.fail_reads {
+            return Err(std::io::Error::other("chart-part read fails"));
+        }
+        self.inner.read(buffer)
+    }
+}
+
+impl std::io::Seek for FailChartOpen {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        let position = self.inner.seek(from)?;
+        self.fail_reads = false;
+        if position == self.chart_data_start {
+            self.opens.set(self.opens.get() + 1);
+            self.fail_reads = Some(self.opens.get()) == self.fail_at;
+        }
+        Ok(position)
+    }
+}
+
+fn chart_open_reader(
+    bytes: &[u8],
+    opens: Rc<Cell<usize>>,
+    fail_at: Option<usize>,
+) -> FailChartOpen {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let chart_data_start = archive
+        .by_name("xl/charts/chart1.xml")
+        .unwrap()
+        .data_start()
+        .expect("chart entry has data");
+    FailChartOpen {
+        inner: Cursor::new(bytes.to_vec()),
+        chart_data_start,
+        opens,
+        fail_at,
+        fail_reads: false,
+    }
+}
+
+/// A reader of `bytes` whose last chart-part open, which a complete import
+/// makes after the metadata parse for the cache replay, fails its reads. A
+/// dry run of the same import counts the opens, so the failing one is the last
+/// open the real reader makes and not an assumed ordinal.
+fn fail_on_last_chart_open(bytes: &[u8]) -> FailChartOpen {
+    let opens = Rc::new(Cell::new(0));
+    umya_spreadsheet::reader::xlsx::read_reader(
+        chart_open_reader(bytes, opens.clone(), None),
+        true,
+    )
+    .unwrap();
+    let total = opens.get();
+    assert!(total > 2, "the replay opens the chart again: {total}");
+    chart_open_reader(bytes, Rc::new(Cell::new(0)), Some(total))
+}
+
+fn assert_chart_zip_name_compatibility(bytes: &[u8]) {
+    let eager = read_book(bytes);
+    assert_eq!(eager.sheet(0).unwrap().chart_collection().len(), 1);
+    assert_eq!(cache_report(&eager), (1, 1, 10, 0, 0, 0, 0, 0));
+    assert_eq!(
+        formulas(&stored_caches(&eager)),
+        ["Sheet1!$A$1".to_string()]
+    );
+    assert_eq!(
+        category_reference(&part(&write(&eager), "xl/charts/chart1.xml"), 0),
+        reference_xml("Sheet1!$A$1", &dense_cache(1, |_| "label".into()))
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "umya-chart-name-{}-{}.xlsx",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("reader")
+    ));
+    std::fs::write(&path, bytes).unwrap();
+    let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
+    lazy.sheet_mut(0).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(lazy.sheet(0).unwrap().chart_collection().len(), 1);
+    assert_eq!(cache_report(&lazy), (1, 1, 10, 0, 0, 0, 0, 0));
+    assert_eq!(formulas(&stored_caches(&lazy)), ["Sheet1!$A$1".to_string()]);
+    assert_eq!(
+        category_reference(&part(&write(&lazy), "xl/charts/chart1.xml"), 0),
+        reference_xml("Sheet1!$A$1", &dense_cache(1, |_| "label".into()))
+    );
+}
+
+#[test]
+fn chart_zip_name_compatibility_matches_the_raw_loader() {
+    for renamed in ["XL/CHARTS/CHART1.XML", "xl\\charts\\chart1.xml"] {
+        assert_chart_zip_name_compatibility(&rename_part(
+            &chart_package(),
+            "xl/charts/chart1.xml",
+            renamed,
+        ));
+    }
+}
+
+#[test]
+fn replay_read_failure_clears_a_canonical_deferred_source() {
+    let canonical = umya_spreadsheet::reader::xlsx::read_reader(
+        fail_on_last_chart_open(&chart_package()),
+        true,
+    )
+    .unwrap();
+    assert_eq!(canonical.sheet(0).unwrap().chart_collection().len(), 1);
+    assert!(stored_caches(&canonical).is_empty());
+    assert_eq!(cache_report(&canonical), (0, 0, 0, 0, 0, 0, 0, 0));
+    assert_eq!(
+        category_reference(&part(&write(&canonical), "xl/charts/chart1.xml"), 0),
+        reference_xml("Sheet1!$A$1", &dense_cache(1, |_| "cells".into()))
+    );
+}
+
+#[test]
+fn unreadable_chart_part_leaves_an_image_frame_without_sources() {
+    // A drawing with a single image frame replays its sources from the buffer
+    // its own metadata parse just filled, so the last chart open is that
+    // parse: a failed read leaves the frame with an empty chart and nothing
+    // to replay.
+    let image = umya_spreadsheet::reader::xlsx::read_reader(
+        fail_on_last_chart_open(&grouped_one_cell_drawing(&chart_package())),
+        true,
+    )
+    .unwrap();
+    let drawing = image.sheet(0).unwrap().worksheet_drawing();
+    assert!(drawing.chart_collection().is_empty());
+    assert_eq!(drawing.image_collection().len(), 1);
+    assert!(stored_caches(&image).is_empty());
+    assert_eq!(cache_report(&image), (0, 0, 0, 0, 0, 0, 0, 0));
+    let chart_space = drawing.image_collection()[0]
+        .one_cell_anchor()
+        .unwrap()
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space();
+    assert!(
+        chart_space
+            .chart()
+            .plot_area()
+            .chart_groups()
+            .next()
+            .is_none()
+    );
+}
+
+const IMAGE_FRAME_FORMULA: &str = "Sheet1!$A$1:$A$2";
+const FOLLOWING_CHART_FORMULA: &str = "Sheet1!$B$1";
+
+/// Chart part 1 is an image-classified one-cell frame holding a stored cache
+/// for `Sheet1!$A$1:$A$2`; chart part 2 follows it in the same drawing and is
+/// an ordinary chart. The whole drawing is parsed before the image frame
+/// replays, so part 2 is the open buffer when part 1 is reopened.
+fn image_frame_before_another_chart_part() -> Vec<u8> {
+    let mut book = number_workbook(2, 2);
+    add_chart(&mut book, "Sheet1", &[IMAGE_FRAME_FORMULA.into()]);
+    add_chart(&mut book, "Sheet1", &[FOLLOWING_CHART_FORMULA.into()]);
+    let bytes = rewrite_part(&write(&book), "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(&xml, 0, &image_frame_cache())
+    });
+    let bytes = rewrite_part(&bytes, "xl/charts/chart2.xml", |xml| {
+        replace_category_cache(&xml, 0, &dense_cache(1, |_| "label".into()))
+    });
+    rewrite_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+        let start = xml.find("<xdr:twoCellAnchor>").unwrap();
+        let end = start
+            + xml[start..].find("</xdr:twoCellAnchor>").unwrap()
+            + "</xdr:twoCellAnchor>".len();
+        let anchor = one_cell_chart_anchor(&xml[start..end]).replacen(
+            "<xdr:graphicFrame",
+            "<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" name=\"Group \
+             1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp><xdr:\
+             graphicFrame",
+            1,
+        );
+        format!("{}{anchor}{}", &xml[..start], &xml[end..])
+    })
+}
+
+fn image_frame_cache() -> String {
+    cache_xml(
+        Some(2),
+        &[
+            Point {
+                index: 0,
+                value: Some("L0".into()),
+            },
+            Point {
+                index: 1,
+                value: Some("L1".into()),
+            },
+        ],
+    )
+}
+
+fn assert_image_frame_before_another_chart_part(book: &Workbook) {
+    let drawing = book.sheet(0).unwrap().worksheet_drawing();
+    assert_eq!(drawing.image_collection().len(), 1);
+    assert_eq!(drawing.chart_collection().len(), 1);
+    assert!(drawing.one_cell_anchor_collection().is_empty());
+    let category = drawing.image_collection()[0]
+        .one_cell_anchor()
+        .unwrap()
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .chart()
+        .plot_area()
+        .chart_groups()
+        .next()
+        .unwrap()
+        .series()
+        .area_chart_series()[0]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    assert_eq!(category.formula().address_str(), IMAGE_FRAME_FORMULA);
+}
+
+#[test]
+fn image_hydration_reopen_reads_the_part_the_following_chart_displaced() {
+    let bytes = image_frame_before_another_chart_part();
+    let book = read_book(&bytes);
+    assert_image_frame_before_another_chart_part(&book);
+    // The cached `label` and the cell display `1` of `Sheet1!$B$1`; the image
+    // frame is not charged.
+    assert_eq!(cache_report(&book), (1, 1, 6, 0, 0, 0, 0, 0));
+    let sources = stored_caches(&book);
+    assert_eq!(sources.len(), 2);
+    assert_eq!(
+        formulas(&sources),
+        [
+            FOLLOWING_CHART_FORMULA.to_string(),
+            IMAGE_FRAME_FORMULA.to_string()
+        ]
+    );
+    assert_eq!(sources[1]["point_count"], 2);
+    assert_eq!(
+        sources[1]["exceptions"],
+        serde_json::json!([
+            {"index": 0, "value": "L0", "loaded_display": null},
+            {"index": 1, "value": "L1", "loaded_display": null},
+        ])
+    );
+}
+
+#[test]
+fn failed_image_hydration_reopen_leaves_the_frame_without_a_source() {
+    let bytes = image_frame_before_another_chart_part();
+    // Only the image frame uses chart part 1, and its replay is the last
+    // thing to open it, after the following chart has displaced it.
+    let mut book =
+        umya_spreadsheet::reader::xlsx::read_reader(fail_on_last_chart_open(&bytes), true).unwrap();
+    assert_image_frame_before_another_chart_part(&book);
+    assert_eq!(cache_report(&book), (1, 1, 6, 0, 0, 0, 0, 0));
+    assert_eq!(
+        formulas(&stored_caches(&book)),
+        [FOLLOWING_CHART_FORMULA.to_string()]
+    );
+    assert_eq!(
+        category_reference(
+            &export_image_frame_part(&mut book, "xl/charts/chart2.xml"),
+            0
+        ),
+        generated(IMAGE_FRAME_FORMULA, 2)
+    );
+}
+
 /// Replaces the cache of the `n`-th `c:cat` of `xml` with `cache`.
 fn replace_category_cache(xml: &str, n: usize, cache: &str) -> String {
     let mut from = 0;
@@ -95,6 +543,23 @@ fn category_reference(xml: &str, n: usize) -> &str {
         .split_once("</c:cat>")
         .unwrap()
         .0
+}
+
+fn series_text_reference(xml: &str, n: usize) -> &str {
+    xml.split("<c:tx>")
+        .nth(n + 1)
+        .unwrap()
+        .split_once("</c:tx>")
+        .unwrap()
+        .0
+}
+
+fn title_reference(xml: &str) -> &str {
+    let title = xml.split_once("<c:title>").unwrap().1;
+    let title = title.split_once("</c:title>").unwrap().0;
+    let start = title.find("<c:strRef>").unwrap();
+    let end = start + title[start..].find("</c:strRef>").unwrap() + "</c:strRef>".len();
+    &title[start..end]
 }
 
 /// A `c:strCache` of points as a file stores them. A point without a value has
@@ -492,6 +957,1157 @@ fn every_series_keeps_the_cache_its_own_file_stored() {
     assert_eq!(
         category_reference(&exported, 1),
         reference_xml(&formula, &second)
+    );
+}
+
+#[test]
+fn real_reader_attaches_duplicate_formulas_and_self_closing_caches() {
+    let formula = column_range('A', 2);
+    let first = dense_cache(2, |index| format!("First {index}"));
+    let second = dense_cache(2, |index| format!("Second {index}"));
+    let bytes = one_chart_workbook(
+        1,
+        2,
+        &[
+            (formula.clone(), first.clone()),
+            (formula.clone(), second.clone()),
+            (formula.clone(), "<c:strCache/>".into()),
+        ],
+    );
+
+    let book = read_book(&bytes);
+    assert_eq!(
+        report_tuple(&book),
+        (3, 4, 34, 0, 0, 0, 0, 0),
+        "the two populated caches cost 16 and 18 bytes; the empty cache costs zero"
+    );
+    let exported = part(&write(&book), "xl/charts/chart1.xml");
+    assert_eq!(
+        category_reference(&exported, 0),
+        reference_xml(&formula, &first)
+    );
+    assert_eq!(
+        category_reference(&exported, 1),
+        reference_xml(&formula, &second)
+    );
+    assert_eq!(
+        category_reference(&exported, 2),
+        reference_xml(&formula, "<c:strCache></c:strCache>")
+    );
+}
+
+#[test]
+fn real_reader_keeps_the_persisted_source_cache_shape() {
+    let formula = "Data!A1:A2";
+    let mut book = number_workbook(1, 2);
+    book.new_sheet("Data").unwrap();
+    book.sheet_by_name_mut("Data")
+        .unwrap()
+        .cell_mut("A2")
+        .set_value_number(2);
+    add_chart(&mut book, "Sheet1", &[formula.into()]);
+    let bytes = rewrite_part(&write(&book), "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(
+            &xml,
+            0,
+            "<c:strCache><c:ptCount val=\"2\"/><c:pt idx=\"1\"><c:v>λ</c:v></c:pt></c:strCache>",
+        )
+    });
+    let book = read_book(&bytes);
+    let mut chart = book.sheet(0).unwrap().chart_collection()[0].clone();
+    let source = chart.area_chart_series_list_mut().area_chart_series_mut()[0]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap()
+        .string_cache()
+        .source()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_string(source).unwrap(),
+        r#"{"formula":"Data!A1:A2","point_count":2,"index_runs":[{"start":1,"len":1}],"exceptions":[{"index":1,"value":"λ","loaded_display":"2"}]}"#
+    );
+    assert_eq!(
+        bincode::serialize(source).unwrap(),
+        [
+            0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44, 0x61, 0x74, 0x61, 0x21, 0x41,
+            0x31, 0x3a, 0x41, 0x32, 0x01, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0xce, 0xbb, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x32,
+        ]
+    );
+}
+
+#[test]
+fn image_frame_without_a_stored_cache_exports_the_cell_display() {
+    let formula = column_range('A', 1);
+    let bytes = one_chart_workbook(1, 1, &[(formula.clone(), String::new())]);
+    let bytes = grouped_one_cell_drawing(&bytes);
+
+    let mut book = read_book(&bytes);
+    assert_eq!(report_tuple(&book), (0, 0, 0, 0, 0, 0, 0, 0));
+    let drawing = book.sheet(0).unwrap().worksheet_drawing();
+    assert_eq!(drawing.image_collection().len(), 1);
+    assert!(drawing.chart_collection().is_empty());
+    assert!(drawing.one_cell_anchor_collection().is_empty());
+    let frame = drawing.image_collection()[0].one_cell_anchor().unwrap();
+    assert!(frame.group_shape().is_some());
+    assert_eq!(
+        (
+            frame.from_marker().col(),
+            frame.from_marker().row(),
+            frame.from_marker().col_off(),
+            frame.from_marker().row_off(),
+        ),
+        (7, 0, 0, 0)
+    );
+    assert_eq!((frame.extent().cx(), frame.extent().cy()), (1, 1));
+    let category = frame
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .chart()
+        .plot_area()
+        .chart_groups()
+        .next()
+        .unwrap()
+        .series()
+        .area_chart_series()[0]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    assert!(category.string_cache().source().is_none());
+    let exported = export_image_frame(&mut book);
+    assert_eq!(category_reference(&exported, 0), generated(&formula, 1));
+}
+
+fn report_tuple(book: &Workbook) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+    let report = book.chart_source_cache_report();
+    (
+        report.kept_caches,
+        report.kept_points,
+        report.kept_text_bytes,
+        report.dropped_caches,
+        report.reduced_caches,
+        report.over_cap_caches,
+        report.over_cap_points,
+        report.over_cap_text_bytes,
+    )
+}
+
+fn grouped_one_cell_drawing(bytes: &[u8]) -> Vec<u8> {
+    rewrite_part(bytes, "xl/drawings/drawing1.xml", |xml| {
+        let start = xml.find("<xdr:to>").unwrap();
+        let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
+        format!(
+            "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" \
+             name=\"Group \
+             1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp>{}",
+            &xml[..start],
+            &xml[end..]
+        )
+        .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
+    })
+}
+
+fn one_cell_chart_anchor(anchor: &str) -> String {
+    let start = anchor.find("<xdr:to>").unwrap();
+    let end = start + anchor[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
+    format!(
+        "{}<xdr:ext cx=\"1\" cy=\"1\"/>{}",
+        &anchor[..start],
+        &anchor[end..]
+    )
+    .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
+}
+
+fn export_image_frame(book: &mut Workbook) -> String {
+    export_image_frame_part(book, "xl/charts/chart1.xml")
+}
+
+fn export_image_frame_part(book: &mut Workbook, part_name: &str) -> String {
+    let chart_space = book
+        .sheet(0)
+        .unwrap()
+        .worksheet_drawing()
+        .image_collection()[0]
+        .one_cell_anchor()
+        .unwrap()
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .clone();
+    let mut chart = Chart::default();
+    chart.new_chart(
+        &ChartType::LineChart,
+        marker("H1"),
+        marker("P18"),
+        vec!["Sheet1!$Z$1:$Z$3"],
+    );
+    *chart.chart_space_mut() = chart_space;
+    book.sheet_mut(0).unwrap().add_chart(chart);
+    part(&write(book), part_name)
+}
+
+fn export_one_cell_frame(book: &mut Workbook) -> String {
+    let chart_space = book
+        .sheet(0)
+        .unwrap()
+        .worksheet_drawing()
+        .one_cell_anchor_collection()[0]
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .clone();
+    let mut chart = Chart::default();
+    chart.new_chart(
+        &ChartType::LineChart,
+        marker("H1"),
+        marker("P18"),
+        vec!["Sheet1!$Z$1:$Z$3"],
+    );
+    *chart.chart_space_mut() = chart_space;
+    book.sheet_mut(0).unwrap().add_chart(chart);
+    part(&write(book), "xl/charts/chart3.xml")
+}
+
+#[test]
+fn image_frames_keep_uncaptured_caches_without_charging_the_import_budget() {
+    let formula = "Gone!$A$1:$A$2".to_string();
+    let cache = cache_xml(
+        Some(2),
+        &[
+            Point {
+                index: 0,
+                value: Some("L0".into()),
+            },
+            Point {
+                index: 1,
+                value: Some("L1".into()),
+            },
+        ],
+    );
+    let bytes = grouped_one_cell_drawing(&one_chart_workbook(
+        1,
+        2,
+        &[(formula.clone(), cache.clone())],
+    ));
+    let mut book = read_book(&bytes);
+    assert_eq!(report_tuple(&book), (0, 0, 0, 0, 0, 0, 0, 0));
+    let drawing = book.sheet(0).unwrap().worksheet_drawing();
+    assert_eq!(drawing.image_collection().len(), 1);
+    assert!(drawing.chart_collection().is_empty());
+    assert!(drawing.one_cell_anchor_collection().is_empty());
+    let frame = drawing.image_collection()[0].one_cell_anchor().unwrap();
+    assert!(frame.group_shape().is_some());
+    assert_eq!(
+        (
+            frame.from_marker().col(),
+            frame.from_marker().row(),
+            frame.from_marker().col_off(),
+            frame.from_marker().row_off(),
+        ),
+        (7, 0, 0, 0)
+    );
+    assert_eq!((frame.extent().cx(), frame.extent().cy()), (1, 1));
+    let sources = stored_caches(&book);
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0]["formula"], formula);
+    assert_eq!(sources[0]["point_count"], 2);
+    assert_eq!(sources[0]["index_runs"], serde_json::json!([]));
+    assert_eq!(
+        sources[0]["exceptions"],
+        serde_json::json!([
+            {"index": 0, "value": "L0", "loaded_display": null},
+            {"index": 1, "value": "L1", "loaded_display": null},
+        ])
+    );
+    assert_eq!(
+        category_reference(&export_image_frame(&mut book), 0),
+        reference_xml(&formula, &cache)
+    );
+}
+
+#[test]
+fn alternate_content_ole_frames_keep_uncaptured_caches_without_charging() {
+    let formula = "Gone!$A$1:$A$2".to_string();
+    let cache = cache_xml(
+        Some(2),
+        &[
+            Point {
+                index: 0,
+                value: Some("L0".into()),
+            },
+            Point {
+                index: 1,
+                value: Some("L1".into()),
+            },
+        ],
+    );
+    let mut book = number_workbook(1, 2);
+    add_chart(&mut book, "Sheet1", std::slice::from_ref(&formula));
+    let anchor = book.sheet(0).unwrap().chart_collection()[0]
+        .two_cell_anchor()
+        .clone();
+    let mut ole = OleObject::default();
+    ole.set_object_extension("bin");
+    ole.set_object_data([0_u8]);
+    ole.set_two_cell_anchor(anchor);
+    book.sheet_mut(0)
+        .unwrap()
+        .ole_objects_mut()
+        .set_ole_object(ole);
+    let bytes = rewrite_part(&write(&book), "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(&xml, 0, &cache)
+    });
+    let bytes = rewrite_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+        let start = xml.find("<xdr:twoCellAnchor>").unwrap();
+        let end = xml[start..].find("</xdr:twoCellAnchor>").unwrap()
+            + start
+            + "</xdr:twoCellAnchor>".len();
+        let anchor = &xml[start..end];
+        let drawing_end = xml.find("</xdr:wsDr>").unwrap();
+        format!(
+            "{}<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"><mc:Choice xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" Requires=\"a14\">{anchor}</mc:Choice></mc:AlternateContent>{}",
+            &xml[..start],
+            &xml[drawing_end..]
+        )
+    });
+    let book = read_book(&bytes);
+    assert_eq!(report_tuple(&book), (0, 0, 0, 0, 0, 0, 0, 0));
+    let sheet = book.sheet(0).unwrap();
+    assert_eq!(sheet.ole_objects().ole_object().len(), 1);
+    assert!(sheet.worksheet_drawing().chart_collection().is_empty());
+    assert!(
+        sheet
+            .worksheet_drawing()
+            .two_cell_anchor_collection()
+            .is_empty()
+    );
+    let anchor = sheet.ole_objects().ole_object()[0].two_cell_anchor();
+    assert!(anchor.is_alternate_content());
+    assert!(anchor.graphic_frame().is_some());
+    assert_eq!(
+        (
+            anchor.from_marker().col(),
+            anchor.from_marker().row(),
+            anchor.from_marker().col_off(),
+            anchor.from_marker().row_off(),
+            anchor.to_marker().col(),
+            anchor.to_marker().row(),
+            anchor.to_marker().col_off(),
+            anchor.to_marker().row_off(),
+        ),
+        (7, 0, 0, 0, 15, 17, 0, 0)
+    );
+    let mut sources = Vec::new();
+    find_sources(
+        &serde_json::to_value(sheet.ole_objects()).unwrap(),
+        &mut sources,
+    );
+    assert_eq!(
+        sources,
+        [serde_json::json!({
+            "formula": "Gone!$A$1:$A$2",
+            "point_count": 2,
+            "index_runs": [],
+            "exceptions": [
+                {"index": 0, "value": "L0", "loaded_display": null},
+                {"index": 1, "value": "L1", "loaded_display": null},
+            ],
+        })]
+    );
+    let chart_space = anchor
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .clone();
+    let mut exported_book = number_workbook(1, 1);
+    let mut chart = Chart::default();
+    chart.new_chart(
+        &ChartType::LineChart,
+        marker("H1"),
+        marker("P18"),
+        vec!["Sheet1!$Z$1:$Z$3"],
+    );
+    *chart.chart_space_mut() = chart_space;
+    exported_book.sheet_mut(0).unwrap().add_chart(chart);
+    assert_eq!(
+        category_reference(&part(&write(&exported_book), "xl/charts/chart1.xml"), 0),
+        reference_xml(&formula, &cache)
+    );
+}
+
+#[test]
+fn overwritten_caches_keep_only_the_final_empty_source_and_cached_name_rules() {
+    let initial_formula = column_range('A', 1);
+    let final_formula = "Sheet1!$B$1:$B$1".to_string();
+    let paired = [
+        "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>old</c:v></c:pt></c:strCache>",
+        "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>middle</c:v></c:pt></c:strCache>",
+        "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>new</c:v></c:pt></c:strCache>",
+    ]
+    .concat();
+    let cases = [
+        ("<c:strCache/>", Some("new")),
+        ("<c:strCache></c:strCache>", None),
+    ];
+    for (ending, cached_name) in cases {
+        let bytes = one_chart_workbook(
+            2,
+            1,
+            &[(initial_formula.clone(), dense_cache(1, |_| "old".into()))],
+        );
+        let bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+            replace_category_cache(
+                &xml,
+                0,
+                &format!("{paired}{ending}<c:f>{final_formula}</c:f>"),
+            )
+        });
+        let book = read_book(&bytes);
+        assert_eq!(report_tuple(&book), (1, 0, 0, 0, 0, 0, 0, 0));
+        let reference = book.sheet(0).unwrap().chart_collection()[0]
+            .chart_space()
+            .chart()
+            .plot_area()
+            .chart_groups()
+            .next()
+            .unwrap()
+            .series()
+            .area_chart_series()[0]
+            .category_axis_data()
+            .unwrap()
+            .string_reference()
+            .unwrap();
+        assert_eq!(reference.cached_value(), cached_name);
+        let source = reference.string_cache().source().unwrap();
+        assert_eq!(reference.formula().address_str(), final_formula);
+        assert_eq!(source.formula(), final_formula);
+        assert_eq!(source.point_count(), None);
+        assert!(source.index_runs().is_empty());
+        assert!(source.exceptions().is_empty());
+        assert_eq!(
+            category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+            reference_xml(&final_formula, "<c:strCache></c:strCache>")
+        );
+    }
+}
+
+#[test]
+fn overwritten_cache_still_validates_each_nonzero_value() {
+    let formula = column_range('A', 2);
+    let bytes = one_chart_workbook(2, 2, &[(formula.clone(), dense_cache(2, |_| "x".into()))]);
+    let bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(
+            &xml,
+            0,
+            concat!(
+                "<c:strCache><c:ptCount val=\"2\"/>",
+                "<c:pt idx=\"0\"><c:v>first</c:v></c:pt>",
+                "<c:pt idx=\"1\"><c:v>&bogus;</c:v></c:pt></c:strCache>",
+                "<c:strCache/>"
+            ),
+        )
+    });
+    assert!(catch_unwind(|| read_book(&bytes)).is_err());
+}
+
+#[test]
+fn discarded_chart_still_validates_each_nonzero_value() {
+    let first_formula = "Sheet1!$A$1:$A$2".to_string();
+    let second_formula = "Sheet1!$B$1".to_string();
+    let mut initial = number_workbook(2, 2);
+    add_chart(&mut initial, "Sheet1", std::slice::from_ref(&first_formula));
+    add_chart(
+        &mut initial,
+        "Sheet1",
+        std::slice::from_ref(&second_formula),
+    );
+    let bytes = rewrite_part(&write(&initial), "xl/charts/chart1.xml", |xml| {
+        let cache = concat!(
+            "<c:strCache><c:ptCount val=\"2\"/>",
+            "<c:pt idx=\"0\"><c:v>first</c:v></c:pt>",
+            "<c:pt idx=\"1\"><c:v>&bogus;</c:v></c:pt></c:strCache>"
+        );
+        let title = format!(
+            "<c:title><c:tx>{}</c:tx></c:title>",
+            reference_xml(&first_formula, cache)
+        );
+        xml.replacen("<c:plotArea>", &format!("{title}<c:plotArea>"), 1)
+            .replace("c:lineChart", "c:unmodeled")
+    });
+    assert!(catch_unwind(|| read_book(&bytes)).is_err());
+}
+
+#[test]
+fn repeated_formulas_attach_by_occurrence_even_when_series_ids_do_not() {
+    let formula = column_range('A', 1);
+    let caches = ["A", "B", "C"]
+        .into_iter()
+        .map(|label| (formula.clone(), dense_cache(1, |_| label.into())))
+        .collect::<Vec<_>>();
+    let bytes = one_chart_workbook(1, 1, &caches);
+    let bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+        xml.replacen("<c:idx val=\"0\"/>", "", 1)
+            .replacen("<c:idx val=\"1\"/>", "<c:idx val=\"0\"/>", 1)
+            .replacen("<c:idx val=\"2\"/>", "<c:idx val=\"0\"/>", 1)
+    });
+    let book = read_book(&bytes);
+    assert_eq!(report_tuple(&book), (3, 3, 6, 0, 0, 0, 0, 0));
+    let exported = part(&write(&book), "xl/charts/chart1.xml");
+    for (index, label) in ["A", "B", "C"].into_iter().enumerate() {
+        assert_eq!(
+            category_reference(&exported, index),
+            reference_xml(&formula, &dense_cache(1, |_| label.into()))
+        );
+    }
+}
+
+#[test]
+fn reordered_raw_sheet_points_keep_their_file_order_and_complete_export() {
+    let formula = "Data!$A$1:$A$4".to_string();
+    let cache = cache_xml(
+        Some(4),
+        &[
+            Point {
+                index: 2,
+                value: Some("3".into()),
+            },
+            Point {
+                index: 0,
+                value: Some("1".into()),
+            },
+            Point {
+                index: 3,
+                value: Some("4".into()),
+            },
+            Point {
+                index: 1,
+                value: Some("2".into()),
+            },
+        ],
+    );
+    let mut initial = number_workbook(1, 4);
+    initial.sheet_mut(0).unwrap().set_name("Host");
+    initial.new_sheet("Data").unwrap();
+    for row in 1..=4 {
+        initial
+            .sheet_by_name_mut("Data")
+            .unwrap()
+            .cell_mut((1, row))
+            .set_value_number(row);
+    }
+    add_chart(&mut initial, "Host", std::slice::from_ref(&formula));
+    let bytes = rewrite_part(&write(&initial), "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(&xml, 0, &cache)
+    });
+    let mut book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+    book.sheet_mut(0).unwrap();
+    assert_eq!(report_tuple(&book), (1, 4, 0, 0, 0, 0, 0, 0));
+    let source = &stored_caches(&book)[0];
+    assert_eq!(
+        source["index_runs"],
+        serde_json::json!([
+            {"start": 2, "len": 1},
+            {"start": 0, "len": 1},
+            {"start": 3, "len": 1},
+            {"start": 1, "len": 1},
+        ])
+    );
+    assert_eq!(source["exceptions"], serde_json::json!([]));
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+        reference_xml(&formula, &cache)
+    );
+}
+
+#[test]
+fn large_reproducible_cache_keeps_only_the_changed_source_label() {
+    let rows = 100_000;
+    let formula = column_range('A', rows);
+    let cache = dense_cache(rows, |index| {
+        if index == 42 {
+            "source".into()
+        } else {
+            (index + 1).to_string()
+        }
+    });
+    let book = read_book(&one_chart_workbook(
+        1,
+        rows as u32,
+        &[(formula.clone(), cache.clone())],
+    ));
+    assert_eq!(report_tuple(&book), (1, 1, 8, 0, 0, 0, 0, 0));
+    let source = &stored_caches(&book)[0];
+    assert_eq!(source["index_runs"], serde_json::json!([]));
+    assert_eq!(
+        source["exceptions"],
+        serde_json::json!([{
+            "index": 42,
+            "value": "source",
+            "loaded_display": "43",
+        }])
+    );
+    // Equality of the complete cache checks all 100,000 exported points.
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+        reference_xml(&formula, &cache)
+    );
+}
+
+#[test]
+fn late_repeated_indices_keep_every_occurrence() {
+    let rows = 20_000;
+    let formula = column_range('A', rows);
+    let mut points: Vec<Point> = (0..rows)
+        .map(|index| Point {
+            index,
+            value: Some((index + 1).to_string()),
+        })
+        .collect();
+    points.push(Point {
+        index: 0,
+        value: Some("1".into()),
+    });
+    let cache = cache_xml(Some(rows + 1), &points);
+    let mut book = read_book(&one_chart_workbook(
+        1,
+        rows as u32,
+        &[(formula.clone(), cache)],
+    ));
+    assert_eq!(report_tuple(&book), (1, 4, 4, 0, 0, 0, 0, 0));
+    let source = &stored_caches(&book)[0];
+    assert_eq!(
+        source["index_runs"],
+        serde_json::json!([{"start": 0, "len": 20_000}, {"start": 0, "len": 1}])
+    );
+    assert_eq!(
+        source["exceptions"],
+        serde_json::json!([
+            {"index": 0, "value": "1", "loaded_display": "1"},
+            {"index": 0, "value": "1", "loaded_display": "1"},
+        ])
+    );
+    book.sheet_mut(0)
+        .unwrap()
+        .cell_mut("A1")
+        .set_value_number(9);
+    let mut expected = (1..=rows)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    expected[0] = "9".into();
+    expected.push("9".into());
+    let expected = cache_xml(
+        Some(rows + 1),
+        &expected
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| Point {
+                index: if index == rows { 0 } else { index },
+                value: Some(value),
+            })
+            .collect::<Vec<_>>(),
+    );
+    // Complete XML equality checks both index-zero occurrences and every run
+    // point.
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+        reference_xml(&formula, &expected)
+    );
+}
+
+#[test]
+fn rejected_caches_keep_cached_names_and_complete_costs() {
+    let filler_formula = column_range('A', 16_384);
+    let rejected_formula = "Sheet1!$B$1:$B$2".to_string();
+    let filler = dense_cache(16_384, |_| "x".into());
+    let rejected = concat!(
+        "<c:strCache><c:ptCount val=\"5\"/>",
+        "<c:pt idx=\"0\"><c:v>Revenue &amp; Sales</c:v></c:pt>",
+        "<c:pt idx=\"00\"><c:v>Wrong</c:v></c:pt>",
+        "<c:pt idx=\"0\"/>",
+        "<c:pt idx=\"0\"></c:pt>",
+        "<c:pt idx=\"1\"><c:v>late</c:v></c:pt></c:strCache>"
+    );
+    let book = read_book(&one_chart_workbook(
+        2,
+        16_384,
+        &[
+            (filler_formula, filler),
+            (rejected_formula.clone(), rejected.into()),
+        ],
+    ));
+    // The filler uses the workbook's independent `1..=16,384` displays;
+    // its retained text is `16,384` x labels plus their decimal displays.
+    assert_eq!(report_tuple(&book), (1, 16_384, 87_198, 1, 0, 1, 9, 29));
+    let reference = book.sheet(0).unwrap().chart_collection()[0]
+        .chart_space()
+        .chart()
+        .plot_area()
+        .chart_groups()
+        .next()
+        .unwrap()
+        .series()
+        .area_chart_series()[1]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    assert_eq!(reference.cached_value(), Some(""));
+    assert!(reference.string_cache().source().is_none());
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 1),
+        generated(&rejected_formula, 2)
+    );
+}
+
+#[test]
+fn reordered_reproducible_points_keep_their_shape() {
+    for (rows, report) in [
+        (16_000, (1, 16_000, 0, 0, 0, 0, 0, 0)),
+        (20_000, (0, 0, 0, 1, 0, 1, 20_000, 0)),
+    ] {
+        let formula = column_range('A', rows);
+        let points = (0..rows)
+            .step_by(2)
+            .chain((1..rows).step_by(2))
+            .map(|index| Point {
+                index,
+                value: Some((index + 1).to_string()),
+            })
+            .collect::<Vec<_>>();
+        let cache = cache_xml(Some(rows), &points);
+        let book = read_book(&one_chart_workbook(
+            1,
+            rows as u32,
+            &[(formula.clone(), cache.clone())],
+        ));
+        assert_eq!(report_tuple(&book), report);
+        if rows == 16_000 {
+            let source = &stored_caches(&book)[0];
+            assert_eq!(source["index_runs"].as_array().unwrap().len(), rows);
+            assert_eq!(source["exceptions"], serde_json::json!([]));
+            // Complete equality checks all 16,000 reordered points.
+            assert_eq!(
+                category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+                reference_xml(&formula, &cache)
+            );
+        } else {
+            assert!(stored_caches(&book).is_empty());
+            assert_eq!(
+                category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+                generated(&formula, rows)
+            );
+        }
+    }
+}
+
+#[test]
+fn shared_chart_parts_are_independent_admission_occurrences() {
+    let rows = 10_000;
+    let formula = column_range('A', rows);
+    let cache = dense_cache(rows, |index| format!("L{index}"));
+    let bytes = one_chart_workbook(1, rows as u32, &[(formula.clone(), cache.clone())]);
+    let bytes = rewrite_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+        let start = xml.find("<xdr:twoCellAnchor>").unwrap();
+        let end = xml[start..].find("</xdr:twoCellAnchor>").unwrap()
+            + start
+            + "</xdr:twoCellAnchor>".len();
+        let anchor = &xml[start..end];
+        xml.replacen("</xdr:wsDr>", &format!("{anchor}</xdr:wsDr>"), 1)
+    });
+    let book = read_book(&bytes);
+    assert_eq!(
+        report_tuple(&book),
+        (1, 10_000, 87_784, 1, 0, 1, 10_000, 87_784)
+    );
+    let charts = book.sheet(0).unwrap().chart_collection();
+    assert_eq!(charts.len(), 2);
+    let references = charts
+        .iter()
+        .map(|chart| {
+            chart
+                .chart_space()
+                .chart()
+                .plot_area()
+                .chart_groups()
+                .next()
+                .unwrap()
+                .series()
+                .area_chart_series()[0]
+                .category_axis_data()
+                .unwrap()
+                .string_reference()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(references[0].cached_value(), Some("L0"));
+    assert_eq!(references[1].cached_value(), Some("L0"));
+    assert_eq!(
+        references[0]
+            .string_cache()
+            .source()
+            .map(|source| source.formula()),
+        Some(formula.as_str())
+    );
+    assert!(references[1].string_cache().source().is_none());
+    assert_eq!(
+        formulas(&stored_caches(&book)),
+        std::slice::from_ref(&formula)
+    );
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+        reference_xml(&formula, &cache)
+    );
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart2.xml"), 0),
+        generated(&formula, rows)
+    );
+}
+
+#[test]
+fn chart_collection_admission_precedes_a_one_cell_frame_even_when_xml_reverses_them() {
+    let filler_formula = column_range('A', 16_383);
+    let collection_formula = "Sheet1!$B$1".to_string();
+    let frame_formula = "Sheet1!$C$1".to_string();
+    let filler = dense_cache(16_383, |_| "x".into());
+    let single = dense_cache(1, |_| "x".into());
+    let mut initial = number_workbook(3, 16_383);
+    for row in 1..=16_383 {
+        initial
+            .sheet_mut(0)
+            .unwrap()
+            .cell_mut((1, row))
+            .set_value_number(1);
+    }
+    add_chart(
+        &mut initial,
+        "Sheet1",
+        std::slice::from_ref(&filler_formula),
+    );
+    add_chart(
+        &mut initial,
+        "Sheet1",
+        std::slice::from_ref(&collection_formula),
+    );
+    add_chart(&mut initial, "Sheet1", std::slice::from_ref(&frame_formula));
+    let mut bytes = write(&initial);
+    for (part_name, cache) in [
+        ("xl/charts/chart1.xml", &filler),
+        ("xl/charts/chart2.xml", &single),
+        ("xl/charts/chart3.xml", &single),
+    ] {
+        bytes = rewrite_part(&bytes, part_name, |xml| {
+            replace_category_cache(&xml, 0, cache)
+        });
+    }
+    let bytes = rewrite_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+        let mut anchors = Vec::new();
+        let mut from = 0;
+        while let Some(start_at) = xml[from..].find("<xdr:twoCellAnchor>") {
+            let start = from + start_at;
+            let end = start
+                + xml[start..].find("</xdr:twoCellAnchor>").unwrap()
+                + "</xdr:twoCellAnchor>".len();
+            anchors.push((start, end));
+            from = end;
+        }
+        assert_eq!(anchors.len(), 3);
+        let first = &xml[anchors[0].0..anchors[0].1];
+        let second = &xml[anchors[1].0..anchors[1].1];
+        let third = &xml[anchors[2].0..anchors[2].1];
+        format!(
+            "{}{}{}{}{}",
+            &xml[..anchors[0].0],
+            one_cell_chart_anchor(third),
+            first,
+            second,
+            &xml[anchors[2].1..]
+        )
+    });
+    let mut book = read_book(&bytes);
+    assert_eq!(report_tuple(&book), (2, 16_384, 32_768, 1, 0, 1, 1, 2));
+    assert_eq!(
+        formulas(&stored_caches(&book)),
+        [filler_formula.clone(), collection_formula.clone()]
+    );
+    let drawing = book.sheet(0).unwrap().worksheet_drawing();
+    assert_eq!(drawing.chart_collection().len(), 2);
+    assert_eq!(drawing.one_cell_anchor_collection().len(), 1);
+    assert!(drawing.image_collection().is_empty());
+    let frame = &drawing.one_cell_anchor_collection()[0];
+    assert_eq!(
+        (
+            frame.from_marker().col(),
+            frame.from_marker().row(),
+            frame.from_marker().col_off(),
+            frame.from_marker().row_off(),
+        ),
+        (7, 0, 0, 0)
+    );
+    assert_eq!((frame.extent().cx(), frame.extent().cy()), (1, 1));
+    let category = frame
+        .graphic_frame()
+        .unwrap()
+        .graphic()
+        .graphic_data()
+        .chart_space()
+        .chart()
+        .plot_area()
+        .chart_groups()
+        .next()
+        .unwrap()
+        .series()
+        .area_chart_series()[0]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    assert!(category.string_cache().source().is_none());
+    let exported = write(&book);
+    assert_eq!(
+        category_reference(&part(&exported, "xl/charts/chart1.xml"), 0),
+        reference_xml(&filler_formula, &filler)
+    );
+    assert_eq!(
+        category_reference(&part(&exported, "xl/charts/chart2.xml"), 0),
+        reference_xml(&collection_formula, &single)
+    );
+    let exported = export_one_cell_frame(&mut book);
+    assert_eq!(
+        category_reference(&exported, 0),
+        generated(&frame_formula, 1)
+    );
+}
+
+#[test]
+fn category_admission_precedes_text_when_the_file_places_text_first() {
+    let rows = 16_383;
+    let filler_formula = column_range('A', rows);
+    let category_formula = "Sheet1!$B$1".to_string();
+    let text_formula = "Sheet1!$C$1".to_string();
+    let filler = dense_cache(rows, |_| "x".into());
+    let single = dense_cache(1, |_| "x".into());
+    let mut source = number_workbook(3, rows as u32);
+    for row in 1..=rows {
+        source
+            .sheet_mut(0)
+            .unwrap()
+            .cell_mut((1, row as u32))
+            .set_value_number(1);
+    }
+    add_chart(
+        &mut source,
+        "Sheet1",
+        &[filler_formula.clone(), category_formula.clone()],
+    );
+    let mut bytes = write(&source);
+    bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |mut xml| {
+        xml = replace_category_cache(&xml, 0, &filler);
+        xml = replace_category_cache(&xml, 1, &single);
+        xml
+    });
+    let bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+        let second = xml.match_indices("<c:ser>").nth(1).unwrap().0;
+        let category = second + xml[second..].find("<c:cat>").unwrap();
+        let text = format!("<c:tx>{}</c:tx>", reference_xml(&text_formula, &single));
+        format!("{}{}{}", &xml[..category], text, &xml[category..])
+    });
+    let book = read_book(&bytes);
+    assert_eq!(report_tuple(&book), (2, 16_384, 32_768, 1, 0, 1, 1, 2));
+    assert_eq!(
+        formulas(&stored_caches(&book)),
+        [filler_formula.clone(), category_formula.clone()]
+    );
+    let text = book.sheet(0).unwrap().chart_collection()[0]
+        .chart_space()
+        .chart()
+        .plot_area()
+        .chart_groups()
+        .next()
+        .unwrap()
+        .series()
+        .area_chart_series()[1]
+        .chart_text()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    assert_eq!(text.cached_value(), Some("x"));
+    let exported = part(&write(&book), "xl/charts/chart1.xml");
+    assert_eq!(
+        series_text_reference(&exported, 0),
+        generated(&text_formula, 1)
+    );
+    assert_eq!(
+        category_reference(&exported, 0),
+        reference_xml(&filler_formula, &filler)
+    );
+    assert_eq!(
+        category_reference(&exported, 1),
+        reference_xml(&category_formula, &single)
+    );
+}
+
+#[test]
+fn discarded_chart_parts_do_not_charge_caches_before_a_supported_chart() {
+    let first_formula = "Sheet1!$A$1".to_string();
+    let second_formula = "Sheet1!$B$1".to_string();
+    let mut initial = number_workbook(2, 1);
+    add_chart(&mut initial, "Sheet1", std::slice::from_ref(&first_formula));
+    add_chart(
+        &mut initial,
+        "Sheet1",
+        std::slice::from_ref(&second_formula),
+    );
+    let mut bytes = write(&initial);
+    bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+        let title = format!(
+            "<c:title><c:tx>{}</c:tx></c:title>",
+            reference_xml(&first_formula, &dense_cache(1, |_| "A".into()))
+        );
+        replace_category_cache(&xml, 0, &dense_cache(1, |_| "A".into()))
+            .replacen("<c:plotArea>", &format!("{title}<c:plotArea>"), 1)
+            .replace("c:lineChart", "c:unmodeled")
+    });
+    bytes = rewrite_part(&bytes, "xl/charts/chart2.xml", |xml| {
+        replace_category_cache(&xml, 0, &dense_cache(1, |_| "B".into()))
+    });
+    let book = read_book(&bytes);
+    assert_eq!(book.sheet(0).unwrap().chart_collection().len(), 1);
+    assert_eq!(report_tuple(&book), (1, 1, 2, 0, 0, 0, 0, 0));
+    assert_eq!(
+        formulas(&stored_caches(&book)),
+        std::slice::from_ref(&second_formula)
+    );
+    assert_eq!(
+        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+        reference_xml(&second_formula, &dense_cache(1, |_| "B".into()))
+    );
+    assert_eq!(
+        part(&write(&book), "xl/charts/chart1.xml")
+            .matches("<c:title>")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn one_graphic_data_can_merge_references_from_two_chart_parts() {
+    let first_formula = "Sheet1!$A$1".to_string();
+    let second_formula = "Sheet1!$B$1".to_string();
+    let mut initial = number_workbook(2, 1);
+    add_chart(&mut initial, "Sheet1", std::slice::from_ref(&first_formula));
+    add_chart(
+        &mut initial,
+        "Sheet1",
+        std::slice::from_ref(&second_formula),
+    );
+    let mut bytes = write(&initial);
+    let first_cache = dense_cache(1, |_| "A".into());
+    let second_cache = dense_cache(1, |_| "B".into());
+    bytes = rewrite_part(&bytes, "xl/charts/chart1.xml", |xml| {
+        replace_category_cache(&xml, 0, &first_cache)
+    });
+    bytes = rewrite_part(&bytes, "xl/charts/chart2.xml", |xml| {
+        let title = format!(
+            "<c:title><c:tx>{}</c:tx></c:title>",
+            reference_xml(&second_formula, &second_cache)
+        );
+        let chart_start = xml.find("<c:chart>").unwrap() + "<c:chart>".len();
+        let group_start = xml.find("<c:lineChart>").unwrap();
+        let group_end = group_start
+            + xml[group_start..].find("</c:lineChart>").unwrap()
+            + "</c:lineChart>".len();
+        format!(
+            "{}{}{}{}",
+            &xml[..chart_start],
+            title,
+            &xml[chart_start..group_start],
+            &xml[group_end..]
+        )
+    });
+    let bytes = rewrite_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+        let first_start = xml.find("<xdr:twoCellAnchor>").unwrap();
+        let first_end = first_start
+            + xml[first_start..].find("</xdr:twoCellAnchor>").unwrap()
+            + "</xdr:twoCellAnchor>".len();
+        let second_start = xml[first_end..].find("<xdr:twoCellAnchor>").unwrap() + first_end;
+        let second_end = second_start
+            + xml[second_start..].find("</xdr:twoCellAnchor>").unwrap()
+            + "</xdr:twoCellAnchor>".len();
+        let first = &xml[first_start..first_end];
+        let second = &xml[second_start..second_end];
+        let chart_start = second.find("<c:chart ").unwrap();
+        let chart_end = chart_start + second[chart_start..].find("/>").unwrap() + 2;
+        let extra_chart = &second[chart_start..chart_end];
+        let graphic_end = first.find("</a:graphicData>").unwrap();
+        let merged = format!(
+            "{}{extra_chart}{}",
+            &first[..graphic_end],
+            &first[graphic_end..]
+        );
+        format!("{}{}{}", &xml[..first_start], merged, &xml[second_end..])
+    });
+    let book = read_book(&bytes);
+    assert_eq!(book.sheet(0).unwrap().chart_collection().len(), 1);
+    assert_eq!(report_tuple(&book), (2, 2, 4, 0, 0, 0, 0, 0));
+    assert_eq!(
+        formulas(&stored_caches(&book)),
+        [first_formula, second_formula]
+    );
+    let chart = &book.sheet(0).unwrap().chart_collection()[0];
+    let title = chart
+        .chart_space()
+        .chart()
+        .title()
+        .unwrap()
+        .chart_text()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    let category = chart
+        .chart_space()
+        .chart()
+        .plot_area()
+        .chart_groups()
+        .next()
+        .unwrap()
+        .series()
+        .area_chart_series()[0]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    assert_eq!(title.cached_value(), Some("B"));
+    assert_eq!(category.cached_value(), Some("A"));
+    assert_eq!(
+        title.string_cache().source().unwrap().formula(),
+        "Sheet1!$B$1"
+    );
+    assert_eq!(
+        category.string_cache().source().unwrap().formula(),
+        "Sheet1!$A$1"
+    );
+    let exported = part(&write(&book), "xl/charts/chart1.xml");
+    assert_eq!(
+        title_reference(&exported),
+        reference_xml("Sheet1!$B$1", &second_cache)
+    );
+    assert_eq!(
+        category_reference(&exported, 0),
+        reference_xml("Sheet1!$A$1", &first_cache)
     );
 }
 

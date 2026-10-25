@@ -440,6 +440,7 @@ impl ValueAxis {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
@@ -449,7 +450,7 @@ impl ValueAxis {
                 }
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.set_title(obj);
                 }
                 b"spPr" => {

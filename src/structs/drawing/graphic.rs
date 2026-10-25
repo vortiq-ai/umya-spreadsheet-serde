@@ -63,13 +63,15 @@ impl Graphic {
         reader: &mut Reader<R>,
         _e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
                 if e.name().into_inner() == b"a:graphicData" {
                     self.graphic_data
-                        .set_attributes(reader, e, drawing_relationships);
+                        .set_attributes(reader, e, drawing_relationships, session, provider);
                 }
             },
             Event::End(ref e) => {

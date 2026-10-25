@@ -14,6 +14,8 @@ use crate::{
         coordinate::column_index_from_string,
     },
     reader::xlsx::{
+        LazyChartPartProvider,
+        SourceCacheSession,
         capture_chart_source_caches,
         raw_to_deserialize_by_worksheet,
     },
@@ -610,14 +612,22 @@ impl Workbook {
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
         let mut deserialized = Vec::new();
         for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
             if !worksheet.is_deserialized() {
-                raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
+                raw_to_deserialize_by_worksheet(
+                    worksheet,
+                    &shared_string_table,
+                    &stylesheet,
+                    &mut session,
+                    &mut provider,
+                );
                 deserialized.push(index);
             }
         }
-        capture_chart_source_caches(self, &deserialized);
+        capture_chart_source_caches(self, &deserialized, &mut session, &mut provider);
         self
     }
 
@@ -630,9 +640,17 @@ impl Workbook {
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
         let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
-        raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
-        capture_chart_source_caches(self, &[index]);
+        raw_to_deserialize_by_worksheet(
+            worksheet,
+            &shared_string_table,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        capture_chart_source_caches(self, &[index], &mut session, &mut provider);
         self
     }
 
@@ -722,9 +740,17 @@ impl Workbook {
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
         let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
-        raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet);
-        capture_chart_source_caches(self, &[index]);
+        raw_to_deserialize_by_worksheet(
+            worksheet,
+            &shared_string_table,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        capture_chart_source_caches(self, &[index], &mut session, &mut provider);
         Ok(self.work_sheet_collection.get_mut(index).unwrap())
     }
 

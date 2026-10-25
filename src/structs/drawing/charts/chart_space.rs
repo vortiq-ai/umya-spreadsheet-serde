@@ -233,6 +233,7 @@ impl ChartSpace {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
@@ -243,7 +244,7 @@ impl ChartSpace {
                     self.set_style(obj);
                 }
                 b"chart" => {
-                    self.chart.set_attributes(reader, e);
+                    self.chart.set_attributes(reader, e, session);
                 }
                 b"printSettings" => {
                     let mut obj = PrintSettings::default();

@@ -438,6 +438,8 @@ impl WorksheetDrawing {
         _e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
         ole_objects: &mut OleObjects,
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) {
         let mut ole_index = 0;
         let mut is_alternate_content = false;
@@ -454,7 +456,7 @@ impl WorksheetDrawing {
                             continue;
                         }
                         let mut obj = OneCellAnchor::default();
-                        obj.set_attributes(reader, e, drawing_relationships);
+                        obj.set_attributes(reader, e, drawing_relationships, session, provider);
                         if obj.is_image() {
                             let mut image = Image::default();
                             image.set_one_cell_anchor(obj);
@@ -469,16 +471,19 @@ impl WorksheetDrawing {
                             os[ole_index]
                                 .two_cell_anchor_mut()
                                 .set_is_alternate_content(true);
+                            let immediate = session.immediate_subsession();
                             os[ole_index].two_cell_anchor_mut().set_attributes(
                                 reader,
                                 e,
                                 drawing_relationships,
+                                &immediate,
+                                provider,
                             );
                             ole_index += 1;
                             continue;
                         }
                         let mut obj = TwoCellAnchor::default();
-                        obj.set_attributes(reader, e, drawing_relationships);
+                        obj.set_attributes(reader, e, drawing_relationships, session, provider);
                         if obj.is_support() {
                             if obj.is_chart() {
                                 let mut chart = Chart::default();

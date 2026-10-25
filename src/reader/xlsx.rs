@@ -52,7 +52,15 @@ mod workbook;
 mod workbook_rels;
 pub(crate) mod worksheet;
 
-pub(crate) use self::chart_cache::capture_chart_source_caches;
+pub(crate) use self::chart_cache::{
+    ChartPartProvider,
+    EagerChartPartProvider,
+    LazyChartPartProvider,
+    SourceCacheSession,
+    capture_chart_source_caches,
+    finalize_parsed_string_cache,
+    register_parsed_string_cache,
+};
 
 /// read spreadsheet from arbitrary reader.
 /// # Arguments
@@ -124,14 +132,14 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
             let mut raw_worksheet = RawWorksheet::default();
             match source_file {
                 Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file),
-                None => raw_worksheet.read(&mut arv, rel_target),
+                None => raw_worksheet.read(&mut arv, rel_target, with_sheet_read),
             }
             sheet.set_raw_data_of_worksheet(raw_worksheet);
         }
     }
 
     if with_sheet_read {
-        book.read_sheet_collection();
+        materialize_eager_sheets(&mut book, &mut arv);
     }
 
     Ok(book)
@@ -210,6 +218,8 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     worksheet: &mut Worksheet,
     shared_string_table: &RwLock<SharedStringTable>,
     stylesheet: &Stylesheet,
+    session: &mut SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
 ) {
     if worksheet.is_deserialized() {
         return;
@@ -227,6 +237,11 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     raw_data_of_worksheet
         .load_relationship_file_data_from_source()
         .unwrap();
+    let mut chart_parts = std::collections::HashMap::new();
+    for relationships in raw_data_of_worksheet.relationships_list_mut() {
+        chart_parts.extend(relationships.take_chart_part_buffers());
+    }
+    provider.add_pending(chart_parts);
 
     if let Some(v) = raw_data_of_worksheet.worksheet_relationships() {
         for relationship in v.relationship_list() {
@@ -237,6 +252,8 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
                         worksheet,
                         relationship.raw_file(),
                         raw_data_of_worksheet.drawing_relationships(),
+                        session,
+                        provider,
                     );
                 }
                 // comment
@@ -274,4 +291,29 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
             }
         }
     }
+    provider.finish_sheet(session);
+}
+
+fn materialize_eager_sheets<R: io::Read + io::Seek>(
+    book: &mut Workbook,
+    archive: &mut zip::read::ZipArchive<R>,
+) {
+    let shared_string_table = book.shared_string_table();
+    let stylesheet = book.stylesheet().clone();
+    let mut session = SourceCacheSession::deferred();
+    let mut provider = EagerChartPartProvider::new(archive);
+    let mut deserialized = Vec::new();
+    for (index, worksheet) in book.sheet_collection_unchecked_mut().iter_mut().enumerate() {
+        if !worksheet.is_deserialized() {
+            raw_to_deserialize_by_worksheet(
+                worksheet,
+                &shared_string_table,
+                &stylesheet,
+                &mut session,
+                &mut provider,
+            );
+            deserialized.push(index);
+        }
+    }
+    capture_chart_source_caches(book, &deserialized, &mut session, &mut provider);
 }

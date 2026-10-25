@@ -129,6 +129,7 @@ impl RawRelationship {
         arv: &mut zip::read::ZipArchive<A>,
         base_path: &str,
         source_file: Option<&Path>,
+        defer_chart_data: bool,
     ) {
         let Some(id) = get_attribute(e, b"Id") else {
             return;
@@ -147,6 +148,11 @@ impl RawRelationship {
         }
         if self.target_mode() != "External" {
             let target = self.target().to_string();
+            if defer_chart_data && self.get_type() == crate::helper::const_str::CHART_NS {
+                self.raw_file_mut()
+                    .set_file_target(crate::reader::driver::join_paths(base_path, &target));
+                return;
+            }
             match source_file {
                 Some(source_file) => self.raw_file_mut().set_attributes_from_source(
                     arv,

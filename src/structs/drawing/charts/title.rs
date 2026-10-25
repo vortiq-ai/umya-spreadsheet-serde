@@ -140,13 +140,14 @@ impl Title {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match local_name(e.name().0) {
                 b"tx" => {
                     let mut obj = ChartText::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.set_chart_text(obj);
                 }
                 b"layout" => {

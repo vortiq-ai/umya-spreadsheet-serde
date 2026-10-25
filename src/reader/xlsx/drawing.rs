@@ -4,7 +4,13 @@ use quick_xml::{
 };
 
 use crate::{
-    reader::driver::xml_read_loop,
+    reader::{
+        driver::xml_read_loop,
+        xlsx::{
+            ChartPartProvider,
+            SourceCacheSession,
+        },
+    },
     structs::{
         Worksheet,
         drawing::spreadsheet::WorksheetDrawing,
@@ -19,6 +25,8 @@ pub(crate) fn read(
     worksheet: &mut Worksheet,
     drawing_file: &RawFile,
     drawing_relationships: Option<&RawRelationships>,
+    session: &mut SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
 ) {
     let data = std::io::Cursor::new(drawing_file.file_data());
     let mut reader = Reader::from_reader(data);
@@ -34,7 +42,10 @@ pub(crate) fn read(
                     e,
                     drawing_relationships,
                     worksheet.ole_objects_mut(),
+                    session,
+                    provider,
                 );
+                session.hydrate_image_frames(&mut obj, provider);
                 worksheet.set_worksheet_drawing(obj);
             }
         },

@@ -163,6 +163,8 @@ impl GraphicFrame {
         reader: &mut Reader<R>,
         e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) {
         if let Some(v) = get_unescaped_attribute(e, b"macro") {
             self.r#macro.set_value_string(v);
@@ -181,7 +183,7 @@ impl GraphicFrame {
                     }
                     b"a:graphic" | b"graphic" => {
                         self.graphic
-                            .set_attributes(reader, e, drawing_relationships);
+                            .set_attributes(reader, e, drawing_relationships, session, provider);
                         }
                     _ => (),
                 }

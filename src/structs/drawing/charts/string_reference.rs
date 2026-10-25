@@ -13,13 +13,19 @@ use quick_xml::{
 use super::Formula;
 use super::StringCache;
 use crate::{
-    reader::driver::local_name,
+    reader::{
+        driver::local_name,
+        xlsx::{
+            SourceCacheSession,
+            finalize_parsed_string_cache,
+            register_parsed_string_cache,
+        },
+    },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -93,35 +99,56 @@ impl StringReference {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &SourceCacheSession,
     ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
-                b"f" => {
-                    self.formula.set_attributes(reader, e);
-                }
-                b"strCache" => {
-                    (self.cached_value, self.string_cache) =
-                        StringCache::set_attributes(reader, e, self.formula.address_str());
-                }
-                _ => (),
-            },
-            Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"strCache" {
-                    self.string_cache = StringCache::empty_source(self.formula.address_str());
-                }
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"strRef" {
-                    if let Some(source) = self.string_cache.take_source() {
-                        self.string_cache
-                            .set_source(Some(source.with_formula(self.formula.address_str())));
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            let start = reader.buffer_position();
+            match reader.read_event_into(&mut buffer).unwrap() {
+                Event::Start(e) => match local_name(e.name().into_inner()) {
+                    b"f" => self.formula.set_attributes(reader, &e),
+                    b"strCache" if session.is_deferred() => {
+                        (self.cached_value, self.string_cache) =
+                            StringCache::set_deferred_attributes(
+                                reader,
+                                self.formula.address_str(),
+                            );
+                        register_parsed_string_cache(
+                            session,
+                            &mut self.string_cache,
+                            Some((start, reader.buffer_position())),
+                        );
                     }
+                    b"strCache" => {
+                        (self.cached_value, self.string_cache) =
+                            StringCache::set_attributes(reader, &e, self.formula.address_str());
+                        register_parsed_string_cache(session, &mut self.string_cache, None);
+                    }
+                    _ => (),
+                },
+                Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => {
+                    self.string_cache = StringCache::empty_source(self.formula.address_str());
+                    register_parsed_string_cache(
+                        session,
+                        &mut self.string_cache,
+                        session
+                            .is_deferred()
+                            .then_some((start, reader.buffer_position())),
+                    );
+                }
+                Event::End(e) if local_name(e.name().into_inner()) == b"strRef" => {
+                    finalize_parsed_string_cache(
+                        session,
+                        &mut self.string_cache,
+                        self.formula.address_str(),
+                    );
                     return;
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strRef"),
-        );
+                Event::Eof => panic!("Error: Could not find {} end element", "c:strRef"),
+                _ => (),
+            }
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {

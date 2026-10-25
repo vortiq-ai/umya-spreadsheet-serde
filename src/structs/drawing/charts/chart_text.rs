@@ -113,6 +113,7 @@ impl ChartText {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
@@ -125,7 +126,7 @@ impl ChartText {
                     }
                     b"strRef" => {
                         let mut obj = StringReference::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session);
                         self.set_string_reference(obj);
                     }
                     b"v" => {

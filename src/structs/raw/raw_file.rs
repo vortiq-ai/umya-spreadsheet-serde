@@ -132,6 +132,34 @@ impl RawFile {
         self
     }
 
+    pub(crate) fn take_file_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.file_data)
+    }
+
+    pub(crate) fn source_file_owned(&self) -> Option<PathBuf> {
+        self.source_file.clone()
+    }
+
+    pub(crate) fn read_from_source_or_empty(target: &str, source_file: Option<&Path>) -> Vec<u8> {
+        let Some(source_file) = source_file else {
+            return Vec::new();
+        };
+        let Ok(file) = File::open(source_file) else {
+            return Vec::new();
+        };
+        let Ok(mut archive) = zip::read::ZipArchive::new(file) else {
+            return Vec::new();
+        };
+        let Ok(mut source) = zip_by_name(&mut archive, target) else {
+            return Vec::new();
+        };
+        let mut data = Vec::new();
+        if source.read_to_end(&mut data).is_err() {
+            data.clear();
+        }
+        data
+    }
+
     pub(crate) fn set_attributes<R: Read + io::Seek>(
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,

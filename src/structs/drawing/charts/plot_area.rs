@@ -888,6 +888,7 @@ impl PlotArea {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
@@ -897,87 +898,87 @@ impl PlotArea {
                 }
                 b"lineChart" => {
                     let mut obj = LineChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::LineChart(obj));
                 }
                 b"line3DChart" => {
                     let mut obj = Line3DChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::Line3DChart(obj));
                 }
                 b"pieChart" => {
                     let mut obj = PieChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::PieChart(obj));
                 }
                 b"pie3DChart" => {
                     let mut obj = Pie3DChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::Pie3DChart(obj));
                 }
                 b"doughnutChart" => {
                     let mut obj = DoughnutChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::DoughnutChart(obj));
                 }
                 b"scatterChart" => {
                     let mut obj = ScatterChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::ScatterChart(obj));
                 }
                 b"barChart" => {
                     let mut obj = BarChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::BarChart(obj));
                 }
                 b"bar3DChart" => {
                     let mut obj = Bar3DChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::Bar3DChart(obj));
                 }
                 b"radarChart" => {
                     let mut obj = RadarChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::RadarChart(obj));
                 }
                 b"bubbleChart" => {
                     let mut obj = BubbleChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::BubbleChart(obj));
                 }
                 b"areaChart" => {
                     let mut obj = AreaChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::AreaChart(obj));
                 }
                 b"area3DChart" => {
                     let mut obj = Area3DChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::Area3DChart(obj));
                 }
                 b"ofPieChart" => {
                     let mut obj = OfPieChart::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.push_chart_group(ChartGroup::OfPieChart(obj));
                 }
                 b"catAx" => {
                     let mut obj = CategoryAxis::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.add_category_axis(obj);
                 }
                 b"dateAx" => {
                     let mut obj = DateAxis::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.add_date_axis(obj);
                 }
                 b"valAx" => {
                     let mut obj = ValueAxis::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.add_value_axis(obj);
                 }
                 b"serAx" => {
                     let mut obj = SeriesAxis::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.add_series_axis(obj);
                 }
                 b"spPr" => {

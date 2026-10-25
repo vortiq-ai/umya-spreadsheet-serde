@@ -494,13 +494,14 @@ impl CategoryAxis {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match local_name(e.name().into_inner()) {
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session);
                     self.set_title(obj);
                 }
                 b"scaling" => {

@@ -74,6 +74,8 @@ impl GraphicData {
         reader: &mut Reader<R>,
         _e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) {
         xml_read_loop!(
             reader,
@@ -83,7 +85,7 @@ impl GraphicData {
                     let relationship = drawing_relationships
                         .unwrap()
                         .relationship_by_rid(&chart_id);
-                    chart::read(relationship.raw_file(), &mut self.chart_space);
+                    chart::read(relationship.raw_file(), &mut self.chart_space, session, provider);
                 }
             },
             Event::End(ref e) => {

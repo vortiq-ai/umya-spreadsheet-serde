@@ -136,12 +136,13 @@ impl RawWorksheet {
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,
         target: &str,
+        defer_chart_data: bool,
     ) {
         self.worksheet_file_mut().set_attributes(arv, "xl", target);
 
         let base_path = self.worksheet_file().path();
         let target = self.worksheet_file().make_rel_name();
-        self.read_rawrelationships(arv, &base_path, &target, None);
+        self.read_rawrelationships(arv, &base_path, &target, None, defer_chart_data);
     }
 
     pub(crate) fn read_lazy<R: io::Read + io::Seek, P: AsRef<Path>>(
@@ -159,7 +160,7 @@ impl RawWorksheet {
 
         let base_path = self.worksheet_file().path();
         let target = self.worksheet_file().make_rel_name();
-        self.read_rawrelationships(arv, &base_path, &target, Some(source_file.as_ref()));
+        self.read_rawrelationships(arv, &base_path, &target, Some(source_file.as_ref()), false);
     }
 
     pub(crate) fn read_rawrelationships<R: io::Read + io::Seek>(
@@ -168,13 +169,20 @@ impl RawWorksheet {
         base_path: &str,
         target: &str,
         source_file: Option<&Path>,
+        defer_chart_data: bool,
     ) {
         let mut obj = RawRelationships::default();
-        if obj.set_attributes(arv, base_path, target, source_file) {
+        if obj.set_attributes(arv, base_path, target, source_file, defer_chart_data) {
             for relationship in obj.relationship_list() {
                 let rels_base_path = relationship.raw_file().path();
                 let rels_target = relationship.raw_file().make_rel_name();
-                self.read_rawrelationships(arv, &rels_base_path, &rels_target, source_file);
+                self.read_rawrelationships(
+                    arv,
+                    &rels_base_path,
+                    &rels_target,
+                    source_file,
+                    defer_chart_data,
+                );
             }
             self.set_relationships(obj);
         }
@@ -188,6 +196,9 @@ impl RawWorksheet {
     pub(crate) fn load_relationship_file_data_from_source(&mut self) -> Result<(), XlsxError> {
         for relationships in self.relationships_list_mut() {
             for relationship in relationships.relationship_list_mut() {
+                if relationship.get_type() == crate::helper::const_str::CHART_NS {
+                    continue;
+                }
                 relationship.raw_file_mut().load_file_data_from_source()?;
             }
         }

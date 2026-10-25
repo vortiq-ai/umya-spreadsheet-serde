@@ -144,6 +144,7 @@ impl PieChart {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
@@ -151,7 +152,7 @@ impl PieChart {
                 match local_name(e.name().0) {
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session);
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }

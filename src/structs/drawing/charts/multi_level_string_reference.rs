@@ -254,7 +254,10 @@ impl MultiLevelStringPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::charts::CategoryAxisData;
+    use crate::{
+        drawing::charts::CategoryAxisData,
+        reader::xlsx::SourceCacheSession,
+    };
 
     const CATEGORIES: &str = r#"<c:cat><c:multiLvlStrRef><c:f>'Income &amp; Sales'!$A$2:$B$5</c:f><c:multiLvlStrCache><c:ptCount val="4"/><c:lvl><c:pt idx="0"><c:v>Jan &amp; Feb</c:v></c:pt><c:pt idx="3"><c:v>&lt;Apr&gt;</c:v></c:pt></c:lvl><c:lvl><c:pt idx="0"><c:v>2026</c:v></c:pt><c:pt idx="2"><c:v>2027</c:v></c:pt></c:lvl><c:lvl/></c:multiLvlStrCache></c:multiLvlStrRef></c:cat>"#;
 
@@ -265,7 +268,8 @@ mod tests {
             panic!("missing category root");
         };
         let mut categories = CategoryAxisData::default();
-        categories.set_attributes(&mut reader, &e);
+        let session = SourceCacheSession::immediate();
+        categories.set_attributes(&mut reader, &e, &session);
         categories
     }
 

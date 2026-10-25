@@ -469,6 +469,7 @@ impl AreaChartSeries {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         xml_read_loop!(
             reader,
@@ -483,7 +484,7 @@ impl AreaChartSeries {
                 match local_name(e.name().into_inner()) {
                     b"tx" => {
                         let mut obj = ChartText::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session);
                         self.set_chart_text(obj);
                     }
                     b"marker" => {
@@ -500,7 +501,7 @@ impl AreaChartSeries {
                     // `continue` here would skip the loop's `buf.clear()`.
                     if !is_empty_element {
                         let mut obj = CategoryAxisData::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session);
                         self.set_category_axis_data(obj);
                     }
                 }

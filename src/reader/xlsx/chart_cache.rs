@@ -1,21 +1,46 @@
 // Reduces newly materialized charts one cache at a time. Only references
 // into still-raw sheets share temporary coordinate lookups across caches.
-use std::collections::{
-    HashMap,
-    HashSet,
+#[cfg(test)]
+use std::cell::Cell as Flag;
+use std::{
+    cell::{
+        Cell as StateCell,
+        RefCell,
+    },
+    collections::{
+        HashMap,
+        HashSet,
+    },
+    ops::Range,
+    rc::Rc,
+};
+
+use quick_xml::{
+    Reader,
+    events::Event,
 };
 
 use crate::{
     helper::address::unescape_sheet_name,
+    reader::driver::{
+        get_attribute,
+        local_name,
+    },
     structs::{
         Cell,
         Workbook,
         drawing::charts::{
+            IndexRun,
             IndexedRange,
             MAX_SOURCE_CACHE_POINTS,
             MAX_SOURCE_CACHE_TEXT_BYTES,
+            SourceCache,
+            SourceException,
             StringReference,
             literal_text,
+            parse_point_count,
+            read_point_value,
+            visit_deferred_indices,
             visit_string_references,
         },
     },
@@ -23,9 +48,1012 @@ use crate::{
 
 type Coordinate = (u32, u32);
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ChartPartBufferObservation {
+    eager_live:                       usize,
+    eager_peak:                       usize,
+    eager_openings:                   usize,
+    failed_reads_have_no_buffer:      bool,
+    lazy_source_reads_have_no_buffer: bool,
+    lazy_sheet_boundaries:            usize,
+    lazy_pending_parts_are_exact:     bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHART_PART_BUFFER_OBSERVATION: RefCell<ChartPartBufferObservation> = RefCell::new(
+        ChartPartBufferObservation {
+            failed_reads_have_no_buffer: true,
+            lazy_source_reads_have_no_buffer: true,
+            lazy_pending_parts_are_exact: true,
+            ..ChartPartBufferObservation::default()
+        },
+    );
+}
+
+#[cfg(test)]
+fn reset_chart_part_buffer_observation() {
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+        *observation.borrow_mut() = ChartPartBufferObservation {
+            failed_reads_have_no_buffer: true,
+            lazy_source_reads_have_no_buffer: true,
+            lazy_pending_parts_are_exact: true,
+            ..ChartPartBufferObservation::default()
+        };
+    });
+}
+
+#[cfg(test)]
+fn chart_part_buffer_observation() -> ChartPartBufferObservation {
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| *observation.borrow())
+}
+
+#[cfg(test)]
+fn observe_eager_part_acquire(data: &PartBuffer, read_succeeded: bool) {
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+        let mut observation = observation.borrow_mut();
+        observation.eager_openings += 1;
+        if !read_succeeded {
+            observation.failed_reads_have_no_buffer &= data.data.is_empty();
+        }
+    });
+}
+
+/// One eager chart-part allocation. Test builds count it live from its
+/// creation until the owner is destroyed, wherever the owner has been moved.
+struct PartBuffer {
+    data:    Vec<u8>,
+    #[cfg(test)]
+    counted: bool,
+}
+
+impl PartBuffer {
+    fn new(data: Vec<u8>) -> Self {
+        #[cfg(test)]
+        let counted = data.capacity() != 0;
+        #[cfg(test)]
+        CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+            let mut observation = observation.borrow_mut();
+            observation.eager_live += usize::from(counted);
+            observation.eager_peak = observation.eager_peak.max(observation.eager_live);
+        });
+        Self {
+            data,
+            #[cfg(test)]
+            counted,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for PartBuffer {
+    fn drop(&mut self) {
+        let counted = usize::from(self.counted);
+        let _ = CHART_PART_BUFFER_OBSERVATION.try_with(|observation| {
+            let mut observation = observation.borrow_mut();
+            observation.eager_live = observation.eager_live.saturating_sub(counted);
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_eager_raw_parts(
+    pending: &HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>,
+) -> usize {
+    let live = pending
+        .values()
+        .filter(|(data, _)| data.capacity() != 0)
+        .count();
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+        let mut observation = observation.borrow_mut();
+        observation.eager_live += live;
+        observation.eager_peak = observation.eager_peak.max(observation.eager_live);
+    });
+    live
+}
+
+#[cfg(test)]
+fn observe_eager_raw_release(released: usize) {
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+        observation.borrow_mut().eager_live -= released;
+    });
+}
+
+#[cfg(test)]
+fn observe_lazy_source_read(data: &[u8]) {
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+        observation.borrow_mut().lazy_source_reads_have_no_buffer &= data.is_empty();
+    });
+}
+
+#[cfg(test)]
+fn observe_lazy_sheet_boundary(provider: &LazyChartPartProvider, session: &SourceCacheSession) {
+    CHART_PART_BUFFER_OBSERVATION.with(|observation| {
+        let mut observation = observation.borrow_mut();
+        observation.lazy_sheet_boundaries += 1;
+        observation.lazy_pending_parts_are_exact &= provider.expected_part.is_none_or(|part| {
+            provider.current.is_none()
+                && provider.last_released == Some(part)
+                && session
+                    .parts
+                    .borrow()
+                    .get(part)
+                    .and_then(|part| part.data.as_ref())
+                    .is_some_and(|data| {
+                        let _: &Box<[u8]> = data;
+                        true
+                    })
+        });
+    });
+}
+
+struct DeferredSource {
+    part:    usize,
+    start:   u64,
+    end:     u64,
+    formula: String,
+}
+
+struct ChartPart {
+    target: String,
+    data:   Option<Box<[u8]>>,
+}
+
+pub(crate) trait ChartPartProvider {
+    fn add_pending(&mut self, pending: HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>);
+
+    fn with_part(
+        &mut self,
+        target: &str,
+        session: &SourceCacheSession,
+        visit: &mut dyn FnMut(Option<&[u8]>),
+    );
+
+    fn finish_sheet(&mut self, session: &SourceCacheSession);
+}
+
+pub(crate) struct LazyChartPartProvider {
+    pending:       HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>,
+    current:       Option<(usize, Vec<u8>)>,
+    #[cfg(test)]
+    last_released: Option<usize>,
+    #[cfg(test)]
+    expected_part: Option<usize>,
+}
+
+impl LazyChartPartProvider {
+    pub(crate) fn new(pending: HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>) -> Self {
+        Self {
+            pending,
+            current: None,
+            #[cfg(test)]
+            last_released: None,
+            #[cfg(test)]
+            expected_part: None,
+        }
+    }
+
+    fn release_current(&mut self, session: &SourceCacheSession) {
+        let Some((part, data)) = self.current.take() else {
+            return;
+        };
+        let exact = data.into_boxed_slice();
+        session.store_part(part, exact);
+        #[cfg(test)]
+        {
+            self.last_released = Some(part);
+        }
+    }
+}
+
+impl ChartPartProvider for LazyChartPartProvider {
+    fn add_pending(&mut self, pending: HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>) {
+        self.pending.extend(pending);
+        #[cfg(test)]
+        {
+            self.expected_part = None;
+        }
+    }
+
+    fn with_part(
+        &mut self,
+        target: &str,
+        session: &SourceCacheSession,
+        visit: &mut dyn FnMut(Option<&[u8]>),
+    ) {
+        let part = session.part_for(target);
+        #[cfg(test)]
+        {
+            self.expected_part = Some(part);
+        }
+        if self.current.as_ref().map(|(current, _)| *current) != Some(part) {
+            self.release_current(session);
+            let data = session.take_part(part).map_or_else(
+                || {
+                    let (data, source_file) = self.pending.remove(target).unwrap_or_default();
+                    if data.is_empty() {
+                        let data = crate::structs::raw::RawFile::read_from_source_or_empty(
+                            target,
+                            source_file.as_deref(),
+                        );
+                        #[cfg(test)]
+                        if source_file.is_some() {
+                            observe_lazy_source_read(&data);
+                        }
+                        data
+                    } else {
+                        data
+                    }
+                },
+                Vec::from,
+            );
+            self.current = Some((part, data));
+        }
+        visit(Some(&self.current.as_ref().unwrap().1));
+    }
+
+    fn finish_sheet(&mut self, session: &SourceCacheSession) {
+        self.release_current(session);
+        #[cfg(test)]
+        observe_lazy_sheet_boundary(self, session);
+    }
+}
+
+pub(crate) struct EagerChartPartProvider<'a, R> {
+    archive: &'a mut zip::read::ZipArchive<R>,
+    current: Option<(String, PartBuffer, bool)>,
+}
+
+impl<'a, R: std::io::Read + std::io::Seek> EagerChartPartProvider<'a, R> {
+    pub(crate) fn new(archive: &'a mut zip::read::ZipArchive<R>) -> Self {
+        Self {
+            archive,
+            current: None,
+        }
+    }
+
+    fn release_current(&mut self) {
+        self.current = None;
+    }
+
+    fn read_part(&mut self, target: &str) {
+        self.release_current();
+        let mut data = Vec::new();
+        let Ok(entry) = crate::reader::driver::zip_by_name(self.archive, target) else {
+            self.current = Some((target.into(), PartBuffer::new(data), false));
+            #[cfg(test)]
+            observe_eager_part_acquire(&self.current.as_ref().unwrap().1, false);
+            return;
+        };
+        let reservation =
+            usize::try_from(entry.size().min(isize::MAX as u64)).unwrap_or(usize::MAX);
+        let _ = data.try_reserve_exact(reservation);
+        let mut entry = std::io::BufReader::new(entry);
+        let succeeded = std::io::Read::read_to_end(&mut entry, &mut data).is_ok();
+        if !succeeded {
+            data.clear();
+        }
+        self.current = Some((target.into(), PartBuffer::new(data), succeeded));
+        #[cfg(test)]
+        {
+            let (_, data, succeeded) = self.current.as_ref().unwrap();
+            observe_eager_part_acquire(data, *succeeded);
+        }
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> ChartPartProvider for EagerChartPartProvider<'_, R> {
+    fn add_pending(&mut self, pending: HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>) {
+        #[cfg(test)]
+        let released = observe_eager_raw_parts(&pending);
+        drop(pending);
+        #[cfg(test)]
+        observe_eager_raw_release(released);
+    }
+
+    fn with_part(
+        &mut self,
+        target: &str,
+        _session: &SourceCacheSession,
+        visit: &mut dyn FnMut(Option<&[u8]>),
+    ) {
+        if self.current.as_ref().map(|(current, ..)| current.as_str()) != Some(target) {
+            self.read_part(target);
+        }
+        let (_, data, succeeded) = self.current.as_ref().unwrap();
+        visit(succeeded.then_some(data.data.as_slice()));
+    }
+
+    fn finish_sheet(&mut self, _session: &SourceCacheSession) {
+        self.release_current();
+    }
+}
+
+impl DeferredSource {
+    fn range(&self) -> Option<Range<usize>> {
+        Some(usize::try_from(self.start).ok()?..usize::try_from(self.end).ok()?)
+    }
+}
+
+enum CapturedSource {
+    Deferred(DeferredSource),
+    Parsed(SourceCache),
+}
+
+enum DeferredReduction {
+    Reduced,
+    Candidate {
+        source:            Option<SourceCache>,
+        points:            usize,
+        text_bytes:        usize,
+        #[cfg(test)]
+        rejection_backing: RejectionBacking,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CandidateBacking {
+    index_runs: Option<(usize, usize)>,
+    exceptions: Option<(usize, usize)>,
+}
+
+#[cfg(test)]
+impl CandidateBacking {
+    fn capture(
+        index_runs: Option<&Vec<IndexRun>>,
+        exceptions: Option<&Vec<SourceException>>,
+    ) -> Self {
+        Self {
+            index_runs: index_runs.map(|runs| (runs.len(), runs.capacity())),
+            exceptions: exceptions.map(|values| (values.len(), values.capacity())),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct RejectionBacking {
+    shape:     Option<CandidateBacking>,
+    exception: Option<CandidateBacking>,
+}
+
+#[cfg(test)]
+impl DeferredReduction {
+    fn rejection_backing(&self) -> RejectionBacking {
+        match self {
+            Self::Reduced => RejectionBacking::default(),
+            Self::Candidate {
+                rejection_backing, ..
+            } => *rejection_backing,
+        }
+    }
+}
+
+struct CacheShape {
+    point_count:     Option<u32>,
+    index_runs:      Option<Vec<IndexRun>>,
+    run_charge:      usize,
+    current_run_len: u32,
+    counted_dense:   bool,
+    repeated:        HashSet<u32>,
+    #[cfg(test)]
+    shape_backing:   Option<CandidateBacking>,
+}
+
+impl CacheShape {
+    // Only the first rejection is the release point; a later over-budget point
+    // must not hide a delayed release.
+    #[cfg(test)]
+    fn observe_shape_rejection(&mut self) {
+        if self.shape_backing.is_none() {
+            self.shape_backing = Some(CandidateBacking::capture(self.index_runs.as_ref(), None));
+        }
+    }
+
+    fn record_index(&mut self, index: u32, count: &mut u64, previous: &mut Option<u32>) {
+        if u64::from(index) != *count {
+            self.counted_dense = false;
+        }
+        *count += 1;
+        let continues = previous.is_some_and(|prior| u64::from(prior) + 1 == u64::from(index))
+            && self.current_run_len < u32::MAX;
+        if continues {
+            self.current_run_len += 1;
+        } else {
+            self.run_charge = self.run_charge.saturating_add(1);
+            self.current_run_len = 1;
+        }
+        *previous = Some(index);
+        if let Some(runs) = &mut self.index_runs {
+            if continues {
+                if let Some(run) = runs.last_mut() {
+                    if run.len < u32::MAX {
+                        run.len += 1;
+                        return;
+                    }
+                }
+            }
+            runs.push(IndexRun {
+                start: index,
+                len:   1,
+            });
+        }
+    }
+}
+
+fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
+    let mut shape = CacheShape {
+        point_count:                None,
+        index_runs:                 Some(Vec::new()),
+        run_charge:                 0,
+        current_run_len:            0,
+        counted_dense:              true,
+        repeated:                   HashSet::new(),
+        #[cfg(test)]
+        shape_backing:              None,
+    };
+    let mut count = 0u64;
+    let mut ascending = true;
+    let mut previous = None;
+    let mut reader = Reader::from_reader(std::io::Cursor::new(data));
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer).unwrap() {
+            Event::Start(e) => match local_name(e.name().into_inner()) {
+                b"pt" => {
+                    if let Some(index) =
+                        get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
+                    {
+                        ascending &= previous.is_none_or(|prior| prior < index);
+                        shape.record_index(index, &mut count, &mut previous);
+                        if shape.run_charge > remaining_points {
+                            shape.index_runs = None;
+                            #[cfg(test)]
+                            shape.observe_shape_rejection();
+                        }
+                    }
+                    let mut skipped = Vec::new();
+                    reader.read_to_end_into(e.name(), &mut skipped).unwrap();
+                }
+                b"ptCount" => shape.point_count = parse_point_count(&e),
+                _ => (),
+            },
+            Event::Empty(e) => match local_name(e.name().into_inner()) {
+                b"pt" => {
+                    if let Some(index) =
+                        get_attribute(&e, b"idx").and_then(|index| index.parse().ok())
+                    {
+                        ascending &= previous.is_none_or(|prior| prior < index);
+                        shape.record_index(index, &mut count, &mut previous);
+                        if shape.run_charge > remaining_points {
+                            shape.index_runs = None;
+                            #[cfg(test)]
+                            shape.observe_shape_rejection();
+                        }
+                    }
+                }
+                b"ptCount" => shape.point_count = parse_point_count(&e),
+                b"strCache" => break,
+                _ => (),
+            },
+            Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+            _ => (),
+        }
+    }
+    let counted_dense = shape.counted_dense && shape.point_count.map(u64::from) == Some(count);
+    shape.counted_dense = counted_dense;
+    if counted_dense {
+        shape.index_runs = Some(Vec::new());
+        shape.run_charge = 0;
+    } else if count == 0 && shape.point_count.is_some_and(|count| count > 0) {
+        shape.run_charge = 1;
+        if shape.run_charge > remaining_points {
+            shape.index_runs = None;
+            #[cfg(test)]
+            shape.observe_shape_rejection();
+        } else {
+            shape.index_runs = Some(vec![IndexRun::default()]);
+        }
+    }
+    if !ascending {
+        let mut seen = HashSet::new();
+        visit_deferred_indices(data, |index| {
+            if !seen.insert(index) {
+                shape.repeated.insert(index);
+            }
+        });
+    }
+    shape
+}
+
+fn reduce_deferred_cache(
+    data: &[u8],
+    formula: String,
+    expected_points: Option<u64>,
+    retain_shape: bool,
+    remaining_points: usize,
+    remaining_text_bytes: usize,
+    mut display: impl FnMut(u32) -> Option<String>,
+) -> DeferredReduction {
+    let mut shape = deferred_shape(data, remaining_points);
+    let mut points = shape.run_charge;
+    let mut text_bytes: usize = 0;
+    let mut counting = shape.index_runs.is_none();
+    let mut exceptions = Vec::new();
+    #[cfg(test)]
+    let mut exception_rejection_backing = None;
+    let mut reader = Reader::from_reader(std::io::Cursor::new(data));
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        let event = reader.read_event_into(&mut buffer).unwrap();
+        let point = match event {
+            Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
+                let index = get_attribute(&e, b"idx").and_then(|index| index.parse().ok());
+                let value = read_point_value(&mut reader);
+                index.map(|index| (index, value))
+            }
+            Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
+                get_attribute(&e, b"idx")
+                    .and_then(|index| index.parse().ok())
+                    .map(|index| (index, None))
+            }
+            Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+            Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+            _ => None,
+        };
+        let Some((index, value)) = point else {
+            continue;
+        };
+        let loaded_display = display(index);
+        if loaded_display.is_none() || value != loaded_display || shape.repeated.contains(&index) {
+            points = points.saturating_add(1);
+            text_bytes = text_bytes
+                .saturating_add(value.as_ref().map_or(0, String::len))
+                .saturating_add(loaded_display.as_ref().map_or(0, String::len));
+            if !counting && (points > remaining_points || text_bytes > remaining_text_bytes) {
+                exceptions = Vec::new();
+                shape.index_runs = None;
+                #[cfg(test)]
+                {
+                    exception_rejection_backing = Some(CandidateBacking::capture(
+                        shape.index_runs.as_ref(),
+                        Some(&exceptions),
+                    ));
+                }
+                counting = true;
+            }
+            if !counting {
+                exceptions.push(SourceException::imported(index, value, loaded_display));
+            }
+        }
+    }
+    if !retain_shape
+        && shape.counted_dense
+        && expected_points == shape.point_count.map(u64::from)
+        && points == 0
+    {
+        return DeferredReduction::Reduced;
+    }
+    DeferredReduction::Candidate {
+        source: (!counting).then(|| {
+            SourceCache::from_reduced(
+                formula,
+                shape.point_count,
+                shape.index_runs.unwrap_or_default(),
+                exceptions,
+            )
+        }),
+        points,
+        text_bytes,
+        #[cfg(test)]
+        rejection_backing: RejectionBacking {
+            shape:     shape.shape_backing,
+            exception: exception_rejection_backing,
+        },
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceCacheSessionMode {
+    Deferred,
+    Immediate,
+}
+
+/// Owns imported cache payloads until the workbook has a stable traversal
+/// order for admission. References retain guarded placeholders meanwhile.
+#[derive(Clone)]
+pub(crate) struct SourceCacheSession {
+    mode:                         SourceCacheSessionMode,
+    descriptors:                  Rc<RefCell<HashMap<usize, DeferredSource>>>,
+    parts:                        Rc<RefCell<Vec<ChartPart>>>,
+    current_part:                 Rc<StateCell<Option<usize>>>,
+    #[cfg(test)]
+    registered_keys:              Rc<RefCell<Vec<usize>>>,
+    #[cfg(test)]
+    drop_next_capture_descriptor: Rc<Flag<bool>>,
+    #[cfg(test)]
+    capture_formulas:             Rc<RefCell<Vec<String>>>,
+    #[cfg(test)]
+    wanted_coordinates:           Rc<RefCell<Option<HashMap<usize, HashSet<Coordinate>>>>>,
+    #[cfg(test)]
+    rejection_backing:            Rc<RefCell<RejectionBacking>>,
+}
+
+impl SourceCacheSession {
+    pub(crate) fn deferred() -> Self {
+        Self {
+            mode:                                      SourceCacheSessionMode::Deferred,
+            descriptors:                               Rc::new(RefCell::new(HashMap::new())),
+            parts:                                     Rc::new(RefCell::new(Vec::new())),
+            current_part:                              Rc::new(StateCell::new(None)),
+            #[cfg(test)]
+            registered_keys:                           Rc::new(RefCell::new(Vec::new())),
+            #[cfg(test)]
+            drop_next_capture_descriptor:              Rc::new(Flag::new(false)),
+            #[cfg(test)]
+            capture_formulas:                          Rc::new(RefCell::new(Vec::new())),
+            #[cfg(test)]
+            wanted_coordinates:                        Rc::new(RefCell::new(None)),
+            #[cfg(test)]
+            rejection_backing:                         Rc::new(RefCell::new(
+                RejectionBacking::default(),
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn immediate() -> Self {
+        Self {
+            mode:                                      SourceCacheSessionMode::Immediate,
+            descriptors:                               Rc::new(RefCell::new(HashMap::new())),
+            parts:                                     Rc::new(RefCell::new(Vec::new())),
+            current_part:                              Rc::new(StateCell::new(None)),
+            #[cfg(test)]
+            registered_keys:                           Rc::new(RefCell::new(Vec::new())),
+            #[cfg(test)]
+            drop_next_capture_descriptor:              Rc::new(Flag::new(false)),
+            #[cfg(test)]
+            capture_formulas:                          Rc::new(RefCell::new(Vec::new())),
+            #[cfg(test)]
+            wanted_coordinates:                        Rc::new(RefCell::new(None)),
+            #[cfg(test)]
+            rejection_backing:                         Rc::new(RefCell::new(
+                RejectionBacking::default(),
+            )),
+        }
+    }
+
+    pub(crate) fn immediate_subsession(&self) -> Self {
+        Self {
+            mode:                                      SourceCacheSessionMode::Immediate,
+            descriptors:                               Rc::clone(&self.descriptors),
+            parts:                                     Rc::clone(&self.parts),
+            current_part:                              Rc::clone(&self.current_part),
+            #[cfg(test)]
+            registered_keys:                           Rc::clone(&self.registered_keys),
+            #[cfg(test)]
+            drop_next_capture_descriptor:              Rc::clone(
+                &self.drop_next_capture_descriptor,
+            ),
+            #[cfg(test)]
+            capture_formulas:                          Rc::clone(&self.capture_formulas),
+            #[cfg(test)]
+            wanted_coordinates:                        Rc::clone(&self.wanted_coordinates),
+            #[cfg(test)]
+            rejection_backing:                         Rc::clone(&self.rejection_backing),
+        }
+    }
+
+    pub(crate) fn is_deferred(&self) -> bool {
+        self.mode == SourceCacheSessionMode::Deferred
+    }
+
+    pub(crate) fn begin_chart_part(&self, target: &str) {
+        if !self.is_deferred() {
+            return;
+        }
+        self.current_part.set(Some(self.part_for(target)));
+    }
+
+    pub(crate) fn end_chart_part(&self) {
+        self.current_part.set(None);
+    }
+
+    fn part_for(&self, target: &str) -> usize {
+        let mut parts = self.parts.borrow_mut();
+        if let Some(part) = parts.iter().position(|part| part.target == target) {
+            return part;
+        }
+        parts.push(ChartPart {
+            target: target.into(),
+            data:   None,
+        });
+        parts.len() - 1
+    }
+
+    fn part_target(&self, part: usize) -> Option<String> {
+        self.parts
+            .borrow()
+            .get(part)
+            .map(|part| part.target.clone())
+    }
+
+    fn store_part(&self, part: usize, data: Box<[u8]>) {
+        if let Some(part) = self.parts.borrow_mut().get_mut(part) {
+            part.data = Some(data);
+        }
+    }
+
+    fn take_part(&self, part: usize) -> Option<Box<[u8]>> {
+        self.parts.borrow_mut().get_mut(part)?.data.take()
+    }
+
+    fn register_parsed_source(
+        &self,
+        cache: &mut crate::drawing::charts::StringCache,
+        span: Option<(u64, u64)>,
+    ) {
+        let Some(key) = cache.source_key() else {
+            return;
+        };
+        #[cfg(test)]
+        self.registered_keys.borrow_mut().push(key);
+        self.clear_allocated_source(cache);
+        let mut descriptors = self.descriptors.borrow_mut();
+        if self.mode == SourceCacheSessionMode::Deferred {
+            let formula = cache
+                .source()
+                .map_or_else(String::new, |source| source.formula().into());
+            let mut source = cache.replace_source_value(SourceCache::as_read(
+                format!("{formula}\0"),
+                None,
+                Vec::new(),
+            ));
+            if let Some(source) = source.as_mut() {
+                source.set_formula(formula.clone());
+            }
+            if source.is_some() {
+                let Some(part) = self.current_part.get() else {
+                    debug_assert!(false, "missing deferred chart part");
+                    cache.set_source(None);
+                    return;
+                };
+                let Some((start, end)) = span else {
+                    debug_assert!(false, "missing deferred chart cache span");
+                    cache.set_source(None);
+                    return;
+                };
+                descriptors.insert(
+                    key,
+                    DeferredSource {
+                        part,
+                        start,
+                        end,
+                        formula,
+                    },
+                );
+            }
+        }
+    }
+
+    fn clear_allocated_source(&self, cache: &crate::drawing::charts::StringCache) {
+        if let Some(key) = cache.source_key() {
+            self.descriptors.borrow_mut().remove(&key);
+        }
+    }
+
+    fn finalize_parsed_source(
+        &self,
+        cache: &mut crate::drawing::charts::StringCache,
+        formula: String,
+    ) {
+        if self.mode == SourceCacheSessionMode::Immediate {
+            cache.finalize_source_formula(formula);
+            if let Some(key) = cache.source_key() {
+                self.descriptors.borrow_mut().remove(&key);
+            }
+            return;
+        }
+        let Some(key) = cache.source_key() else {
+            return;
+        };
+        let mut descriptors = self.descriptors.borrow_mut();
+        let Some(source) = descriptors.get_mut(&key) else {
+            debug_assert!(false, "missing deferred chart source cache descriptor");
+            cache.set_source(None);
+            return;
+        };
+        cache.finalize_source_formula(format!("{formula}\0"));
+        source.formula = formula;
+    }
+
+    /// Restore the uncaptured image frames before the drawing becomes visible
+    /// to materialization. They intentionally retain the parser's source.
+    pub(crate) fn hydrate_image_frames(
+        &self,
+        drawing: &mut crate::drawing::spreadsheet::WorksheetDrawing,
+        provider: &mut dyn ChartPartProvider,
+    ) {
+        #[cfg(test)]
+        let _observation = crate::drawing::charts::DeferredHydrationSourceBoxObservation::begin();
+        visit_image_frames(drawing, &mut |reference| {
+            if reference.string_cache().source().is_none() {
+                return;
+            }
+            if let Some(source) = self.take(reference) {
+                if let Some(source) = self.materialize_with_provider(&source, provider) {
+                    self.replace(reference, source);
+                } else {
+                    self.clear(reference);
+                }
+            } else {
+                debug_assert!(
+                    false,
+                    "missing deferred image chart source cache descriptor"
+                );
+                self.clear(reference);
+            }
+        });
+    }
+
+    fn take(&self, reference: &mut StringReference) -> Option<DeferredSource> {
+        let key = reference.string_cache().source_key()?;
+        self.descriptors.borrow_mut().remove(&key)
+    }
+
+    #[cfg(test)]
+    fn materialize(&self, source: DeferredSource) -> SourceCache {
+        let parts = self.parts.borrow();
+        let data = parts
+            .get(source.part)
+            .and_then(|part| part.data.as_deref())
+            .and_then(|part| source.range().and_then(|range| part.get(range)))
+            .unwrap_or_default();
+        crate::drawing::charts::materialize_deferred_cache(data, source.formula)
+    }
+
+    fn materialize_with_provider(
+        &self,
+        source: &DeferredSource,
+        provider: &mut dyn ChartPartProvider,
+    ) -> Option<SourceCache> {
+        let mut materialized = None;
+        if let Some(target) = self.part_target(source.part) {
+            provider.with_part(&target, self, &mut |part| {
+                let Some(part) = part else {
+                    return;
+                };
+                let data = source.range().and_then(|range| part.get(range));
+                let Some(data) = data else {
+                    return;
+                };
+                materialized = Some(crate::drawing::charts::materialize_deferred_cache(
+                    data,
+                    source.formula.clone(),
+                ));
+            });
+        }
+        materialized
+    }
+
+    fn with_deferred_indices(
+        &self,
+        reference: &StringReference,
+        mut visit: impl FnMut(u32),
+    ) -> Option<()> {
+        let key = reference.string_cache().source_key()?;
+        let descriptors = self.descriptors.borrow();
+        let source = descriptors.get(&key)?;
+        let parts = self.parts.borrow();
+        let data = parts
+            .get(source.part)?
+            .data
+            .as_deref()?
+            .get(source.range()?)?;
+        visit_deferred_indices(data, &mut visit);
+        Some(())
+    }
+
+    fn clear(&self, reference: &mut StringReference) {
+        if let Some(key) = reference.string_cache().source_key() {
+            self.descriptors.borrow_mut().remove(&key);
+        }
+        reference.string_cache_mut().set_source(None);
+    }
+
+    fn replace(&self, reference: &mut StringReference, source: SourceCache) {
+        reference.string_cache_mut().replace_or_set_source(source);
+        self.clear_allocated_source(reference.string_cache());
+    }
+
+    fn take_for_capture(&self, reference: &mut StringReference) -> Option<CapturedSource> {
+        match self.mode {
+            SourceCacheSessionMode::Immediate => {
+                if let Some(key) = reference.string_cache().source_key() {
+                    self.descriptors.borrow_mut().remove(&key);
+                }
+                reference
+                    .string_cache_mut()
+                    .take_source()
+                    .map(CapturedSource::Parsed)
+            }
+            SourceCacheSessionMode::Deferred => {
+                if !reference.string_cache().source_is_deferred() {
+                    return None;
+                }
+                let source = self.take(reference);
+                if source.is_none() {
+                    debug_assert!(false, "missing deferred chart source cache descriptor");
+                }
+                self.clear(reference);
+                source.map(CapturedSource::Deferred)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn last_registered_key(&self) -> Option<usize> {
+        self.registered_keys.borrow().last().copied()
+    }
+
+    #[cfg(test)]
+    fn arm_descriptor_loss(&self) {
+        self.drop_next_capture_descriptor.set(true);
+    }
+
+    #[cfg(test)]
+    fn descriptor_loss_was_consumed(&self) -> bool {
+        !self.drop_next_capture_descriptor.get()
+    }
+
+    #[cfg(test)]
+    fn capture_formulas(&self) -> Vec<String> {
+        self.capture_formulas.borrow().clone()
+    }
+
+    #[cfg(test)]
+    fn wanted_coordinates(&self) -> Option<HashMap<usize, HashSet<Coordinate>>> {
+        self.wanted_coordinates.borrow().clone()
+    }
+
+    #[cfg(test)]
+    fn rejection_backing(&self) -> RejectionBacking {
+        *self.rejection_backing.borrow()
+    }
+}
+
+pub(crate) fn register_parsed_string_cache(
+    session: &SourceCacheSession,
+    cache: &mut crate::drawing::charts::StringCache,
+    span: Option<(u64, u64)>,
+) {
+    session.register_parsed_source(cache, span);
+}
+
+pub(crate) fn finalize_parsed_string_cache(
+    session: &SourceCacheSession,
+    cache: &mut crate::drawing::charts::StringCache,
+    formula: String,
+) {
+    session.finalize_parsed_source(cache, formula);
+}
+
 /// Capture only sheets transitioning from raw in this call. Older materialized
 /// sheets may already contain edits and cannot supply an import baseline.
-pub(crate) fn capture_chart_source_caches(book: &mut Workbook, fresh: &[usize]) {
+pub(crate) fn capture_chart_source_caches(
+    book: &mut Workbook,
+    fresh: &[usize],
+    session: &mut SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
+) {
     if fresh.is_empty() {
         return;
     }
@@ -51,17 +1079,31 @@ pub(crate) fn capture_chart_source_caches(book: &mut Workbook, fresh: &[usize]) 
                 &mut |reference| {
                     let request = Request::new(reference, &names);
                     if let Some(index) = request.sheet.filter(|index| raw.contains(index)) {
-                        if let Some(source) = reference.string_cache().source() {
-                            wanted.entry(index).or_default().extend(
-                                source
-                                    .indices()
-                                    .filter_map(|point| request.range.as_ref()?.coordinate(point)),
-                            );
+                        let mut add_point = |point| {
+                            if let Some(coordinate) = request
+                                .range
+                                .as_ref()
+                                .and_then(|range| range.coordinate(point))
+                            {
+                                wanted.entry(index).or_default().insert(coordinate);
+                            }
+                        };
+                        if session
+                            .with_deferred_indices(reference, &mut add_point)
+                            .is_none()
+                        {
+                            if let Some(source) = reference.string_cache().source() {
+                                source.indices().for_each(add_point);
+                            }
                         }
                     }
                 },
             );
         }
+    }
+    #[cfg(test)]
+    {
+        *session.wanted_coordinates.borrow_mut() = Some(wanted.clone());
     }
     let mut streamed: HashMap<usize, HashMap<Coordinate, String>> = HashMap::new();
     if !wanted.is_empty() {
@@ -94,42 +1136,124 @@ pub(crate) fn capture_chart_source_caches(book: &mut Workbook, fresh: &[usize]) 
             std::mem::take(book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut());
         visit_drawing(&mut drawing, &mut |reference| {
             let request = Request::new(reference, &names);
-            let Some(source) = reference.string_cache_mut().take_source() else {
+            #[cfg(test)]
+            if session.drop_next_capture_descriptor.replace(false) {
+                if let Some(key) = reference.string_cache().source_key() {
+                    session.descriptors.borrow_mut().remove(&key);
+                }
+            }
+            #[cfg(test)]
+            session
+                .capture_formulas
+                .borrow_mut()
+                .push(reference.formula().address_str());
+            let source = session.take_for_capture(reference);
+            let Some(source) = source else {
                 return;
             };
             let earlier = request
                 .sheet
                 .is_some_and(|index| !raw.contains(&index) && !fresh_set.contains(&index));
-            let cache = if earlier {
-                None
-            } else {
-                let retain_shape = request.sheet.is_some_and(|index| raw.contains(&index));
-                source.reduce(request.expected_points(), retain_shape, |point| {
-                    request.display(book, &raw, &streamed, point)
-                })
-            };
-            let Some(cache) = cache else {
+            if earlier {
                 report.reduced_caches += 1;
                 report.dropped_caches += 1;
                 return;
+            }
+            let retain_shape = request.sheet.is_some_and(|index| raw.contains(&index));
+            let remaining_points = MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points);
+            let remaining_text = MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes);
+            let reduced = match source {
+                CapturedSource::Parsed(source) => {
+                    match source.reduce(request.expected_points(), retain_shape, |point| {
+                        request.display(book, &raw, &streamed, point)
+                    }) {
+                        Some(cache) => {
+                            let points = cache.stored_points();
+                            let text_bytes = cache.stored_text_bytes();
+                            DeferredReduction::Candidate {
+                                source: (points <= remaining_points
+                                    && text_bytes <= remaining_text)
+                                    .then_some(cache),
+                                points,
+                                text_bytes,
+                                #[cfg(test)]
+                                rejection_backing: RejectionBacking::default(),
+                            }
+                        }
+                        None => DeferredReduction::Reduced,
+                    }
+                }
+                CapturedSource::Deferred(source) => {
+                    let Some(target) = session.part_target(source.part) else {
+                        debug_assert!(false, "invalid deferred chart cache span");
+                        return;
+                    };
+                    let mut reduced = None;
+                    provider.with_part(&target, session, &mut |data| {
+                        let Some(data) = data else {
+                            return;
+                        };
+                        let Some(data) = source.range().and_then(|range| data.get(range)) else {
+                            debug_assert!(false, "invalid deferred chart cache span");
+                            return;
+                        };
+                        reduced = Some(reduce_deferred_cache(
+                            data,
+                            source.formula.clone(),
+                            request.expected_points(),
+                            retain_shape,
+                            remaining_points,
+                            remaining_text,
+                            |point| request.display(book, &raw, &streamed, point),
+                        ));
+                    });
+                    let Some(reduced) = reduced else {
+                        return;
+                    };
+                    #[cfg(test)]
+                    {
+                        *session.rejection_backing.borrow_mut() = reduced.rejection_backing();
+                    }
+                    reduced
+                }
             };
-            let points = cache.stored_points();
-            let bytes = cache.stored_text_bytes();
-            if points <= MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points)
-                && bytes <= MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes)
-            {
-                report.kept_caches += 1;
-                report.kept_points += points;
-                report.kept_text_bytes += bytes;
-                reference.string_cache_mut().set_source(Some(cache));
-            } else {
-                report.dropped_caches += 1;
-                report.over_cap_caches += 1;
-                report.over_cap_points = report.over_cap_points.saturating_add(points);
-                report.over_cap_text_bytes = report.over_cap_text_bytes.saturating_add(bytes);
+            match reduced {
+                DeferredReduction::Reduced => {
+                    report.reduced_caches += 1;
+                    report.dropped_caches += 1;
+                }
+                DeferredReduction::Candidate {
+                    source: Some(cache),
+                    points,
+                    text_bytes,
+                    ..
+                } => {
+                    report.kept_caches += 1;
+                    report.kept_points += points;
+                    report.kept_text_bytes += text_bytes;
+                    session.replace(reference, cache);
+                }
+                DeferredReduction::Candidate {
+                    source: None,
+                    points,
+                    text_bytes,
+                    ..
+                } => {
+                    report.dropped_caches += 1;
+                    report.over_cap_caches += 1;
+                    report.over_cap_points = report.over_cap_points.saturating_add(points);
+                    report.over_cap_text_bytes =
+                        report.over_cap_text_bytes.saturating_add(text_bytes);
+                }
             }
         });
+        #[cfg(debug_assertions)]
+        {
+            let worksheet = &mut book.sheet_collection_unchecked_mut()[*index];
+            audit_surviving_sources(&mut drawing, worksheet.ole_objects_mut());
+        }
         *book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut() = drawing;
+        provider.finish_sheet(session);
     }
     *book.chart_source_cache_report_mut() = report;
 }
@@ -158,6 +1282,48 @@ fn visit_drawing(
             frame.graphic_mut().graphic_data_mut().chart_space_mut(),
             &mut |_, reference| visit(reference),
         );
+    }
+}
+
+/// Visits only the image-classified one-cell frame carriers. OLE anchors and
+/// image two-cell anchors are deliberately absent from this route.
+fn visit_image_frames(
+    drawing: &mut crate::drawing::spreadsheet::WorksheetDrawing,
+    visit: &mut dyn FnMut(&mut StringReference),
+) {
+    for image in drawing.image_collection_mut() {
+        if let Some(frame) = image
+            .one_cell_anchor_mut()
+            .and_then(|anchor| anchor.graphic_frame_mut())
+        {
+            visit_string_references(
+                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                &mut |_, reference| visit(reference),
+            );
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn audit_surviving_sources(
+    drawing: &mut crate::drawing::spreadsheet::WorksheetDrawing,
+    ole_objects: &mut crate::structs::OleObjects,
+) {
+    let mut audit = |reference: &mut StringReference| {
+        debug_assert!(
+            !reference.string_cache().source_is_deferred(),
+            "deferred chart source cache escaped materialization"
+        );
+    };
+    visit_drawing(drawing, &mut audit);
+    visit_image_frames(drawing, &mut audit);
+    for ole in ole_objects.ole_object_mut() {
+        if let Some(frame) = ole.two_cell_anchor_mut().graphic_frame_mut() {
+            visit_string_references(
+                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                &mut |_, reference| audit(reference),
+            );
+        }
     }
 }
 
@@ -218,23 +1384,1000 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{
+        Cursor,
+        Read,
+        Write,
+    };
+    #[cfg(debug_assertions)]
+    use std::panic::{
+        AssertUnwindSafe,
+        catch_unwind,
+    };
 
     use quick_xml::Writer;
 
     use super::*;
+    #[cfg(debug_assertions)]
+    use crate::OleObject;
     use crate::{
         Chart,
         ChartType,
         drawing::{
-            charts::{
-                CategoryAxisData,
-                SourceCache,
-            },
+            charts::CategoryAxisData,
             spreadsheet::MarkerType,
         },
         structs::raw::RawWorksheet,
     };
+
+    fn deferred_reference(session: &SourceCacheSession, xml: &str) -> StringReference {
+        const TARGET: &str = "deferred.xml";
+        session.begin_chart_part(TARGET);
+        session.store_part(session.part_for(TARGET), xml.as_bytes().into());
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let mut buffer = Vec::new();
+        let Event::Start(root) = reader.read_event_into(&mut buffer).unwrap() else {
+            panic!("missing string reference");
+        };
+        let mut reference = StringReference::default();
+        reference.set_attributes(&mut reader, &root, session);
+        session.end_chart_part();
+        reference
+    }
+
+    fn lazy_provider() -> LazyChartPartProvider {
+        LazyChartPartProvider::new(HashMap::new())
+    }
+
+    fn chart_with_reference(reference: StringReference) -> Chart {
+        let mut category = CategoryAxisData::default();
+        category.set_string_reference(reference);
+        let mut chart = Chart::default();
+        chart.new_chart(
+            &ChartType::LineChart,
+            MarkerType::default(),
+            MarkerType::default(),
+            vec!["Sheet1!B1"],
+        );
+        chart.area_chart_series_list_mut().area_chart_series_mut()[0]
+            .set_category_axis_data(category);
+        chart
+    }
+
+    #[test]
+    fn reader_image_hydration_allocates_no_temporary_source_boxes() {
+        for cache in [
+            concat!(
+                "<c:strCache><c:ptCount val=\"1\"/>",
+                "<c:pt idx=\"0\"><c:v>L</c:v></c:pt></c:strCache>"
+            ),
+            "<c:strCache/>",
+        ] {
+            let book = crate::reader::xlsx::read_reader(
+                Cursor::new(image_deferred_cache_package(cache)),
+                true,
+            )
+            .unwrap();
+            assert_eq!(
+                crate::drawing::charts::DeferredHydrationSourceBoxObservation::count(),
+                0
+            );
+            let source = book
+                .sheet(0)
+                .unwrap()
+                .worksheet_drawing()
+                .image_collection()[0]
+                .one_cell_anchor()
+                .unwrap()
+                .graphic_frame()
+                .unwrap()
+                .graphic()
+                .graphic_data()
+                .chart_space()
+                .chart()
+                .plot_area()
+                .chart_groups()
+                .next()
+                .unwrap()
+                .series()
+                .area_chart_series()[0]
+                .category_axis_data()
+                .unwrap()
+                .string_reference()
+                .unwrap()
+                .string_cache()
+                .source()
+                .unwrap();
+            assert_eq!(source.formula(), "Sheet1!$A$1");
+            assert_eq!(source.point_count(), cache.contains("ptCount").then_some(1));
+        }
+    }
+
+    #[test]
+    fn admitted_replacement_clears_a_descriptor_at_its_new_box_address() {
+        let session = SourceCacheSession::deferred();
+        let mut reference = deferred_reference(
+            &session,
+            "<c:strRef><c:f>F</c:f><c:strCache><c:pt \
+             idx=\"0\"><c:v>L</c:v></c:pt></c:strCache></c:strRef>",
+        );
+        let admitted = session.take_for_capture(&mut reference).unwrap();
+        reference
+            .string_cache_mut()
+            .set_source(Some(SourceCache::as_read(
+                "placeholder".into(),
+                None,
+                Vec::new(),
+            )));
+        let key = reference.string_cache().source_key().unwrap();
+        session.descriptors.borrow_mut().insert(
+            key,
+            DeferredSource {
+                part:    0,
+                start:   0,
+                end:     0,
+                formula: "stale".into(),
+            },
+        );
+
+        let CapturedSource::Deferred(admitted) = admitted else {
+            panic!("deferred source was materialized");
+        };
+        session.replace(&mut reference, session.materialize(admitted));
+
+        let key = reference.string_cache().source_key().unwrap();
+        assert!(!session.descriptors.borrow().contains_key(&key));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn missing_descriptor_during_real_capture_asserts_in_debug() {
+        let (mut unaffected, mut unaffected_session) = materialize_descriptor_loss();
+        let mut unaffected_provider = lazy_provider();
+        capture_chart_source_caches(
+            &mut unaffected,
+            &[0],
+            &mut unaffected_session,
+            &mut unaffected_provider,
+        );
+
+        let (mut book, mut session) = materialize_descriptor_loss();
+        session.arm_descriptor_loss();
+        let mut provider = lazy_provider();
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        }))
+        .expect_err("the armed deferred session must lose its own descriptor");
+        assert!(session.descriptor_loss_was_consumed());
+        let message = failure.downcast_ref::<String>().map_or_else(
+            || failure.downcast_ref::<&str>().copied().unwrap_or_default(),
+            String::as_str,
+        );
+        assert!(message.contains("missing deferred chart source cache descriptor"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn session_end_audit_checks_canonical_image_and_ole_guards_without_ole_lookup() {
+        let mut canonical = imported_audit_package();
+        audit_sheet(&mut canonical);
+        poison_first_reference(
+            canonical.sheet_mut(0).unwrap().chart_collection_mut()[0].chart_space_mut(),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| audit_sheet(&mut canonical))).is_err());
+
+        let mut image =
+            crate::reader::xlsx::read_reader(Cursor::new(grouped_one_cell_audit_package()), true)
+                .unwrap();
+        audit_sheet(&mut image);
+        poison_first_reference(
+            image
+                .sheet_mut(0)
+                .unwrap()
+                .worksheet_drawing_mut()
+                .image_collection_mut()[0]
+                .one_cell_anchor_mut()
+                .unwrap()
+                .graphic_frame_mut()
+                .unwrap()
+                .graphic_mut()
+                .graphic_data_mut()
+                .chart_space_mut(),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| audit_sheet(&mut image))).is_err());
+
+        let mut ole =
+            crate::reader::xlsx::read_reader(Cursor::new(ole_audit_package()), true).unwrap();
+        audit_sheet(&mut ole);
+        poison_first_reference(
+            ole.sheet_mut(0).unwrap().ole_objects_mut().ole_object_mut()[0]
+                .two_cell_anchor_mut()
+                .graphic_frame_mut()
+                .unwrap()
+                .graphic_mut()
+                .graphic_data_mut()
+                .chart_space_mut(),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| audit_sheet(&mut ole))).is_err());
+    }
+
+    #[cfg(debug_assertions)]
+    fn audit_sheet(book: &mut Workbook) {
+        let sheet = &mut book.sheet_collection_unchecked_mut()[0];
+        let mut drawing = std::mem::take(sheet.worksheet_drawing_mut());
+        audit_surviving_sources(&mut drawing, sheet.ole_objects_mut());
+        *sheet.worksheet_drawing_mut() = drawing;
+    }
+
+    #[cfg(debug_assertions)]
+    fn poison_first_reference(chart_space: &mut crate::drawing::charts::ChartSpace) {
+        let mut poisoned = false;
+        visit_string_references(chart_space, &mut |_, reference| {
+            if !poisoned {
+                let formula = reference
+                    .string_cache()
+                    .source()
+                    .unwrap()
+                    .formula()
+                    .to_string();
+                reference
+                    .string_cache_mut()
+                    .finalize_source_formula(format!("{formula}\0"));
+                poisoned = true;
+            }
+        });
+        assert!(poisoned);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn missing_descriptor_during_real_capture_uses_generated_export_in_release() {
+        let (mut book, mut session) = materialize_descriptor_loss();
+        session.arm_descriptor_loss();
+        let mut provider = lazy_provider();
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        assert!(session.descriptor_loss_was_consumed());
+        let reference = book.sheet(0).unwrap().chart_collection()[0]
+            .chart_space()
+            .chart()
+            .plot_area()
+            .chart_groups()
+            .next()
+            .unwrap()
+            .series()
+            .area_chart_series()[0]
+            .category_axis_data()
+            .unwrap()
+            .string_reference()
+            .unwrap();
+        assert!(reference.string_cache().source().is_none());
+        let report = book.chart_source_cache_report();
+        assert_eq!(
+            (
+                report.kept_caches,
+                report.kept_points,
+                report.kept_text_bytes,
+                report.dropped_caches,
+                report.reduced_caches,
+                report.over_cap_caches,
+                report.over_cap_points,
+                report.over_cap_text_bytes,
+            ),
+            (0, 0, 0, 0, 0, 0, 0, 0)
+        );
+        let mut output = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut output)).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(output)).unwrap();
+        let mut chart = String::new();
+        archive
+            .by_name("xl/charts/chart1.xml")
+            .unwrap()
+            .read_to_string(&mut chart)
+            .unwrap();
+        assert!(chart.contains(
+            "<c:strRef><c:f>Sheet1!$A$1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt \
+             idx=\"0\"><c:v>1</c:v></c:pt></c:strCache></c:strRef>"
+        ));
+    }
+
+    fn descriptor_loss_package() -> Vec<u8> {
+        let formula = "Sheet1!$A$1";
+        let mut book = crate::new_file();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut("A1")
+            .set_value_number(1);
+        let mut reference = StringReference::default();
+        reference.formula_mut().set_address_str(formula);
+        reference
+            .string_cache_mut()
+            .set_source(Some(SourceCache::as_read(
+                formula.into(),
+                Some(1),
+                vec![(0, Some("L".into()))],
+            )));
+        book.sheet_mut(0)
+            .unwrap()
+            .add_chart(chart_with_reference(reference));
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            if name == "xl/charts/chart1.xml" {
+                let xml = String::from_utf8(data).unwrap();
+                let start = xml.find("<c:cat>").unwrap();
+                let end = start + xml[start..].find("</c:cat>").unwrap() + "</c:cat>".len();
+                let category = concat!(
+                    "<c:cat><c:strRef><c:f>Sheet1!$A$1</c:f><c:strCache>",
+                    "<c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>L</c:v></c:pt>",
+                    "</c:strCache></c:strRef></c:cat>"
+                );
+                data = format!("{}{category}{}", &xml[..start], &xml[end..]).into_bytes();
+            }
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&data).unwrap();
+        }
+        let bytes = output.finish().unwrap().into_inner();
+        let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let mut xml = String::new();
+        archive
+            .by_name("xl/charts/chart1.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains(concat!(
+            "<c:cat><c:strRef><c:f>Sheet1!$A$1</c:f><c:strCache>",
+            "<c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>L</c:v></c:pt>",
+            "</c:strCache></c:strRef></c:cat>"
+        )));
+        bytes
+    }
+
+    fn materialize_descriptor_loss() -> (Workbook, SourceCacheSession) {
+        let mut book =
+            crate::reader::xlsx::read_reader(Cursor::new(descriptor_loss_package()), false)
+                .unwrap();
+        let shared_strings = book.shared_string_table();
+        let stylesheet = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = lazy_provider();
+        crate::reader::xlsx::raw_to_deserialize_by_worksheet(
+            &mut book.sheet_collection_unchecked_mut()[0],
+            &shared_strings,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        (book, session)
+    }
+
+    fn rewrite_package_part(
+        bytes: &[u8],
+        part: &str,
+        edit: impl FnOnce(String) -> String,
+    ) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let mut edit = Some(edit);
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            if name == part {
+                data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
+            }
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&data).unwrap();
+        }
+        assert!(edit.is_none(), "{part} was not rewritten");
+        output.finish().unwrap().into_inner()
+    }
+
+    fn replace_chart_cache(xml: String, cache: &str) -> String {
+        let start = xml.find("<c:strCache>").unwrap();
+        let end = start + xml[start..].find("</c:strCache>").unwrap() + "</c:strCache>".len();
+        format!("{}{cache}{}", &xml[..start], &xml[end..])
+    }
+
+    fn deferred_cache_package(cache: &str) -> Vec<u8> {
+        rewrite_package_part(&descriptor_loss_package(), "xl/charts/chart1.xml", |xml| {
+            replace_chart_cache(xml, cache)
+        })
+    }
+
+    fn image_deferred_cache_package(cache: &str) -> Vec<u8> {
+        rewrite_package_part(
+            &deferred_cache_package(cache),
+            "xl/drawings/drawing1.xml",
+            |xml| {
+                let start = xml.find("<xdr:to>").unwrap();
+                let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
+                format!(
+                    "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" \
+                     \\
+                 name=\"Group \\
+                 1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp>{}",
+                    &xml[..start],
+                    &xml[end..]
+                )
+                .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
+            },
+        )
+    }
+
+    fn cache_with_indices(indices: impl IntoIterator<Item = u32>) -> String {
+        let indices = indices.into_iter().collect::<Vec<_>>();
+        let mut cache = format!("<c:strCache><c:ptCount val=\"{}\"/>", indices.len());
+        for index in indices {
+            use std::fmt::Write as _;
+            write!(cache, "<c:pt idx=\"{index}\"><c:v>{index}</c:v></c:pt>").unwrap();
+        }
+        cache.push_str("</c:strCache>");
+        cache
+    }
+
+    fn capture_deferred_cache(cache: &str) -> (Workbook, SourceCacheSession) {
+        let mut book =
+            crate::reader::xlsx::read_reader(Cursor::new(deferred_cache_package(cache)), false)
+                .unwrap();
+        let shared_strings = book.shared_string_table();
+        let stylesheet = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = lazy_provider();
+        crate::reader::xlsx::raw_to_deserialize_by_worksheet(
+            &mut book.sheet_collection_unchecked_mut()[0],
+            &shared_strings,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        (book, session)
+    }
+
+    #[test]
+    fn shape_rejection_releases_run_backing_before_value_decoding() {
+        let mut cache = format!(
+            "<c:strCache><c:ptCount val=\"{}\"/>",
+            MAX_SOURCE_CACHE_POINTS + 2
+        );
+        for index in 0..=MAX_SOURCE_CACHE_POINTS as u32 {
+            let value = if index == 0 { 1 } else { index * 2 };
+            use std::fmt::Write as _;
+            write!(
+                cache,
+                "<c:pt idx=\"{}\"><c:v>{value}</c:v></c:pt>",
+                index * 2
+            )
+            .unwrap();
+        }
+        cache.push_str("<c:pt idx=\"0\"><c:v>1</c:v></c:pt></c:strCache>");
+        let (book, session) = capture_deferred_cache(&cache);
+        assert_eq!(
+            session.rejection_backing().shape,
+            Some(CandidateBacking {
+                index_runs: None,
+                exceptions: None,
+            })
+        );
+        assert_eq!(session.rejection_backing().exception, None);
+        let report = book.chart_source_cache_report();
+        assert_eq!(
+            (
+                report.kept_caches,
+                report.kept_points,
+                report.kept_text_bytes,
+                report.dropped_caches,
+                report.reduced_caches,
+                report.over_cap_caches,
+                report.over_cap_points,
+                report.over_cap_text_bytes
+            ),
+            (0, 0, 0, 1, 0, 1, 32_772, 76_373)
+        );
+    }
+
+    #[test]
+    fn exception_rejection_releases_backing_before_later_repeated_points_decode() {
+        let mut cache = format!(
+            "<c:strCache><c:ptCount val=\"{}\"/>",
+            MAX_SOURCE_CACHE_POINTS + 3
+        );
+        for index in 0..=MAX_SOURCE_CACHE_POINTS as u32 + 2 {
+            let value = if index == 0 { 1 } else { index };
+            use std::fmt::Write as _;
+            write!(cache, "<c:pt idx=\"{index}\"><c:v>{value}</c:v></c:pt>").unwrap();
+        }
+        cache.push_str("<c:pt idx=\"0\"><c:v>1</c:v></c:pt></c:strCache>");
+        let (book, session) = capture_deferred_cache(&cache);
+        assert_eq!(session.rejection_backing().shape, None);
+        assert_eq!(
+            session.rejection_backing().exception,
+            Some(CandidateBacking {
+                index_runs: None,
+                exceptions: Some((0, 0)),
+            })
+        );
+        let report = book.chart_source_cache_report();
+        assert_eq!(
+            (
+                report.kept_caches,
+                report.kept_points,
+                report.kept_text_bytes,
+                report.dropped_caches,
+                report.reduced_caches,
+                report.over_cap_caches,
+                report.over_cap_points,
+                report.over_cap_text_bytes
+            ),
+            (0, 0, 0, 1, 0, 1, 16_390, 70_828)
+        );
+    }
+
+    #[test]
+    fn reader_reduced_dense_cache_has_no_dense_run_capacity() {
+        let rows = 100_000u32;
+        let formula = format!("Sheet1!$A$1:$A${rows}");
+        let mut imported = crate::new_file();
+        for row in 1..=rows {
+            imported
+                .sheet_mut(0)
+                .unwrap()
+                .cell_mut((1, row))
+                .set_value_number(row);
+        }
+        let mut reference = StringReference::default();
+        reference.formula_mut().set_address_str(&formula);
+        imported
+            .sheet_mut(0)
+            .unwrap()
+            .add_chart(chart_with_reference(reference));
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&imported, &mut Cursor::new(&mut bytes)).unwrap();
+        let mut cache = format!("<c:strCache><c:ptCount val=\"{rows}\"/>");
+        for index in 0..rows {
+            let value = if index == 42 {
+                "source".to_string()
+            } else {
+                (index + 1).to_string()
+            };
+            use std::fmt::Write as _;
+            write!(cache, "<c:pt idx=\"{index}\"><c:v>{value}</c:v></c:pt>").unwrap();
+        }
+        cache.push_str("</c:strCache>");
+        bytes = rewrite_package_part(&bytes, "xl/charts/chart1.xml", |xml| {
+            replace_chart_cache(xml, &cache)
+        });
+        let book = crate::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
+        let source = book.sheet(0).unwrap().chart_collection()[0]
+            .chart_space()
+            .chart()
+            .plot_area()
+            .chart_groups()
+            .next()
+            .unwrap()
+            .series()
+            .area_chart_series()[0]
+            .category_axis_data()
+            .unwrap()
+            .string_reference()
+            .unwrap()
+            .string_cache()
+            .source()
+            .unwrap();
+        let (exceptions, index_runs) = source.retained_capacities();
+        assert!(exceptions <= 2);
+        assert_eq!(index_runs, 0);
+    }
+
+    #[test]
+    fn skipped_subtrees_request_only_the_modeled_raw_coordinate() {
+        let mut book =
+            crate::reader::xlsx::read_reader(Cursor::new(skipped_subtree_request_package()), false)
+                .unwrap();
+        assert!(!book.sheet_collection_unchecked_mut()[1].is_deserialized());
+        let shared_strings = book.shared_string_table();
+        let stylesheet = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = lazy_provider();
+        crate::reader::xlsx::raw_to_deserialize_by_worksheet(
+            &mut book.sheet_collection_unchecked_mut()[0],
+            &shared_strings,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        let wanted = session.wanted_coordinates().unwrap();
+        assert_eq!(wanted.len(), 1);
+        assert_eq!(wanted[&1], HashSet::from([(1, 1)]));
+        assert!(!book.sheet_collection_unchecked_mut()[1].is_deserialized());
+    }
+
+    fn skipped_subtree_request_package() -> Vec<u8> {
+        let formula = "Data!$A$1";
+        let mut book = crate::new_file();
+        book.sheet_mut(0).unwrap().set_name("Host");
+        book.new_sheet("Data")
+            .unwrap()
+            .cell_mut("A1")
+            .set_value_number(1);
+        let mut reference = StringReference::default();
+        reference.formula_mut().set_address_str(formula);
+        reference
+            .string_cache_mut()
+            .set_source(Some(SourceCache::as_read(
+                formula.into(),
+                Some(1),
+                vec![(0, Some("A".into()))],
+            )));
+        book.sheet_mut(0)
+            .unwrap()
+            .add_chart(chart_with_reference(reference));
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
+        rewrite_package_part(&bytes, "xl/charts/chart1.xml", |xml| {
+            let cache = concat!(
+                "<c:strCache><c:ptCount val=\"1\"/>",
+                "<c:pt idx=\"0\"><c:v>A</c:v></c:pt></c:strCache>"
+            );
+            let modeled = format!(
+                "<c:idx val=\"0\"/><c:order \
+                 val=\"0\"/><c:cat><c:strRef><c:f>Data!$A$1</c:f>{cache}</c:strRef></c:cat><c:\
+                 val><c:numRef><c:f>Host!$B$1</c:f></c:numRef></c:val>"
+            );
+            let series_extension = format!(
+                "<c:extLst><c:ext \
+                 uri=\"series\"><c:cat><c:strRef><c:f>Data!$B$1</c:f>{cache}</c:strRef></c:cat></\
+                 c:ext></c:extLst>"
+            );
+            let family_extension = format!(
+                "<c:extLst><c:ext \
+                 uri=\"family\"><c:cat><c:strRef><c:f>Data!$C$1</c:f>{cache}</c:strRef></c:cat></\
+                 c:ext></c:extLst>"
+            );
+            let chart_extension = format!(
+                "<c:extLst><c:ext \
+                 uri=\"chart\"><c:cat><c:strRef><c:f>Data!$D$1</c:f>{cache}</c:strRef></c:cat></c:\
+                 ext></c:extLst>"
+            );
+            let start = xml.find("<c:ser>").unwrap();
+            let end = start + xml[start..].find("</c:ser>").unwrap() + "</c:ser>".len();
+            format!(
+                "{}<c:ser>{modeled}{series_extension}</c:ser>{}",
+                &xml[..start],
+                &xml[end..]
+            )
+            .replacen(
+                "</c:lineChart>",
+                &format!("{family_extension}</c:lineChart>"),
+                1,
+            )
+            .replacen("</c:chart>", &format!("{chart_extension}</c:chart>"), 1)
+        })
+    }
+
+    #[test]
+    fn merged_chart_parts_capture_the_title_before_the_category() {
+        reset_chart_part_buffer_observation();
+        let eager =
+            crate::reader::xlsx::read_reader(Cursor::new(merged_title_capture_package()), true)
+                .unwrap();
+        assert_eq!(eager.chart_source_cache_report().kept_caches, 2);
+        assert_eq!(
+            chart_part_buffer_observation(),
+            ChartPartBufferObservation {
+                eager_live:                       0,
+                eager_peak:                       1,
+                eager_openings:                   4,
+                failed_reads_have_no_buffer:      true,
+                lazy_source_reads_have_no_buffer: true,
+                lazy_sheet_boundaries:            0,
+                lazy_pending_parts_are_exact:     true,
+            }
+        );
+
+        let mut book =
+            crate::reader::xlsx::read_reader(Cursor::new(merged_title_capture_package()), false)
+                .unwrap();
+        let shared_strings = book.shared_string_table();
+        let stylesheet = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        let mut provider = lazy_provider();
+        crate::reader::xlsx::raw_to_deserialize_by_worksheet(
+            &mut book.sheet_collection_unchecked_mut()[0],
+            &shared_strings,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        );
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        assert_eq!(session.capture_formulas(), ["Sheet1!$B$1", "Sheet1!$A$1"]);
+        let report = book.chart_source_cache_report();
+        assert_eq!(
+            (
+                report.kept_caches,
+                report.kept_points,
+                report.kept_text_bytes
+            ),
+            (2, 2, 4)
+        );
+    }
+
+    #[test]
+    fn eager_provider_opens_a_part_once_for_consecutive_references() {
+        reset_chart_part_buffer_observation();
+        let book =
+            crate::reader::xlsx::read_reader(Cursor::new(two_reference_part_package()), true)
+                .unwrap();
+        assert_eq!(book.chart_source_cache_report().kept_caches, 2);
+        let observation = chart_part_buffer_observation();
+        assert_eq!(observation.eager_openings, 2);
+        assert_eq!(observation.eager_peak, 1);
+        assert_eq!(observation.eager_live, 0);
+    }
+
+    #[test]
+    fn lazy_two_sheet_materialization_compacts_pending_chart_parts_before_advancing() {
+        reset_chart_part_buffer_observation();
+        let mut book =
+            crate::reader::xlsx::read_reader(Cursor::new(two_sheet_chart_part_package()), false)
+                .unwrap();
+        book.read_sheet_collection();
+        let observation = chart_part_buffer_observation();
+        // Both sheets cross a boundary twice: once when deserialized and once
+        // when captured, so dropping either release point changes the count.
+        assert_eq!(observation.lazy_sheet_boundaries, 4);
+        assert!(observation.lazy_pending_parts_are_exact);
+    }
+
+    fn two_sheet_chart_part_package() -> Vec<u8> {
+        let mut book = crate::new_file();
+        book.new_sheet("Second").unwrap();
+        for (sheet, formula, value) in [(0, "Sheet1!$A$1", "first"), (1, "Second!$A$1", "second")] {
+            book.sheet_collection_unchecked_mut()[sheet]
+                .cell_mut("A1")
+                .set_value(value);
+            let mut reference = StringReference::default();
+            reference.formula_mut().set_address_str(formula);
+            reference
+                .string_cache_mut()
+                .set_source(Some(SourceCache::as_read(
+                    formula.into(),
+                    Some(1),
+                    vec![(0, Some(value.into()))],
+                )));
+            book.sheet_collection_unchecked_mut()[sheet].add_chart(chart_with_reference(reference));
+        }
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn unreadable_chart_parts_discard_partial_bytes() {
+        fn corrupt_chart_crc(bytes: &[u8]) -> Vec<u8> {
+            let mut corrupt = bytes.to_vec();
+            let mut offset = 0;
+            while offset + 46 <= corrupt.len() {
+                if corrupt[offset..].starts_with(b"PK\x01\x02") {
+                    let name_len =
+                        u16::from_le_bytes([corrupt[offset + 28], corrupt[offset + 29]]) as usize;
+                    let extra_len =
+                        u16::from_le_bytes([corrupt[offset + 30], corrupt[offset + 31]]) as usize;
+                    let comment_len =
+                        u16::from_le_bytes([corrupt[offset + 32], corrupt[offset + 33]]) as usize;
+                    let name_start = offset + 46;
+                    let name_end = name_start + name_len;
+                    if corrupt[name_start..name_end] == *b"xl/charts/chart1.xml" {
+                        corrupt[offset + 16..offset + 20].copy_from_slice(&0u32.to_le_bytes());
+                        return corrupt;
+                    }
+                    offset = name_end + extra_len + comment_len;
+                } else {
+                    offset += 1;
+                }
+            }
+            panic!("chart entry was not found in the ZIP directory");
+        }
+
+        let bytes = corrupt_chart_crc(&deferred_cache_package(
+            "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>A</c:v></c:pt></c:strCache>",
+        ));
+        reset_chart_part_buffer_observation();
+        crate::reader::xlsx::read_reader(Cursor::new(&bytes), true).unwrap();
+        assert!(chart_part_buffer_observation().failed_reads_have_no_buffer);
+
+        let path = std::env::temp_dir().join(format!(
+            "umya-chart-part-observation-{}-{}.xlsx",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        reset_chart_part_buffer_observation();
+        let mut lazy = crate::reader::xlsx::lazy_read(&path).unwrap();
+        lazy.sheet_mut(0).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let observation = chart_part_buffer_observation();
+        assert!(observation.lazy_source_reads_have_no_buffer);
+        assert!(observation.lazy_pending_parts_are_exact);
+    }
+
+    fn merged_title_capture_package() -> Vec<u8> {
+        let mut book = crate::new_file();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut("A1")
+            .set_value_number(1);
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut("B1")
+            .set_value_number(1);
+        for (formula, label) in [("Sheet1!$A$1", "A"), ("Sheet1!$B$1", "B")] {
+            let mut reference = StringReference::default();
+            reference.formula_mut().set_address_str(formula);
+            reference
+                .string_cache_mut()
+                .set_source(Some(SourceCache::as_read(
+                    formula.into(),
+                    Some(1),
+                    vec![(0, Some(label.into()))],
+                )));
+            book.sheet_mut(0)
+                .unwrap()
+                .add_chart(chart_with_reference(reference));
+        }
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
+        bytes = rewrite_package_part(&bytes, "xl/charts/chart1.xml", |xml| {
+            let start = xml.find("<c:cat>").unwrap();
+            let end = start + xml[start..].find("</c:cat>").unwrap() + "</c:cat>".len();
+            let category = concat!(
+                "<c:cat><c:strRef><c:f>Sheet1!$A$1</c:f><c:strCache>",
+                "<c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>A</c:v></c:pt>",
+                "</c:strCache></c:strRef></c:cat>"
+            );
+            format!("{}{category}{}", &xml[..start], &xml[end..])
+        });
+        bytes = rewrite_package_part(&bytes, "xl/charts/chart2.xml", |xml| {
+            let title = concat!(
+                "<c:title><c:tx><c:strRef><c:f>Sheet1!$B$1</c:f><c:strCache>",
+                "<c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>B</c:v></c:pt>",
+                "</c:strCache></c:strRef></c:tx></c:title>"
+            );
+            let chart_start = xml.find("<c:chart>").unwrap() + "<c:chart>".len();
+            let group_start = xml.find("<c:lineChart>").unwrap();
+            let group_end = group_start
+                + xml[group_start..].find("</c:lineChart>").unwrap()
+                + "</c:lineChart>".len();
+            format!(
+                "{}{}{}{}",
+                &xml[..chart_start],
+                title,
+                &xml[chart_start..group_start],
+                &xml[group_end..]
+            )
+        });
+        rewrite_package_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+            let first_start = xml.find("<xdr:twoCellAnchor>").unwrap();
+            let first_end = first_start
+                + xml[first_start..].find("</xdr:twoCellAnchor>").unwrap()
+                + "</xdr:twoCellAnchor>".len();
+            let second_start = first_end + xml[first_end..].find("<xdr:twoCellAnchor>").unwrap();
+            let second_end = second_start
+                + xml[second_start..].find("</xdr:twoCellAnchor>").unwrap()
+                + "</xdr:twoCellAnchor>".len();
+            let first = &xml[first_start..first_end];
+            let second = &xml[second_start..second_end];
+            let chart_start = second.find("<c:chart ").unwrap();
+            let chart_end = chart_start + second[chart_start..].find("/>").unwrap() + 2;
+            let graphic_end = first.find("</a:graphicData>").unwrap();
+            let merged = format!(
+                "{}{}{}",
+                &first[..graphic_end],
+                &second[chart_start..chart_end],
+                &first[graphic_end..]
+            );
+            format!("{}{}{}", &xml[..first_start], merged, &xml[second_end..])
+        })
+    }
+
+    fn two_reference_part_package() -> Vec<u8> {
+        rewrite_package_part(&descriptor_loss_package(), "xl/charts/chart1.xml", |xml| {
+            let title = concat!(
+                "<c:title><c:tx><c:strRef><c:f>Sheet1!$A$1</c:f><c:strCache>",
+                "<c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>L</c:v></c:pt>",
+                "</c:strCache></c:strRef></c:tx></c:title>"
+            );
+            xml.replacen("<c:plotArea>", &format!("{title}<c:plotArea>"), 1)
+        })
+    }
+
+    #[cfg(debug_assertions)]
+    fn imported_audit_package() -> Workbook {
+        crate::reader::xlsx::read_reader(Cursor::new(descriptor_loss_package()), true).unwrap()
+    }
+
+    #[cfg(debug_assertions)]
+    fn grouped_one_cell_audit_package() -> Vec<u8> {
+        rewrite_package_part(
+            &descriptor_loss_package(),
+            "xl/drawings/drawing1.xml",
+            |xml| {
+                let start = xml.find("<xdr:to>").unwrap();
+                let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
+                format!(
+                    "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" \
+                     name=\"Group \
+                     1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp>{}",
+                    &xml[..start],
+                    &xml[end..]
+                )
+                .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
+            },
+        )
+    }
+
+    #[cfg(debug_assertions)]
+    fn ole_audit_package() -> Vec<u8> {
+        let formula = "Sheet1!$A$1";
+        let mut book = crate::new_file();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut("A1")
+            .set_value_number(1);
+        let mut reference = StringReference::default();
+        reference.formula_mut().set_address_str(formula);
+        reference
+            .string_cache_mut()
+            .set_source(Some(SourceCache::as_read(
+                formula.into(),
+                Some(1),
+                vec![(0, Some("L".into()))],
+            )));
+        book.sheet_mut(0)
+            .unwrap()
+            .add_chart(chart_with_reference(reference));
+        let anchor = book.sheet(0).unwrap().chart_collection()[0]
+            .two_cell_anchor()
+            .clone();
+        let mut object = OleObject::default();
+        object.set_object_extension("bin");
+        object.set_object_data([0]);
+        object.set_two_cell_anchor(anchor);
+        book.sheet_mut(0)
+            .unwrap()
+            .ole_objects_mut()
+            .set_ole_object(object);
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
+        rewrite_package_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
+            let start = xml.find("<xdr:twoCellAnchor>").unwrap();
+            let end = start
+                + xml[start..].find("</xdr:twoCellAnchor>").unwrap()
+                + "</xdr:twoCellAnchor>".len();
+            let anchor = &xml[start..end];
+            let drawing_end = xml.find("</xdr:wsDr>").unwrap();
+            format!(
+                "{}<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"><mc:Choice xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" Requires=\"a14\">{anchor}</mc:Choice></mc:AlternateContent>{}",
+                &xml[..start],
+                &xml[drawing_end..]
+            )
+        })
+    }
 
     #[test]
     fn failed_raw_streams_are_unavailable_at_capture_and_stored_export() {
@@ -272,7 +2415,9 @@ mod tests {
         chart.area_chart_series_list_mut().area_chart_series_mut()[0]
             .set_category_axis_data(category);
         book.sheet_collection_unchecked_mut()[0].add_chart(chart);
-        capture_chart_source_caches(&mut book, &[0]);
+        let mut session = SourceCacheSession::immediate();
+        let mut provider = lazy_provider();
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
         let chart = &book.sheet_collection_no_check()[0].chart_collection()[0];
         let reference = chart
             .chart_space()
@@ -333,7 +2478,8 @@ mod tests {
             panic!("missing string reference");
         };
         let mut reference = StringReference::default();
-        reference.set_attributes(&mut reader, &root);
+        let session = SourceCacheSession::immediate();
+        reference.set_attributes(&mut reader, &root, &session);
         let mut category = CategoryAxisData::default();
         category.set_string_reference(reference);
         let mut chart = Chart::default();
@@ -386,7 +2532,9 @@ mod tests {
                 .iter()
                 .all(|source| source["exceptions"][0]["loaded_display"].is_null())
         );
-        capture_chart_source_caches(&mut book, &[0]);
+        let mut session = SourceCacheSession::immediate();
+        let mut provider = lazy_provider();
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
         let drawing = book.sheet_collection_no_check()[0].worksheet_drawing();
         assert_eq!(drawing.chart_collection().len(), 1);
         assert_eq!(drawing.one_cell_anchor_collection().len(), 1);

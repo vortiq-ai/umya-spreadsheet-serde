@@ -507,6 +507,164 @@ fn filtered_series_extensions_do_not_become_ordinary_series() {
 }
 
 #[test]
+fn skipped_series_extensions_do_not_admit_or_request_their_string_caches() {
+    let cache = concat!(
+        "<c:strCache><c:ptCount val=\"1\"/>",
+        "<c:pt idx=\"0\"><c:v>A</c:v></c:pt></c:strCache>"
+    );
+    let modeled = [
+        "<c:idx val=\"0\"/><c:order val=\"0\"/>",
+        "<c:cat><c:strRef><c:f>Data!$A$1</c:f>",
+        cache,
+        "</c:strRef></c:cat><c:val><c:numRef><c:f>Sheet1!$B$1</c:f></c:numRef></c:val>",
+    ]
+    .concat();
+    let skipped = [
+        format!("<c:extLst><c:ext uri=\"{FILTERING_URI}\" xmlns:c15=\"{C15_NS}\">"),
+        "<c15:filteredLineSeries><c15:ser><c:cat><c:strRef><c:f>Data!$B$1</c:f>".into(),
+        cache.to_string(),
+        "</c:strRef></c:cat></c15:ser></c15:filteredLineSeries></c:ext></c:extLst>".into(),
+    ]
+    .concat();
+    let mut initial = base_book(&ChartType::LineChart);
+    initial.sheet_mut(0).unwrap().set_name("Host");
+    initial.new_sheet("Data").unwrap();
+    initial
+        .sheet_by_name_mut("Data")
+        .unwrap()
+        .cell_mut("A1")
+        .set_value_number(1);
+    let bytes = with_chart_part(&write(&initial), |xml| {
+        let family = format!(
+            "<c:extLst><c:ext \
+             uri=\"family\"><c:cat><c:strRef><c:f>Data!$C$1</c:f>{cache}</c:strRef></c:cat></c:\
+             ext></c:extLst>"
+        );
+        let chart = format!(
+            "<c:extLst><c:ext \
+             uri=\"chart\"><c:cat><c:strRef><c:f>Data!$D$1</c:f>{cache}</c:strRef></c:cat></c:\
+             ext></c:extLst>"
+        );
+        replace_between(
+            xml,
+            "<c:ser>",
+            "</c:ser>",
+            &format!("<c:ser>{modeled}{skipped}</c:ser>"),
+        )
+        .replacen("</c:lineChart>", &format!("{family}</c:lineChart>"), 1)
+        .replacen("</c:chart>", &format!("{chart}</c:chart>"), 1)
+        .replacen(
+            "<c:grouping val=\"stacked\"/>",
+            "<c:grouping val=\"standard\"/>",
+            1,
+        )
+    });
+    let input_xml = chart_part(&bytes);
+    assert_eq!(input_xml.matches("<c:ser>").count(), 1, "{input_xml}");
+    assert!(
+        input_xml.contains("<c:grouping val=\"standard\"/>"),
+        "{input_xml}"
+    );
+    assert!(
+        input_xml.contains("<c:varyColors val=\"0\"/>"),
+        "{input_xml}"
+    );
+    let input_series = between(&input_xml, "<c:ser>", "</c:ser>");
+    assert!(
+        input_series.starts_with("<c:ser><c:idx val=\"0\"/><c:order val=\"0\"/>"),
+        "{input_series}"
+    );
+    for formula in ["Data!$A$1", "Data!$B$1"] {
+        assert!(input_series.contains(formula), "{input_series}");
+    }
+    for formula in ["Data!$C$1", "Data!$D$1"] {
+        assert!(!input_series.contains(formula), "{input_series}");
+        assert!(input_xml.contains(formula), "{input_xml}");
+    }
+    let mut book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+    book.sheet_mut(0).unwrap();
+    let report = book.chart_source_cache_report();
+    assert_eq!(
+        (
+            report.kept_caches,
+            report.kept_points,
+            report.kept_text_bytes,
+            report.dropped_caches,
+            report.reduced_caches,
+            report.over_cap_caches,
+            report.over_cap_points,
+            report.over_cap_text_bytes,
+        ),
+        (1, 1, 2, 0, 0, 0, 0, 0)
+    );
+    let chart = chart_of(&book);
+    let line = chart
+        .chart_space()
+        .chart()
+        .plot_area()
+        .line_chart()
+        .unwrap();
+    assert!(matches!(
+        line.grouping().val(),
+        umya_spreadsheet::drawing::charts::GroupingValues::Standard
+    ));
+    assert!(!line.vary_colors().val());
+    assert_eq!(
+        chart
+            .chart_space()
+            .chart()
+            .plot_area()
+            .line_chart()
+            .unwrap()
+            .area_chart_series_list()
+            .area_chart_series()
+            .len(),
+        1
+    );
+    let category = chart
+        .chart_space()
+        .chart()
+        .plot_area()
+        .line_chart()
+        .unwrap()
+        .area_chart_series_list()
+        .area_chart_series()[0]
+        .category_axis_data()
+        .unwrap()
+        .string_reference()
+        .unwrap();
+    let source = category.string_cache().source().unwrap();
+    let series = &line.area_chart_series_list().area_chart_series()[0];
+    assert_eq!(series.index().val(), 0);
+    assert_eq!(series.order().val(), 0);
+    assert_eq!(
+        series
+            .values()
+            .unwrap()
+            .number_reference()
+            .formula()
+            .address_str(),
+        "Sheet1!$B$1"
+    );
+    assert_eq!(source.formula(), "Data!$A$1");
+    assert_eq!(source.point_count(), Some(1));
+    assert!(source.index_runs().is_empty());
+    assert_eq!(source.exceptions().len(), 1);
+    assert_eq!(source.exceptions()[0].index(), 0);
+    assert_eq!(source.exceptions()[0].value(), Some("A"));
+    assert_eq!(source.exceptions()[0].loaded_display(), Some("1"));
+    let written = chart_part(&write(&book));
+    assert_eq!(
+        between(&written, "<c:cat>", "</c:cat>"),
+        "<c:cat><c:strRef><c:f>Data!$A$1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt \
+         idx=\"0\"><c:v>A</c:v></c:pt></c:strCache></c:strRef></c:cat>"
+    );
+    for skipped in ["Data!$B$1", "Data!$C$1", "Data!$D$1"] {
+        assert!(!written.contains(skipped), "{written}");
+    }
+}
+
+#[test]
 fn nested_leader_lines_extension_does_not_set_the_ordinary_leader_lines() {
     let labels = [
         "<c:dLbls><c:showLegendKey val=\"0\"/><c:showVal val=\"1\"/>",

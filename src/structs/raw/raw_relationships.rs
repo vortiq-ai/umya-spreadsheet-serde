@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io,
     io::Read,
     path::Path,
@@ -120,6 +121,22 @@ impl RawRelationships {
             .unwrap_or_else(|| panic!("Not found relationship with ID: {r_id}."))
     }
 
+    pub(crate) fn take_chart_part_buffers(
+        &mut self,
+    ) -> HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)> {
+        self.relationship_list_mut()
+            .iter_mut()
+            .filter(|relationship| relationship.get_type() == crate::helper::const_str::CHART_NS)
+            .map(|relationship| {
+                let raw_file = relationship.raw_file_mut();
+                (
+                    raw_file.file_target().to_string(),
+                    (raw_file.take_file_data(), raw_file.source_file_owned()),
+                )
+            })
+            .collect()
+    }
+
     #[deprecated(since = "3.0.0", note = "Use relationship_by_rid()")]
     pub(crate) fn get_relationship_by_rid(&self, r_id: &str) -> &RawRelationship {
         self.relationship_by_rid(r_id)
@@ -144,6 +161,7 @@ impl RawRelationships {
         base_path: &str,
         target: &str,
         source_file: Option<&Path>,
+        defer_chart_data: bool,
     ) -> bool {
         let data = {
             let path_str = join_paths(base_path, target);
@@ -164,7 +182,14 @@ impl RawRelationships {
             Event::Empty(ref e) => {
                 if e.name().into_inner() == b"Relationship" {
                     let mut obj = RawRelationship::default();
-                    obj.set_attributes(&mut reader, e, arv, base_path, source_file);
+                    obj.set_attributes(
+                        &mut reader,
+                        e,
+                        arv,
+                        base_path,
+                        source_file,
+                        defer_chart_data,
+                    );
                     self.add_relationship_list(obj);
                 }
             },

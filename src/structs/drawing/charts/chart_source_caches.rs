@@ -47,8 +47,8 @@ pub struct SourceCache {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct IndexRun {
-    start: u32,
-    len:   u32,
+    pub(crate) start: u32,
+    pub(crate) len:   u32,
 }
 
 /// A point whose stored text is not the text its cell displayed when the file
@@ -106,9 +106,8 @@ pub struct ChartSourceCacheReport {
 }
 
 impl SourceCache {
-    pub(crate) fn with_formula(mut self, formula: String) -> Self {
+    pub(crate) fn set_formula(&mut self, formula: String) {
         self.formula = formula;
-        self
     }
 
     /// The reference the file had.
@@ -156,6 +155,11 @@ impl SourceCache {
             .fold(0, usize::saturating_add)
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_capacities(&self) -> (usize, usize) {
+        (self.exceptions.capacity(), self.index_runs.capacity())
+    }
+
     /// Every point index of the cache, in file order.
     pub fn indices(&self) -> impl Iterator<Item = u32> + '_ {
         let dense = if self.index_runs.is_empty() {
@@ -187,6 +191,22 @@ impl SourceCache {
                     loaded_display: None,
                 })
                 .collect(),
+        }
+    }
+
+    pub(crate) fn from_reduced(
+        formula: String,
+        point_count: Option<u32>,
+        mut index_runs: Vec<IndexRun>,
+        mut exceptions: Vec<SourceException>,
+    ) -> Self {
+        index_runs.shrink_to_fit();
+        exceptions.shrink_to_fit();
+        Self {
+            formula,
+            point_count,
+            index_runs,
+            exceptions,
         }
     }
 
@@ -312,6 +332,18 @@ impl IndexRun {
 }
 
 impl SourceException {
+    pub(crate) fn imported(
+        index: u32,
+        value: Option<String>,
+        loaded_display: Option<String>,
+    ) -> Self {
+        Self {
+            index,
+            value,
+            loaded_display,
+        }
+    }
+
     /// The point index.
     #[must_use]
     pub fn index(&self) -> u32 {

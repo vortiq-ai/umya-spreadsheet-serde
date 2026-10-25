@@ -217,6 +217,8 @@ impl OneCellAnchor {
         reader: &mut Reader<R>,
         _e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) {
         xml_read_loop!(
             reader,
@@ -232,7 +234,7 @@ impl OneCellAnchor {
                     }
                     b"xdr:graphicFrame" | b"graphicFrame" => {
                         let mut obj = GraphicFrame::default();
-                        obj.set_attributes(reader, e, drawing_relationships);
+                        obj.set_attributes(reader, e, drawing_relationships, session, provider);
                         self.set_graphic_frame(obj);
                     }
                     b"xdr:sp" | b"sp" => {

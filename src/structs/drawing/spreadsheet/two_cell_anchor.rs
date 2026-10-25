@@ -336,6 +336,8 @@ impl TwoCellAnchor {
         reader: &mut Reader<R>,
         e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) {
         set_string_from_xml!(self, e, edit_as, "editAs");
 
@@ -356,7 +358,7 @@ impl TwoCellAnchor {
                 }
                 b"xdr:graphicFrame" | b"graphicFrame" => {
                     let mut obj = GraphicFrame::default();
-                    obj.set_attributes(reader, e, drawing_relationships);
+                    obj.set_attributes(reader, e, drawing_relationships, session, provider);
                     self.set_graphic_frame(obj);
                 }
                 b"xdr:sp" | b"sp" => {
