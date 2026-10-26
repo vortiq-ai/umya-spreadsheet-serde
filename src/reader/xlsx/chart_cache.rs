@@ -23,13 +23,18 @@ use quick_xml::{
 #[cfg(test)]
 use crate::structs::drawing::charts::note_work;
 use crate::{
-    helper::address::unescape_sheet_name,
+    helper::{
+        address::unescape_sheet_name,
+        number_format::PreparedFormats,
+    },
     reader::driver::{
         attribute_u32,
         local_name,
     },
     structs::{
+        CacheDisplay,
         Cell,
+        Cells,
         Workbook,
         drawing::charts::{
             DenseSummary,
@@ -38,19 +43,27 @@ use crate::{
             MAX_SOURCE_CACHE_POINTS,
             MAX_SOURCE_CACHE_TEXT_BYTES,
             PointScratch,
+            RangeStepper,
             SourceCache,
             SourceException,
             StringReference,
             literal_text,
             parse_point_count,
-            read_point_into,
+            read_point_borrowed,
             visit_deferred_indices,
             visit_string_references,
         },
     },
 };
 
+mod slots;
+mod strict;
+
+use slots::RangeSlots;
+
 type Coordinate = (u32, u32);
+const RAW_SHEET: u8 = 1;
+const FRESH_SHEET: u8 = 2;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -214,6 +227,15 @@ pub(crate) trait ChartPartProvider {
         target: &str,
         session: &SourceCacheSession,
         visit: &mut dyn FnMut(Option<&[u8]>),
+    ) {
+        self.with_memoized_part(target, session, &mut |data, _| visit(data));
+    }
+
+    fn with_memoized_part(
+        &mut self,
+        target: &str,
+        session: &SourceCacheSession,
+        visit: &mut dyn FnMut(Option<&[u8]>, &mut DenseMemo),
     );
 
     fn finish_sheet(&mut self, session: &SourceCacheSession);
@@ -222,6 +244,7 @@ pub(crate) trait ChartPartProvider {
 pub(crate) struct LazyChartPartProvider {
     pending:       HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>,
     current:       Option<(usize, Vec<u8>)>,
+    memo:          DenseMemo,
     #[cfg(test)]
     last_released: Option<usize>,
     #[cfg(test)]
@@ -233,6 +256,7 @@ impl LazyChartPartProvider {
         Self {
             pending,
             current: None,
+            memo: DenseMemo::default(),
             #[cfg(test)]
             last_released: None,
             #[cfg(test)]
@@ -241,6 +265,7 @@ impl LazyChartPartProvider {
     }
 
     fn release_current(&mut self, session: &SourceCacheSession) {
+        self.memo.release();
         let Some((part, data)) = self.current.take() else {
             return;
         };
@@ -262,11 +287,11 @@ impl ChartPartProvider for LazyChartPartProvider {
         }
     }
 
-    fn with_part(
+    fn with_memoized_part(
         &mut self,
         target: &str,
         session: &SourceCacheSession,
-        visit: &mut dyn FnMut(Option<&[u8]>),
+        visit: &mut dyn FnMut(Option<&[u8]>, &mut DenseMemo),
     ) {
         let part = session.part_for(target);
         #[cfg(test)]
@@ -296,7 +321,7 @@ impl ChartPartProvider for LazyChartPartProvider {
             );
             self.current = Some((part, data));
         }
-        visit(Some(&self.current.as_ref().unwrap().1));
+        visit(Some(&self.current.as_ref().unwrap().1), &mut self.memo);
     }
 
     fn finish_sheet(&mut self, session: &SourceCacheSession) {
@@ -309,6 +334,7 @@ impl ChartPartProvider for LazyChartPartProvider {
 pub(crate) struct EagerChartPartProvider<'a, R> {
     archive: &'a mut zip::read::ZipArchive<R>,
     current: Option<(String, PartBuffer, bool)>,
+    memo:    DenseMemo,
 }
 
 impl<'a, R: std::io::Read + std::io::Seek> EagerChartPartProvider<'a, R> {
@@ -316,17 +342,19 @@ impl<'a, R: std::io::Read + std::io::Seek> EagerChartPartProvider<'a, R> {
         Self {
             archive,
             current: None,
+            memo: DenseMemo::default(),
         }
     }
 
     fn release_current(&mut self) {
+        self.memo.release();
         self.current = None;
     }
 
     fn read_part(&mut self, target: &str) {
         self.release_current();
         let mut data = Vec::new();
-        let Ok(entry) = crate::reader::driver::zip_by_name(self.archive, target) else {
+        let Ok(mut entry) = crate::reader::driver::zip_by_name(self.archive, target) else {
             self.current = Some((target.into(), PartBuffer::new(data), false));
             #[cfg(test)]
             observe_eager_part_acquire(&self.current.as_ref().unwrap().1, false);
@@ -335,7 +363,6 @@ impl<'a, R: std::io::Read + std::io::Seek> EagerChartPartProvider<'a, R> {
         let reservation =
             usize::try_from(entry.size().min(isize::MAX as u64)).unwrap_or(usize::MAX);
         let _ = data.try_reserve_exact(reservation);
-        let mut entry = std::io::BufReader::new(entry);
         let succeeded = std::io::Read::read_to_end(&mut entry, &mut data).is_ok();
         if !succeeded {
             data.clear();
@@ -358,17 +385,17 @@ impl<R: std::io::Read + std::io::Seek> ChartPartProvider for EagerChartPartProvi
         observe_eager_raw_release(released);
     }
 
-    fn with_part(
+    fn with_memoized_part(
         &mut self,
         target: &str,
         _session: &SourceCacheSession,
-        visit: &mut dyn FnMut(Option<&[u8]>),
+        visit: &mut dyn FnMut(Option<&[u8]>, &mut DenseMemo),
     ) {
         if self.current.as_ref().map(|(current, ..)| current.as_str()) != Some(target) {
             self.read_part(target);
         }
         let (_, data, succeeded) = self.current.as_ref().unwrap();
-        visit(succeeded.then_some(data.data.as_slice()));
+        visit(succeeded.then_some(data.data.as_slice()), &mut self.memo);
     }
 
     fn finish_sheet(&mut self, _session: &SourceCacheSession) {
@@ -396,6 +423,222 @@ enum DeferredReduction {
         #[cfg(test)]
         rejection_backing: RejectionBacking,
     },
+}
+
+const MAX_MEMO_ENTRIES: usize = 256;
+const MAX_MEMO_BYTES: usize = 1_048_576;
+
+// The index and flags distinguish the sheet's admission classification; the
+// final component distinguishes literal, materialized, streamed and unavailable
+// displays. No pointer into a workbook or a part is retained.
+type MemoClass = (Option<usize>, u8, u8);
+
+enum MemoOutcome {
+    Reduced,
+    Rejected,
+    Kept(SourceCache),
+}
+
+struct MemoEntry {
+    formula:      String,
+    span:         Range<usize>,
+    retain_shape: bool,
+    class:        MemoClass,
+    points:       usize,
+    text_bytes:   usize,
+    outcome:      MemoOutcome,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct MemoObservation {
+    entries:             usize,
+    retained_bytes:      usize,
+    allocated_peak:      usize,
+    measured_insertions: usize,
+    hits:                usize,
+}
+
+/// Owned by the provider, with storage released at every part boundary.
+#[derive(Default)]
+pub(crate) struct DenseMemo {
+    entries:             Vec<MemoEntry>,
+    bytes:               usize,
+    #[cfg(test)]
+    measure_allocations: bool,
+    #[cfg(test)]
+    observation:         MemoObservation,
+}
+
+impl DenseMemo {
+    fn release(&mut self) {
+        self.entries = Vec::new();
+        self.bytes = 0;
+    }
+
+    fn lookup(
+        &mut self,
+        part: &[u8],
+        source: &DeferredSource,
+        retain_shape: bool,
+        class: MemoClass,
+        remaining_points: usize,
+        remaining_text: usize,
+    ) -> Option<DeferredReduction> {
+        source.summary?;
+        let span = part.get(source.range()?)?;
+        let entry = self.entries.iter().find(|entry| {
+            entry.formula == source.formula
+                && entry.retain_shape == retain_shape
+                && entry.class == class
+                && part.get(entry.span.clone()) == Some(span)
+        })?;
+        #[cfg(test)]
+        {
+            self.observation.hits += 1;
+        }
+        let fits = entry.points <= remaining_points && entry.text_bytes <= remaining_text;
+        let kept = match &entry.outcome {
+            MemoOutcome::Reduced => return Some(DeferredReduction::Reduced),
+            MemoOutcome::Rejected => None,
+            MemoOutcome::Kept(source) => fits.then(|| source.clone()),
+        };
+        #[cfg(test)]
+        let rejected = kept.is_none();
+        Some(DeferredReduction::Candidate {
+            source:                         kept,
+            points:                         entry.points,
+            text_bytes:                     entry.text_bytes,
+            #[cfg(test)]
+            rejection_backing:              RejectionBacking {
+                shape:     dense_shape(source.summary.unwrap(), remaining_points).shape_backing,
+                exception: rejected.then_some(CandidateBacking {
+                    index_runs: None,
+                    exceptions: Some((0, 0)),
+                }),
+            },
+        })
+    }
+
+    fn retain(
+        &mut self,
+        source: &mut DeferredSource,
+        retain_shape: bool,
+        class: MemoClass,
+        reduction: &DeferredReduction,
+    ) {
+        if source.summary.is_none() || self.entries.len() >= MAX_MEMO_ENTRIES {
+            return;
+        }
+        let Some(span) = source.range() else { return };
+        let clone_bytes = match reduction {
+            DeferredReduction::Candidate {
+                source: Some(kept), ..
+            } => kept.cloned_retained_bytes(),
+            _ => Some(0),
+        };
+        // Reserve the bounded table once. This avoids a second table allocation
+        // while a nearly full memo still owns the old allocation.
+        let table_bytes = if self.entries.capacity() == 0 {
+            MAX_MEMO_ENTRIES.checked_mul(size_of::<MemoEntry>())
+        } else {
+            Some(0)
+        };
+        let required = clone_bytes
+            .and_then(|bytes| bytes.checked_add(source.formula.capacity()))
+            .and_then(|bytes| bytes.checked_add(self.bytes))
+            .and_then(|bytes| bytes.checked_add(table_bytes?));
+        if required.is_none_or(|bytes| bytes > MAX_MEMO_BYTES) {
+            return;
+        }
+        #[cfg(test)]
+        if self.measure_allocations {
+            // The finished descriptor transfers this allocation to the memo.
+            // All input, workbook, reduction and output allocations are outside
+            // this scope; only the table and the stored clone allocate here.
+            let baseline = self.bytes + source.formula.capacity();
+            let ((), seen) = crate::test_alloc::observe_with_live_bytes(baseline, || {
+                self.retain_checked(source, span, retain_shape, class, reduction);
+            });
+            assert_eq!(
+                seen.live_bytes as usize,
+                self.bytes + source.formula.capacity()
+            );
+            self.observation.allocated_peak = self.observation.allocated_peak.max(seen.peak_bytes);
+            self.observation.measured_insertions += 1;
+            self.observation.entries = self.observation.entries.max(self.entries.len());
+            self.observation.retained_bytes = self.observation.retained_bytes.max(self.bytes);
+            return;
+        }
+        self.retain_checked(source, span, retain_shape, class, reduction);
+    }
+
+    fn retain_checked(
+        &mut self,
+        source: &mut DeferredSource,
+        span: Range<usize>,
+        retain_shape: bool,
+        class: MemoClass,
+        reduction: &DeferredReduction,
+    ) {
+        let mut table = Vec::new();
+        let table_bytes = if self.entries.capacity() == 0 {
+            if table.try_reserve_exact(MAX_MEMO_ENTRIES).is_err() {
+                return;
+            }
+            let Some(bytes) = table.capacity().checked_mul(size_of::<MemoEntry>()) else {
+                return;
+            };
+            bytes
+        } else {
+            0
+        };
+        let (points, text_bytes, kept) = match reduction {
+            DeferredReduction::Reduced => (0, 0, None),
+            DeferredReduction::Candidate {
+                source,
+                points,
+                text_bytes,
+                ..
+            } => (*points, *text_bytes, source.as_ref()),
+        };
+        let predicted = kept.map_or(Some(0), SourceCache::cloned_retained_bytes);
+        let base = self
+            .bytes
+            .checked_add(table_bytes)
+            .and_then(|bytes| bytes.checked_add(source.formula.capacity()));
+        let Some(bytes) = base
+            .and_then(|bytes| bytes.checked_add(predicted?))
+            .filter(|bytes| *bytes <= MAX_MEMO_BYTES)
+        else {
+            return;
+        };
+        let outcome = match reduction {
+            DeferredReduction::Reduced => MemoOutcome::Reduced,
+            DeferredReduction::Candidate { source: None, .. } => MemoOutcome::Rejected,
+            DeferredReduction::Candidate { .. } => MemoOutcome::Kept(kept.unwrap().clone()),
+        };
+        let actual = match &outcome {
+            MemoOutcome::Kept(kept) => kept.retained_bytes(),
+            _ => Some(0),
+        };
+        // String/Vec clones allocate their lengths. Admission
+        // precedes cloning; actual storage only verifies that accounting.
+        debug_assert_eq!(actual, predicted);
+        if self.entries.capacity() == 0 {
+            self.entries = table;
+        }
+        self.entries.push(MemoEntry {
+            formula: std::mem::take(&mut source.formula),
+            span,
+            retain_shape,
+            class,
+            points,
+            text_bytes,
+            outcome,
+        });
+        self.bytes = bytes;
+    }
 }
 
 #[cfg(test)]
@@ -599,17 +842,40 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
     shape
 }
 
-fn reduce_deferred_cache(
+fn reduce_deferred_cache<'a>(
     data: &[u8],
     source: &DeferredSource,
     expected_points: Option<u64>,
     retain_shape: bool,
     remaining_points: usize,
     remaining_text_bytes: usize,
-    mut display: impl FnMut(u32) -> Option<String>,
+    display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
 ) -> DeferredReduction {
+    let budget = ReplayBudget {
+        expected_points,
+        retain_shape,
+        points: remaining_points,
+        text: remaining_text_bytes,
+    };
+    reduce_cache(data, source, &budget, display, false).unwrap()
+}
+
+fn reduce_cache<'a>(
+    data: &[u8],
+    source: &DeferredSource,
+    budget: &ReplayBudget,
+    mut display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
+    strict: bool,
+) -> Option<DeferredReduction> {
+    let ReplayBudget {
+        expected_points,
+        retain_shape,
+        points: remaining_points,
+        text: remaining_text_bytes,
+    } = *budget;
     let mut shape = match source.summary {
         Some(summary) => dense_shape(summary, remaining_points),
+        None if strict => strict::shape(data, remaining_points)?,
         None => deferred_shape(data, remaining_points),
     };
     let mut points = shape.run_charge;
@@ -618,38 +884,83 @@ fn reduce_deferred_cache(
     let mut exceptions = Vec::new();
     #[cfg(test)]
     let mut exception_rejection_backing = None;
+    let mut bytes = if strict {
+        Some(strict::ByteCache::new(data)?)
+    } else {
+        None
+    };
     #[cfg(test)]
     note_work(|counts| counts.decode_scans += 1);
-    let mut reader = Reader::from_reader(std::io::Cursor::new(data));
-    reader.config_mut().trim_text(true);
-    let mut buffer = Vec::new();
-    let mut scratch = PointScratch::default();
+    let mut fallback = (!strict).then(|| {
+        let mut reader = Reader::from_reader(std::io::Cursor::new(data));
+        reader.config_mut().trim_text(true);
+        (reader, Vec::new(), PointScratch::default())
+    });
+    let mut display_scratch = String::new();
+    let mut decoded = String::new();
     loop {
-        buffer.clear();
-        let event = reader.read_event_into(&mut buffer).unwrap();
-        let point = match event {
-            Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
-                let index = attribute_u32(&e, b"idx");
-                let value = read_point_into(&mut reader, &mut scratch, true).value;
-                index.map(|index| (index, value))
+        let point = if let Some(bytes) = &mut bytes {
+            match bytes.next().ok()? {
+                Some((index, raw)) => {
+                    #[cfg(test)]
+                    note_work(|counts| counts.kept_values += 1);
+                    let value = if raw.contains('&') {
+                        // Invalid entities restart to preserve the old panic.
+                        // Valid entities use the original text decoder.
+                        if !crate::helper::utils::references_are_valid(raw) {
+                            return None;
+                        }
+                        crate::helper::utils::unescape_xml_text_into(
+                            &quick_xml::events::BytesText::from_escaped(raw),
+                            &mut decoded,
+                        );
+                        decoded.as_str()
+                    } else {
+                        raw
+                    };
+                    Some((index, Some(value)))
+                }
+                None => break,
             }
-            Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
-                attribute_u32(&e, b"idx").map(|index| (index, None))
-            }
-            Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => break,
-            Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
-            _ => None,
+        } else {
+            let (reader, buffer, scratch) = fallback.as_mut().unwrap();
+            buffer.clear();
+            let event = reader.read_event_into(buffer).unwrap();
+            let point = match event {
+                Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
+                    let index = attribute_u32(&e, b"idx");
+                    let value = read_point_borrowed(reader, scratch);
+                    index.map(|index| (index, value))
+                }
+                Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
+                    attribute_u32(&e, b"idx").map(|index| (index, None))
+                }
+                Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+                Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+                Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+                _ => None,
+            };
+            point
         };
         let Some((index, value)) = point else {
             continue;
         };
-        let loaded_display = display(index);
-        if loaded_display.is_none() || value != loaded_display || shape.repeated.contains(&index) {
+        let loaded_display = display(index, &mut display_scratch);
+        if loaded_display.is_none()
+            || value
+                != loaded_display
+                    .as_ref()
+                    .map(|text| text.text(&display_scratch))
+            || (!shape.repeated.is_empty() && shape.repeated.contains(&index))
+        {
             points = points.saturating_add(1);
             text_bytes = text_bytes
-                .saturating_add(value.as_ref().map_or(0, String::len))
-                .saturating_add(loaded_display.as_ref().map_or(0, String::len));
+                .saturating_add(value.map_or(0, str::len))
+                .saturating_add(
+                    loaded_display
+                        .as_ref()
+                        .map_or(0, |text| text.text(&display_scratch).len()),
+                );
             if !counting && (points > remaining_points || text_bytes > remaining_text_bytes) {
                 exceptions = Vec::new();
                 shape.index_runs = None;
@@ -663,7 +974,11 @@ fn reduce_deferred_cache(
                 counting = true;
             }
             if !counting {
-                exceptions.push(SourceException::imported(index, value, loaded_display));
+                exceptions.push(SourceException::imported(
+                    index,
+                    value.map(str::to_owned),
+                    loaded_display.map(|text| text.into_owned(&display_scratch)),
+                ));
             }
         }
     }
@@ -672,9 +987,9 @@ fn reduce_deferred_cache(
         && expected_points == shape.point_count.map(u64::from)
         && points == 0
     {
-        return DeferredReduction::Reduced;
+        return Some(DeferredReduction::Reduced);
     }
-    DeferredReduction::Candidate {
+    Some(DeferredReduction::Candidate {
         source: (!counting).then(|| {
             SourceCache::from_reduced(
                 source.formula.clone(),
@@ -690,7 +1005,61 @@ fn reduce_deferred_cache(
             shape:     shape.shape_backing,
             exception: exception_rejection_backing,
         },
+    })
+}
+
+struct ReplayBudget {
+    expected_points: Option<u64>,
+    retain_shape:    bool,
+    points:          usize,
+    text:            usize,
+}
+
+fn replay_with_memo<'a>(
+    part: &[u8],
+    memo: &mut DenseMemo,
+    source: &mut DeferredSource,
+    budget: &ReplayBudget,
+    class: MemoClass,
+    display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
+) -> Option<DeferredReduction> {
+    if let Some(reused) = memo.lookup(
+        part,
+        source,
+        budget.retain_shape,
+        class,
+        budget.points,
+        budget.text,
+    ) {
+        return Some(reused);
     }
+    let Some(data) = source.range().and_then(|range| part.get(range)) else {
+        debug_assert!(false, "invalid deferred chart cache span");
+        return None;
+    };
+    let mut display = display;
+    let reduction = match reduce_cache(data, source, budget, &mut display, true) {
+        Some(reduction) => {
+            #[cfg(test)]
+            strict::note_scan(true);
+            reduction
+        }
+        None => {
+            #[cfg(test)]
+            strict::note_scan(false);
+            reduce_deferred_cache(
+                data,
+                source,
+                budget.expected_points,
+                budget.retain_shape,
+                budget.points,
+                budget.text,
+                display,
+            )
+        }
+    };
+    memo.retain(source, budget.retain_shape, class, &reduction);
+    Some(reduction)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1098,27 +1467,37 @@ pub(crate) fn capture_chart_source_caches(
         .enumerate()
         .map(|(index, sheet)| (sheet.name().to_string(), index))
         .collect();
-    let raw: HashSet<usize> = book
+    let mut classes: Vec<u8> = book
         .sheet_collection_no_check()
         .iter()
-        .enumerate()
-        .filter(|(_, sheet)| !sheet.is_deserialized())
-        .map(|(index, _)| index)
+        .map(|sheet| {
+            if sheet.is_deserialized() {
+                0
+            } else {
+                RAW_SHEET
+            }
+        })
         .collect();
-    let fresh_set: HashSet<usize> = fresh.iter().copied().collect();
+    for &index in fresh {
+        classes[index] |= FRESH_SHEET;
+    }
+    let mut formats = PreparedFormats::default();
     let mut wanted: HashMap<usize, HashSet<Coordinate>> = HashMap::new();
-    if !raw.is_empty() {
+    if classes.iter().any(|class| class & RAW_SHEET != 0) {
         for index in fresh {
             visit_drawing(
                 book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut(),
                 &mut |reference| {
                     let request = Request::new(reference, &names);
-                    if let Some(index) = request.sheet.filter(|index| raw.contains(index)) {
+                    if let Some(index) = request
+                        .sheet
+                        .filter(|&index| classes[index] & RAW_SHEET != 0)
+                    {
+                        let mut stepper = request.range.as_ref().map(IndexedRange::stepper);
                         let mut add_point = |point| {
-                            if let Some(coordinate) = request
-                                .range
-                                .as_ref()
-                                .and_then(|range| range.coordinate(point))
+                            if let Some(coordinate) = stepper
+                                .as_mut()
+                                .and_then(|stepper| stepper.coordinate(point))
                             {
                                 wanted.entry(index).or_default().insert(coordinate);
                             }
@@ -1153,7 +1532,9 @@ pub(crate) fn capture_chart_source_caches(
                 |cell: &Cell| {
                     let coordinate = (cell.coordinate().col_num(), cell.coordinate().row_num());
                     if coordinates.contains(&coordinate) {
-                        values.insert(coordinate, cell.formatted_value());
+                        let mut scratch = String::new();
+                        let display = cell.cache_display_prepared(&mut scratch, &mut formats);
+                        values.insert(coordinate, display.into_owned(&scratch));
                     }
                 },
             );
@@ -1166,9 +1547,11 @@ pub(crate) fn capture_chart_source_caches(
     let mut report = *book.chart_source_cache_report();
     for index in fresh {
         // Move only the drawing while resolving cells through the workbook's
-        // indexed storage; there are no copied cell or cache display arrays.
+        // indexed storage; the part slots retain references into that storage.
         let mut drawing =
             std::mem::take(book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut());
+        let mut slots = RangeSlots::default();
+        let read_book: &Workbook = book;
         visit_drawing(&mut drawing, &mut |reference| {
             let request = Request::new(reference, &names);
             #[cfg(test)]
@@ -1188,20 +1571,33 @@ pub(crate) fn capture_chart_source_caches(
             };
             let earlier = request
                 .sheet
-                .is_some_and(|index| !raw.contains(&index) && !fresh_set.contains(&index));
+                .is_some_and(|index| classes[index] & (RAW_SHEET | FRESH_SHEET) == 0);
             if earlier {
                 report.reduced_caches += 1;
                 report.dropped_caches += 1;
                 return;
             }
-            let retain_shape = request.sheet.is_some_and(|index| raw.contains(&index));
+            let retain_shape = request
+                .sheet
+                .is_some_and(|index| classes[index] & RAW_SHEET != 0);
+            let slot = match &source {
+                CapturedSource::Deferred(source) => {
+                    slots.cover_source(source, &request, read_book, &classes, &streamed)
+                }
+                CapturedSource::Parsed(_) => None,
+            };
+            let mut resolver = request.resolve(read_book, &classes, &streamed);
             let remaining_points = MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points);
             let remaining_text = MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes);
             let reduced = match source {
                 CapturedSource::Parsed(source) => {
-                    match source.reduce(request.expected_points(), retain_shape, |point| {
-                        request.display(book, &raw, &streamed, point)
-                    }) {
+                    match source.reduce_borrowed(
+                        request.expected_points(),
+                        retain_shape,
+                        |point, scratch| {
+                            slots.display(slot, &mut resolver, point, scratch, &mut formats)
+                        },
+                    ) {
                         Some(cache) => {
                             let points = cache.stored_points();
                             let text_bytes = cache.stored_text_bytes();
@@ -1218,29 +1614,36 @@ pub(crate) fn capture_chart_source_caches(
                         None => DeferredReduction::Reduced,
                     }
                 }
-                CapturedSource::Deferred(source) => {
+                CapturedSource::Deferred(mut source) => {
                     let Some(target) = session.part_target(source.part) else {
                         debug_assert!(false, "invalid deferred chart cache span");
                         return;
                     };
                     let mut reduced = None;
-                    provider.with_part(&target, session, &mut |data| {
-                        let Some(data) = data else {
-                            return;
-                        };
-                        let Some(data) = source.range().and_then(|range| data.get(range)) else {
-                            debug_assert!(false, "invalid deferred chart cache span");
-                            return;
-                        };
-                        reduced = Some(reduce_deferred_cache(
-                            data,
-                            &source,
-                            request.expected_points(),
-                            retain_shape,
-                            remaining_points,
-                            remaining_text,
-                            |point| request.display(book, &raw, &streamed, point),
-                        ));
+                    let class = (
+                        request.sheet,
+                        request.sheet.map_or(0, |index| classes[index]),
+                        resolver.classification(),
+                    );
+                    let budget = ReplayBudget {
+                        expected_points: request.expected_points(),
+                        retain_shape,
+                        points: remaining_points,
+                        text: remaining_text,
+                    };
+                    provider.with_memoized_part(&target, session, &mut |part, memo| {
+                        if let Some(part) = part {
+                            reduced = replay_with_memo(
+                                part,
+                                memo,
+                                &mut source,
+                                &budget,
+                                class,
+                                |point, scratch| {
+                                    slots.display(slot, &mut resolver, point, scratch, &mut formats)
+                                },
+                            );
+                        }
                     });
                     let Some(reduced) = reduced else {
                         return;
@@ -1282,6 +1685,7 @@ pub(crate) fn capture_chart_source_caches(
                 }
             }
         });
+        drop(slots);
         #[cfg(debug_assertions)]
         {
             let worksheet = &mut book.sheet_collection_unchecked_mut()[*index];
@@ -1390,35 +1794,99 @@ impl Request {
         }
     }
 
-    fn display(
-        &self,
-        book: &Workbook,
-        raw: &HashSet<usize>,
-        streamed: &HashMap<usize, HashMap<Coordinate, String>>,
-        point: u32,
-    ) -> Option<String> {
+    fn resolve<'a>(
+        &'a self,
+        book: &'a Workbook,
+        classes: &[u8],
+        streamed: &'a HashMap<usize, HashMap<Coordinate, String>>,
+    ) -> DisplayResolver<'a> {
         if let Some(text) = &self.literal {
-            return (point == 0).then(|| text.clone());
+            return DisplayResolver::Literal(text);
         }
-        let index = self.sheet?;
-        let coordinate = self.range.as_ref()?.coordinate(point)?;
-        if raw.contains(&index) {
-            streamed
-                .get(&index)
-                .map(|values| values.get(&coordinate).cloned().unwrap_or_default())
-        } else {
-            Some(
-                book.sheet_collection_no_check()[index]
-                    .cells_crate()
-                    .get(coordinate)
-                    .map_or_else(String::new, Cell::formatted_value),
-            )
+        let source = match self.sheet {
+            Some(index) if classes[index] & RAW_SHEET != 0 => match streamed.get(&index) {
+                Some(values) => ResolvedCells::Streamed(values),
+                None => return DisplayResolver::Unavailable,
+            },
+            Some(index) => {
+                ResolvedCells::Materialized(book.sheet_collection_no_check()[index].cells_crate())
+            }
+            None => return DisplayResolver::Unavailable,
+        };
+        match self.range.as_ref() {
+            Some(range) => DisplayResolver::Range {
+                source,
+                stepper: range.stepper(),
+            },
+            None => DisplayResolver::Unavailable,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ResolvedCells<'a> {
+    Materialized(&'a Cells),
+    Streamed(&'a HashMap<Coordinate, String>),
+}
+
+/// Sheet classification and storage lookup happen once for each cache.
+enum DisplayResolver<'a> {
+    Literal(&'a str),
+    Range {
+        source:  ResolvedCells<'a>,
+        stepper: RangeStepper<'a>,
+    },
+    Unavailable,
+}
+
+impl<'a> DisplayResolver<'a> {
+    fn classification(&self) -> u8 {
+        match self {
+            Self::Literal(_) => 0,
+            Self::Range {
+                source: ResolvedCells::Materialized(_),
+                ..
+            } => 1,
+            Self::Range {
+                source: ResolvedCells::Streamed(_),
+                ..
+            } => 2,
+            Self::Unavailable => 3,
+        }
+    }
+
+    fn display(
+        &mut self,
+        point: u32,
+        scratch: &mut String,
+        formats: &mut PreparedFormats,
+    ) -> Option<CacheDisplay<'a>> {
+        match self {
+            Self::Literal(text) => (point == 0).then_some(CacheDisplay::Borrowed(text)),
+            Self::Range { source, stepper } => {
+                let coordinate = stepper.coordinate(point)?;
+                Some(match *source {
+                    ResolvedCells::Materialized(cells) => cells
+                        .get(coordinate)
+                        .map_or(CacheDisplay::Borrowed(""), |cell| {
+                            cell.cache_display_prepared(scratch, formats)
+                        }),
+                    ResolvedCells::Streamed(values) => {
+                        CacheDisplay::Borrowed(values.get(&coordinate).map_or("", String::as_str))
+                    }
+                })
+            }
+            Self::Unavailable => None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    mod prepared_formats;
+    mod repeats;
+    mod strict_scan;
+
     use std::io::{
         Cursor,
         Read,
@@ -3072,10 +3540,20 @@ mod tests {
             let reference = deferred_reference(&session, &string_reference_xml(&cache));
             assert_eq!(reference.cached_value(), Some("X"), "{inner}");
             assert_eq!(descriptor_summary(&session, &reference), None, "{inner}");
+            strict::SCANS.with(|seen| seen.set((0, 0)));
             let (book, _, parsed, captured) = capture_with_work(&cache, 0);
-            assert_eq!(captured.shape_scans, 1, "{inner}");
+            assert_eq!(strict::SCANS.with(StateCell::get), (0, 1), "{inner}");
+            // Without a summary, the strict shape pass starts but rejects the
+            // nested point where it expects v, before any decode pass/value.
+            // Fallback adds one shape pass and one decode pass: totals 2/1.
+            // Pass 1 keeps X once; fallback ends the valueless outer point at
+            // the inner point's end, then keeps X once: 1 + 0 + 1 = 2 values.
+            // capture_with_work resets counters before pass 1, so the earlier
+            // standalone reference parse contributes nothing to these totals.
+            assert_eq!(captured.shape_scans, 2, "{inner}");
             assert_eq!(captured.decode_scans, 1, "{inner}");
             assert_eq!(parsed.kept_values, 1, "{inner}");
+            assert_eq!(captured.kept_values, 2, "{inner}");
             assert_eq!(report_of(&book), (1, 3, 2, 0, 0, 0, 0, 0), "{inner}");
             assert_eq!(
                 category_source(&book).map(facts_of),
@@ -3409,16 +3887,31 @@ mod tests {
         );
     }
 
-    // Replay allocates, per point, the decoded value and the display text it
-    // compares it with, and nothing else that grows with the cache. Each
-    // scan adds only its reused buffers and what it keeps.
+    // Equal values and displays are borrowed: only reused parser buffers,
+    // shape storage and the retained formula/runs may allocate. A hidden
+    // per-point decode or display copy exceeds these fixed allowances.
     #[test]
-    fn replay_allocates_only_values_displays_and_kept_runs() {
+    fn replay_allocates_nothing_per_equal_point_beyond_kept_state() {
         let displays = labels(2 * POINTS);
-        let per_point = 2 * POINTS as usize;
+        // Outer events, point events and raw value text: each <=32 bytes,
+        // at most six growth requests; two parser stacks fit PARSER_STATE.
         let state = 3 * BUFFER_GROWTH + PARSER_STATE;
+        // Shape events/skip buffers, runs (4 -> 2048 slots), ptCount text,
+        // and parser stacks. The reverse case also grows the seen-index set.
         let shape = 2 * BUFFER_GROWTH + RUN_GROWTH + 1 + PARSER_STATE;
         let indices = 2 * BUFFER_GROWTH + SEEN_GROWTH + PARSER_STATE;
+        // Doubling requests sum to less than twice each final capacity.
+        // Three <=32-byte buffers, <=32 name bytes and four open offsets.
+        let state_bytes = 3 * 64 + 64 + 4 * size_of::<usize>();
+        // Two scan buffers, <=2048 eight-byte runs, four ptCount bytes,
+        // and the same parser stacks.
+        let shape_bytes =
+            2 * 64 + 2 * 2048 * size_of::<IndexRun>() + 4 + 64 + 4 * size_of::<usize>();
+        // 4096 buckets fit 2000 indices at 7/8 load. Each bucket has a u32
+        // and control byte; allow 16 control suffix bytes for each growth.
+        let indices_bytes =
+            2 * 64 + 2 * 4096 * (4 + 1) + SEEN_GROWTH * 16 + 64 + 4 * size_of::<usize>();
+        let shrink_bytes = POINTS as usize * size_of::<IndexRun>() + 1;
         // One shrink of the kept runs and one copy of the formula.
         let shrink = 2;
         let dense_cache = labeled_cache(0..POINTS, POINTS as usize);
@@ -3431,53 +3924,617 @@ mod tests {
                 Some(DenseSummary {
                     point_count: POINTS,
                 }),
-                per_point + state,
+                state,
+                state_bytes,
             ),
             (
                 "sparse ascending",
                 &sparse_cache,
                 None,
-                per_point + state + shape + shrink,
+                state + shape + shrink,
+                state_bytes + shape_bytes + shrink_bytes,
             ),
             (
                 "non-ascending",
                 &reverse_cache,
                 None,
-                per_point + state + shape + indices + shrink,
+                state + shape + indices + shrink,
+                state_bytes + shape_bytes + indices_bytes + shrink_bytes,
             ),
         ];
-        for (name, cache, summary, allowed) in cases {
+        for (name, cache, summary, allowed, allowed_bytes) in cases {
+            for strict_first in [false, true] {
+                // Sparse and reverse caches must meet the same bounds through
+                // production replay; keep the direct fallback witness too.
+                if strict_first && summary.is_some() {
+                    continue;
+                }
+                let mut source = DeferredSource {
+                    part: 0,
+                    start: 0,
+                    end: u64::try_from(cache.len()).unwrap(),
+                    formula: String::from("F"),
+                    summary,
+                };
+                let budget = ReplayBudget {
+                    expected_points: Some(u64::from(POINTS)),
+                    retain_shape:    false,
+                    points:          usize::MAX,
+                    text:            usize::MAX,
+                };
+                let mut memo = DenseMemo::default();
+                strict::SCANS.with(|seen| seen.set((0, 0)));
+                let (reduced, seen) = crate::test_alloc::observe(|| {
+                    let display = |index: u32, _: &mut String| {
+                        Some(CacheDisplay::Borrowed(&displays[index as usize]))
+                    };
+                    if strict_first {
+                        replay_with_memo(
+                            cache.as_bytes(),
+                            &mut memo,
+                            &mut source,
+                            &budget,
+                            (None, 0, 0),
+                            display,
+                        )
+                        .unwrap()
+                    } else {
+                        reduce_deferred_cache(
+                            cache.as_bytes(),
+                            &source,
+                            budget.expected_points,
+                            budget.retain_shape,
+                            budget.points,
+                            budget.text,
+                            display,
+                        )
+                    }
+                });
+                assert_eq!(
+                    matches!(reduced, DeferredReduction::Reduced),
+                    summary.is_some(),
+                    "{name}, strict_first={strict_first}"
+                );
+                if strict_first {
+                    assert_eq!(strict::SCANS.with(StateCell::get), (1, 0));
+                }
+                assert!(
+                    seen.total() <= allowed,
+                    "{name}, strict_first={strict_first}: {seen:?} exceeds {allowed} for {POINTS} \
+                     points"
+                );
+                assert!(
+                    seen.total_bytes() <= allowed_bytes,
+                    "{name}, strict_first={strict_first}: {seen:?} exceeds {allowed_bytes} bytes"
+                );
+            }
+        }
+    }
+
+    // Seven mismatches spread across 2000 points must build exactly fourteen
+    // owned strings and retain every exception. Equal points contribute zero
+    // requests, so a no-op reducer cannot satisfy this exact byte witness.
+    #[test]
+    fn replay_allocates_each_stored_exception_once() {
+        const DIFFERENT: [u32; 7] = [0, 17, 199, 701, 1203, 1709, 1999];
+        let cache = labeled_cache(0..POINTS, POINTS as usize);
+        let mut displays = labels(POINTS);
+        for index in DIFFERENT {
+            displays[index as usize].replace_range(..1, "D");
+        }
+        let source = DeferredSource {
+            part:    0,
+            start:   0,
+            end:     0,
+            formula: String::from("F"),
+            summary: Some(DenseSummary {
+                point_count: POINTS,
+            }),
+        };
+        let (reduced, seen) = crate::test_alloc::observe(|| {
+            reduce_deferred_cache(
+                cache.as_bytes(),
+                &source,
+                Some(u64::from(POINTS)),
+                false,
+                usize::MAX,
+                usize::MAX,
+                |index, _| Some(CacheDisplay::Borrowed(&displays[index as usize])),
+            )
+        });
+        let DeferredReduction::Candidate {
+            source: Some(kept),
+            points,
+            text_bytes,
+            ..
+        } = reduced
+        else {
+            panic!("mismatches must retain their source");
+        };
+        assert_eq!((points, text_bytes), (7, 7 * (6 + 6)));
+        assert_eq!(kept.formula(), "F");
+        assert_eq!(kept.point_count(), Some(POINTS));
+        assert!(kept.index_runs().is_empty());
+        assert_eq!(kept.exceptions().len(), 7);
+        for (exception, index) in kept.exceptions().iter().zip(DIFFERENT) {
+            assert_eq!(exception.index(), index);
+            assert_eq!(exception.value(), Some(format!("V{index:05}").as_str()));
+            assert_eq!(
+                exception.loaded_display(),
+                Some(format!("D{index:05}").as_str())
+            );
+        }
+        // Parser requests, computed from the raw tags and Vec growth:
+        // outer events 8,16,32; point events 8; text 8,16 (6 value
+        // bytes plus the 6-byte close tag); opened names 10,20;
+        // opened offsets four usize slots. Nine requests in total.
+        let scan_bytes = 8 + 16 + 32 + 8 + 8 + 16 + 10 + 20 + 4 * size_of::<usize>();
+        // Seven six-byte values plus seven six-byte displays. Exceptions
+        // grow 0->4->8 then shrink to 7; the one-byte formula is cloned.
+        let entry_bytes = size_of::<SourceException>();
+        assert_eq!(seen.total(), 9 + 14 + 3 + 1);
+        assert_eq!(
+            seen.total_bytes(),
+            scan_bytes + 14 * 6 + (4 + 8 + 7) * entry_bytes + 1
+        );
+        assert_eq!(seen.live_bytes, (14 * 6 + 7 * entry_bytes + 1) as isize);
+        assert_eq!(kept.retained_capacities(), (7, 0));
+    }
+
+    // The real replay resolves numeric General/@ and string cells without
+    // allocating one display per equal point. All input/cell setup is outside
+    // the observed scope; only the reducer's four reusable buffers can grow.
+    #[test]
+    fn equal_cell_displays_allocate_only_reused_scan_and_format_buffers() {
+        let cache = cache_with_indices(0..POINTS);
+        for code in [None, Some("General"), Some("@"), Some("string")] {
+            let mut book = crate::new_file();
+            for index in 0..POINTS {
+                let cell = book.sheet_mut(0).unwrap().cell_mut((1, index + 1));
+                if code == Some("string") {
+                    cell.set_value_string(index.to_string());
+                } else {
+                    cell.set_value_number(index);
+                    if let Some(code) = code {
+                        cell.style_mut().number_format_mut().set_format_code(code);
+                    }
+                }
+            }
+            let mut reference = StringReference::default();
+            reference
+                .formula_mut()
+                .set_address_str(format!("Sheet1!A1:A{POINTS}"));
+            let names = HashMap::from([(String::from("Sheet1"), 0)]);
+            let request = Request::new(&reference, &names);
+            let streamed = HashMap::new();
+            let mut resolver = request.resolve(&book, &[2], &streamed);
+            let mut formats = PreparedFormats::default();
             let source = DeferredSource {
-                part: 0,
-                start: 0,
-                end: 0,
+                part:    0,
+                start:   0,
+                end:     0,
                 formula: String::from("F"),
-                summary,
+                summary: Some(DenseSummary {
+                    point_count: POINTS,
+                }),
             };
             let (reduced, seen) = crate::test_alloc::observe(|| {
                 reduce_deferred_cache(
                     cache.as_bytes(),
                     &source,
-                    Some(u64::from(POINTS)),
+                    request.expected_points(),
                     false,
                     usize::MAX,
                     usize::MAX,
-                    |index| Some(displays[index as usize].clone()),
+                    |index, scratch| resolver.display(index, scratch, &mut formats),
                 )
             });
-            assert_eq!(
-                matches!(reduced, DeferredReduction::Reduced),
-                summary.is_some(),
-                "{name}"
+            assert!(matches!(reduced, DeferredReduction::Reduced), "{code:?}");
+            // Four <=32-byte buffers (outer events, point events, raw text,
+            // numeric display) plus the two parser stacks. Doubling requests
+            // sum to <64 bytes per byte-buffer and name stack, plus 4 offsets.
+            assert!(
+                seen.total() <= 4 * BUFFER_GROWTH + PARSER_STATE,
+                "{code:?}: {seen:?}"
             );
             assert!(
-                seen.total() >= per_point,
-                "{name}: {seen:?} misses the per-point values and displays"
+                seen.total_bytes() <= 4 * 64 + 64 + 4 * size_of::<usize>(),
+                "{code:?}: {seen:?}"
             );
-            assert!(
-                seen.total() <= allowed,
-                "{name}: {seen:?} exceeds {allowed} for {POINTS} points"
-            );
+            assert_eq!(seen.live_bytes, 0);
+        }
+    }
+
+    // Entity decoding reuses one String. A long first value followed by short
+    // values must neither accumulate raw text nor allocate per entity point.
+    #[test]
+    fn equal_entity_values_reuse_the_longest_decoded_buffer() {
+        let long = "x".repeat(1500);
+        let mut cache = format!("<c:strCache><c:ptCount val=\"{POINTS}\"/>");
+        for index in 0..POINTS {
+            let prefix = if index == 0 { long.as_str() } else { "" };
+            cache.push_str(&format!(
+                "<c:pt idx=\"{index}\"><c:v>{prefix}A&amp;B&#x42;&lt;&#67;</c:v></c:pt>"
+            ));
+        }
+        cache.push_str("</c:strCache>");
+        let long_display = format!("{long}A&BB<C");
+        let source = DeferredSource {
+            part:    0,
+            start:   0,
+            end:     0,
+            formula: String::from("F"),
+            summary: Some(DenseSummary {
+                point_count: POINTS,
+            }),
+        };
+        let (reduced, seen) = crate::test_alloc::observe(|| {
+            reduce_deferred_cache(
+                cache.as_bytes(),
+                &source,
+                Some(u64::from(POINTS)),
+                false,
+                usize::MAX,
+                usize::MAX,
+                |index, _| {
+                    Some(CacheDisplay::Borrowed(if index == 0 {
+                        &long_display
+                    } else {
+                        "A&BB<C"
+                    }))
+                },
+            )
+        });
+        assert!(matches!(reduced, DeferredReduction::Reduced));
+        // Raw text needs <1536 bytes plus its closing tag, capacity <=3072.
+        // Decoded text needs 1506, capacity <=3012. Their doubling requests
+        // sum to less than twice each capacity. Remaining event/name buffers
+        // are <=32 bytes, with four usize offsets. No term depends on POINTS.
+        assert!(
+            seen.total() <= 2 * 12 + 3 * BUFFER_GROWTH + PARSER_STATE,
+            "{seen:?}"
+        );
+        assert!(
+            seen.total_bytes() <= 2 * (3072 + 3012) + 3 * 64 + 4 * size_of::<usize>(),
+            "{seen:?}"
+        );
+        assert!(
+            seen.peak_bytes <= 3072 + 3012 + 3 * 32 + 4 * size_of::<usize>(),
+            "{seen:?}"
+        );
+        assert_eq!(seen.live_bytes, 0);
+    }
+
+    // Two occurrences of each range must resolve the same displays through
+    // materialized cells and a real raw-sheet stream. Gaps, repeated indices
+    // and out-of-range points pin empty versus unavailable display semantics.
+    #[test]
+    fn capture_resolves_repeated_ranges_literals_and_missing_sheets_consistently() {
+        for deferred in [false, true] {
+            for raw in [false, true] {
+                let mut book = crate::new_file();
+                book.new_sheet("Data").unwrap();
+                if raw {
+                    let mut data = RawWorksheet::default();
+                    // The streaming worksheet reader dispatches only elements
+                    // in the SpreadsheetML main namespace.
+                    data.worksheet_file_mut().set_file_data(
+                        concat!(
+                            "<worksheet xmlns=\"http://schemas.openxmlformats.org/\
+                             spreadsheetml/2006/main\"><sheetData><row r=\"1\"><c r=\"A1\" \
+                             t=\"inlineStr\"><is><t>one</t></is></c></row>",
+                            "<row r=\"3\"><c r=\"A3\" \
+                             t=\"inlineStr\"><is><t>last</t></is></c></row></sheetData></\
+                             worksheet>"
+                        )
+                        .as_bytes(),
+                    );
+                    book.sheet_collection_unchecked_mut()[1].set_raw_data_of_worksheet(data);
+                } else {
+                    book.sheet_mut(1)
+                        .unwrap()
+                        .cell_mut("A1")
+                        .set_value_string("one");
+                    book.sheet_mut(1)
+                        .unwrap()
+                        .cell_mut("A3")
+                        .set_value_string("last");
+                }
+                let mut session = if deferred {
+                    SourceCacheSession::deferred()
+                } else {
+                    SourceCacheSession::immediate()
+                };
+                let range_cache = concat!(
+                    "<c:strCache><c:ptCount val=\"5\"/>",
+                    "<c:pt idx=\"0\"><c:v>one</c:v></c:pt>",
+                    "<c:pt idx=\"1\"><c:v/></c:pt>",
+                    "<c:pt idx=\"2\"><c:v>last</c:v></c:pt>",
+                    "<c:pt idx=\"0\"><c:v>one</c:v></c:pt>",
+                    "<c:pt idx=\"3\"><c:v>outside</c:v></c:pt></c:strCache>"
+                );
+                // Store all deferred references in one real part, so their
+                // byte offsets continue to name their own formula/cache.
+                let mut xml = String::from("<root>");
+                for formula in [
+                    "Data!A1:A3",
+                    "Data!A1:A3",
+                    "&quot;literal&quot;",
+                    "Missing!A1:A3",
+                ] {
+                    let cache = if formula == "&quot;literal&quot;" {
+                        "<c:strCache><c:ptCount val=\"1\"/><c:pt \
+                         idx=\"0\"><c:v>literal</c:v></c:pt></c:strCache>"
+                    } else {
+                        range_cache
+                    };
+                    xml.push_str(&format!("<c:strRef><c:f>{formula}</c:f>{cache}</c:strRef>"));
+                }
+                xml.push_str("</root>");
+                session.begin_chart_part("resolver.xml");
+                session.store_part(session.part_for("resolver.xml"), xml.as_bytes().into());
+                let mut reader = Reader::from_reader(xml.as_bytes());
+                let mut buffer = Vec::new();
+                loop {
+                    buffer.clear();
+                    match reader.read_event_into(&mut buffer).unwrap() {
+                        Event::Start(root) if local_name(root.name().into_inner()) == b"strRef" => {
+                            let mut reference = StringReference::default();
+                            reference.set_attributes(&mut reader, &root, &session);
+                            book.sheet_mut(0)
+                                .unwrap()
+                                .add_chart(chart_with_reference(reference));
+                        }
+                        Event::Eof => break,
+                        _ => (),
+                    }
+                }
+                session.end_chart_part();
+                let mut provider = lazy_provider();
+                let fresh = if raw { vec![0] } else { vec![0, 1] };
+                capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider);
+                let mut sources = Vec::new();
+                for chart in book.sheet_collection_no_check()[0].chart_collection() {
+                    visit_string_references(
+                        &mut chart.chart_space().clone(),
+                        &mut |_, reference| {
+                            if reference.formula().address_str().contains("literal") {
+                                assert!(
+                                    reference.string_cache().source().is_none(),
+                                    "deferred={deferred}, raw={raw}: equal literal retained"
+                                );
+                            } else {
+                                sources.push(
+                                    reference
+                                        .string_cache()
+                                        .source()
+                                        .unwrap_or_else(|| {
+                                            panic!("deferred={deferred}, raw={raw}: source missing")
+                                        })
+                                        .clone(),
+                                );
+                            }
+                        },
+                    );
+                }
+                assert_eq!(sources.len(), 3, "deferred={deferred}, raw={raw}");
+                for source in &sources[..2] {
+                    assert_eq!(
+                        source.formula(),
+                        "Data!A1:A3",
+                        "deferred={deferred}, raw={raw}"
+                    );
+                    assert_eq!(
+                        source.point_count(),
+                        Some(5),
+                        "deferred={deferred}, raw={raw}"
+                    );
+                    assert_eq!(
+                        source
+                            .index_runs()
+                            .iter()
+                            .map(|run| (run.start(), run.len()))
+                            .collect::<Vec<_>>(),
+                        [(0, 3), (0, 1), (3, 1)],
+                        "deferred={deferred}, raw={raw}"
+                    );
+                    assert_eq!(
+                        source
+                            .exceptions()
+                            .iter()
+                            .map(|point| (point.index(), point.value(), point.loaded_display()))
+                            .collect::<Vec<_>>(),
+                        [
+                            (0, Some("one"), Some("one")),
+                            (0, Some("one"), Some("one")),
+                            (3, Some("outside"), None),
+                        ],
+                        "deferred={deferred}, raw={raw}"
+                    );
+                }
+                assert_eq!(sources[0], sources[1], "deferred={deferred}, raw={raw}");
+                assert_eq!(
+                    sources[2].formula(),
+                    "Missing!A1:A3",
+                    "deferred={deferred}, raw={raw}"
+                );
+                assert_eq!(
+                    sources[2]
+                        .exceptions()
+                        .iter()
+                        .map(|point| (point.index(), point.value(), point.loaded_display()))
+                        .collect::<Vec<_>>(),
+                    [
+                        (0, Some("one"), None),
+                        (1, Some(""), None),
+                        (2, Some("last"), None),
+                        (0, Some("one"), None),
+                        (3, Some("outside"), None),
+                    ],
+                    "deferred={deferred}, raw={raw}"
+                );
+                // Two resolved caches: 3 runs + 3 exceptions and 19 bytes
+                // each. Missing sheet: 3 runs + 5 exceptions, 17 value bytes.
+                // The one equal literal cache is eliminated.
+                assert_eq!(
+                    report_of(&book),
+                    (3, 20, 55, 1, 1, 0, 0, 0),
+                    "deferred={deferred}, raw={raw}"
+                );
+            }
+        }
+    }
+
+    // Dense raw-sheet capture must consume nonempty text, both when equal
+    // labels retain only shape and when a mismatch stores the loaded display.
+    // Unbound/foreign worksheet elements remain excluded by the real reader.
+    #[test]
+    fn raw_text_capture_preserves_worksheet_namespace_filtering() {
+        for deferred in [false, true] {
+            for (namespace, recognized) in [
+                ("", false),
+                (
+                    " xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"",
+                    true,
+                ),
+                (" xmlns=\"urn:foreign\"", false),
+            ] {
+                for stale in [false, true] {
+                    let mode = format!(
+                        "deferred={deferred}, raw=true, namespace={namespace:?}, stale={stale}"
+                    );
+                    let mut book = crate::new_file();
+                    book.new_sheet("Data").unwrap();
+                    let mut data = RawWorksheet::default();
+                    data.worksheet_file_mut().set_file_data(
+                        format!(
+                            "<worksheet{namespace}><sheetData><row r=\"1\"><c r=\"A1\" \
+                             t=\"inlineStr\"><is><t>one</t></is></c></row><row r=\"2\"><c \
+                             r=\"A2\" t=\"inlineStr\"><is><t>last</t></is></c></row></sheetData></\
+                             worksheet>"
+                        )
+                        .as_bytes(),
+                    );
+                    book.sheet_collection_unchecked_mut()[1].set_raw_data_of_worksheet(data);
+                    let mut session = if deferred {
+                        SourceCacheSession::deferred()
+                    } else {
+                        SourceCacheSession::immediate()
+                    };
+                    let second = if stale { "stale" } else { "last" };
+                    let reference = deferred_reference(
+                        &session,
+                        &format!(
+                            "<c:strRef><c:f>Data!A1:A2</c:f><c:strCache><c:ptCount \
+                             val=\"2\"/><c:pt idx=\"0\"><c:v>one</c:v></c:pt><c:pt \
+                             idx=\"1\"><c:v>{second}</c:v></c:pt></c:strCache></c:strRef>"
+                        ),
+                    );
+                    if deferred {
+                        assert_eq!(
+                            descriptor_summary(&session, &reference),
+                            Some(DenseSummary { point_count: 2 }),
+                            "{mode}"
+                        );
+                    }
+                    book.sheet_mut(0)
+                        .unwrap()
+                        .add_chart(chart_with_reference(reference));
+                    let mut provider = lazy_provider();
+                    capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+                    let source = category_source(&book)
+                        .unwrap_or_else(|| panic!("{mode}: raw source shape missing"));
+                    assert_eq!(source.formula(), "Data!A1:A2", "{mode}");
+                    assert_eq!(source.point_count(), Some(2), "{mode}");
+                    assert!(source.index_runs().is_empty(), "{mode}");
+                    let expected = if recognized {
+                        if stale {
+                            vec![(1, Some("stale"), Some("last"))]
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        vec![(0, Some("one"), Some("")), (1, Some(second), Some(""))]
+                    };
+                    assert_eq!(
+                        source
+                            .exceptions()
+                            .iter()
+                            .map(|point| (point.index(), point.value(), point.loaded_display()))
+                            .collect::<Vec<_>>(),
+                        expected,
+                        "{mode}"
+                    );
+                    // Dense shape costs no runs. Valid equal text costs zero;
+                    // stale/last costs 5+4 bytes. Ignored cells cost the two
+                    // cached labels alone: 3+4 bytes, or 3+5 when stale.
+                    let (points, bytes) = if recognized {
+                        if stale { (1, 9) } else { (0, 0) }
+                    } else if stale {
+                        (2, 8)
+                    } else {
+                        (2, 7)
+                    };
+                    assert_eq!(
+                        report_of(&book),
+                        (1, points, bytes, 0, 0, 0, 0, 0),
+                        "{mode}"
+                    );
+                }
+            }
+        }
+    }
+
+    // ZIP CRC failure and a shortened compressed stream can leave partial
+    // output in read_to_end; the production provider must publish no bytes.
+    #[test]
+    fn part_reader_discards_corrupt_and_truncated_compressed_output() {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "part.xml",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer
+            .write_all("<c:strCache>data</c:strCache>".repeat(100).as_bytes())
+            .unwrap();
+        let good = writer.finish().unwrap().into_inner();
+        let mut archive = zip::ZipArchive::new(Cursor::new(&good)).unwrap();
+        let mut provider = EagerChartPartProvider::new(&mut archive);
+        provider.read_part("part.xml");
+        let (_, buffer, succeeded) = provider.current.as_ref().unwrap();
+        assert!(succeeded);
+        assert_eq!(
+            buffer.data,
+            "<c:strCache>data</c:strCache>".repeat(100).as_bytes()
+        );
+        let directory = good
+            .windows(4)
+            .position(|bytes| bytes == b"PK\x01\x02")
+            .unwrap();
+        for truncate in [false, true] {
+            let mut bytes = good.clone();
+            if truncate {
+                let size =
+                    u32::from_le_bytes(bytes[directory + 20..directory + 24].try_into().unwrap());
+                bytes[directory + 20..directory + 24].copy_from_slice(&(size / 2).to_le_bytes());
+            } else {
+                bytes[directory + 16] ^= 1;
+            }
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut provider = EagerChartPartProvider::new(&mut archive);
+            provider.read_part("part.xml");
+            let (_, buffer, succeeded) = provider.current.as_ref().unwrap();
+            assert!(!succeeded, "truncated={truncate}");
+            assert!(buffer.data.is_empty());
+            let mut visited = false;
+            provider.with_part("part.xml", &SourceCacheSession::deferred(), &mut |data| {
+                assert!(data.is_none());
+                visited = true;
+            });
+            assert!(visited);
         }
     }
 }

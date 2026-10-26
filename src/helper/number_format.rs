@@ -69,76 +69,207 @@ pub fn get_percent_dollar_regex() -> &'static Regex {
     compile_regex!("%$")
 }
 
-pub fn to_formatted_string<S: AsRef<str>, P: AsRef<str>>(value: S, format: P) -> String {
-    let mut value: Cow<str> = Cow::Borrowed(value.as_ref());
-    let format = Cow::Borrowed(format.as_ref());
+/// A read owns this map; codes are inserted only after the early returns.
+#[derive(Default)]
+pub(crate) struct PreparedFormats {
+    formats: std::collections::HashMap<String, PreparedFormat>,
+}
 
-    // is empty
+impl PreparedFormats {
+    pub(crate) fn format(&mut self, value: &str, code: &str) -> String {
+        format_with(value, code, |parsed| {
+            if let Some(prepared) = self.formats.get(code) {
+                return prepared.apply(parsed);
+            }
+            self.formats
+                .insert(code.to_string(), PreparedFormat::new(code));
+            self.formats.get(code).unwrap().apply(parsed)
+        })
+    }
+}
+
+pub fn to_formatted_string<S: AsRef<str>, P: AsRef<str>>(value: S, format: P) -> String {
+    format_with(value.as_ref(), format.as_ref(), |parsed| {
+        PreparedFormat::new(format.as_ref()).apply(parsed)
+    })
+}
+
+fn format_with(value: &str, code: &str, prepare_and_apply: impl FnOnce(f64) -> String) -> String {
     if value.is_empty() {
         return value.to_string();
     }
-    // is numeric
-    match &value.parse::<f64>() {
-        // convert value
-        Ok(val) if format == NumberingFormat::FORMAT_GENERAL => {
-            return val.to_string();
-        }
-        Ok(_) if format == NumberingFormat::FORMAT_TEXT => return value.to_string(),
+    let parsed = match value.parse::<f64>() {
+        Ok(value) if code == NumberingFormat::FORMAT_GENERAL => return value.to_string(),
+        Ok(_) if code == NumberingFormat::FORMAT_TEXT => return value.to_string(),
         Err(_) => return value.to_string(),
-        _ => {}
-    }
-
-    let Ok(parsed_val) = value.parse::<f64>() else {
-        return value.to_string();
+        Ok(value) => value,
     };
+    prepare_and_apply(parsed)
+}
 
-    // Inspect the selected raw section before escaped characters are rewritten.
-    // This allows placeholder-free sections to retain their literal meaning.
-    let raw_sections: Vec<&str> = split(get_section_regex(), &format).collect();
-    let (_, raw_split_format, _) = split_format(raw_sections, parsed_val);
-    if let Some(literal) = literal_only_section(&raw_split_format) {
-        return literal;
+#[derive(Clone, Copy)]
+enum FormatKind {
+    Date,
+    Quoted,
+    Percent,
+    Number,
+}
+
+struct PreparedSection<T> {
+    display:   T,
+    condition: String,
+    threshold: String,
+}
+
+struct PreparedDisplay {
+    spaced: String,
+    kind:   FormatKind,
+}
+
+/// Each split has its own delayed failure. Preparing a later split cannot
+/// bypass the selected raw section's literal return.
+struct PreparedFormat {
+    raw:       Result<Vec<PreparedSection<String>>, usize>,
+    rewritten: Result<Result<Vec<PreparedSection<PreparedDisplay>>, usize>, fancy_regex::Error>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl PreparedFormat {
+    fn new(code: &str) -> Self {
+        #[cfg(test)]
+        PREPARATIONS.with(|count| count.set(count.get() + 1));
+        let raw = prepare_sections(code, |converted| converted);
+        let rewritten = get_escape_regex()
+            .try_replacen(code, 0, r#""$0""#)
+            .map(|text| prepare_sections(&text, prepare_display));
+        Self { raw, rewritten }
     }
 
-    // Convert any other escaped characters to quoted strings, e.g. (\T to "T")
-    let mut format = get_escape_regex().replace_all(&format, r#""$0""#);
+    fn apply(&self, value: f64) -> String {
+        let (raw, _) = select_section(&self.raw, value);
+        if let Some(literal) = literal_only_section(&raw.display) {
+            return literal;
+        }
+        let rewritten = self.rewritten.as_ref().unwrap();
+        let (section, absolute) = select_section(rewritten, value);
+        let section = &section.display;
+        // Keep the absolute value's round trip and the quoted parse here.
+        let reparsed = absolute.to_string().parse::<f64>().unwrap_or(0.0);
+        let formatted = match section.kind {
+            FormatKind::Date => date_formater::format_as_date(reparsed, &section.spaced),
+            FormatKind::Quoted => Cow::Owned(
+                section
+                    .spaced
+                    .trim_matches('"')
+                    .parse::<f64>()
+                    .unwrap()
+                    .to_string(),
+            ),
+            FormatKind::Percent => {
+                percentage_formater::format_as_percentage(reparsed, &section.spaced)
+            }
+            FormatKind::Number => number_formater::format_as_number(reparsed, &section.spaced),
+        };
+        formatted.trim().to_string()
+    }
+}
 
-    // Get the sections, there can be up to four sections, separated with a
-    // semi-colon (but only if not a quoted literal)
-    let sections: Vec<&str> = split(get_section_regex(), &format).collect();
-    let (_, split_format, split_value) = split_format(sections, parsed_val);
-    format = Cow::Owned(split_format);
-    value = Cow::Owned(split_value);
+fn prepare_sections<T>(
+    code: &str,
+    display: impl Fn(String) -> T,
+) -> Result<Vec<PreparedSection<T>>, usize> {
+    let color_re = compile_regex!(r"\[(Black|White|Red|Green|Blue|Yellow|Magenta|Cyan)\]");
+    let cond_re = compile_regex!(r"\[(>|>=|<|<=|=|<>)([+-]?\d+([.]\d+)?)\]");
+    let mut result = Vec::new();
+    for (index, section) in split(get_section_regex(), code).enumerate() {
+        let mut converted = section.to_string();
+        if color_re.captures(section).ok().flatten().is_some() {
+            if index >= 5 {
+                return Err(index);
+            }
+            converted = color_re.replace_all(section, "").to_string();
+        }
+        let mut condition = String::new();
+        let mut threshold = String::from("0");
+        if let Some(captures) = cond_re.captures(section).ok().flatten() {
+            if index >= 5 {
+                return Err(index);
+            }
+            condition = captures.get(1).unwrap().as_str().to_string();
+            threshold = captures.get(2).unwrap().as_str().to_string();
+            // Intentionally use the original section: this can keep color
+            // syntax.
+            converted = cond_re.replace_all(section, "").to_string();
+        }
+        result.push(PreparedSection {
+            display: display(converted),
+            condition,
+            threshold,
+        });
+    }
+    Ok(result)
+}
 
-    // In Excel formats, "_" is used to add spacing,
-    //    The following character indicates the size of the spacing, which we
-    // can't do in HTML, so we just use a standard space
-    let re = compile_regex!("_.");
-    let format = re.replace_all(&format, " ");
-
-    // Let's begin inspecting the format and converting the value to a formatted
-    // string
-
-    //  Check for date/time characters (not inside quotes)
-
-    let reparsed = value.parse::<f64>().unwrap_or(0.0);
-
-    if get_date_time_regex().is_match(&format).unwrap_or(false) {
-        // datetime format
-        value = date_formater::format_as_date(reparsed, &format);
-    } else if format.starts_with('"') && format.ends_with('"') {
-        let conv_format = format.trim_matches('"').parse::<f64>().unwrap();
-        value = Cow::Owned(conv_format.to_string());
+fn prepare_display(converted: String) -> PreparedDisplay {
+    let spacing_re = compile_regex!("_.");
+    let spaced = match spacing_re.replace_all(&converted, " ") {
+        Cow::Borrowed(_) => converted,
+        Cow::Owned(spaced) => spaced,
+    };
+    let kind = if get_date_time_regex().is_match(&spaced).unwrap_or(false) {
+        FormatKind::Date
+    } else if spaced.starts_with('"') && spaced.ends_with('"') {
+        FormatKind::Quoted
     } else if get_percent_dollar_regex()
-        .is_match(&format)
+        .is_match(&spaced)
         .unwrap_or(false)
     {
-        // % number format
-        value = percentage_formater::format_as_percentage(reparsed, &format);
+        FormatKind::Percent
     } else {
-        value = number_formater::format_as_number(reparsed, &format);
-    }
-    value.trim().to_string()
+        FormatKind::Number
+    };
+    PreparedDisplay { spaced, kind }
+}
+
+fn select_section<T>(
+    stage: &Result<Vec<PreparedSection<T>>, usize>,
+    value: f64,
+) -> (&PreparedSection<T>, f64) {
+    let sections = match stage {
+        Ok(sections) => sections,
+        Err(index) => panic!("index out of bounds: the len is 5 but the index is {index}"),
+    };
+    let compare = |index: usize, default| {
+        let section = &sections[index];
+        split_format_compare(
+            value,
+            &section.condition,
+            section.threshold.parse::<f64>().unwrap_or(0.0),
+            default,
+            0.0,
+        )
+    };
+    let index = match sections.len() {
+        2 if !compare(0, ">=") => 1,
+        3 | 4 if !compare(0, ">") => {
+            if compare(1, "<") {
+                1
+            } else {
+                2
+            }
+        }
+        _ => 0,
+    };
+    let absolute = if matches!(sections.len(), 2..=4) {
+        value.abs()
+    } else {
+        value
+    };
+    (&sections[index], absolute)
 }
 
 /// Decode a section that contains literals but no value placeholder.
@@ -187,91 +318,6 @@ fn literal_only_section(format: &str) -> Option<String> {
     }
 
     (!in_quotes).then_some(result)
-}
-
-fn split_format(sections: Vec<&str>, value: f64) -> (String, String, String) {
-    let mut converted_sections: Vec<String> = Vec::new();
-
-    // Extract the relevant section depending on whether number is positive,
-    // negative, or zero? Text not supported yet.
-    // Here is how the sections apply to various values in Excel:
-    //   1 section:   [POSITIVE/NEGATIVE/ZERO/TEXT]
-    //   2 sections:  [POSITIVE/ZERO/TEXT] [NEGATIVE]
-    //   3 sections:  [POSITIVE/TEXT] [NEGATIVE] [ZERO]
-    //   4 sections:  [POSITIVE] [NEGATIVE] [ZERO] [TEXT]
-    let cnt: usize = sections.len();
-
-    // format!("{}{}{}", "\\[(", Color::NAMED_COLORS.join("|"), ")\\]");
-    let color_re = compile_regex!(r"\[(Black|White|Red|Green|Blue|Yellow|Magenta|Cyan)\]");
-    let cond_re = compile_regex!(r"\[(>|>=|<|<=|=|<>)([+-]?\d+([.]\d+)?)\]");
-
-    let mut colors = [""; 5];
-    let mut condops = [""; 5];
-
-    let mut condvals = ["0"; 5];
-    sections.into_iter().enumerate().for_each(|(idx, section)| {
-        let mut converted_section = section.to_string();
-
-        // Process color matching
-        if let Some(captures) = color_re.captures(section).ok().flatten() {
-            let mut items = captures.iter().filter_map(|cap| cap.map(|c| c.as_str()));
-
-            if let Some(first_item) = items.next() {
-                colors[idx].clone_from(&first_item);
-            }
-
-            converted_section = color_re.replace_all(section, "").to_string();
-        }
-
-        // Process conditional matching
-        if let Some(captures) = cond_re.captures(section).ok().flatten() {
-            let mut items = captures
-                .iter()
-                .filter_map(|cap| cap.map(|c| c.as_str()))
-                .skip(1);
-
-            if let Some(v) = items.next() {
-                condops[idx].clone_from(&v);
-            }
-            if let Some(v) = items.next() {
-                condvals[idx].clone_from(&v);
-            }
-
-            converted_section = cond_re.replace_all(section, "").to_string();
-        }
-
-        converted_sections.insert(idx, converted_section);
-    });
-
-    let mut color = colors[0];
-    let mut format = &converted_sections[0];
-    let mut absval = value;
-    match cnt {
-        2 => {
-            absval = absval.abs();
-            let condval_one = condvals[0].parse::<f64>().unwrap_or(0.0);
-            if !split_format_compare(value, condops[0], condval_one, ">=", 0f64) {
-                color = colors[1];
-                format = &converted_sections[1];
-            }
-        }
-        3 | 4 => {
-            absval = absval.abs();
-            let condval_one = condvals[0].parse::<f64>().unwrap_or(0.0);
-            let condval_two = condvals[1].parse::<f64>().unwrap_or(0.0);
-            if !split_format_compare(value, condops[0], condval_one, ">", 0f64) {
-                if split_format_compare(value, condops[1], condval_two, "<", 0f64) {
-                    color = colors[1];
-                    format = &converted_sections[1];
-                } else {
-                    color = colors[2];
-                    format = &converted_sections[2];
-                }
-            }
-        }
-        _ => {}
-    }
-    (color.to_string(), format.into(), absval.to_string())
 }
 
 #[allow(clippy::float_cmp)]
@@ -487,4 +533,228 @@ fn test_to_formatted_string_zero_section_with_only_escaped_literals() {
         to_formatted_string("0", r#""TRUE";"TRUE";"FALSE""#)
     );
     assert_eq!("", to_formatted_string("0", "0;-0;"));
+}
+
+#[cfg(test)]
+pub(crate) fn preparation_count() -> usize {
+    PREPARATIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+mod prepared_tests {
+    use super::*;
+
+    fn outcome(result: std::thread::Result<String>) -> String {
+        result.unwrap_or_else(|payload| {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap();
+            format!("PANIC: {message}")
+        })
+    }
+
+    // Every captured row must agree after earlier codes and panics have used
+    // the same map; an uncached-only replay misses damaged prepared entries.
+    #[test]
+    fn shared_formats_preserve_every_known_answer_in_fixture_order() {
+        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/number_format_known_answers.json"
+        ))
+        .unwrap();
+        let mut formats = PreparedFormats::default();
+        for (index, row) in rows.iter().enumerate() {
+            let code = row["format"].as_str().unwrap();
+            let value = row["value"].as_str().unwrap();
+            let observed = outcome(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || formats.format(value, code),
+            )));
+            assert_eq!(
+                observed,
+                row["output"].as_str().unwrap(),
+                "oracle row {index}: format={code:?}, value={value:?}"
+            );
+        }
+    }
+
+    // The escape VM exhausts its default 1,000,000 backtracks searching
+    // 2,000,000 ASCII positions (fancy-regex 0.18 compile.rs:999, vm.rs:1062).
+    // Preparation must survive; a literal return bypasses that saved error.
+    #[test]
+    fn escape_failure_waits_for_raw_checks_and_literal_return() {
+        let literal = "x".repeat(2_000_000);
+        let code = format!("0;\"{literal}\"");
+        let prepared = PreparedFormat::new(&code);
+        assert_eq!(prepared.apply(-1.0), literal);
+        let expected = "PANIC: called `Result::unwrap()` on an `Err` value: \
+                        RuntimeError(BacktrackLimitExceeded)";
+        // The previous formatter called replace_all here, which delegates to
+        // try_replacen(...).unwrap() (fancy-regex lib.rs:1280,1295).
+        assert_eq!(
+            outcome(std::panic::catch_unwind(|| {
+                get_escape_regex()
+                    .replace_all(&code, r#""$0""#)
+                    .into_owned()
+            })),
+            expected
+        );
+        assert_eq!(
+            outcome(std::panic::catch_unwind(|| prepared.apply(1.0))),
+            expected
+        );
+        let raw_code = format!("0;0;0;0;0;[Red]0{literal}");
+        let raw_prepared = PreparedFormat::new(&raw_code);
+        let bounds = "PANIC: index out of bounds: the len is 5 but the index is 5";
+        assert_eq!(
+            outcome(std::panic::catch_unwind(|| raw_prepared.apply(1.0))),
+            bounds
+        );
+        let mut formats = PreparedFormats::default();
+        for (value, code, expected) in [
+            ("-1", code.as_str(), literal.as_str()),
+            ("1", code.as_str(), expected),
+            ("1", raw_code.as_str(), bounds),
+        ] {
+            assert_eq!(
+                outcome(std::panic::catch_unwind(|| to_formatted_string(
+                    value, code
+                ))),
+                expected
+            );
+            let mut cell = crate::Cell::default();
+            cell.set_value_number(value.parse::<f64>().unwrap());
+            cell.style_mut().number_format_mut().set_format_code(code);
+            assert_eq!(
+                outcome(std::panic::catch_unwind(|| cell.formatted_value())),
+                expected
+            );
+            assert_eq!(
+                outcome(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || { formats.format(value, code) }
+                ))),
+                expected
+            );
+        }
+    }
+
+    // Reusing one date entry must survive a panic without corrupting later
+    // values. These are the oracle's 16 lexical inputs, in capture-input order.
+    // Rows 10891 -> 10892 -> 10895 put a panic between two numeric successes.
+    #[test]
+    fn reused_date_format_preserves_known_answers_before_and_after_panics() {
+        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/number_format_known_answers.json"
+        ))
+        .unwrap();
+        let inputs = [
+            ("0", 10887),
+            ("-0", 10883),
+            ("1", 10890),
+            ("-1", 10884),
+            ("0.5", 10888),
+            ("-1234.5678", 10885),
+            ("1e-7", 10891),
+            ("1e21", 10892),
+            ("45000.75", 10895),
+            ("NaN", 10897),
+            ("inf", 10898),
+            ("-inf", 10886),
+            ("", 10882),
+            ("not a number", 10899),
+            ("007", 10889),
+            ("1e3", 10893),
+        ];
+        let before = preparation_count();
+        let mut formats = PreparedFormats::default();
+        for (value, index) in inputs {
+            let row = &rows[index];
+            assert_eq!(row["format"], "yyyy-mm-dd");
+            assert_eq!(row["value"], value);
+            let observed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                formats.format(value, "yyyy-mm-dd")
+            })) {
+                Ok(output) => output,
+                Err(payload) => {
+                    let message = payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                        .unwrap();
+                    format!("PANIC: {message}")
+                }
+            };
+            assert_eq!(
+                observed,
+                row["output"].as_str().unwrap(),
+                "oracle row {index}"
+            );
+            assert_eq!(formats.formats.len(), 1);
+            assert_eq!(preparation_count() - before, 1);
+        }
+    }
+
+    // Early-return values must bypass preparation, including raw bounds
+    // failures; malformed sections must never be inspected for those values.
+    #[test]
+    fn early_returns_do_not_prepare_number_formats() {
+        let before = preparation_count();
+        let mut formats = PreparedFormats::default();
+        for (value, code, expected) in [
+            ("", "0;0;0;0;0;[Red]0", ""),
+            ("text", "0;0;0;0;0;[Red]0", "text"),
+            ("007", "General", "7"),
+            ("007", "@", "007"),
+        ] {
+            assert_eq!(to_formatted_string(value, code), expected);
+            assert_eq!(formats.format(value, code), expected);
+        }
+        assert!(formats.formats.is_empty());
+        assert_eq!(preparation_count(), before);
+    }
+
+    // The external oracle's zero-based rows 1225, 5803 and 5819 establish
+    // the bounds message, including failure before a literal first section.
+    #[test]
+    fn raw_section_failure_precedes_literal_selection() {
+        for code in [
+            r#""literal";0;0;0;0;[Red]0"#,
+            "0;0;0;0;0;[<0]0",
+            "0;0;0;0;0;[Red]0",
+        ] {
+            let prepared = PreparedFormat::new(code);
+            let panic = std::panic::catch_unwind(|| prepared.apply(1.0)).unwrap_err();
+            assert_eq!(
+                panic.downcast_ref::<String>().unwrap(),
+                "index out of bounds: the len is 5 but the index is 5",
+            );
+        }
+    }
+
+    // _ followed by a quote removes that quote during spacing conversion.
+    // Raw "a_"0" contains an unquoted zero, but its converted "a 0" is a
+    // quoted non-number. Only selecting this section may run its parse.
+    #[test]
+    fn quoted_numeric_parse_waits_for_the_selected_converted_section() {
+        let code = r#""a_"0";"other""#;
+        let prepared = PreparedFormat::new(code);
+        assert_eq!(prepared.apply(-1.0), "other");
+        let panic = std::panic::catch_unwind(|| prepared.apply(1.0)).unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<String>().unwrap(),
+            "called `Result::unwrap()` on an `Err` value: ParseFloatError { kind: Invalid }",
+        );
+    }
+
+    // Escaping \(; shields a raw separator only after the raw bounds check.
+    // Combining stage failures must not hide that check behind rewriting.
+    #[test]
+    fn raw_bounds_failure_survives_an_escaped_separator() {
+        let prepared = PreparedFormat::new(r"0;0;0;0;0\(;[Red]0");
+        assert_eq!(
+            outcome(std::panic::catch_unwind(|| prepared.apply(1.0))),
+            "PANIC: index out of bounds: the len is 5 but the index is 5"
+        );
+        assert_eq!(to_formatted_string("1", r#""literal";0"#), "literal");
+    }
 }

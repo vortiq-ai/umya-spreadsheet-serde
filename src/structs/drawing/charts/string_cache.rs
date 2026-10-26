@@ -33,6 +33,8 @@ pub(crate) struct WorkCounts {
     pub(crate) shape_scans:  usize,
     pub(crate) decode_scans: usize,
     pub(crate) index_scans:  usize,
+    // Paired values decoded by a keeping reader or borrowed replay, rather
+    // than a count of owned String allocations.
     pub(crate) kept_values:  usize,
 }
 
@@ -100,6 +102,7 @@ use crate::{
         address::unescape_sheet_name,
         utils::{
             unescape_xml_text,
+            unescape_xml_text_into,
             validate_xml_text,
         },
     },
@@ -133,6 +136,7 @@ pub struct StringCache {
 }
 
 /// Maps a cache point index onto a cell of a rectangular range, row by row.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct IndexedRange {
     col_start: u32,
     row_start: u32,
@@ -180,6 +184,47 @@ impl IndexedRange {
         let col = u64::from(self.col_start) + index % self.width;
         let row = u64::from(self.row_start) + index / self.width;
         Some((u32::try_from(col).ok()?, u32::try_from(row).ok()?))
+    }
+
+    pub(crate) fn stepper(&self) -> RangeStepper<'_> {
+        RangeStepper {
+            range:    self,
+            previous: None,
+        }
+    }
+}
+
+/// Ascending points advance without division; gaps and reversals use the
+/// original arithmetic. One-dimensional ranges need no division at all.
+pub(crate) struct RangeStepper<'a> {
+    range:    &'a IndexedRange,
+    previous: Option<(u32, (u32, u32))>,
+}
+
+impl RangeStepper<'_> {
+    pub(crate) fn coordinate(&mut self, index: u32) -> Option<(u32, u32)> {
+        let range = self.range;
+        if u64::from(index) >= range.len {
+            return None;
+        }
+        let coordinate = if range.width == 1 {
+            (range.col_start, range.row_start.checked_add(index)?)
+        } else if range.len == range.width {
+            (range.col_start.checked_add(index)?, range.row_start)
+        } else if let Some((_, (col, row))) = self
+            .previous
+            .filter(|(prior, _)| prior.checked_add(1) == Some(index))
+        {
+            if u64::from(col) - u64::from(range.col_start) + 1 == range.width {
+                (range.col_start, row.checked_add(1)?)
+            } else {
+                (col.checked_add(1)?, row)
+            }
+        } else {
+            range.coordinate(index)?
+        };
+        self.previous = Some((index, coordinate));
+        Some(coordinate)
     }
 }
 
@@ -631,8 +676,9 @@ impl DenseProof {
 /// allocates for what it keeps and not for each point.
 #[derive(Default)]
 pub(crate) struct PointScratch {
-    events: Vec<u8>,
-    text:   Vec<u8>,
+    events:  Vec<u8>,
+    text:    Vec<u8>,
+    decoded: String,
 }
 
 #[cfg(test)]
@@ -659,10 +705,59 @@ pub(crate) fn read_point_into<R: std::io::BufRead>(
     keep: bool,
 ) -> PointRead {
     let mut value = None;
+    let flat = scan_point(reader, &mut scratch.events, &mut scratch.text, |text| {
+        if keep {
+            value = Some(match text {
+                Some(text) => {
+                    #[cfg(test)]
+                    note_work(|counts| counts.kept_values += 1);
+                    unescape_xml_text(text)
+                }
+                None => String::new(),
+            });
+        } else if let Some(text) = text {
+            validate_xml_text(text);
+        }
+    });
+    PointRead { value, flat }
+}
+
+/// Borrows the final value until the next point. Each earlier value is still
+/// decoded and validated, even when a later value replaces it.
+pub(crate) fn read_point_borrowed<'a, R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    scratch: &'a mut PointScratch,
+) -> Option<&'a str> {
+    let mut present = false;
+    let mut raw_len = None;
+    scan_point(reader, &mut scratch.events, &mut scratch.text, |text| {
+        present = true;
+        raw_len = match text {
+            Some(text) => {
+                #[cfg(test)]
+                note_work(|counts| counts.kept_values += 1);
+                (!unescape_xml_text_into(text, &mut scratch.decoded)).then_some(text.len())
+            }
+            None => Some(0),
+        };
+    });
+    present.then(|| match raw_len {
+        Some(len) => std::str::from_utf8(&scratch.text[..len]).unwrap(),
+        None => scratch.decoded.as_str(),
+    })
+}
+
+/// The common point grammar for retained, discarded and borrowed values.
+fn scan_point<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    events: &mut Vec<u8>,
+    text_buffer: &mut Vec<u8>,
+    mut value: impl FnMut(Option<&quick_xml::events::BytesText<'_>>),
+) -> bool {
     let mut flat = true;
     loop {
-        scratch.events.clear();
-        let event = match reader.read_event_into(&mut scratch.events) {
+        events.clear();
+        let event = match reader.read_event_into(events) {
             Ok(event) => event,
             Err(e) => panic!("Error at position {}: {e:?}", reader.buffer_position()),
         };
@@ -670,31 +765,23 @@ pub(crate) fn read_point_into<R: std::io::BufRead>(
             Event::Start(ref e) => {
                 if local_name(e.name().into_inner()) == b"v" {
                     // `read_text_into` appends to its buffer.
-                    scratch.text.clear();
-                    let text = reader.read_text_into(e.name(), &mut scratch.text).unwrap();
-                    if keep {
-                        #[cfg(test)]
-                        note_work(|counts| counts.kept_values += 1);
-                        value = Some(unescape_xml_text(&text));
-                    } else {
-                        validate_xml_text(&text);
-                    }
+                    text_buffer.clear();
+                    let text = reader.read_text_into(e.name(), text_buffer).unwrap();
+                    value(Some(&text));
                 } else {
                     flat = false;
                 }
             }
             Event::Empty(ref e) => {
                 if local_name(e.name().into_inner()) == b"v" {
-                    if keep {
-                        value = Some(String::new());
-                    }
+                    value(None);
                 } else {
                     flat = false;
                 }
             }
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"pt" {
-                    return PointRead { value, flat };
+                    return flat;
                 }
             }
             Event::Eof => panic!("Error: Could not find {} end element", "c:pt"),
@@ -1091,5 +1178,165 @@ mod tests {
         // Growing a buffer at most doubles it past the longest value.
         assert!(scratch.text_capacity() >= longest);
         assert!(scratch.text_capacity() <= 2 * longest);
+    }
+
+    // Sequential stepping, gaps, repeated indices and overflow boundaries
+    // must retain the reference arithmetic's coordinates and None results.
+    #[test]
+    fn stepped_coordinates_match_arithmetic_at_gaps_and_limits() {
+        for range in [
+            IndexedRange {
+                col_start: 1,
+                row_start: 1,
+                width:     1,
+                len:       0,
+            },
+            IndexedRange {
+                col_start: u32::MAX,
+                row_start: u32::MAX,
+                width:     1,
+                len:       1,
+            },
+            IndexedRange {
+                col_start: u32::MAX - 2,
+                row_start: 1,
+                width:     3,
+                len:       3,
+            },
+            IndexedRange {
+                col_start: 1,
+                row_start: u32::MAX - 2,
+                width:     1,
+                len:       3,
+            },
+            IndexedRange {
+                col_start: 3,
+                row_start: 5,
+                width:     1,
+                len:       7,
+            },
+            IndexedRange {
+                col_start: 3,
+                row_start: 5,
+                width:     8,
+                len:       8,
+            },
+            IndexedRange {
+                col_start: 3,
+                row_start: 5,
+                width:     4,
+                len:       12,
+            },
+            IndexedRange {
+                col_start: u32::MAX - 2,
+                row_start: u32::MAX - 1,
+                width:     3,
+                len:       6,
+            },
+        ] {
+            let mut stepper = range.stepper();
+            for index in (0..=range.len as u32).chain([u32::MAX, 0, 0, 2, 1, 3, 4, 6, 5]) {
+                assert_eq!(
+                    stepper.coordinate(index),
+                    range.coordinate(index),
+                    "index={index}"
+                );
+            }
+        }
+        let mut formula = Formula::default();
+        formula.set_address_str("Sheet1!A1:XFD1048576");
+        let range = IndexedRange::from_formula(&formula).unwrap();
+        assert_eq!(range.len(), 16_384 * 1_048_576);
+        let mut stepper = range.stepper();
+        for (index, expected) in [
+            (0, Some((1, 1))),
+            (16_383, Some((16_384, 1))),
+            (16_384, Some((1, 2))),
+            (u32::MAX, Some((16_384, 262_144))),
+        ] {
+            assert_eq!(range.coordinate(index), expected);
+            assert_eq!(stepper.coordinate(index), expected);
+        }
+        let wide = IndexedRange {
+            col_start: 1,
+            row_start: 1,
+            width:     u64::from(u32::MAX),
+            len:       u64::from(u32::MAX) * 2,
+        };
+        let mut stepper = wide.stepper();
+        for index in [u32::MAX - 1, u32::MAX, 0, 1] {
+            assert_eq!(stepper.coordinate(index), wide.coordinate(index));
+        }
+        assert_eq!(stepper.coordinate(u32::MAX), Some((1, 2)));
+    }
+
+    // The borrowed reader must keep raw XML, CR and whitespace and validate
+    // overwritten values. It shares the production grammar with the old API.
+    #[test]
+    fn borrowed_point_values_preserve_text_replacements_and_failures() {
+        let mut scratch = PointScratch::default();
+        for (inner, expected) in [
+            ("", None),
+            ("<c:v/>", Some("")),
+            ("<c:v></c:v>", Some("")),
+            ("<c:v>  \r\n>\u{e9}  </c:v>", Some("  \r\n>\u{e9}  ")),
+            ("<x:v>A&amp;B&#x42;&lt;&#67;&#13;</x:v>", Some("A&BB<C\r")),
+            ("<c:v><![CDATA[a&AMP;]]><b/></c:v>", None),
+            (
+                "<c:v><![CDATA[raw]]><b/></c:v>",
+                Some("<![CDATA[raw]]><b/>"),
+            ),
+            ("<c:v>long&amp;text</c:v><c:v>s</c:v>", Some("s")),
+            ("<c:v>old</c:v><c:v/>", Some("")),
+        ] {
+            let xml = format!("<c:pt>{inner}</c:pt>");
+            let actual = catch(|| {
+                read_point_borrowed(&mut after_start(xml.as_bytes(), true), &mut scratch)
+                    .map(str::to_owned)
+            });
+            if inner.contains("&AMP;") {
+                let message = unwrap_message(
+                    &quick_xml::escape::unescape("<![CDATA[a&AMP;]]><b/>").unwrap_err(),
+                );
+                assert_eq!(actual, Err(message));
+            } else {
+                assert_eq!(actual, Ok(expected.map(str::to_owned)), "{inner}");
+            }
+        }
+        for (xml, message) in [
+            (
+                &b"<c:pt><c:v>a</c:v>"[..],
+                "Error: Could not find c:pt end element".to_string(),
+            ),
+            (
+                &b"<c:pt><c:v>&bogus;</c:v><c:v>ok</c:v></c:pt>"[..],
+                unwrap_message(&quick_xml::escape::unescape("&bogus;").unwrap_err()),
+            ),
+            (
+                &b"<c:pt><c:v>a\xFFb</c:v></c:pt>"[..],
+                unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+                    std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err(),
+                )),
+            ),
+            (
+                &b"<c:pt idx=\"0\"><c:v>a</c:v></c:z>"[..],
+                "Error at position 32: IllFormed(MismatchedEndTag { expected: \"c:pt\", found: \
+                 \"c:z\" })"
+                    .to_string(),
+            ),
+            (
+                &b"<c:pt><c:v>abc"[..],
+                "called `Result::unwrap()` on an `Err` value: IllFormed(MissingEndTag(\"c:v\"))"
+                    .to_string(),
+            ),
+        ] {
+            assert_eq!(
+                catch(
+                    || read_point_borrowed(&mut after_start(xml, false), &mut scratch)
+                        .map(str::to_owned)
+                ),
+                Err(message)
+            );
+        }
     }
 }

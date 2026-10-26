@@ -31,10 +31,44 @@ pub(crate) fn validate_xml_text(e: &quick_xml::events::BytesText<'_>) {
     }
 }
 
+/// Decodes into reused storage only when the text cannot be borrowed raw.
+/// Invalid references go through the original decoder to preserve its errors.
+pub(crate) fn unescape_xml_text_into(
+    e: &quick_xml::events::BytesText<'_>,
+    scratch: &mut String,
+) -> bool {
+    let decoded = e.decode().unwrap();
+    if !decoded.contains('&') && matches!(decoded, std::borrow::Cow::Borrowed(_)) {
+        return false;
+    }
+    if !references_are_valid(decoded.as_ref()) {
+        quick_xml::escape::unescape(decoded.as_ref()).unwrap();
+    }
+    scratch.clear();
+    let mut rest = decoded.as_ref();
+    while let Some(start) = rest.find('&') {
+        scratch.push_str(&rest[..start]);
+        let end = start + rest[start..].find(';').unwrap();
+        let name = &rest[start + 1..end];
+        if let Some(number) = name.strip_prefix('#') {
+            let (digits, radix) = match number.strip_prefix('x') {
+                Some(hex) => (hex, 16),
+                None => (number, 10),
+            };
+            scratch.push(char::from_u32(u32::from_str_radix(digits, radix).unwrap()).unwrap());
+        } else {
+            scratch.push_str(quick_xml::escape::resolve_predefined_entity(name).unwrap());
+        }
+        rest = &rest[end + 1..];
+    }
+    scratch.push_str(rest);
+    true
+}
+
 /// Whether `unescape` accepts `raw`: every `&` starts a reference ended by a
 /// `;` with no `&` between, naming a predefined entity or a valid character
 /// reference.
-fn references_are_valid(raw: &str) -> bool {
+pub(crate) fn references_are_valid(raw: &str) -> bool {
     let bytes = raw.as_bytes();
     let mut from = 0;
     while let Some(start) = bytes[from..].iter().position(|&byte| byte == b'&') {

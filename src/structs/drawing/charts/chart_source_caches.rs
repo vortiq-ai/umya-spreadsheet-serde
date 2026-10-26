@@ -11,6 +11,7 @@ use super::{
     ChartSpace,
     StringReference,
 };
+use crate::structs::CacheDisplay;
 
 /// Most stored points a workbook may keep, counted over every stored cache:
 /// the exception points plus the index runs.
@@ -160,6 +161,48 @@ impl SourceCache {
         (self.exceptions.capacity(), self.index_runs.capacity())
     }
 
+    /// Heap storage owned by this source, including spare capacity.
+    pub(crate) fn retained_bytes(&self) -> Option<usize> {
+        self.storage_bytes(true)
+    }
+
+    /// Clones of Vec and String allocate their lengths, not spare capacity.
+    pub(crate) fn cloned_retained_bytes(&self) -> Option<usize> {
+        self.storage_bytes(false)
+    }
+
+    fn storage_bytes(&self, capacity: bool) -> Option<usize> {
+        let text_bytes = |text: &String| {
+            if capacity {
+                text.capacity()
+            } else {
+                text.len()
+            }
+        };
+        let runs = if capacity {
+            self.index_runs.capacity()
+        } else {
+            self.index_runs.len()
+        };
+        let exceptions = if capacity {
+            self.exceptions.capacity()
+        } else {
+            self.exceptions.len()
+        };
+        let mut bytes = text_bytes(&self.formula)
+            .checked_add(runs.checked_mul(size_of::<IndexRun>())?)?
+            .checked_add(exceptions.checked_mul(size_of::<SourceException>())?)?;
+        for exception in &self.exceptions {
+            for text in [&exception.value, &exception.loaded_display]
+                .into_iter()
+                .flatten()
+            {
+                bytes = bytes.checked_add(text_bytes(text))?;
+            }
+        }
+        Some(bytes)
+    }
+
     /// Every point index of the cache, in file order.
     pub fn indices(&self) -> impl Iterator<Item = u32> + '_ {
         let dense = if self.index_runs.is_empty() {
@@ -172,7 +215,7 @@ impl SourceCache {
 
     /// The cache exactly as the file stored it: every point is an exception
     /// whose load display is not known yet. A workbook read reduces it with
-    /// [`Self::reduce`].
+    /// [`Self::reduce_borrowed`].
     pub(crate) fn as_read(
         formula: String,
         point_count: Option<u32>,
@@ -246,12 +289,28 @@ impl SourceCache {
     /// each point's cell displayed at load. `None` means the cache is dense,
     /// has `expected_points` points and every point equals its load display,
     /// so exporting from the cells reproduces it.
+    #[cfg(test)]
     pub(crate) fn reduce(
         self,
         expected_points: Option<u64>,
         retain_shape: bool,
         mut display: impl FnMut(u32) -> Option<String>,
     ) -> Option<Self> {
+        self.reduce_borrowed(expected_points, retain_shape, |index, scratch| {
+            display(index).map(|text| {
+                *scratch = text;
+                CacheDisplay::Scratch
+            })
+        })
+    }
+
+    pub(crate) fn reduce_borrowed<'a>(
+        self,
+        expected_points: Option<u64>,
+        retain_shape: bool,
+        mut display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
+    ) -> Option<Self> {
+        let mut scratch = String::new();
         let count = self.exceptions.len();
         let counted_dense = self.index_runs.is_empty()
             && self.point_count.map(|declared| declared as usize) == Some(count);
@@ -275,9 +334,12 @@ impl SourceCache {
             .exceptions
             .into_iter()
             .filter_map(|mut point| {
-                let display = display(point.index);
-                if display.is_none() || point.value != display || repeated.contains(&point.index) {
-                    point.loaded_display = display;
+                let display = display(point.index, &mut scratch);
+                if display.is_none()
+                    || point.value.as_deref() != display.as_ref().map(|text| text.text(&scratch))
+                    || (!repeated.is_empty() && repeated.contains(&point.index))
+                {
+                    point.loaded_display = display.map(|text| text.into_owned(&scratch));
                     Some(point)
                 } else {
                     None
@@ -514,6 +576,42 @@ pub(crate) fn adopt_source_caches(space: &mut ChartSpace, previous: &ChartSpace)
 mod tests {
     use super::*;
     use crate::drawing::charts::StringCache;
+
+    // Capacity accounting must include unused backing and both nested strings;
+    // clone preflight must instead predict allocations from their lengths.
+    #[test]
+    fn retained_source_bytes_include_spare_capacity_and_nested_strings() {
+        let (source, allocated) = crate::test_alloc::observe(|| {
+            let mut formula = String::with_capacity(97);
+            formula.push('f');
+            let mut value = String::with_capacity(101);
+            value.push('v');
+            let mut display = String::with_capacity(103);
+            display.push('d');
+            let mut index_runs = Vec::with_capacity(4);
+            index_runs.push(IndexRun { start: 0, len: 1 });
+            let mut exceptions = Vec::with_capacity(3);
+            exceptions.push(SourceException::imported(0, Some(value), Some(display)));
+            SourceCache {
+                formula,
+                point_count: Some(1),
+                index_runs,
+                exceptions,
+            }
+        });
+        let retained =
+            97 + 4 * size_of::<IndexRun>() + 3 * size_of::<SourceException>() + 101 + 103;
+        let cloned = 1 + size_of::<IndexRun>() + size_of::<SourceException>() + 1 + 1;
+        assert_eq!(source.retained_bytes(), Some(retained));
+        assert_eq!(allocated.live_bytes, retained as isize);
+        assert_eq!(allocated.peak_bytes, retained);
+        assert_eq!(source.cloned_retained_bytes(), Some(cloned));
+        let (copy, allocated) = crate::test_alloc::observe(|| source.clone());
+        assert_eq!(copy, source);
+        assert_eq!(copy.retained_bytes(), Some(cloned));
+        assert_eq!(allocated.live_bytes, cloned as isize);
+        assert_eq!(allocated.peak_bytes, cloned);
+    }
 
     #[test]
     fn sparse_storage_releases_dense_allocations() {
