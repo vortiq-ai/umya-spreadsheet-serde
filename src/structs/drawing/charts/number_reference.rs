@@ -3,14 +3,18 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 // c:numRef
 use super::Formula;
+use super::numeric_data::children;
+
+#[derive(Clone, Copy)]
+pub(crate) enum NumericSourceCachePolicy {
+    Read,
+    SkipSourceCache,
+}
 use super::NumberingCache;
 use crate::{
     reader::driver::local_name,
@@ -19,7 +23,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -83,26 +86,60 @@ impl NumberReference {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
+        // Existing callers keep source format-code handling. The policy is
+        // explicit only for new roles; no new numeric cache storage is added.
+        let (parsed, _) = self.read_status(reader, e, false, NumericSourceCachePolicy::Read);
+        assert!(parsed, "Could not read numeric reference");
+    }
+
+    pub(crate) fn read_with_policy<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        policy: NumericSourceCachePolicy,
+    ) -> bool {
+        let (parsed, valid) = self.read_status(reader, e, empty, policy);
+        parsed && valid
+    }
+
+    // Parsing completion is distinct from new-role schema validity. Historical
+    // readers panic on malformed XML, but keep their complete missing/duplicate
+    // formula behavior rather than acquiring a new validation policy.
+    fn read_status<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        policy: NumericSourceCachePolicy,
+    ) -> (bool, bool) {
+        let mut formulas = 0usize;
+        let mut valid = true;
+        let complete = children(reader, e, empty, |reader, child, empty| {
+            match local_name(child.name().into_inner()) {
                 b"f" => {
-                    self.formula.set_attributes(reader, e);
+                    formulas += 1;
+                    if empty {
+                        self.formula.set_address_str("");
+                    } else {
+                        valid &= self.formula.try_set_attributes(reader, child);
+                    }
+                    true
                 }
-                b"numCache" => {
-                    self.numbering_cache.set_attributes(reader, e);
+                b"numCache" if matches!(policy, NumericSourceCachePolicy::Read) => {
+                    if !empty {
+                        self.numbering_cache.set_attributes(reader, child);
+                    }
+                    true
                 }
-                _ => (),
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"numRef" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:numRef"),
-        );
+                // SkipSourceCache consumes the entire source cache through the
+                // shared direct-child loop. Descendants cannot become formulas.
+                _ => false,
+            }
+        });
+        (complete && valid, formulas == 1)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
@@ -119,3 +156,7 @@ impl NumberReference {
         write_end_tag(writer, "c:numRef");
     }
 }
+
+#[cfg(test)]
+#[path = "number_reference_tests.rs"]
+mod tests;

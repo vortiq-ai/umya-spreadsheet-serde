@@ -61,6 +61,8 @@ pub enum SeriesPartKind {
     DataPoints,
     /// Ordered trendlines and their labels.
     Trendlines,
+    /// Ordered error-bar occurrences with family-specific cardinality.
+    ErrorBars,
 }
 
 impl SeriesPartKind {
@@ -95,6 +97,9 @@ impl SeriesFamily {
             XValues,
             YValues,
         };
+        if part == SeriesPartKind::ErrorBars {
+            return super::error_bars::error_bar_limit(self) > 0;
+        }
         if part == SeriesPartKind::Trendlines {
             return !matches!(self, Self::Pie | Self::Radar);
         }

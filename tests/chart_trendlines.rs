@@ -879,7 +879,7 @@ fn appended_series_vector_and_number_format_wire_costs_are_exact() {
     assert_eq!(bincode::serialize(&series).unwrap(), vec![0; 16]);
     let mut series = series;
     series.parts_mut();
-    assert_eq!(bincode::serialize(&series).unwrap().len(), 32); // Fifteen absent originals, Some, two eight-byte vectors.
+    assert_eq!(bincode::serialize(&series).unwrap().len(), 40); // Fifteen absent originals, Some, three eight-byte vectors.
     let format = NumberingFormat::default();
     assert_eq!(bincode::serialize(&format).unwrap(), vec![0, 0, 0]);
     assert_eq!(

@@ -464,3 +464,8 @@ mod trendline;
 pub use self::trendline::*;
 mod trendline_label;
 pub use self::trendline_label::*;
+
+mod numeric_data;
+pub use self::numeric_data::*;
+mod error_bars;
+pub use self::error_bars::*;

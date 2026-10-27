@@ -16,6 +16,7 @@ use super::{
     CategoryAxisData,
     DataLabels,
     DataPoint,
+    ErrorBars,
     Explosion,
     Formula,
     Index,
@@ -70,6 +71,17 @@ pub struct AreaChartSeries {
 }
 
 impl AreaChartSeries {
+    #[must_use]
+    pub fn error_bars(&self) -> &[ErrorBars] {
+        self.parts()
+            .map(SeriesParts::error_bars)
+            .unwrap_or_default()
+    }
+
+    pub fn error_bars_mut(&mut self) -> &mut Vec<ErrorBars> {
+        self.parts_mut().error_bars_mut()
+    }
+
     #[must_use]
     pub fn parts(&self) -> Option<&SeriesParts> {
         self.parts.as_deref()
@@ -499,6 +511,11 @@ impl AreaChartSeries {
         if let Some(v) = &mut self.bubble_size {
             result.push(v.number_reference_mut().formula_mut());
         }
+        if let Some(parts) = self.parts.as_mut() {
+            for bars in parts.error_bars_mut() {
+                result.extend(bars.formulas_mut());
+            }
+        }
         result
     }
 
@@ -521,6 +538,11 @@ impl AreaChartSeries {
                 // series fields.
                 let is_empty_element = matches!(n, Event::Empty(_));
                 match local_name(e.name().into_inner()) {
+                    b"errBars" => {
+                        self.error_bars_mut().push(ErrorBars::read(
+                            reader,e,is_empty_element,
+                        ));
+                    }
                     b"trendline" => {
                         self.trendlines_mut().push(Trendline::read(
                             reader,
@@ -651,6 +673,7 @@ impl AreaChartSeries {
             SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
             SeriesPartKind::Smooth => self.smooth.is_some(),
             SeriesPartKind::DataPoints => !self.data_points().is_empty(),
+            SeriesPartKind::ErrorBars => !self.error_bars().is_empty(),
             SeriesPartKind::Trendlines => !self.trendlines().is_empty(),
         }
     }
@@ -668,6 +691,9 @@ impl AreaChartSeries {
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
             SeriesPartKind::DataPoints => (),
+            SeriesPartKind::ErrorBars => {
+                if let Some(parts)=self.parts.as_mut(){parts.error_bars_mut().clear();}
+            },
             SeriesPartKind::Trendlines => {
                 if let Some(parts)=self.parts.as_mut(){
                     parts.trendlines_mut().clear();
@@ -732,6 +758,19 @@ impl AreaChartSeries {
                 conflicts.push((SeriesPartKind::Trendlines, occurrence, reason));
             }
         }
+        let limit = super::error_bars::error_bar_limit(family);
+        for (occurrence, bars) in self.error_bars().iter().enumerate() {
+            let reason = if limit == 0 {
+                Some(SeriesPartConflictReason::NotAllowed)
+            } else if occurrence >= limit {
+                Some(SeriesPartConflictReason::TooMany)
+            } else {
+                bars.conflict()
+            };
+            if let Some(reason) = reason {
+                conflicts.push((SeriesPartKind::ErrorBars, occurrence, reason));
+            }
+        }
         conflicts
     }
 
@@ -742,7 +781,7 @@ impl AreaChartSeries {
         &mut self,
         family: SeriesFamily,
     ) -> Vec<(SeriesPartKind, usize)> {
-        let removed: Vec<_> = self
+        let mut removed: Vec<_> = self
             .part_conflicts(family)
             .into_iter()
             .filter(|(_, _, reason)| *reason == SeriesPartConflictReason::NotAllowed)
@@ -750,6 +789,16 @@ impl AreaChartSeries {
             .collect();
         for (part, _) in &removed {
             self.clear_part(*part);
+        }
+        let limit = super::error_bars::error_bar_limit(family);
+        if limit > 0 {
+            removed.extend(
+                (limit..self.error_bars().len())
+                    .map(|occurrence| (SeriesPartKind::ErrorBars, occurrence)),
+            );
+            if let Some(parts) = self.parts.as_mut() {
+                parts.error_bars_mut().truncate(limit);
+            }
         }
         removed
     }
@@ -822,6 +871,14 @@ impl AreaChartSeries {
             for trendline in self.trendlines() {
                 trendline.write_to(writer, wb);
             }
+        }
+
+        for bars in self
+            .error_bars()
+            .iter()
+            .take(super::error_bars::error_bar_limit(family))
+        {
+            bars.write_to(writer, wb);
         }
 
         // c:cat

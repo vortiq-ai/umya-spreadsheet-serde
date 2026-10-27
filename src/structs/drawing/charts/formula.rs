@@ -107,9 +107,24 @@ impl Formula {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        let mut buf = Vec::new();
-        let text = reader.read_text_into(e.name(), &mut buf).unwrap();
-        self.set_address_str(crate::helper::utils::unescape_xml_text(&text));
+        assert!(
+            self.try_set_attributes(reader, e),
+            "Could not read formula text"
+        );
+    }
+
+    /// Same normalization as the historical reader, without panicking for the
+    /// new diagnostic-bearing numeric-reference route.
+    pub(crate) fn try_set_attributes<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+    ) -> bool {
+        let Some(value) = super::numeric_data::read_text(reader, e, false) else {
+            return false;
+        };
+        self.set_address_str(value);
+        true
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

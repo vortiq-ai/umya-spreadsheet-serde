@@ -259,7 +259,8 @@ fn trendlines_and_error_bars_do_not_replace_the_series_shape_properties() {
     assert!(ser.contains("00ff00"), "{ser}");
     assert_eq!(read_series.trendlines().len(), 1);
     assert_eq!(read_series.trendlines()[0].name(), Some("Trend"));
-    assert!(!ser.contains("0000ff"), "{ser}");
+    assert!(ser.contains("0000ff"), "{ser}");
+    assert_eq!(read_series.error_bars().len(), 1);
 }
 
 #[test]

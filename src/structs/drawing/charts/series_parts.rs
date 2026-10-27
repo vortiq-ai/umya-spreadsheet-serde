@@ -1,5 +1,6 @@
 use super::{
     DataPoint,
+    ErrorBars,
     Trendline,
 };
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -9,8 +10,19 @@ pub struct SeriesParts {
     data_points: Vec<DataPoint>,
     #[cfg_attr(feature = "serde", serde(default))]
     trendlines:  Vec<Trendline>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    error_bars:  Vec<ErrorBars>,
 }
 impl SeriesParts {
+    #[must_use]
+    pub fn error_bars(&self) -> &[ErrorBars] {
+        &self.error_bars
+    }
+
+    pub fn error_bars_mut(&mut self) -> &mut Vec<ErrorBars> {
+        &mut self.error_bars
+    }
+
     #[must_use]
     pub fn trendlines(&self) -> &[Trendline] {
         &self.trendlines
