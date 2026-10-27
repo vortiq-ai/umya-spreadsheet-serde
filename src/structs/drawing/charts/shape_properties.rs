@@ -281,6 +281,7 @@ impl ShapeProperties {
             reader,
             Event::Start(ref e) => {
                 match local_name(e.name().0) {
+                    b"noFill" => { NoFill::set_attributes(reader,e,false); self.set_no_fill(NoFill::default()); }
                     b"pattFill" => {
                         let mut obj = PatternFill::default();
                         obj.set_attributes(reader, e);
@@ -325,6 +326,10 @@ impl ShapeProperties {
                 }
             },
             Event::Empty(ref e) => {
+                if local_name(e.name().0) == b"effectLst" {
+                    self.set_effect_list(EffectList::default());
+                }
+
                 if local_name(e.name().0) == b"noFill" {
                     let obj = NoFill::default();
                     NoFill::set_attributes(reader, e, true);

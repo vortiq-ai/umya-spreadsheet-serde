@@ -27,9 +27,9 @@ const RANGE_ROWS: u32 = 100_000;
 
 /// What a stripped `Chart` of this fixture serializes to: the bytes it had
 /// before any source cache could be kept in it (672 bincode, 5309 JSON), plus
-/// the `Option` tag of each string reference's cache.
-const CHART_BINCODE_BYTES: usize = 673;
-const CHART_JSON_BYTES: usize = 5322;
+/// the string-reference cache Option tag and the one series-parts Option tag.
+const CHART_BINCODE_BYTES: usize = 674;
+const CHART_JSON_BYTES: usize = 5335;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

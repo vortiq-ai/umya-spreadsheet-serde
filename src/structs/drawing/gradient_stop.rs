@@ -113,40 +113,36 @@ impl GradientStop {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        empty: bool,
     ) {
         if let Some(v) = get_attribute(e, b"pos") {
             self.set_position(v.parse::<i32>().unwrap());
         }
 
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:schemeClr" => {
-                        let mut obj = SchemeColor::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_scheme_color(obj);
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"schemeClr" => { let mut value=SchemeColor::default(); value.set_attributes(reader,e,empty); self.set_scheme_color(value); },
+        b"srgbClr" => { let mut value=RgbColorModelHex::default(); value.set_attributes(reader,e,empty); self.set_rgb_color_model_hex(value); },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
                     }
-                    b"a:srgbClr" => {
-                        let mut obj = RgbColorModelHex::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_rgb_color_model_hex(obj);
-                    }
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:gs" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:gs")
-        );
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

@@ -317,56 +317,57 @@ impl SchemeColor {
             return;
         }
 
+        let end_name = e.name().as_ref().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:lum" => {
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"lum" => {
                         let mut obj = PercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.luminance = Some(obj);
                     }
-                    b"a:lumMod" => {
+                    b"lumMod" => {
                         let mut obj = PercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.luminance_modulation = Some(obj);
                     }
-                    b"a:lumOff" => {
+                    b"lumOff" => {
                         let mut obj = PercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.luminance_offset = Some(obj);
                     }
-                    b"a:sat" => {
+                    b"sat" => {
                         let mut obj = PercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.saturation = Some(obj);
                     }
-                    b"a:satMod" => {
+                    b"satMod" => {
                         let mut obj = PercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.saturation_modulation = Some(obj);
                     }
-                    b"a:shade" => {
+                    b"shade" => {
                         let mut obj = PositiveFixedPercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.shade = Some(obj);
                     }
-                    b"a:alpha" => {
+                    b"alpha" => {
                         let mut obj = PositiveFixedPercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.alpha = Some(obj);
                     }
-                    b"a:tint" => {
+                    b"tint" => {
                         let mut obj = PositiveFixedPercentageType::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.tint = Some(obj);
                     }
-                    _ => (),
+                    _ => { if !is_empty { crate::reader::driver::skip_element(reader,e); } },
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"a:schemeClr" {
+                if e.name().as_ref()==end_name.as_slice() {
                     return;
                 }
             },

@@ -57,10 +57,12 @@ pub enum SeriesPartKind {
     BubbleSize,
     Bubble3D,
     Smooth,
+    /// Ordered point overrides, legal in every supported family.
+    DataPoints,
 }
 
 impl SeriesPartKind {
-    /// Every kind, in the order the series types write them.
+    /// Family-dependent kinds, in the order the series types write them.
     pub(crate) const ALL: [Self; 10] = [
         Self::Explosion,
         Self::InvertIfNegative,
@@ -91,6 +93,9 @@ impl SeriesFamily {
             XValues,
             YValues,
         };
+        if part == SeriesPartKind::DataPoints {
+            return true;
+        }
         match self {
             Self::Bar => matches!(part, InvertIfNegative | Categories | Values),
             Self::Line => matches!(part, Marker | Categories | Values | Smooth),

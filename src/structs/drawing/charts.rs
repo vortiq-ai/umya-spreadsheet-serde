@@ -450,3 +450,12 @@ pub use self::time_unit_values::*;
 
 mod base_time_unit;
 pub use self::base_time_unit::*;
+
+mod xml_scalar;
+pub use self::xml_scalar::*;
+mod picture_options;
+pub use self::picture_options::*;
+mod data_point;
+pub use self::data_point::*;
+mod series_parts;
+pub use self::series_parts::*;

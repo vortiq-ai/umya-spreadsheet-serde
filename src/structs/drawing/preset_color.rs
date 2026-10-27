@@ -75,29 +75,33 @@ impl PresetColor {
         self.alpha = Some(value);
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        empty: bool,
     ) {
         self.set_val(get_unescaped_attribute(e, b"val").unwrap());
 
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:alpha" {
-                    let mut alpha = Alpha::default();
-                    alpha.set_attributes(reader, e);
-                    self.set_alpha(alpha);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:prstClr" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:prstClr")
-        );
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"alpha" => { let mut value=Alpha::default(); value.set_attributes(reader,e); self.set_alpha(value); if !empty { crate::reader::driver::skip_element(reader,e); } },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
+                    }
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

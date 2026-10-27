@@ -185,10 +185,10 @@ fn point_formatting_does_not_replace_the_line_series_index_order_or_marker() {
         ser.starts_with("<c:ser><c:idx val=\"1\"/><c:order val=\"1\"/>"),
         "{ser}"
     );
-    assert!(!ser.contains("<c:marker>"), "{ser}");
-    assert!(!ser.contains("circle"), "{ser}");
+    assert!(ser.contains(&point_marker), "{ser}");
+    assert!(ser.contains("circle"), "{ser}");
     assert!(ser.to_lowercase().contains("4472c4"), "{ser}");
-    assert!(!ser.to_lowercase().contains("ed7d31"), "{ser}");
+    assert!(ser.to_lowercase().contains("ed7d31"), "{ser}");
 }
 
 #[test]
@@ -218,9 +218,9 @@ fn point_formatting_does_not_replace_the_bar_series_own_values() {
 
     let ser = written_series(&book);
     assert!(ser.to_lowercase().contains("4472c4"), "{ser}");
-    assert!(!ser.to_lowercase().contains("ff0000"), "{ser}");
-    assert!(!ser.contains("explosion"), "{ser}");
-    assert!(!ser.contains("bubble3D"), "{ser}");
+    assert!(ser.to_lowercase().contains("ff0000"), "{ser}");
+    assert!(ser.contains("<c:explosion val=\"25\"/>"), "{ser}");
+    assert!(ser.contains("<c:bubble3D val=\"1\"/>"), "{ser}");
 }
 
 #[test]

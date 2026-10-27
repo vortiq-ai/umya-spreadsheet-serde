@@ -176,37 +176,39 @@ impl GradientFill {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
+        self.read_attributes(reader, e, false);
+    }
+
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+    ) {
         set_string_from_xml!(self, e, flip, "flip");
         set_string_from_xml!(self, e, rotate_with_shape, "rotWithShape");
 
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:lin" => {
-                    let mut obj = LinearGradientFill::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_linear_gradient_fill(obj);
-                }
-                b"a:tileRect" => {
-                    let obj = TileRectangle::default();
-                    TileRectangle::set_attributes(reader, e, is_empty);
-                    self.set_tile_rectangle(obj);
-                }
-                b"a:gsLst" => {
-                    self.gradient_stop_list.set_attributes(reader, e);
-                }
-                _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:gradFill" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:gradFill")
-        );
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"lin" => { let mut value=LinearGradientFill::default(); value.set_attributes(reader,e,empty); self.set_linear_gradient_fill(value); },
+        b"tileRect" => { TileRectangle::set_attributes(reader,e,empty); self.set_tile_rectangle(TileRectangle::default()); },
+        b"gsLst" => { self.gradient_stop_list.read_attributes(reader,e,empty); },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
+                    }
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

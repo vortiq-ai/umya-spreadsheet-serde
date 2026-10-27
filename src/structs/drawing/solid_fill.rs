@@ -122,38 +122,38 @@ impl SolidFill {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:schemeClr" => {
-                    let mut scheme_color = SchemeColor::default();
-                    scheme_color.set_attributes(reader, e, is_empty);
-                    self.set_scheme_color(scheme_color);
-                }
-                b"a:srgbClr" => {
-                    let mut rgb_color_model_hex = RgbColorModelHex::default();
-                    rgb_color_model_hex.set_attributes(reader, e, is_empty);
-                    self.set_rgb_color_model_hex(rgb_color_model_hex);
-                }
-                b"a:sysClr" => {
-                    let mut obj = SystemColor::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_system_color(obj);
-                }
-                _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:solidFill" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:solidFill")
-        );
+        self.read_attributes(reader, e, false);
+    }
+
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+    ) {
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"schemeClr" => { let mut value=SchemeColor::default(); value.set_attributes(reader,e,empty); self.set_scheme_color(value); },
+        b"srgbClr" => { let mut value=RgbColorModelHex::default(); value.set_attributes(reader,e,empty); self.set_rgb_color_model_hex(value); },
+        b"sysClr" => { let mut value=SystemColor::default(); value.set_attributes(reader,e,empty); self.set_system_color(value); },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
+                    }
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

@@ -15,6 +15,7 @@ use super::{
     BubbleSize,
     CategoryAxisData,
     DataLabels,
+    DataPoint,
     Explosion,
     Formula,
     Index,
@@ -24,6 +25,7 @@ use super::{
     SeriesFamily,
     SeriesPartConflictReason,
     SeriesPartKind,
+    SeriesParts,
     ShapeProperties,
     Smooth,
     Values,
@@ -62,9 +64,30 @@ pub struct AreaChartSeries {
     bubble_3d:          Option<Bubble3D>,
     smooth:             Option<Smooth>,
     data_labels:        Option<DataLabels>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:              Option<Box<SeriesParts>>,
 }
 
 impl AreaChartSeries {
+    #[must_use]
+    pub fn parts(&self) -> Option<&SeriesParts> {
+        self.parts.as_deref()
+    }
+
+    pub fn parts_mut(&mut self) -> &mut SeriesParts {
+        self.parts.get_or_insert_with(Default::default)
+    }
+
+    pub fn data_points(&self) -> &[DataPoint] {
+        self.parts()
+            .map(SeriesParts::data_points)
+            .unwrap_or_default()
+    }
+
+    pub fn data_points_mut(&mut self) -> &mut Vec<DataPoint> {
+        self.parts_mut().data_points_mut()
+    }
+
     #[must_use]
     pub fn index(&self) -> &Index {
         &self.index
@@ -477,14 +500,11 @@ impl AreaChartSeries {
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                // A self-closing element has no subtree, so nothing may descend into it.
-                // Only the children named below are modeled. Any other child with a subtree
-                // (`c:dPt`, `c:trendline`, `c:errBars`, `c:extLst`, ...) is skipped whole in
-                // the `_` arm: its descendants reuse the names of modeled fields (`c:idx`,
-                // `c:marker`, `c:spPr`, `c:invertIfNegative`, `c:explosion`, `c:bubble3D`,
-                // and `c:errBars`' attribute-only `c:val`) and would overwrite the series' own.
+                // Each modeled child owns its subtree; unknown future parts are skipped
+                // whole so nested names cannot overwrite the series fields.
                 let is_empty_element = matches!(n, Event::Empty(_));
                 match local_name(e.name().into_inner()) {
+                    b"dPt" => { self.data_points_mut().push(DataPoint::read(reader,is_empty_element)); }
                     b"tx" => {
                         let mut obj = ChartText::default();
                         obj.set_attributes(reader, e, session);
@@ -492,7 +512,7 @@ impl AreaChartSeries {
                     }
                     b"marker" => {
                         let mut obj = Marker::default();
-                        obj.set_attributes(reader, e, false);
+                        obj.set_attributes(reader, e, is_empty_element);
                         self.set_marker(obj);
                     }
                 b"spPr" => {
@@ -539,7 +559,7 @@ impl AreaChartSeries {
                 }
                 b"dLbls" => {
                     let mut obj = DataLabels::default();
-                    obj.set_attributes(reader, e);
+                    if !is_empty_element { obj.set_attributes(reader, e); }
                     self.set_data_labels(obj);
                 }
                 b"idx" => {
@@ -596,6 +616,7 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size.is_some(),
             SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
             SeriesPartKind::Smooth => self.smooth.is_some(),
+            SeriesPartKind::DataPoints => !self.data_points().is_empty(),
         }
     }
 
@@ -611,6 +632,7 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size = None,
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
+            SeriesPartKind::DataPoints => (),
         }
     }
 
@@ -620,11 +642,47 @@ impl AreaChartSeries {
         &self,
         family: SeriesFamily,
     ) -> Vec<(SeriesPartKind, usize, SeriesPartConflictReason)> {
-        SeriesPartKind::ALL
+        let mut conflicts: Vec<_> = SeriesPartKind::ALL
             .into_iter()
             .filter(|part| self.has_part(*part) && !family.allows(*part))
             .map(|part| (part, 0, SeriesPartConflictReason::NotAllowed))
-            .collect()
+            .collect();
+        if family.allows(SeriesPartKind::Marker)
+            && self.marker.as_ref().is_some_and(|v| !v.is_valid())
+        {
+            conflicts.push((
+                SeriesPartKind::Marker,
+                0,
+                SeriesPartConflictReason::InvalidValue,
+            ));
+        }
+        if family.allows(SeriesPartKind::Explosion) {
+            if let Some(explosion) = self.explosion.as_ref().filter(|v| !v.is_valid()) {
+                conflicts.push((
+                    SeriesPartKind::Explosion,
+                    0,
+                    if explosion.has_val() {
+                        SeriesPartConflictReason::InvalidValue
+                    } else {
+                        SeriesPartConflictReason::MissingRequiredChild
+                    },
+                ));
+            }
+        }
+        for (occurrence, point) in self.data_points().iter().enumerate() {
+            if !point.is_valid() {
+                conflicts.push((
+                    SeriesPartKind::DataPoints,
+                    occurrence,
+                    if point.index().attribute().is_none() {
+                        SeriesPartConflictReason::MissingRequiredChild
+                    } else {
+                        SeriesPartConflictReason::InvalidValue
+                    },
+                ));
+            }
+        }
+        conflicts
     }
 
     /// Removes the parts `family`'s series type cannot hold and returns them
@@ -637,6 +695,7 @@ impl AreaChartSeries {
         let removed: Vec<_> = self
             .part_conflicts(family)
             .into_iter()
+            .filter(|(_, _, reason)| *reason == SeriesPartConflictReason::NotAllowed)
             .map(|(part, occurrence, _)| (part, occurrence))
             .collect();
         for (part, _) in &removed {
@@ -697,6 +756,11 @@ impl AreaChartSeries {
             .filter(|_| family.allows(SeriesPartKind::Marker))
         {
             v.write_to(writer);
+        }
+
+        // Every supported family permits ordered point overrides before labels.
+        for point in self.data_points() {
+            point.write_to(writer);
         }
 
         // c:dLbls

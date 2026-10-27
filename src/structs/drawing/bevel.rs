@@ -22,21 +22,22 @@ impl Bevel {
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
     ) {
         if empty_flag {
             return;
         }
 
-        xml_read_loop!(
-            reader,
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:bevel" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:bevel")
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+            Event::Start(ref child) => { crate::reader::driver::skip_element(reader,child); },
+            Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
+                    }
+                },
+            Event::Eof => panic!("Could not find drawing leaf end element"),
         );
     }
 

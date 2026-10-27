@@ -262,10 +262,11 @@ impl OuterShadow {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        empty: bool,
     ) {
         if let Some(v) = get_unescaped_attribute(e, b"blurRad") {
             self.set_blur_radius(v);
@@ -289,36 +290,27 @@ impl OuterShadow {
             self.set_rotate_with_shape(v);
         }
 
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:prstClr" => {
-                        let mut obj = PresetColor::default();
-                        obj.set_attributes(reader, e);
-                        self.set_preset_color(obj);
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"prstClr" => { let mut value=PresetColor::default(); value.read_attributes(reader,e,empty); self.set_preset_color(value); },
+        b"schemeClr" => { let mut value=SchemeColor::default(); value.set_attributes(reader,e,empty); self.set_scheme_color(value); },
+        b"srgbClr" => { let mut value=RgbColorModelHex::default(); value.set_attributes(reader,e,empty); self.set_rgb_color_model_hex(value); },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
                     }
-                    b"a:schemeClr" => {
-                        let mut obj = SchemeColor::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_scheme_color(obj);
-                    }
-                    b"a:srgbClr" => {
-                        let mut obj = RgbColorModelHex::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_rgb_color_model_hex(obj);
-                    }
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:outerShdw" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:outerShdw")
-        );
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

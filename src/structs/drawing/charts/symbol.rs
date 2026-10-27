@@ -12,7 +12,7 @@ use super::{
     MarkerStyleValues,
 };
 use crate::{
-    reader::driver::get_attribute,
+    drawing::get_unescaped_attribute,
     writer::driver::write_start_tag,
 };
 
@@ -43,7 +43,15 @@ impl Symbol {
         _reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+        if let Some(value) = get_unescaped_attribute(e, b"val") {
+            self.val.set_value_string(value);
+        }
+    }
+
+    /// Whether the required symbol value was explicitly supplied.
+    #[must_use]
+    pub fn has_val(&self) -> bool {
+        self.val.has_value()
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -51,7 +59,11 @@ impl Symbol {
         write_start_tag(
             writer,
             "c:symbol",
-            vec![("val", self.val.value_string()).into()],
+            if self.val.has_value() {
+                vec![("val", self.val.value_string()).into()]
+            } else {
+                vec![]
+            },
             true,
         );
     }

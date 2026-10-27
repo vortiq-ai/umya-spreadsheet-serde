@@ -122,43 +122,30 @@ impl EffectList {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
     ) {
         if empty_flag {
             return;
         }
 
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:softEdge" {
-                    let mut obj = SoftEdge::default();
-                    obj.set_attributes(reader, e);
-                    self.set_soft_edge(obj);
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty=matches!(event,Event::Empty(_));
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"glow" => { let mut value=Glow::default(); value.read_attributes(reader,e,empty); self.set_glow(value); },
+                    b"outerShdw" => { let mut value=OuterShadow::default(); value.read_attributes(reader,e,empty); self.set_outer_shadow(value); },
+                    b"softEdge" => { let mut value=SoftEdge::default(); value.set_attributes(reader,e); self.set_soft_edge(value); if !empty { crate::reader::driver::skip_element(reader,e); } },
+                    _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
                 }
             },
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:glow" => {
-                        let mut obj = Glow::default();
-                        obj.set_attributes(reader, e);
-                        self.set_glow(obj);
+            Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
                     }
-                    b"a:outerShdw" => {
-                        let mut obj = OuterShadow::default();
-                        obj.set_attributes(reader, e);
-                        self.set_outer_shadow(obj);
-                    }
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:effectLst" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:effectLst")
+                },
+            Event::Eof => panic!("Could not find effects end element"),
         );
     }
 

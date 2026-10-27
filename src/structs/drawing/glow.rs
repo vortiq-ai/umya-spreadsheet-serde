@@ -70,30 +70,35 @@ impl Glow {
         self.scheme_color = Some(Box::new(value));
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        empty: bool,
     ) {
-        self.radius
-            .set_value_string(get_attribute(e, b"rad").unwrap());
+        if let Some(radius) = get_attribute(e, b"rad") {
+            self.radius.set_value_string(radius);
+        }
 
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"a:schemeClr" {
-                    let mut obj = SchemeColor::default();
-                    obj.set_attributes(reader, e, false);
-                    self.set_scheme_color(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:glow" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:glow")
-        );
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"schemeClr" => { let mut value=SchemeColor::default(); value.set_attributes(reader,e,empty); self.set_scheme_color(value); },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
+                    }
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -101,7 +106,7 @@ impl Glow {
         write_start_tag(
             writer,
             "a:glow",
-            vec![("rad", &self.radius.value_string()).into()],
+            if self.radius.has_value() { vec![("rad",self.radius.value_string()).into()] } else { vec![] },
             false,
         );
 

@@ -1,0 +1,67 @@
+[
+  {
+    "name": "bevel-join",
+    "input": "<a:ln><a:solidFill><a:srgbClr val=\"445566\"/></a:solidFill><a:bevel/></a:ln>",
+    "expected": "<a:ln><a:solidFill><a:srgbClr val=\"445566\"/></a:solidFill><a:bevel/></a:ln>"
+  },
+  {
+    "name": "miter-join",
+    "input": "<a:ln><a:solidFill><a:srgbClr val=\"445566\"/></a:solidFill><a:miter lim=\"800000\"/></a:ln>",
+    "expected": "<a:ln><a:solidFill><a:srgbClr val=\"445566\"/></a:solidFill><a:miter lim=\"800000\"/></a:ln>"
+  },
+  {
+    "name": "tail-end",
+    "input": "<a:ln><a:solidFill><a:srgbClr val=\"445566\"/></a:solidFill><a:round/><a:tailEnd type=\"triangle\" w=\"lg\" len=\"med\"/></a:ln>",
+    "expected": "<a:ln><a:solidFill><a:srgbClr val=\"445566\"/></a:solidFill><a:round/><a:tailEnd type=\"triangle\" w=\"lg\" len=\"med\"/></a:ln>"
+  },
+  {
+    "name": "system-color",
+    "input": "<a:ln><a:solidFill><a:sysClr val=\"windowText\" lastClr=\"112233\"/></a:solidFill></a:ln>",
+    "expected": "<a:ln><a:solidFill><a:sysClr val=\"windowText\" lastClr=\"112233\"/></a:solidFill></a:ln>"
+  },
+  {
+    "name": "gradient-stops-linear-tile",
+    "input": "<a:ln><a:gradFill flip=\"xy\" rotWithShape=\"0\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"accent1\"><a:lumMod val=\"50000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:srgbClr val=\"445566\"><a:alpha val=\"80000\"/></a:srgbClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"1\"/><a:tileRect/></a:gradFill><a:round/></a:ln>",
+    "expected": "<a:ln><a:gradFill flip=\"xy\" rotWithShape=\"0\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"accent1\"><a:lumMod val=\"50000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:srgbClr val=\"445566\"><a:alpha val=\"80000\"/></a:srgbClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"1\"/><a:tileRect/></a:gradFill><a:round/></a:ln>"
+  },
+  {
+    "name": "empty-gradient",
+    "input": "<a:ln><a:gradFill flip=\"x\" rotWithShape=\"1\"/></a:ln>",
+    "expected": "<a:ln><a:gradFill flip=\"x\" rotWithShape=\"1\"></a:gradFill></a:ln>"
+  },
+  {
+    "name": "glow-scheme",
+    "input": "<a:effectLst><a:glow rad=\"25400\"><a:schemeClr val=\"accent2\"><a:alpha val=\"50000\"/></a:schemeClr></a:glow></a:effectLst>",
+    "expected": "<a:effectLst><a:glow rad=\"25400\"><a:schemeClr val=\"accent2\"><a:alpha val=\"50000\"/></a:schemeClr></a:glow></a:effectLst>"
+  },
+  {
+    "name": "glow-omitted-radius",
+    "input": "<a:effectLst><a:glow><a:schemeClr val=\"accent2\"/></a:glow></a:effectLst>",
+    "expected": "<a:effectLst><a:glow><a:schemeClr val=\"accent2\"/></a:glow></a:effectLst>"
+  },
+  {
+    "name": "shadow-scheme",
+    "input": "<a:effectLst><a:outerShdw blurRad=\"40000\" dist=\"20000\" dir=\"5400000\" sx=\"100000\" sy=\"100000\" algn=\"ctr\" rotWithShape=\"0\"><a:schemeClr val=\"accent3\"><a:alpha val=\"50000\"/></a:schemeClr></a:outerShdw></a:effectLst>",
+    "expected": "<a:effectLst><a:outerShdw blurRad=\"40000\" dist=\"20000\" dir=\"5400000\" sx=\"100000\" sy=\"100000\" algn=\"ctr\" rotWithShape=\"0\"><a:schemeClr val=\"accent3\"><a:alpha val=\"50000\"/></a:schemeClr></a:outerShdw></a:effectLst>"
+  },
+  {
+    "name": "shadow-rgb",
+    "input": "<a:effectLst><a:outerShdw><a:srgbClr val=\"445566\"><a:tint val=\"10000\"/></a:srgbClr></a:outerShdw></a:effectLst>",
+    "expected": "<a:effectLst><a:outerShdw><a:srgbClr val=\"445566\"><a:tint val=\"10000\"/></a:srgbClr></a:outerShdw></a:effectLst>"
+  },
+  {
+    "name": "shadow-preset-alpha",
+    "input": "<a:effectLst><a:outerShdw><a:prstClr val=\"red\"><a:alpha val=\"80000\"/></a:prstClr></a:outerShdw></a:effectLst>",
+    "expected": "<a:effectLst><a:outerShdw><a:prstClr val=\"red\"><a:alpha val=\"80000\"/></a:prstClr></a:outerShdw></a:effectLst>"
+  },
+  {
+    "name": "shadow-preset-empty",
+    "input": "<a:effectLst><a:outerShdw><a:prstClr val=\"red\"/></a:outerShdw></a:effectLst>",
+    "expected": "<a:effectLst><a:outerShdw><a:prstClr val=\"red\"></a:prstClr></a:outerShdw></a:effectLst>"
+  },
+  {
+    "name": "soft-edge",
+    "input": "<a:effectLst><a:softEdge rad=\"12700\"/></a:effectLst>",
+    "expected": "<a:effectLst><a:softEdge rad=\"12700\"/></a:effectLst>"
+  }
+]

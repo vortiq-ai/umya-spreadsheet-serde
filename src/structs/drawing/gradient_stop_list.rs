@@ -65,30 +65,37 @@ impl GradientStopList {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
+        empty: bool,
     ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"a:gs" {
-                    let mut obj = GradientStop::default();
-                    obj.set_attributes(reader, e);
-                    self.add_gradient_stop(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:gsLst" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:gsLst")
-        );
+        if empty {
+            return;
+        }
+        let end_name = e.name().as_ref().to_vec();
+        xml_read_loop!(reader,
+                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                        let empty=matches!(event,Event::Empty(_));
+                        match crate::reader::driver::local_name(e.name().into_inner()) {
+        b"gs" => { let mut value=GradientStop::default(); value.read_attributes(reader,e,empty); self.add_gradient_stop(value); },
+                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                        }
+                    },
+                    Event::End(ref end) => {
+                    if end.name().as_ref() == end_name.as_slice() {
+                        return;
+                    }
+                },
+                    Event::Eof => panic!("Could not find drawing owner end element"),
+                );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        if self.gradient_stop.is_empty() {
+            return;
+        }
         // a:gsLst
         write_start_tag(writer, "a:gsLst", vec![], false);
 

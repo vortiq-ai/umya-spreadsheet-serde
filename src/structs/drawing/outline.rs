@@ -424,61 +424,62 @@ impl Outline {
 
         set_string_from_xml!(self, e, alignment, "algn");
 
+        let end_name = e.name().as_ref().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:solidFill" => {
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"solidFill" => {
                         let mut solid_fill = SolidFill::default();
-                        solid_fill.set_attributes(reader, e);
+                        solid_fill.read_attributes(reader, e, is_empty);
                         self.set_solid_fill(solid_fill);
                     }
-                    b"a:gradFill" => {
+                    b"gradFill" => {
                         let mut obj = GradientFill::default();
-                        obj.set_attributes(reader, e);
+                        obj.read_attributes(reader, e, is_empty);
                         self.set_gradient_fill(obj);
                     }
-                    b"a:tailEnd" => {
+                    b"tailEnd" => {
                         let mut obj = TailEnd::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.set_tail_end(obj);
                     }
-                    b"a:noFill" => {
+                    b"noFill" => {
                         let obj = NoFill::default();
                         NoFill::set_attributes(reader, e, is_empty);
                         self.set_no_fill(obj);
                     }
-                    b"a:bevel" => {
+                    b"bevel" => {
                         let obj = Bevel::default();
                         Bevel::set_attributes(reader, e, is_empty);
                         self.set_bevel(obj);
                     }
-                    b"a:miter" => {
+                    b"miter" => {
                         let mut obj = Miter::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.set_miter(obj);
                     }
-                    b"a:prstDash" => {
+                    b"prstDash" => {
                         let mut obj = PresetDash::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.set_preset_dash(obj);
                     }
-                    b"a:round" => {
+                    b"round" => {
                         let obj = Round::default();
                         Round::set_attributes(reader, e, is_empty);
                         self.set_round(obj);
                     }
-                    b"a:sysClr" => {
+                    b"sysClr" => {
                         let mut obj = SystemColor::default();
                         obj.set_attributes(reader, e, is_empty);
                         self.set_system_color(obj);
                     }
-                    _ => (),
+                    _ => { if !is_empty { crate::reader::driver::skip_element(reader,e); } },
                 }
             },
             Event::End(ref e) => {
-                if  e.name().into_inner() == b"a:ln" {
+                if e.name().as_ref()==end_name.as_slice() {
                     return;
                 }
             },
@@ -514,33 +515,23 @@ impl Outline {
             v.write_to(writer);
         }
 
-        // a:round
-        if self.round.is_some() {
-            Round::write_to(writer);
-        }
-
-        // a:tailEnd
-        if let Some(v) = &self.tail_end {
-            v.write_to(writer);
-        }
-
-        // a:noFill
+        // CT_LineProperties: fill, dash, join, head/tail ends.
         if self.no_fill.is_some() {
             NoFill::write_to(writer);
         }
-
-        // a:bevel
-        if self.bevel.is_some() {
-            Bevel::write_to(writer);
-        }
-
-        // a:prstDash
         if let Some(v) = &self.preset_dash {
             v.write_to(writer);
         }
-
-        // a:miter
+        if self.round.is_some() {
+            Round::write_to(writer);
+        }
+        if self.bevel.is_some() {
+            Bevel::write_to(writer);
+        }
         if let Some(v) = &self.miter {
+            v.write_to(writer);
+        }
+        if let Some(v) = &self.tail_end {
             v.write_to(writer);
         }
 
