@@ -98,9 +98,10 @@ impl StringReference {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         session: &SourceCacheSession,
     ) {
+        let end = e.name().into_inner().to_vec();
         let mut buffer = Vec::new();
         loop {
             buffer.clear();
@@ -127,7 +128,7 @@ impl StringReference {
                             StringCache::set_attributes(reader, &e, self.formula.address_str());
                         register_parsed_string_cache(session, &mut self.string_cache, None, None);
                     }
-                    _ => (),
+                    _ => crate::reader::driver::skip_element(reader,&e),
                 },
                 Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => {
                     self.string_cache = StringCache::empty_source(self.formula.address_str());
@@ -140,7 +141,7 @@ impl StringReference {
                         None,
                     );
                 }
-                Event::End(e) if local_name(e.name().into_inner()) == b"strRef" => {
+                Event::End(e) if e.name().into_inner()==end.as_slice() => {
                     finalize_parsed_string_cache(
                         session,
                         &mut self.string_cache,

@@ -331,6 +331,9 @@ impl Chart {
     /// from `previous` by exact formula, reference role and existing identity.
     /// Series categories and series text each use their explicitly present
     /// series index (`c:idx`); axis titles use an explicitly present `c:axId`.
+    /// Trendline-label text uses the explicit series index and exact formula
+    /// as its role, so reordering labels cannot transfer caches; repeated
+    /// formula roles within the same series are ambiguous and never adopted.
     /// Explicit zero is valid. A role/ID must occur exactly once in each chart,
     /// counting even references without caches or with invalid guards. Missing
     /// or ambiguous identities do not match. Previous empty slots stay empty.

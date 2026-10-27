@@ -59,6 +59,8 @@ pub enum SeriesPartKind {
     Smooth,
     /// Ordered point overrides, legal in every supported family.
     DataPoints,
+    /// Ordered trendlines and their labels.
+    Trendlines,
 }
 
 impl SeriesPartKind {
@@ -93,6 +95,9 @@ impl SeriesFamily {
             XValues,
             YValues,
         };
+        if part == SeriesPartKind::Trendlines {
+            return !matches!(self, Self::Pie | Self::Radar);
+        }
         if part == SeriesPartKind::DataPoints {
             return true;
         }

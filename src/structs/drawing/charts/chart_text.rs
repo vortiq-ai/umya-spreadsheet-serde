@@ -112,37 +112,49 @@ impl ChartText {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
                 match local_name(e.name().into_inner()) {
                     b"rich" => {
-                        let mut obj = RichText::default();
-                        obj.set_attributes(reader, e);
-                        self.set_rich_text(obj);
+                        let mut v = RichText::default();
+                        if !empty {
+                            v.set_attributes(reader, e);
+                        }
+                        self.rich_text = Some(v);
                     }
                     b"strRef" => {
-                        let mut obj = StringReference::default();
-                        obj.set_attributes(reader, e, session);
-                        self.set_string_reference(obj);
+                        let mut v = StringReference::default();
+                        if !empty {
+                            v.set_attributes(reader, e, session);
+                        }
+                        self.string_reference = Some(v);
                     }
                     b"v" => {
-                        let mut obj = NumericValue::default();
-                        obj.set_attributes(reader, e);
-                        self.set_numeric_value(obj);
+                        let mut v = NumericValue::default();
+                        if !empty {
+                            v.set_attributes(reader, e);
+                        }
+                        self.numeric_value = Some(v);
                     }
-                    _ => (),
+                    _ => {
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"tx" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:tx"),
+            Event::Eof => panic!("Could not find chart text end element"),
         );
     }
 

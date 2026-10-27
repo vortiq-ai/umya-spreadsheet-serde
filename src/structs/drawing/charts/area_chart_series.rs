@@ -28,6 +28,7 @@ use super::{
     SeriesParts,
     ShapeProperties,
     Smooth,
+    Trendline,
     Values,
     XValues,
     YValues,
@@ -76,6 +77,21 @@ impl AreaChartSeries {
 
     pub fn parts_mut(&mut self) -> &mut SeriesParts {
         self.parts.get_or_insert_with(Default::default)
+    }
+
+    #[must_use]
+    pub fn trendlines(&self) -> &[Trendline] {
+        self.parts()
+            .map(SeriesParts::trendlines)
+            .unwrap_or_default()
+    }
+
+    pub fn trendlines_mut(&mut self) -> &mut Vec<Trendline> {
+        self.parts_mut().trendlines_mut()
+    }
+
+    pub(crate) fn trendlines_iter_mut(&mut self) -> impl Iterator<Item = &mut Trendline> {
+        self.parts.iter_mut().flat_map(|p| p.trendlines_mut())
     }
 
     pub fn data_points(&self) -> &[DataPoint] {
@@ -500,14 +516,28 @@ impl AreaChartSeries {
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                // Each modeled child owns its subtree; unknown future parts are skipped
-                // whole so nested names cannot overwrite the series fields.
+                // Each modeled child owns its subtree; unknown future parts are
+                // skipped whole so nested names cannot overwrite the
+                // series fields.
                 let is_empty_element = matches!(n, Event::Empty(_));
                 match local_name(e.name().into_inner()) {
-                    b"dPt" => { self.data_points_mut().push(DataPoint::read(reader,is_empty_element)); }
+                    b"trendline" => {
+                        self.trendlines_mut().push(Trendline::read(
+                            reader,
+                            e,
+                            is_empty_element,
+                            session,
+                        ));
+                    }
+                    b"dPt" => {
+                        self.data_points_mut()
+                            .push(DataPoint::read(reader, is_empty_element));
+                    }
                     b"tx" => {
                         let mut obj = ChartText::default();
-                        obj.set_attributes(reader, e, session);
+                        if !is_empty_element {
+                            obj.set_attributes(reader, e, session);
+                        }
                         self.set_chart_text(obj);
                     }
                     b"marker" => {
@@ -515,85 +545,89 @@ impl AreaChartSeries {
                         obj.set_attributes(reader, e, is_empty_element);
                         self.set_marker(obj);
                     }
-                b"spPr" => {
-                    let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
-                    self.set_shape_properties(obj);
-                }
-                b"cat" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
-                        let mut obj = CategoryAxisData::default();
-                        obj.set_attributes(reader, e, session);
-                        self.set_category_axis_data(obj);
+                    b"spPr" => {
+                        let mut obj = ShapeProperties::default();
+                        if !is_empty_element {
+                            obj.set_attributes(reader, e);
+                        }
+                        self.set_shape_properties(obj);
                     }
-                }
-                b"val" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
-                        let mut obj = Values::default();
+                    b"cat" => {
+                        // `continue` here would skip the loop's `buf.clear()`.
+                        if !is_empty_element {
+                            let mut obj = CategoryAxisData::default();
+                            obj.set_attributes(reader, e, session);
+                            self.set_category_axis_data(obj);
+                        }
+                    }
+                    b"val" => {
+                        // `continue` here would skip the loop's `buf.clear()`.
+                        if !is_empty_element {
+                            let mut obj = Values::default();
+                            obj.set_attributes(reader, e);
+                            self.set_values(obj);
+                        }
+                    }
+                    b"xVal" => {
+                        // `continue` here would skip the loop's `buf.clear()`.
+                        if !is_empty_element {
+                            let mut obj = XValues::default();
+                            obj.set_attributes(reader, e);
+                            self.set_x_values(obj);
+                        }
+                    }
+                    b"yVal" => {
+                        // `continue` here would skip the loop's `buf.clear()`.
+                        if !is_empty_element {
+                            let mut obj = YValues::default();
+                            obj.set_attributes(reader, e);
+                            self.set_y_values(obj);
+                        }
+                    }
+                    b"bubbleSize" => {
+                        let mut obj = BubbleSize::default();
                         obj.set_attributes(reader, e);
-                        self.set_values(obj);
+                        self.set_bubble_size(obj);
                     }
-                }
-                b"xVal" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
-                        let mut obj = XValues::default();
+                    b"dLbls" => {
+                        let mut obj = DataLabels::default();
+                        if !is_empty_element {
+                            obj.set_attributes(reader, e);
+                        }
+                        self.set_data_labels(obj);
+                    }
+                    b"idx" => {
+                        self.index.set_attributes(reader, e);
+                    }
+                    b"order" => {
+                        self.order.set_attributes(reader, e);
+                    }
+                    b"explosion" => {
+                        let mut obj = Explosion::default();
                         obj.set_attributes(reader, e);
-                        self.set_x_values(obj);
+                        self.set_explosion(obj);
                     }
-                }
-                b"yVal" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
-                        let mut obj = YValues::default();
+                    b"invertIfNegative" => {
+                        let mut obj = InvertIfNegative::default();
                         obj.set_attributes(reader, e);
-                        self.set_y_values(obj);
+                        self.set_invert_if_negative(obj);
+                    }
+                    b"bubble3D" => {
+                        let mut obj = Bubble3D::default();
+                        obj.set_attributes(reader, e);
+                        self.set_bubble_3d(obj);
+                    }
+                    b"smooth" => {
+                        let mut obj = Smooth::default();
+                        obj.set_attributes(reader, e);
+                        self.set_smooth(obj);
+                    }
+                    _ => {
+                        if !is_empty_element {
+                            skip_element(reader, e);
+                        }
                     }
                 }
-                b"bubbleSize" => {
-                    let mut obj = BubbleSize::default();
-                    obj.set_attributes(reader, e);
-                    self.set_bubble_size(obj);
-                }
-                b"dLbls" => {
-                    let mut obj = DataLabels::default();
-                    if !is_empty_element { obj.set_attributes(reader, e); }
-                    self.set_data_labels(obj);
-                }
-                b"idx" => {
-                    self.index.set_attributes(reader, e);
-                }
-                b"order" => {
-                    self.order.set_attributes(reader, e);
-                }
-                b"explosion" => {
-                    let mut obj = Explosion::default();
-                    obj.set_attributes(reader, e);
-                    self.set_explosion(obj);
-                }
-                b"invertIfNegative" => {
-                    let mut obj = InvertIfNegative::default();
-                    obj.set_attributes(reader, e);
-                    self.set_invert_if_negative(obj);
-                }
-                b"bubble3D" => {
-                    let mut obj = Bubble3D::default();
-                    obj.set_attributes(reader, e);
-                    self.set_bubble_3d(obj);
-                }
-                b"smooth" => {
-                    let mut obj = Smooth::default();
-                    obj.set_attributes(reader, e);
-                    self.set_smooth(obj);
-                }
-                _ => {
-                    if !is_empty_element {
-                        skip_element(reader, e);
-                    }
-                }
-            }
             },
             Event::End(ref e) => {
                 if local_name(e.name().into_inner()) == b"ser" {
@@ -617,6 +651,7 @@ impl AreaChartSeries {
             SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
             SeriesPartKind::Smooth => self.smooth.is_some(),
             SeriesPartKind::DataPoints => !self.data_points().is_empty(),
+            SeriesPartKind::Trendlines => !self.trendlines().is_empty(),
         }
     }
 
@@ -633,6 +668,11 @@ impl AreaChartSeries {
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
             SeriesPartKind::DataPoints => (),
+            SeriesPartKind::Trendlines => {
+                if let Some(parts)=self.parts.as_mut(){
+                    parts.trendlines_mut().clear();
+                }
+            },
         }
     }
 
@@ -680,6 +720,16 @@ impl AreaChartSeries {
                         SeriesPartConflictReason::InvalidValue
                     },
                 ));
+            }
+        }
+        for (occurrence, trendline) in self.trendlines().iter().enumerate() {
+            let reason = if family.allows(SeriesPartKind::Trendlines) {
+                trendline.conflict()
+            } else {
+                Some(SeriesPartConflictReason::NotAllowed)
+            };
+            if let Some(reason) = reason {
+                conflicts.push((SeriesPartKind::Trendlines, occurrence, reason));
             }
         }
         conflicts
@@ -766,6 +816,12 @@ impl AreaChartSeries {
         // c:dLbls
         if let Some(v) = &self.data_labels {
             v.write_to(writer);
+        }
+
+        if family.allows(SeriesPartKind::Trendlines) {
+            for trendline in self.trendlines() {
+                trendline.write_to(writer, wb);
+            }
         }
 
         // c:cat

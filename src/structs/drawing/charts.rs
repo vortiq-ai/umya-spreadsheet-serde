@@ -459,3 +459,8 @@ mod data_point;
 pub use self::data_point::*;
 mod series_parts;
 pub use self::series_parts::*;
+
+mod trendline;
+pub use self::trendline::*;
+mod trendline_label;
+pub use self::trendline_label::*;

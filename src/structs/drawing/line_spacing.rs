@@ -64,23 +64,27 @@ impl LineSpacing {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:spcPct" {
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                if crate::reader::driver::local_name(e.name().into_inner()) == b"spcPct" {
                     let mut obj = SpacingPercent::default();
                     obj.set_attributes(reader, e);
                     self.set_spacing_percent(obj);
                 }
+                if matches!(event, Event::Start(_)) {
+                    crate::reader::driver::skip_element(reader, e);
+                }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"a:lnSpc" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:lnSpc")
+            Event::Eof => panic!("Error: Could not find {} end element", "a:lnSpc"),
         );
     }
 

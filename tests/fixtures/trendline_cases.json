@@ -1,0 +1,386 @@
+{
+  "positives": [
+    {
+      "name": "type-exp",
+      "xml": "<c:trendline><c:trendlineType val=\"exp\"/></c:trendline>",
+      "semantic_expectations": {
+        "kind": "exp"
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "type-linear",
+      "xml": "<c:trendline><c:trendlineType val=\"linear\"/></c:trendline>",
+      "semantic_expectations": {
+        "kind": "linear"
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "type-log",
+      "xml": "<c:trendline><c:trendlineType val=\"log\"/></c:trendline>",
+      "semantic_expectations": {
+        "kind": "log"
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "type-movingAvg",
+      "xml": "<c:trendline><c:trendlineType val=\"movingAvg\"/></c:trendline>",
+      "semantic_expectations": {
+        "kind": "movingAvg"
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "type-poly",
+      "xml": "<c:trendline><c:trendlineType val=\"poly\"/></c:trendline>",
+      "semantic_expectations": {
+        "kind": "poly"
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "type-power",
+      "xml": "<c:trendline><c:trendlineType val=\"power\"/></c:trendline>",
+      "semantic_expectations": {
+        "kind": "power"
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "default-type-attribute",
+      "xml": "<c:trendline><c:trendlineType/></c:trendline>",
+      "semantic_expectations": {
+        "kind_attribute": null,
+        "semantic_kind": "linear",
+        "required_element_present": true
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "empty-name",
+      "xml": "<c:trendline><c:name></c:name><c:trendlineType/></c:trendline>",
+      "semantic_expectations": {
+        "name": "",
+        "name_present": true
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "spaced-name",
+      "xml": "<c:trendline><c:name>  Fit &amp; trend  </c:name><c:trendlineType/></c:trendline>",
+      "semantic_expectations": {
+        "name": "  Fit & trend  "
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "order-default",
+      "xml": "<c:trendline><c:trendlineType/><c:order/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 2
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "order-low",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"2\"/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 2
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "order-high",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"6\"/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 6
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "order-whitespace",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\" 02 \"/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 2
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "period-default",
+      "xml": "<c:trendline><c:trendlineType/><c:period/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 2
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "period-low",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\"2\"/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 2
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "period-high",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\"4294967295\"/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 4294967295
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "period-whitespace",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\" 0002 \"/></c:trendline>",
+      "semantic_expectations": {
+        "semantic_scalar": 2
+      },
+      "schema_expected": true
+    },
+    {
+      "name": "forward",
+      "xml": "<c:trendline><c:trendlineType/><c:forward val=\" 1.2500E+1 \"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "backward",
+      "xml": "<c:trendline><c:trendlineType/><c:backward val=\"-0\"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "intercept-infinity",
+      "xml": "<c:trendline><c:trendlineType/><c:intercept val=\"INF\"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "intercept-negative-infinity",
+      "xml": "<c:trendline><c:trendlineType/><c:intercept val=\"-INF\"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "intercept-nan",
+      "xml": "<c:trendline><c:trendlineType/><c:intercept val=\"NaN\"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "boolean-absence",
+      "xml": "<c:trendline><c:trendlineType/><c:dispRSqr/><c:dispEq/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "boolean-words",
+      "xml": "<c:trendline><c:trendlineType/><c:dispRSqr val=\"false\"/><c:dispEq val=\"true\"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "boolean-whitespace",
+      "xml": "<c:trendline><c:trendlineType/><c:dispRSqr val=\" false \"/><c:dispEq val=\" 0 \"/></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-empty",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-layout",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:layout/></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-rich",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Fit label</a:t></a:r></a:p></c:rich></c:tx></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-reference",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:tx><c:strRef><c:f>Data!$A$1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>Imported label</c:v></c:pt></c:strCache></c:strRef></c:tx></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-number-format-omitted-linked",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:numFmt formatCode=\"0.00\"/></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-number-format-word",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:numFmt formatCode=\"0.00\" sourceLinked=\"true\"/></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-number-format-whitespace",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:numFmt formatCode=\"0.00\" sourceLinked=\" false \"/></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-empty-format",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:numFmt formatCode=\"\"/></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-shape",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:spPr><a:ln w=\"12700\"><a:solidFill><a:srgbClr val=\"4472C4\"/></a:solidFill><a:prstDash val=\"dash\"/><a:round/></a:ln></c:spPr></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-text-properties",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Label style</a:t></a:r></a:p></c:txPr></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    },
+    {
+      "name": "label-all",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:layout/><c:tx><c:strRef><c:f>Data!$A$1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>Imported label</c:v></c:pt></c:strCache></c:strRef></c:tx><c:numFmt formatCode=\"0.00\" sourceLinked=\"0\"/><c:spPr><a:ln w=\"12700\"><a:solidFill><a:srgbClr val=\"4472C4\"/></a:solidFill><a:prstDash val=\"dash\"/><a:round/></a:ln></c:spPr><c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Label style</a:t></a:r></a:p></c:txPr></c:trendlineLbl></c:trendline>",
+      "semantic_expectations": {},
+      "schema_expected": true
+    }
+  ],
+  "negatives": [
+    {
+      "name": "missing-kind",
+      "xml": "<c:trendline/>",
+      "schema_expected": false,
+      "expected_diagnostic": "trendlineType"
+    },
+    {
+      "name": "invalid-kind",
+      "xml": "<c:trendline><c:trendlineType val=\"unknown\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "unknown"
+    },
+    {
+      "name": "untrimmed-string-enum",
+      "xml": "<c:trendline><c:trendlineType val=\" linear \"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": " linear "
+    },
+    {
+      "name": "order-invalid-0",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"1\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "1"
+    },
+    {
+      "name": "order-invalid-1",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"7\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "7"
+    },
+    {
+      "name": "order-invalid-2",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"abc\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "abc"
+    },
+    {
+      "name": "order-invalid-3",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"256\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "256"
+    },
+    {
+      "name": "order-invalid-4",
+      "xml": "<c:trendline><c:trendlineType/><c:order val=\"+2\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "+2"
+    },
+    {
+      "name": "period-invalid-0",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\"1\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "1"
+    },
+    {
+      "name": "period-invalid-1",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\"abc\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "abc"
+    },
+    {
+      "name": "period-invalid-2",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\"4294967296\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "4294967296"
+    },
+    {
+      "name": "period-invalid-3",
+      "xml": "<c:trendline><c:trendlineType/><c:period val=\"+2\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "+2"
+    },
+    {
+      "name": "forward-missing-attribute",
+      "xml": "<c:trendline><c:trendlineType/><c:forward/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "val"
+    },
+    {
+      "name": "backward-missing-attribute",
+      "xml": "<c:trendline><c:trendlineType/><c:backward/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "val"
+    },
+    {
+      "name": "intercept-missing-attribute",
+      "xml": "<c:trendline><c:trendlineType/><c:intercept/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "val"
+    },
+    {
+      "name": "invalid-double",
+      "xml": "<c:trendline><c:trendlineType/><c:forward val=\"inf\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "inf"
+    },
+    {
+      "name": "invalid-boolean",
+      "xml": "<c:trendline><c:trendlineType/><c:dispEq val=\"yes\"/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "yes"
+    },
+    {
+      "name": "missing-format-code",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:numFmt/></c:trendlineLbl></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "formatCode"
+    },
+    {
+      "name": "invalid-format-linked",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:numFmt formatCode=\"0\" sourceLinked=\"yes\"/></c:trendlineLbl></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "yes"
+    },
+    {
+      "name": "label-choice",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Fit label</a:t></a:r></a:p></c:rich><c:strRef><c:f>Data!$A$1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>Imported label</c:v></c:pt></c:strCache></c:strRef></c:tx></c:trendlineLbl></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "strRef"
+    },
+    {
+      "name": "duplicate-kind",
+      "xml": "<c:trendline><c:trendlineType/><c:trendlineType/></c:trendline>",
+      "schema_expected": false,
+      "expected_diagnostic": "trendlineType"
+    }
+  ],
+  "native_validator_known_discrepancy": "1e is separately invalid by normative grammar; do not claim native rejects it"
+}

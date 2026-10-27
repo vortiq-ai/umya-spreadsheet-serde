@@ -428,12 +428,13 @@ impl SourceException {
 
 /// Identity uses existing explicit values only. Presentation, group kind,
 /// axis bindings and traversal order never participate in adoption.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ReferenceIdentity {
     ChartTitle,
     Category(u32),
     SeriesText(u32),
     AxisTitle(u32),
+    TrendlineLabel(u32, String),
 }
 
 // Define the traversal once for borrowed and mutable references. Each visit
@@ -443,7 +444,7 @@ macro_rules! string_reference_traversal {
     ($name:ident, ($($mutable:tt)*), ($($borrow:lifetime)?),
      $chart:ident, $title:ident, $text:ident,
      $reference:ident, $plot:ident, $groups:ident, $series:ident, $items:ident,
-     $category:ident, [$($axes:ident),*]) => {
+     $category:ident, $trends:ident, $label:ident, $label_text:ident, [$($axes:ident),*]) => {
         pub(crate) fn $name $(<$borrow>)? (
             space: & $($borrow)? $($mutable)* ChartSpace,
             visit: &mut dyn FnMut(
@@ -489,6 +490,27 @@ macro_rules! string_reference_traversal {
                     visit(identity.map(ReferenceIdentity::AxisTitle), reference);
                 }
             })*
+
+            // Existing roles keep their admission order and priority globally,
+            // including later series and axis titles. New label roles follow
+            // in their own document order through this same traversal owner.
+            for group in plot.$groups() {
+                for series in group.$series().$items() {
+                    let identity = series.index().explicit_value();
+                    for trendline in series.$trends() {
+                        if let Some(reference) = trendline
+                            .$label()
+                            .and_then(|label| label.$label_text())
+                            .and_then(|text| text.$reference())
+                        {
+                            let key = identity.map(|id| ReferenceIdentity::TrendlineLabel(
+                                id, reference.formula().address_str(),
+                            ));
+                            visit(key,reference);
+                        }
+                    }
+                }
+            }
         }
     };
 }
@@ -506,6 +528,7 @@ string_reference_traversal!(
     series_mut,
     area_chart_series_mut,
     category_axis_data_mut,
+    trendlines_iter_mut, label_mut, text_mut,
     [category_axis_mut, date_axis_mut, value_axis_mut, series_axis_mut]
 );
 string_reference_traversal!(
@@ -521,6 +544,7 @@ string_reference_traversal!(
     series,
     area_chart_series,
     category_axis_data,
+    trendlines, label, text,
     [category_axis, date_axis, value_axis, series_axis]
 );
 

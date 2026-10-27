@@ -77,34 +77,42 @@ impl Run {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner(){
-                    b"a:rPr"=> {
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"rPr" => {
                         self.run_properties.set_attributes(reader, e, is_empty);
                     }
-                    b"a:t"=> {
+                    b"t" => {
                         if !is_empty {
+                            let config = reader.config().clone();
+                            reader.config_mut().trim_text(false);
                             let mut buf = Vec::new();
                             let text = crate::helper::utils::unescape_xml_text(
-                                &reader.read_text_into(e.name(), &mut buf).unwrap()
+                                &reader.read_text_into(e.name(), &mut buf).unwrap(),
                             );
+                            *reader.config_mut() = config;
                             self.set_text(text);
                         }
                     }
-                    _=>{}
+                    _ => {
+                        if !is_empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                if e.name().0 == b"a:r" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:r")
+            Event::Eof => panic!("Error: Could not find {} end element", "a:r"),
         );
     }
 

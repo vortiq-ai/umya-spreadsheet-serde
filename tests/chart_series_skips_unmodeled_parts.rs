@@ -256,7 +256,9 @@ fn trendlines_and_error_bars_do_not_replace_the_series_shape_properties() {
 
     let ser = written_series(&book).to_lowercase();
     assert!(ser.contains("4472c4"), "{ser}");
-    assert!(!ser.contains("00ff00"), "{ser}");
+    assert!(ser.contains("00ff00"), "{ser}");
+    assert_eq!(read_series.trendlines().len(), 1);
+    assert_eq!(read_series.trendlines()[0].name(), Some("Trend"));
     assert!(!ser.contains("0000ff"), "{ser}");
 }
 

@@ -542,64 +542,70 @@ impl RunProperties {
             return;
         }
 
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:solidFill" => {
-                    let mut obj = SolidFill::default();
-                    obj.set_attributes(reader, e);
-                    self.set_solid_fill(obj);
-                }
-                b"a:ln" => {
-                    let mut obj = Outline::default();
-                    obj.set_attributes(reader, e);
-                    self.set_outline(obj);
-                }
-                b"a:gradFill" => {
-                    let mut obj = GradientFill::default();
-                    obj.set_attributes(reader, e);
-                    self.set_gradient_fill(obj);
-                }
-                b"a:effectLst" => {
-                    let mut effect_list = EffectList::default();
-                    effect_list.set_attributes(reader, e, is_empty);
-                    self.set_effect_list(effect_list);
-                }
-                b"a:latin" => {
-                    let mut obj = TextFontType::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_latin_font(obj);
-                }
-                b"a:ea" => {
-                    let mut obj = TextFontType::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_east_asian_font(obj);
-                }
-                b"a:cs" => {
-                    let mut obj = TextFontType::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_complex_script_font(obj);
-                }
-                b"a:noFill" => {
-                    let obj = NoFill::default();
-                    NoFill::set_attributes(reader, e, is_empty);
-                    self.set_no_fill(obj);
-                }
-                _ => (),
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"solidFill" => {
+                        let mut obj = SolidFill::default();
+                        obj.read_attributes(reader, e, is_empty);
+                        self.set_solid_fill(obj);
+                    }
+                    b"ln" => {
+                        let mut obj = Outline::default();
+                        if !is_empty {
+                            obj.set_attributes(reader, e);
+                        }
+                        self.set_outline(obj);
+                    }
+                    b"gradFill" => {
+                        let mut obj = GradientFill::default();
+                        obj.read_attributes(reader, e, is_empty);
+                        self.set_gradient_fill(obj);
+                    }
+                    b"effectLst" => {
+                        let mut effect_list = EffectList::default();
+                        effect_list.set_attributes(reader, e, is_empty);
+                        self.set_effect_list(effect_list);
+                    }
+                    b"latin" => {
+                        let mut obj = TextFontType::default();
+                        obj.set_attributes(reader, e, is_empty);
+                        self.set_latin_font(obj);
+                    }
+                    b"ea" => {
+                        let mut obj = TextFontType::default();
+                        obj.set_attributes(reader, e, is_empty);
+                        self.set_east_asian_font(obj);
+                    }
+                    b"cs" => {
+                        let mut obj = TextFontType::default();
+                        obj.set_attributes(reader, e, is_empty);
+                        self.set_complex_script_font(obj);
+                    }
+                    b"noFill" => {
+                        let obj = NoFill::default();
+                        NoFill::set_attributes(reader, e, is_empty);
+                        self.set_no_fill(obj);
+                    }
+                    _ => {
+                        if !is_empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                match e.name().into_inner() {
-                    b"a:rPr" | b"a:endParaRPr" | b"a:defRPr" => return,
-                    _ => (),
+                if e.name().into_inner() == end.as_slice() {
+                    return;
                 }
             },
             Event::Eof => panic!(
                 "Error: Could not find {} end element",
                 "a:rPr, a:endParaRPr, a:defRPr"
-            )
+            ),
         );
     }
 
@@ -654,48 +660,20 @@ impl RunProperties {
             || self.east_asian_font.is_some()
             || self.gradient_fill.is_some()
             || self.effect_list.is_some()
+            || self.complex_script_font.is_some()
+            || self.no_fill.is_some()
         {
             write_start_tag(writer, tag_name, attributes, false);
 
-            // a:solidFill
-            if let Some(v) = &self.solid_fill {
-                v.write_to(writer);
-            }
-
-            // a:ln
-            if let Some(v) = &self.outline {
-                v.write_to(writer);
-            }
-
-            // a:latin
-            if let Some(v) = &self.latin_font {
-                v.write_to_latin(writer);
-            }
-
-            // a:ea
-            if let Some(v) = &self.east_asian_font {
-                v.write_to_ea(writer);
-            }
-
-            // a:cs
-            if let Some(v) = &self.complex_script_font {
-                v.write_to_cs(writer);
-            }
-
-            // a:gradFill
-            if let Some(v) = &self.gradient_fill {
-                v.write_to(writer);
-            }
-
-            // a:noFill
-            if self.no_fill.is_some() {
-                NoFill::write_to(writer);
-            }
-
-            // a:effectLst
-            if let Some(v) = &self.effect_list {
-                v.write_to(writer);
-            }
+            // Native character-property sequence: line, fill choice, effects, fonts.
+            if let Some(v)=&self.outline {v.write_to(writer);}
+            if let Some(v)=&self.solid_fill {v.write_to(writer);}
+            if let Some(v)=&self.gradient_fill {v.write_to(writer);}
+            if self.no_fill.is_some(){NoFill::write_to(writer);}
+            if let Some(v)=&self.effect_list {v.write_to(writer);}
+            if let Some(v)=&self.latin_font {v.write_to_latin(writer);}
+            if let Some(v)=&self.east_asian_font {v.write_to_ea(writer);}
+            if let Some(v)=&self.complex_script_font {v.write_to_cs(writer);}
 
             write_end_tag(writer, tag_name);
         } else {

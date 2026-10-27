@@ -60,28 +60,34 @@ impl Layout {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
     ) {
         if empty_flag {
             return;
         }
 
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
                 if local_name(e.name().into_inner()) == b"manualLayout" {
-                    let mut obj = ManualLayout::default();
-                    obj.set_attributes(reader, e);
-                    self.set_manual_layout(obj);
+                    let mut v = ManualLayout::default();
+                    if !empty {
+                        v.set_attributes(reader, e);
+                    }
+                    self.set_manual_layout(v);
+                } else if !empty {
+                    crate::reader::driver::skip_element(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"layout" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:layout"),
+            Event::Eof => panic!("Could not find layout end element"),
         );
     }
 

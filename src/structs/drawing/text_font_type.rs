@@ -125,20 +125,16 @@ impl TextFontType {
             return;
         }
 
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
+            Event::Start(ref e) => crate::reader::driver::skip_element(reader, e),
             Event::End(ref e) => {
-                if e.name().into_inner() == b"a:latin" {
-                    return;
-                }
-                if e.name().into_inner() == b"a:cs" {
-                    return;
-                }
-                if e.name().into_inner() == b"a:ea" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:latin,a:cs,a:ea")
+            Event::Eof => panic!("Error: Could not find {} end element", "a:latin,a:cs,a:ea"),
         );
     }
 

@@ -283,63 +283,84 @@ impl ManualLayout {
             && self.width_mode.is_none()
     }
 
+    pub(crate) fn is_valid(&self) -> bool {
+        self.left.as_ref().is_none_or(Left::is_valid)
+            && self.top.as_ref().is_none_or(Top::is_valid)
+            && self.width.as_ref().is_none_or(Width::is_valid)
+            && self.height.as_ref().is_none_or(Height::is_valid)
+            && self.left_mode.as_ref().is_none_or(LeftMode::is_valid)
+            && self.top_mode.as_ref().is_none_or(TopMode::is_valid)
+            && self.width_mode.as_ref().is_none_or(WidthMode::is_valid)
+            && self.height_mode.as_ref().is_none_or(HeightMode::is_valid)
+            && self
+                .layout_target
+                .as_ref()
+                .is_none_or(LayoutTarget::is_valid)
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => match local_name(e.name().0) {
-                b"h" => {
-                    let mut obj = Height::default();
-                    obj.set_attributes(reader, e);
-                    self.set_height(obj);
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                match local_name(e.name().0) {
+                    b"h" => {
+                        let mut obj = Height::default();
+                        obj.set_attributes(reader, e);
+                        self.set_height(obj);
+                    }
+                    b"hMode" => {
+                        let mut obj = HeightMode::default();
+                        obj.set_attributes(reader, e);
+                        self.set_height_mode(obj);
+                    }
+                    b"layoutTarget" => {
+                        let mut obj = LayoutTarget::default();
+                        obj.set_attributes(reader, e);
+                        self.set_layout_target(obj);
+                    }
+                    b"x" => {
+                        let mut obj = Left::default();
+                        obj.set_attributes(reader, e);
+                        self.set_left(obj);
+                    }
+                    b"xMode" => {
+                        let mut obj = LeftMode::default();
+                        obj.set_attributes(reader, e);
+                        self.set_left_mode(obj);
+                    }
+                    b"y" => {
+                        let mut obj = Top::default();
+                        obj.set_attributes(reader, e);
+                        self.set_top(obj);
+                    }
+                    b"yMode" => {
+                        let mut obj = TopMode::default();
+                        obj.set_attributes(reader, e);
+                        self.set_top_mode(obj);
+                    }
+                    b"w" => {
+                        let mut obj = Width::default();
+                        obj.set_attributes(reader, e);
+                        self.set_width(obj);
+                    }
+                    b"wMode" => {
+                        let mut obj = WidthMode::default();
+                        obj.set_attributes(reader, e);
+                        self.set_width_mode(obj);
+                    }
+                    _ => (),
                 }
-                b"hMode" => {
-                    let mut obj = HeightMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_height_mode(obj);
+                if matches!(event, Event::Start(_)) {
+                    crate::reader::driver::skip_element(reader, e);
                 }
-                b"layoutTarget" => {
-                    let mut obj = LayoutTarget::default();
-                    obj.set_attributes(reader, e);
-                    self.set_layout_target(obj);
-                }
-                b"x" => {
-                    let mut obj = Left::default();
-                    obj.set_attributes(reader, e);
-                    self.set_left(obj);
-                }
-                b"xMode" => {
-                    let mut obj = LeftMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_left_mode(obj);
-                }
-                b"y" => {
-                    let mut obj = Top::default();
-                    obj.set_attributes(reader, e);
-                    self.set_top(obj);
-                }
-                b"yMode" => {
-                    let mut obj = TopMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_top_mode(obj);
-                }
-                b"w" => {
-                    let mut obj = Width::default();
-                    obj.set_attributes(reader, e);
-                    self.set_width(obj);
-                }
-                b"wMode" => {
-                    let mut obj = WidthMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_width_mode(obj);
-                }
-                _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"manualLayout" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },

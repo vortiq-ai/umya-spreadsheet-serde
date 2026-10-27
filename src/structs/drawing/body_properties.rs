@@ -323,21 +323,25 @@ impl BodyProperties {
             return;
         }
 
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:spAutoFit" {
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                if crate::reader::driver::local_name(e.name().into_inner()) == b"spAutoFit" {
                     let obj = ShapeAutoFit::default();
                     ShapeAutoFit::set_attributes(reader, e);
                     self.set_shape_auto_fit(obj);
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:bodyPr" {
-                     return
+                if matches!(event, Event::Start(_)) {
+                    crate::reader::driver::skip_element(reader, e);
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:bodyPr")
+            Event::End(ref e) => {
+                if e.name().into_inner() == end.as_slice() {
+                    return;
+                }
+            },
+            Event::Eof => panic!("Error: Could not find {} end element", "a:bodyPr"),
         );
     }
 

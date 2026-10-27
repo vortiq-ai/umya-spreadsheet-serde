@@ -118,35 +118,43 @@ impl Paragraph {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:pPr" => {
-                        self.paragraph_properties.set_attributes(reader, e, is_empty);
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"pPr" => {
+                        self.paragraph_properties
+                            .set_attributes(reader, e, is_empty);
                     }
-                    b"a:r" => {
+                    b"r" => {
                         let mut run = Run::default();
-                        run.set_attributes(reader, e);
+                        if !is_empty {
+                            run.set_attributes(reader, e);
+                        }
                         self.add_run(run);
                     }
-                    b"a:endParaRPr" => {
+                    b"endParaRPr" => {
                         let mut run_properties = RunProperties::default();
                         run_properties.set_attributes(reader, e, is_empty);
                         self.set_end_para_run_properties(run_properties);
                     }
-                    _ => (),
+                    _ => {
+                        if !is_empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"a:p" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:p")
+            Event::Eof => panic!("Error: Could not find {} end element", "a:p"),
         );
     }
 

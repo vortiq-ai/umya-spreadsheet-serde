@@ -153,30 +153,37 @@ impl ParagraphProperties {
             return;
         }
 
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:defRPr" => {
-                    let mut obj = RunProperties::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_default_run_properties(obj);
-                }
-                b"a:lnSpc" => {
-                    let mut obj = LineSpacing::default();
-                    obj.set_attributes(reader, e);
-                    self.set_line_spacing(obj);
-                }
-                _ => (),
+                match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"defRPr" => {
+                        let mut obj = RunProperties::default();
+                        obj.set_attributes(reader, e, is_empty);
+                        self.set_default_run_properties(obj);
+                    }
+                    b"lnSpc" => {
+                        let mut obj = LineSpacing::default();
+                        if !is_empty {
+                            obj.set_attributes(reader, e);
+                        }
+                        self.set_line_spacing(obj);
+                    }
+                    _ => {
+                        if !is_empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                if  e.name().into_inner() == b"a:pPr" {
-                    return
+                if e.name().into_inner() == end.as_slice() {
+                    return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:pPr")
+            Event::Eof => panic!("Error: Could not find {} end element", "a:pPr"),
         );
     }
 

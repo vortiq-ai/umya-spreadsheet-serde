@@ -120,36 +120,39 @@ impl RichText {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
-                b"p" => {
-                    let mut paragraph = Paragraph::default();
-                    paragraph.set_attributes(reader, e);
-                    self.add_paragraph(paragraph);
-                }
-                b"bodyPr" => {
-                    let mut body_properties = BodyProperties::default();
-                    body_properties.set_attributes(reader, e, false);
-                    self.set_body_properties(body_properties);
-                }
-                _ => (),
-            },
-            Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"bodyPr" {
-                    let mut body_properties = BodyProperties::default();
-                    body_properties.set_attributes(reader, e, true);
-                    self.set_body_properties(body_properties);
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                match local_name(e.name().into_inner()) {
+                    b"p" => {
+                        let mut v = Paragraph::default();
+                        if !empty {
+                            v.set_attributes(reader, e);
+                        }
+                        self.add_paragraph(v);
+                    }
+                    b"bodyPr" => {
+                        let mut v = BodyProperties::default();
+                        v.set_attributes(reader, e, empty);
+                        self.set_body_properties(v);
+                    }
+                    _ => {
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"rich" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:rich"),
+            Event::Eof => panic!("Could not find text body end element"),
         );
     }
 
