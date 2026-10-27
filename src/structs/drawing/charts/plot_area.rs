@@ -34,6 +34,7 @@ use super::{
     RadarChart,
     ScatterChart,
     SeriesAxis,
+    SeriesPartConflict,
     ShapeProperties,
     ValueAxis,
 };
@@ -110,6 +111,31 @@ fn order_chart_groups<T>(
 }
 
 impl PlotArea {
+    /// The stored series parts the writer leaves out because the series type
+    /// of their plot group cannot hold them.
+    ///
+    /// `group_index` counts in `chart_groups()` order. The result is empty
+    /// when everything stored is written.
+    #[must_use]
+    pub fn series_part_conflicts(&self) -> Vec<SeriesPartConflict> {
+        let mut conflicts = Vec::new();
+        for (group_index, group) in self.chart_groups().enumerate() {
+            let family = group.series_family();
+            for (series_index, series) in group.series().area_chart_series().iter().enumerate() {
+                conflicts.extend(series.part_conflicts(family).into_iter().map(
+                    |(part, occurrence, reason)| SeriesPartConflict {
+                        group_index,
+                        series_index,
+                        part,
+                        occurrence,
+                        reason,
+                    },
+                ));
+            }
+        }
+        conflicts
+    }
+
     /// Every container once, in document order, or legacy order without
     /// markers.
     #[must_use = "the iterator must be consumed to visit chart containers"]

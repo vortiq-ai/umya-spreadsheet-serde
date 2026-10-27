@@ -15,6 +15,7 @@ use super::{
     AreaChartSeriesList,
     DataLabels,
     FirstSliceAngle,
+    SeriesFamily,
     VaryColors,
 };
 use crate::{
@@ -191,7 +192,7 @@ impl PieChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Pie);
         }
 
         // c:dLbls

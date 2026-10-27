@@ -282,11 +282,11 @@ const EXPECTED_FULL_SERIES: &str = concat!(
     "<c:ser><c:idx val=\"4\"/><c:order val=\"5\"/><c:tx><c:strRef>",
     "<c:f>Sheet1!$B$1</c:f><c:strCache><c:ptCount val=\"1\"/>",
     "<c:pt idx=\"0\"><c:v>10</c:v></c:pt></c:strCache></c:strRef>",
-    "</c:tx><c:explosion val=\"5\"/><c:invertIfNegative val=\"0\"/>",
+    "</c:tx><c:spPr><a:ln w=\"28575\"><a:solidFill>",
+    "<a:srgbClr val=\"4472c4\"/></a:solidFill></a:ln></c:spPr>",
     "<c:marker><c:symbol val=\"diamond\"/><c:size val=\"7\"/><c:spPr>",
     "<a:solidFill><a:srgbClr val=\"ed7d31\"/></a:solidFill></c:spPr>",
-    "</c:marker><c:spPr><a:ln w=\"28575\"><a:solidFill>",
-    "<a:srgbClr val=\"4472c4\"/></a:solidFill></a:ln></c:spPr><c:dLbls>",
+    "</c:marker><c:dLbls>",
     "<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr>",
     "<a:defRPr sz=\"1000\"/></a:pPr><a:endParaRPr lang=\"en-US\"/></a:p>",
     "</c:txPr><c:showLegendKey val=\"0\"/><c:showVal val=\"1\"/>",
@@ -300,7 +300,7 @@ const EXPECTED_FULL_SERIES: &str = concat!(
     "</c:formatCode><c:ptCount val=\"3\"/><c:pt idx=\"0\"><c:v>10</c:v>",
     "</c:pt><c:pt idx=\"1\"><c:v>20</c:v></c:pt><c:pt idx=\"2\">",
     "<c:v>30</c:v></c:pt></c:numCache></c:numRef></c:val>",
-    "<c:bubble3D val=\"0\"/><c:smooth val=\"1\"/></c:ser>",
+    "<c:smooth val=\"1\"/></c:ser>",
 );
 
 #[test]

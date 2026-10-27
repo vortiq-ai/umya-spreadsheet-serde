@@ -194,14 +194,14 @@ impl ParagraphProperties {
         write_start_tag(writer, "a:pPr", attributes, empty_flag);
 
         if !empty_flag {
-            // a:defRPr
-            if let Some(v) = &self.default_run_properties {
-                v.write_to_def_rpr(writer);
-            }
-
             // a:lnSpc
             if let Some(v) = &self.line_spacing {
                 v.write_to(writer);
+            }
+
+            // a:defRPr
+            if let Some(v) = &self.default_run_properties {
+                v.write_to_def_rpr(writer);
             }
 
             write_end_tag(writer, "a:pPr");

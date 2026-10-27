@@ -79,7 +79,32 @@ fn group(kind: ChartType, index: u32) -> ChartGroup {
         .number_reference_mut()
         .formula_mut()
         .set_address_str(format!("Sheet1!$B${}:$B${}", index + 2, index + 3));
-    series.set_values(values);
+    match kind {
+        ChartType::ScatterChart => {
+            let reference = values.number_reference().clone();
+            let mut x_values = charts::XValues::default();
+            x_values.set_number_reference(reference.clone());
+            let mut y_values = charts::YValues::default();
+            y_values.set_number_reference(reference);
+            series.set_x_values(x_values);
+            series.set_y_values(y_values);
+        }
+        ChartType::BubbleChart => {
+            let reference = values.number_reference().clone();
+            let mut x_values = charts::XValues::default();
+            x_values.set_number_reference(reference.clone());
+            let mut y_values = charts::YValues::default();
+            y_values.set_number_reference(reference.clone());
+            let mut bubble_size = charts::BubbleSize::default();
+            bubble_size.set_number_reference(reference);
+            series.set_x_values(x_values);
+            series.set_y_values(y_values);
+            series.set_bubble_size(bubble_size);
+        }
+        _ => {
+            series.set_values(values);
+        }
+    }
     macro_rules! container {
         ($family:ident) => {{
             let mut chart = charts::$family::default();
@@ -272,8 +297,10 @@ fn native_signature(plot: &PlotArea) -> Vec<Value> {
 }
 
 fn assert_xml_round_trip(plot: &PlotArea) -> PlotArea {
+    assert_eq!(plot.series_part_conflicts(), vec![]);
     let bytes = chart_bytes(plot);
     let restored = read_plot(&bytes);
+    assert_eq!(restored.series_part_conflicts(), vec![]);
     assert_canonical(&restored);
     assert_eq!(native_signature(&restored), native_signature(plot));
     assert_eq!(chart_xml(&chart_bytes(&restored)), chart_xml(&bytes));
@@ -488,7 +515,8 @@ fn structural_adjustment_moves_formulas_in_every_container() {
         plot.add_chart_group(group(kind, 0));
     }
     plot.add_chart_group(group(ChartType::LineChart, 0));
-    assert_eq!(plot.formula_mut().len(), 14);
+    assert_eq!(plot.series_part_conflicts(), vec![]);
+    assert_eq!(plot.formula_mut().len(), 17);
     plot = insert_row(&plot);
     for formula in plot.formula_mut() {
         assert_eq!(formula.address_str(), "Sheet1!$B$3:$B$4");

@@ -21,6 +21,9 @@ use super::{
     InvertIfNegative,
     Marker,
     Order,
+    SeriesFamily,
+    SeriesPartConflictReason,
+    SeriesPartKind,
     ShapeProperties,
     Smooth,
     Values,
@@ -581,7 +584,75 @@ impl AreaChartSeries {
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    fn has_part(&self, part: SeriesPartKind) -> bool {
+        match part {
+            SeriesPartKind::Explosion => self.explosion.is_some(),
+            SeriesPartKind::InvertIfNegative => self.invert_if_negative.is_some(),
+            SeriesPartKind::Marker => self.marker.is_some(),
+            SeriesPartKind::Categories => self.category_axis_data.is_some(),
+            SeriesPartKind::Values => self.values.is_some(),
+            SeriesPartKind::XValues => self.x_values.is_some(),
+            SeriesPartKind::YValues => self.y_values.is_some(),
+            SeriesPartKind::BubbleSize => self.bubble_size.is_some(),
+            SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
+            SeriesPartKind::Smooth => self.smooth.is_some(),
+        }
+    }
+
+    fn clear_part(&mut self, part: SeriesPartKind) {
+        match part {
+            SeriesPartKind::Explosion => self.explosion = None,
+            SeriesPartKind::InvertIfNegative => self.invert_if_negative = None,
+            SeriesPartKind::Marker => self.marker = None,
+            SeriesPartKind::Categories => self.category_axis_data = None,
+            SeriesPartKind::Values => self.values = None,
+            SeriesPartKind::XValues => self.x_values = None,
+            SeriesPartKind::YValues => self.y_values = None,
+            SeriesPartKind::BubbleSize => self.bubble_size = None,
+            SeriesPartKind::Bubble3D => self.bubble_3d = None,
+            SeriesPartKind::Smooth => self.smooth = None,
+        }
+    }
+
+    /// The stored parts `family`'s series type cannot hold, as (kind,
+    /// occurrence, reason). Every modeled part is stored at most once.
+    pub(crate) fn part_conflicts(
+        &self,
+        family: SeriesFamily,
+    ) -> Vec<(SeriesPartKind, usize, SeriesPartConflictReason)> {
+        SeriesPartKind::ALL
+            .into_iter()
+            .filter(|part| self.has_part(*part) && !family.allows(*part))
+            .map(|part| (part, 0, SeriesPartConflictReason::NotAllowed))
+            .collect()
+    }
+
+    /// Removes the parts `family`'s series type cannot hold and returns them
+    /// as (kind, occurrence). Everything else, including the index, order,
+    /// name, formatting, data labels and data references, stays.
+    pub(crate) fn remove_parts_not_allowed_in(
+        &mut self,
+        family: SeriesFamily,
+    ) -> Vec<(SeriesPartKind, usize)> {
+        let removed: Vec<_> = self
+            .part_conflicts(family)
+            .into_iter()
+            .map(|(part, occurrence, _)| (part, occurrence))
+            .collect();
+        for (part, _) in &removed {
+            self.clear_part(*part);
+        }
+        removed
+    }
+
+    /// Writes the series as `family`'s series type: only children that type
+    /// has, in its schema order.
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        family: SeriesFamily,
+    ) {
         // c:ser
         write_start_tag(writer, "c:ser", vec![], false);
 
@@ -596,23 +667,35 @@ impl AreaChartSeries {
             v.write_to(writer, wb);
         }
 
+        // c:spPr
+        if let Some(v) = &self.shape_properties {
+            v.write_to(writer);
+        }
+
         // c:explosion
-        if let Some(v) = &self.explosion {
+        if let Some(v) = self
+            .explosion
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Explosion))
+        {
             v.write_to(writer);
         }
 
         // c:invertIfNegative
-        if let Some(v) = &self.invert_if_negative {
+        if let Some(v) = self
+            .invert_if_negative
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::InvertIfNegative))
+        {
             v.write_to(writer);
         }
 
         // c:marker
-        if let Some(v) = &self.marker {
-            v.write_to(writer);
-        }
-
-        // c:spPr
-        if let Some(v) = &self.shape_properties {
+        if let Some(v) = self
+            .marker
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Marker))
+        {
             v.write_to(writer);
         }
 
@@ -622,37 +705,65 @@ impl AreaChartSeries {
         }
 
         // c:cat
-        if let Some(v) = &self.category_axis_data {
+        if let Some(v) = self
+            .category_axis_data
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Categories))
+        {
             v.write_to(writer, wb);
         }
 
         // c:val
-        if let Some(v) = &self.values {
+        if let Some(v) = self
+            .values
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Values))
+        {
             v.write_to(writer, wb);
         }
 
         // c:xVal
-        if let Some(v) = &self.x_values {
+        if let Some(v) = self
+            .x_values
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::XValues))
+        {
             v.write_to(writer, wb);
         }
 
         // c:yVal
-        if let Some(v) = &self.y_values {
+        if let Some(v) = self
+            .y_values
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::YValues))
+        {
             v.write_to(writer, wb);
         }
 
         // c:bubbleSize
-        if let Some(v) = &self.bubble_size {
+        if let Some(v) = self
+            .bubble_size
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::BubbleSize))
+        {
             v.write_to(writer, wb);
         }
 
         // c:bubble3D
-        if let Some(v) = &self.bubble_3d {
+        if let Some(v) = self
+            .bubble_3d
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Bubble3D))
+        {
             v.write_to(writer);
         }
 
         // c:smooth
-        if let Some(v) = &self.smooth {
+        if let Some(v) = self
+            .smooth
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Smooth))
+        {
             v.write_to(writer);
         }
 

@@ -3016,30 +3016,51 @@ fn every_reference_location_is_reduced_stripped_and_adopted() {
     chart
         .area_chart_series_list_mut()
         .set_area_chart_series(vec![series.clone()]);
+    let mut common_series = native::AreaChartSeries::default();
+    common_series.set_index(series.index().clone());
+    common_series.set_order(series.order().clone());
+    common_series.set_chart_text(series.chart_text().unwrap().clone());
+    common_series.set_category_axis_data(series.category_axis_data().unwrap().clone());
+    common_series.set_values(series.values().unwrap().clone());
+    let value_reference = series.values().unwrap().number_reference().clone();
+    let mut scatter_series = native::AreaChartSeries::default();
+    scatter_series.set_index(series.index().clone());
+    scatter_series.set_order(series.order().clone());
+    scatter_series.set_chart_text(series.chart_text().unwrap().clone());
+    let mut scatter_x = native::XValues::default();
+    scatter_x.set_number_reference(value_reference.clone());
+    let mut scatter_y = native::YValues::default();
+    scatter_y.set_number_reference(value_reference.clone());
+    scatter_series.set_x_values(scatter_x);
+    scatter_series.set_y_values(scatter_y);
+    let mut bubble_series = scatter_series.clone();
+    let mut bubble_size = native::BubbleSize::default();
+    bubble_size.set_number_reference(value_reference);
+    bubble_series.set_bubble_size(bubble_size);
     macro_rules! group {
-        ($kind:ident) => {{
+        ($kind:ident, $series:expr) => {{
             let mut group = native::$kind::default();
             group
                 .area_chart_series_list_mut()
-                .add_area_chart_series(series.clone());
+                .add_area_chart_series($series);
             native::ChartGroup::$kind(group)
         }};
     }
     let plot = chart.chart_space_mut().chart_mut().plot_area_mut();
     for group in [
-        group!(Line3DChart),
-        group!(PieChart),
-        group!(Pie3DChart),
-        group!(DoughnutChart),
-        group!(ScatterChart),
-        group!(BarChart),
-        group!(Bar3DChart),
-        group!(RadarChart),
-        group!(BubbleChart),
-        group!(AreaChart),
-        group!(Area3DChart),
-        group!(OfPieChart),
-        group!(LineChart),
+        group!(Line3DChart, common_series.clone()),
+        group!(PieChart, common_series.clone()),
+        group!(Pie3DChart, common_series.clone()),
+        group!(DoughnutChart, common_series.clone()),
+        group!(ScatterChart, scatter_series),
+        group!(BarChart, common_series.clone()),
+        group!(Bar3DChart, common_series.clone()),
+        group!(RadarChart, common_series.clone()),
+        group!(BubbleChart, bubble_series),
+        group!(AreaChart, common_series.clone()),
+        group!(Area3DChart, common_series.clone()),
+        group!(OfPieChart, common_series.clone()),
+        group!(LineChart, common_series.clone()),
     ] {
         plot.add_chart_group(group);
     }
@@ -3081,7 +3102,7 @@ fn every_reference_location_is_reduced_stripped_and_adopted() {
     let original = serde_json::to_value(&chart).unwrap();
     let mut sources = Vec::new();
     find_sources(&original, &mut sources);
-    assert_eq!(sources.len(), 33); // title + 14 groups * 2 + four axis titles
+    assert_eq!(sources.len(), 31); // title + 12 categories + 14 series titles + four axis titles
     let mut stripped = chart.clone();
     stripped.strip_source_caches();
     let mut found = Vec::new();
@@ -3110,13 +3131,21 @@ fn every_reference_location_is_reduced_stripped_and_adopted() {
     assert_eq!(serde_json::to_value(&stripped).unwrap(), expected);
     stripped.adopt_source_caches(&chart);
     assert_eq!(serde_json::to_value(&stripped).unwrap(), original);
+    assert_eq!(
+        chart
+            .chart_space()
+            .chart()
+            .plot_area()
+            .series_part_conflicts(),
+        vec![]
+    );
 
     // Serialize the complete synthetic chart through XLSX so capture, rather
     // than just the boundary traversal, visits titles and every plot group.
     let mut book = number_workbook(1, 12);
     book.sheet_mut(0).unwrap().add_chart(chart);
     let mut imported = read_book(&write(&book));
-    assert_eq!(imported.chart_source_cache_report().kept_caches, 33);
+    assert_eq!(imported.chart_source_cache_report().kept_caches, 31);
     reconcile_admission(&imported);
     imported.sheet_mut(0).unwrap().chart_collection_mut()[0].strip_source_caches();
     assert!(stored_caches(&imported).is_empty());

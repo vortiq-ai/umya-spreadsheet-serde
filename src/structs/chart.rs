@@ -40,6 +40,8 @@ use crate::{
                 RotateX,
                 RotateY,
                 ScatterChart,
+                SeriesAxis,
+                SeriesFamily,
                 ShapeValues,
                 ShowLeaderLines,
                 Smooth,
@@ -480,7 +482,10 @@ impl Chart {
     }
 
     #[inline]
-    fn convert_series(area_chart_series_list: &[&str], smooth: bool) -> AreaChartSeriesList {
+    fn convert_series(
+        area_chart_series_list: &[&str],
+        family: SeriesFamily,
+    ) -> AreaChartSeriesList {
         let mut acsl_obj = AreaChartSeriesList::default();
         area_chart_series_list
             .iter()
@@ -501,12 +506,16 @@ impl Chart {
                 acs_object.index_mut().set_val(u32::try_from(idx).unwrap());
                 acs_object.order_mut().set_val(u32::try_from(idx).unwrap());
                 acs_object.set_values(values);
-                if smooth {
-                    acs_object.set_smooth(Smooth::default());
-                } else {
-                    let mut invert_if_negative = InvertIfNegative::default();
-                    invert_if_negative.set_val(0f64);
-                    acs_object.set_invert_if_negative(invert_if_negative);
+                match family {
+                    SeriesFamily::Line => {
+                        acs_object.set_smooth(Smooth::default());
+                    }
+                    SeriesFamily::Bar => {
+                        let mut invert_if_negative = InvertIfNegative::default();
+                        invert_if_negative.set_val(0f64);
+                        acs_object.set_invert_if_negative(invert_if_negative);
+                    }
+                    _ => (),
                 }
                 acsl_obj.add_area_chart_series(acs_object);
             });
@@ -514,7 +523,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_line_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Line);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -659,13 +668,16 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Line);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
 
         let mut axis_id2 = AxisId::default();
         axis_id2.set_val(169_590_080);
+
+        let mut axis_id3 = AxisId::default();
+        axis_id3.set_val(110_000_000);
 
         let mut line_3d_chart = Line3DChart::default();
         line_3d_chart
@@ -674,6 +686,7 @@ impl Chart {
         line_3d_chart.set_area_chart_series_list(acsl_obj);
         line_3d_chart.add_axis_id(axis_id1);
         line_3d_chart.add_axis_id(axis_id2);
+        line_3d_chart.add_axis_id(axis_id3);
 
         let mut category_axis = CategoryAxis::default();
         category_axis.axis_id_mut().set_val(213_468_160);
@@ -719,6 +732,26 @@ impl Chart {
             .set_val(TickLabelPositionValues::NextTo);
         value_axis.tick_crossing_axis_mut().set_val(213_468_160);
 
+        let mut series_axis = SeriesAxis::default();
+        series_axis.axis_id_mut().set_val(110_000_000);
+        series_axis
+            .scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        series_axis
+            .axis_position_mut()
+            .set_val(AxisPositionValues::Right);
+        series_axis
+            .major_tick_mark_mut()
+            .set_val(TickMarkValues::None);
+        series_axis
+            .minor_tick_mark_mut()
+            .set_val(TickMarkValues::None);
+        series_axis
+            .tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        series_axis.tick_crossing_axis_mut().set_val(169_590_080);
+
         let layout = Layout::default();
         let mut style = Style::default();
         style.set_val('2');
@@ -762,6 +795,13 @@ impl Chart {
             .graphic_data_mut()
             .chart_space_mut()
             .chart_mut()
+            .plot_area_mut()
+            .add_series_axis(series_axis);
+        graphic_frame
+            .graphic_mut()
+            .graphic_data_mut()
+            .chart_space_mut()
+            .chart_mut()
             .legend_mut()
             .legend_position_mut()
             .set_val(LegendPositionValues::Right);
@@ -800,7 +840,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_pie_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Pie);
 
         let mut show_leader_lines = ShowLeaderLines::default();
         show_leader_lines.set_val(true);
@@ -904,7 +944,7 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Pie);
 
         let mut show_leader_lines = ShowLeaderLines::default();
         show_leader_lines.set_val(true);
@@ -1114,7 +1154,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_area_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Area);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1253,7 +1293,7 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Area);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1389,7 +1429,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_bar_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, false);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Bar);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1533,7 +1573,7 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, false);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Bar);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1672,7 +1712,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_of_pie_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, false);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Pie);
 
         let mut show_leader_lines = ShowLeaderLines::default();
         show_leader_lines.set_val(true);
@@ -1680,6 +1720,7 @@ impl Chart {
         let mut of_pie_chart = OfPieChart::default();
         of_pie_chart.of_pie_type_mut().set_val(OfPieValues::Bar);
         of_pie_chart.vary_colors_mut().set_val(true);
+        of_pie_chart.second_pie_size_mut().set_val(75);
         of_pie_chart.set_area_chart_series_list(acsl_obj);
         of_pie_chart
             .data_labels_mut()
@@ -1983,7 +2024,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_radar_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Radar);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -2147,12 +2188,8 @@ impl Chart {
                     .set_text("General");
                 acs_object.set_y_values(y_values);
 
-                let mut invert_if_negative = InvertIfNegative::default();
-                invert_if_negative.set_val(0f64);
-
                 acs_object.index_mut().set_val(idx);
                 acs_object.order_mut().set_val(idx);
-                acs_object.set_invert_if_negative(invert_if_negative);
                 acsl_obj.add_area_chart_series(acs_object);
 
                 acs_object = AreaChartSeries::default();

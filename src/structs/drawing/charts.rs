@@ -13,6 +13,9 @@ pub use self::plot_area::*;
 mod chart_group;
 pub use self::chart_group::*;
 
+mod series_family;
+pub use self::series_family::*;
+
 mod title;
 pub use self::title::*;
 

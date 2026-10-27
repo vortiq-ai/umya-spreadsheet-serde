@@ -17,6 +17,7 @@ use super::{
     GapWidth,
     OfPieType,
     SecondPieSize,
+    SeriesFamily,
     SeriesLines,
     VaryColors,
 };
@@ -284,7 +285,7 @@ impl OfPieChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Pie);
         }
 
         // c:dLbls

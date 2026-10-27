@@ -351,8 +351,8 @@ impl ManualLayout {
         // c:manualLayout
         write_start_tag(writer, "c:manualLayout", vec![], false);
 
-        // c:hMode
-        if let Some(v) = &self.height_mode {
+        // c:layoutTarget
+        if let Some(v) = &self.layout_target {
             v.write_to(writer);
         }
 
@@ -371,8 +371,8 @@ impl ManualLayout {
             v.write_to(writer);
         }
 
-        // c:h
-        if let Some(v) = &self.height {
+        // c:hMode
+        if let Some(v) = &self.height_mode {
             v.write_to(writer);
         }
 
@@ -391,8 +391,8 @@ impl ManualLayout {
             v.write_to(writer);
         }
 
-        // c:layoutTarget
-        if let Some(v) = &self.layout_target {
+        // c:h
+        if let Some(v) = &self.height {
             v.write_to(writer);
         }
 

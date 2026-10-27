@@ -18,6 +18,7 @@ use super::{
     PieChart,
     RadarChart,
     ScatterChart,
+    SeriesFamily,
 };
 use crate::{
     ChartType,
@@ -146,6 +147,12 @@ impl<'a> ChartGroupRef<'a> {
             Self::Area3DChart(_) => ChartType::Area3DChart,
             Self::OfPieChart(_) => ChartType::OfPieChart,
         }
+    }
+
+    /// The series type this group writes its series as.
+    #[must_use]
+    pub fn series_family(self) -> SeriesFamily {
+        SeriesFamily::from(self.kind())
     }
 
     #[must_use]

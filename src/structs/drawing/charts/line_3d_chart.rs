@@ -16,6 +16,7 @@ use super::{
     AxisId,
     DataLabels,
     Grouping,
+    SeriesFamily,
     VaryColors,
 };
 use crate::{
@@ -231,7 +232,7 @@ impl Line3DChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Line);
         }
 
         // c:dLbls
