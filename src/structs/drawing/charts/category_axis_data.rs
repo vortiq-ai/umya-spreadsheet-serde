@@ -39,22 +39,39 @@ pub struct CategoryAxisData {
 }
 
 impl CategoryAxisData {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(value) = &mut self.string_reference {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.number_reference {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.multi_level_string_reference {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.string_literal {
-            result.extend(value.formulas_mut());
-        }
-        result
+    // Disjoint stored children; preserves absent/invalid source states.
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
+        Option<&StringReference>,
+        Option<&NumberReference>,
+        Option<&MultiLevelStringReference>,
+        Option<&StringLiteral>,
+    ) {
+        (
+            self.string_reference.as_ref(),
+            self.number_reference.as_ref(),
+            self.multi_level_string_reference.as_ref(),
+            self.string_literal.as_ref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut StringReference>,
+        Option<&mut NumberReference>,
+        Option<&mut MultiLevelStringReference>,
+        Option<&mut StringLiteral>,
+    ) {
+        (
+            self.string_reference.as_mut(),
+            self.number_reference.as_mut(),
+            self.multi_level_string_reference.as_mut(),
+            self.string_literal.as_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn multi_level_string_reference(&self) -> Option<&MultiLevelStringReference> {

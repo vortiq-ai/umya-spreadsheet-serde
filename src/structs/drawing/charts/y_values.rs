@@ -24,11 +24,6 @@ pub struct YValues {
 }
 
 impl YValues {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        result.extend(self.number_reference.formulas_mut());
-        result
-    }
 
     #[must_use]
     pub fn number_reference(&self) -> &NumberReference {

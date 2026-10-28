@@ -59,11 +59,6 @@ impl SeriesDataLabelsRange {
         &mut self.reference
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        result.extend(self.reference.formulas_mut());
-        result
-    }
 
     #[must_use]
     pub fn reference(&self) -> &StringReference {
@@ -169,11 +164,6 @@ impl DataLabelFieldEntry {
         &mut self.reference
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        result.extend(self.reference.formulas_mut());
-        result
-    }
 
     #[must_use]
     pub fn field_guid(&self) -> &str {
@@ -296,13 +286,6 @@ pub struct DataLabelFieldTable {
     invalid: bool,
 }
 impl DataLabelFieldTable {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        for entry in &mut self.entries {
-            result.extend(entry.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn entries(&self) -> &[DataLabelFieldEntry] {

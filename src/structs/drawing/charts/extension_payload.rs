@@ -209,34 +209,6 @@ impl ExtensionPayload {
         }
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        match &mut self.value {
-            ExtensionPayloadValue::InvertSolidFill(v) => {
-                if let Some(s) = v.shape_properties_mut() {
-                    result.extend(s.formulas_mut());
-                }
-            }
-            ExtensionPayloadValue::DataLabelsRange(v) => result.extend(v.formulas_mut()),
-            ExtensionPayloadValue::FieldTable(v) => result.extend(v.formulas_mut()),
-            ExtensionPayloadValue::FilteredSeriesTitle(v) | ExtensionPayloadValue::LabelText(v) => {
-                result.extend(v.formulas_mut());
-            }
-            ExtensionPayloadValue::FilteredCategoryTitle(v) => result.extend(v.formulas_mut()),
-            ExtensionPayloadValue::FullReference(v)
-            | ExtensionPayloadValue::LevelReference(v)
-            | ExtensionPayloadValue::FormulaReference(v) => {
-                result.extend(v.references_mut().iter_mut());
-            }
-            ExtensionPayloadValue::CategoryFilterExceptions(v) => result.extend(v.formulas_mut()),
-            ExtensionPayloadValue::FilteredSeries(v) => result.extend(v.series.formula_mut()),
-            ExtensionPayloadValue::LabelLayout(v) => result.extend(v.formulas_mut()),
-            ExtensionPayloadValue::LabelShape(v) => result.extend(v.formulas_mut()),
-            ExtensionPayloadValue::LeaderLines(v) => result.extend(v.formulas_mut()),
-            _ => (),
-        }
-        result
-    }
 
     /// The caller has already checked the registration or the defined nested
     /// reference grammar. Namespace resolution never guesses from prefix text.

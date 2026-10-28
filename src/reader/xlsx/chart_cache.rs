@@ -52,6 +52,8 @@ use crate::{
             read_point_borrowed,
             visit_deferred_indices,
             visit_string_references,
+            visit_string_references_in_phase,
+            chart_reference_roles::ReferenceCachePhase,
         },
     },
 };
@@ -1620,154 +1622,173 @@ pub(crate) fn capture_chart_source_caches(
     }
 
     let mut report = *book.chart_source_cache_report();
-    for index in fresh {
-        // Move only the drawing while resolving cells through the workbook's
-        // indexed storage; the part slots retain references into that storage.
-        let mut drawing =
-            std::mem::take(book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut());
-        let mut slots = RangeSlots::default();
-        let read_book: &Workbook = book;
-        visit_drawing(&mut drawing, &mut |reference| {
-            let request = Request::new(reference, &names);
-            #[cfg(test)]
-            if session.drop_next_capture_descriptor.replace(false) {
-                if let Some(key) = reference.string_cache().source_key() {
-                    session.descriptors.borrow_mut().remove(&key);
-                }
-            }
-            #[cfg(test)]
-            session
-                .capture_formulas
-                .borrow_mut()
-                .push(reference.formula().address_str());
-            let source = session.take_for_capture(reference);
-            let Some(source) = source else {
-                return;
-            };
-            let earlier = request
-                .sheet
-                .is_some_and(|index| classes[index] & (RAW_SHEET | FRESH_SHEET) == 0);
-            if earlier {
-                report.reduced_caches += 1;
-                report.dropped_caches += 1;
-                return;
-            }
-            let retain_shape = request
-                .sheet
-                .is_some_and(|index| classes[index] & RAW_SHEET != 0);
-            let slot = match &source {
-                CapturedSource::Deferred(source) => {
-                    slots.cover_source(source, &request, read_book, &classes, &streamed)
-                }
-                CapturedSource::Parsed(_) => None,
-            };
-            let mut resolver = request.resolve(read_book, &classes, &streamed);
-            let remaining_points = MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points);
-            let remaining_text = MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes);
-            let reduced = match source {
-                CapturedSource::Parsed(source) => {
-                    match source.reduce_borrowed(
-                        request.expected_points(),
-                        retain_shape,
-                        |point, scratch| {
-                            slots.display(slot, &mut resolver, point, scratch, &mut formats)
-                        },
-                    ) {
-                        Some(cache) => {
-                            let points = cache.stored_points();
-                            let text_bytes = cache.stored_text_bytes();
-                            DeferredReduction::Candidate {
-                                source: (points <= remaining_points
-                                    && text_bytes <= remaining_text)
-                                    .then_some(cache),
-                                points,
-                                text_bytes,
-                                #[cfg(test)]
-                                rejection_backing: RejectionBacking::default(),
-                            }
-                        }
-                        None => DeferredReduction::Reduced,
+    let mut has_deferred = false;
+    for phase in [ReferenceCachePhase::Legacy, ReferenceCachePhase::Deferred] {
+        if phase == ReferenceCachePhase::Deferred && !has_deferred {
+            break;
+        }
+        for index in fresh {
+            // Move only the drawing while resolving cells through the
+            // workbook's indexed storage; the part slots retain
+            // references into that storage.
+            let mut drawing = std::mem::take(
+                book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut(),
+            );
+            let mut slots = RangeSlots::default();
+            let read_book: &Workbook = book;
+            has_deferred |= visit_drawing_in_phase(&mut drawing, phase, &mut |reference| {
+                let request = Request::new(reference, &names);
+                #[cfg(test)]
+                if session.drop_next_capture_descriptor.replace(false) {
+                    if let Some(key) = reference.string_cache().source_key() {
+                        session.descriptors.borrow_mut().remove(&key);
                     }
                 }
-                CapturedSource::Deferred(mut source) => {
-                    let Some(target) = session.part_target(source.part) else {
-                        debug_assert!(false, "invalid deferred chart cache span");
-                        return;
-                    };
-                    let mut reduced = None;
-                    let class = (
-                        request.sheet,
-                        request.sheet.map_or(0, |index| classes[index]),
-                        resolver.classification(),
-                    );
-                    let budget = ReplayBudget {
-                        expected_points: request.expected_points(),
-                        retain_shape,
-                        points: remaining_points,
-                        text: remaining_text,
-                    };
-                    provider.with_memoized_part(&target, session, &mut |part, memo| {
-                        if let Some(part) = part {
-                            reduced = replay_with_memo(
-                                part,
-                                memo,
-                                &mut source,
-                                &budget,
-                                class,
-                                |point, scratch| {
-                                    slots.display(slot, &mut resolver, point, scratch, &mut formats)
-                                },
-                            );
-                        }
-                    });
-                    let Some(reduced) = reduced else {
-                        return;
-                    };
-                    #[cfg(test)]
-                    {
-                        *session.rejection_backing.borrow_mut() = reduced.rejection_backing();
-                    }
-                    reduced
-                }
-            };
-            match reduced {
-                DeferredReduction::Reduced => {
+                #[cfg(test)]
+                session
+                    .capture_formulas
+                    .borrow_mut()
+                    .push(reference.formula().address_str());
+                let source = session.take_for_capture(reference);
+                let Some(source) = source else {
+                    return;
+                };
+                let earlier = request
+                    .sheet
+                    .is_some_and(|index| classes[index] & (RAW_SHEET | FRESH_SHEET) == 0);
+                if earlier {
                     report.reduced_caches += 1;
                     report.dropped_caches += 1;
+                    return;
                 }
-                DeferredReduction::Candidate {
-                    source: Some(cache),
-                    points,
-                    text_bytes,
-                    ..
-                } => {
-                    report.kept_caches += 1;
-                    report.kept_points += points;
-                    report.kept_text_bytes += text_bytes;
-                    session.replace(reference, cache);
+                let retain_shape = request
+                    .sheet
+                    .is_some_and(|index| classes[index] & RAW_SHEET != 0);
+                let slot = match &source {
+                    CapturedSource::Deferred(source) => {
+                        slots.cover_source(source, &request, read_book, &classes, &streamed)
+                    }
+                    CapturedSource::Parsed(_) => None,
+                };
+                let mut resolver = request.resolve(read_book, &classes, &streamed);
+                let remaining_points = MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points);
+                let remaining_text =
+                    MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes);
+                let reduced = match source {
+                    CapturedSource::Parsed(source) => {
+                        match source.reduce_borrowed(
+                            request.expected_points(),
+                            retain_shape,
+                            |point, scratch| {
+                                slots.display(slot, &mut resolver, point, scratch, &mut formats)
+                            },
+                        ) {
+                            Some(cache) => {
+                                let points = cache.stored_points();
+                                let text_bytes = cache.stored_text_bytes();
+                                DeferredReduction::Candidate {
+                                    source: (points <= remaining_points
+                                        && text_bytes <= remaining_text)
+                                        .then_some(cache),
+                                    points,
+                                    text_bytes,
+                                    #[cfg(test)]
+                                    rejection_backing: RejectionBacking::default(),
+                                }
+                            }
+                            None => DeferredReduction::Reduced,
+                        }
+                    }
+                    CapturedSource::Deferred(mut source) => {
+                        let Some(target) = session.part_target(source.part) else {
+                            debug_assert!(false, "invalid deferred chart cache span");
+                            return;
+                        };
+                        let mut reduced = None;
+                        let class = (
+                            request.sheet,
+                            request.sheet.map_or(0, |index| classes[index]),
+                            resolver.classification(),
+                        );
+                        let budget = ReplayBudget {
+                            expected_points: request.expected_points(),
+                            retain_shape,
+                            points: remaining_points,
+                            text: remaining_text,
+                        };
+                        provider.with_memoized_part(&target, session, &mut |part, memo| {
+                            if let Some(part) = part {
+                                reduced = replay_with_memo(
+                                    part,
+                                    memo,
+                                    &mut source,
+                                    &budget,
+                                    class,
+                                    |point, scratch| {
+                                        slots.display(
+                                            slot,
+                                            &mut resolver,
+                                            point,
+                                            scratch,
+                                            &mut formats,
+                                        )
+                                    },
+                                );
+                            }
+                        });
+                        let Some(reduced) = reduced else {
+                            return;
+                        };
+                        #[cfg(test)]
+                        {
+                            *session.rejection_backing.borrow_mut() = reduced.rejection_backing();
+                        }
+                        reduced
+                    }
+                };
+                match reduced {
+                    DeferredReduction::Reduced => {
+                        report.reduced_caches += 1;
+                        report.dropped_caches += 1;
+                    }
+                    DeferredReduction::Candidate {
+                        source: Some(cache),
+                        points,
+                        text_bytes,
+                        ..
+                    } => {
+                        report.kept_caches += 1;
+                        report.kept_points += points;
+                        report.kept_text_bytes += text_bytes;
+                        session.replace(reference, cache);
+                    }
+                    DeferredReduction::Candidate {
+                        source: None,
+                        points,
+                        text_bytes,
+                        ..
+                    } => {
+                        report.dropped_caches += 1;
+                        report.over_cap_caches += 1;
+                        report.over_cap_points = report.over_cap_points.saturating_add(points);
+                        report.over_cap_text_bytes =
+                            report.over_cap_text_bytes.saturating_add(text_bytes);
+                    }
                 }
-                DeferredReduction::Candidate {
-                    source: None,
-                    points,
-                    text_bytes,
-                    ..
-                } => {
-                    report.dropped_caches += 1;
-                    report.over_cap_caches += 1;
-                    report.over_cap_points = report.over_cap_points.saturating_add(points);
-                    report.over_cap_text_bytes =
-                        report.over_cap_text_bytes.saturating_add(text_bytes);
-                }
-            }
-        });
-        drop(slots);
-        #[cfg(debug_assertions)]
-        {
-            let worksheet = &mut book.sheet_collection_unchecked_mut()[*index];
-            audit_surviving_sources(&mut drawing, worksheet.ole_objects_mut());
+            });
+            drop(slots);
+            *book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut() = drawing;
+            provider.finish_sheet(session);
         }
-        *book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut() = drawing;
-        provider.finish_sheet(session);
+    }
+    // Deferred descriptors remain guarded between phases. Audit the complete
+    // cohort only after every matching cache callback has executed once.
+    #[cfg(debug_assertions)]
+    for index in fresh {
+        let worksheet = &mut book.sheet_collection_unchecked_mut()[*index];
+        let mut drawing = std::mem::take(worksheet.worksheet_drawing_mut());
+        audit_surviving_sources(&mut drawing, worksheet.ole_objects_mut());
+        *worksheet.worksheet_drawing_mut() = drawing;
     }
     *book.chart_source_cache_report_mut() = report;
 }
@@ -1778,25 +1799,43 @@ fn visit_drawing(
     drawing: &mut crate::drawing::spreadsheet::WorksheetDrawing,
     visit: &mut dyn FnMut(&mut StringReference),
 ) {
+    if visit_drawing_in_phase(drawing, ReferenceCachePhase::Legacy, visit) {
+        visit_drawing_in_phase(drawing, ReferenceCachePhase::Deferred, visit);
+    }
+}
+
+fn visit_drawing_in_phase(
+    drawing: &mut crate::drawing::spreadsheet::WorksheetDrawing,
+    phase: ReferenceCachePhase,
+    visit: &mut dyn FnMut(&mut StringReference),
+) -> bool {
+    let mut deferred = false;
     for chart in drawing.chart_collection_mut() {
-        visit_string_references(chart.chart_space_mut(), &mut |_, reference| {
-            visit(reference);
-        });
+        deferred |= visit_string_references_in_phase(
+            chart.chart_space_mut(),
+            phase,
+            &mut |_, reference| {
+                visit(reference);
+            },
+        );
     }
     for anchor in drawing.one_cell_anchor_collection_mut() {
         if let Some(frame) = anchor.graphic_frame_mut() {
-            visit_string_references(
+            deferred |= visit_string_references_in_phase(
                 frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                phase,
                 &mut |_, reference| visit(reference),
             );
         }
     }
     for frame in drawing.graphic_frame_collection_mut() {
-        visit_string_references(
+        deferred |= visit_string_references_in_phase(
             frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+            phase,
             &mut |_, reference| visit(reference),
         );
     }
+    deferred
 }
 
 /// Visits only the image-classified one-cell frame carriers. OLE anchors and
@@ -1958,6 +1997,8 @@ impl<'a> DisplayResolver<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "serde")]
+    mod stage9_cache_phase;
     mod prepared_formats;
     mod repeats;
     mod strict_scan;
@@ -1989,9 +2030,12 @@ mod tests {
     };
 
     fn deferred_reference(session: &SourceCacheSession, xml: &str) -> StringReference {
-        const TARGET: &str = "deferred.xml";
-        session.begin_chart_part(TARGET);
-        session.store_part(session.part_for(TARGET), xml.as_bytes().into());
+        deferred_reference_at(session, "deferred.xml", xml)
+    }
+
+    fn deferred_reference_at(session: &SourceCacheSession, target: &str, xml: &str) -> StringReference {
+        session.begin_chart_part(target);
+        session.store_part(session.part_for(target), xml.as_bytes().into());
         let mut reader = Reader::from_reader(xml.as_bytes());
         let mut buffer = Vec::new();
         let Event::Start(root) = reader.read_event_into(&mut buffer).unwrap() else {

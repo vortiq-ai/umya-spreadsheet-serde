@@ -65,7 +65,6 @@ pub use self::display_units::*;
 mod pivot_format;
 pub use self::pivot_format::*;
 mod phase8_cache_roles;
-mod phase8_extension_roles;
 
 mod date1904;
 pub use self::date1904::*;
@@ -114,6 +113,10 @@ pub use self::number_reference::*;
 
 mod formula;
 pub use self::formula::*;
+mod chart_reference_edit;
+pub use self::chart_reference_edit::*;
+pub(crate) mod chart_reference_roles;
+pub(crate) mod reference_edit_engine;
 
 mod numbering_cache;
 pub use self::numbering_cache::*;
@@ -515,8 +518,6 @@ pub use self::extension_list::*;
 
 mod extension_registry;
 
-mod chart_extension_roles;
-pub(crate) use self::chart_extension_roles::*;
 
 #[cfg(test)]
 #[path="charts/extension_leaves_tests.rs"]

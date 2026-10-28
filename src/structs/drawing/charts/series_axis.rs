@@ -52,16 +52,20 @@ pub struct SeriesAxis {
 }
 
 impl SeriesAxis {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.title {
-            result.extend(v.formulas_mut());
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
+        super::chart_reference_roles::AxisParts {
+            id: self.axis_id.explicit_value(), title: self.title.as_ref(),
+            shape: None, gridlines: self.major_gridlines.as_deref(), display_parts: None,
         }
-        if let Some(v) = &mut self.major_gridlines {
-            result.extend(v.formulas_mut());
-        }
-        result
     }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        super::chart_reference_roles::AxisPartsMut {
+            id: self.axis_id.explicit_value(), title: self.title.as_mut(),
+            shape: None, gridlines: self.major_gridlines.as_deref_mut(), display_parts: None,
+        }
+    }
+
 
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {

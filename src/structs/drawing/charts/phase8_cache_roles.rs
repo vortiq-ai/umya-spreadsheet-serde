@@ -1,6 +1,7 @@
 //! Non-materializing owner traversal fragment. The joint cache owner must call
 //! these functions only after all pre-existing and phase6/7 roles.
-use super::{Chart, DataLabel, DisplayLabelChild, DisplayUnits, DisplayUnitsLabel, DrawingChartParts, PivotFormat, StringReference, ValueAxis};
+use super::{Chart, PivotFormat, StringReference, ValueAxis};
+use super::chart_source_caches::ReferenceIdentity;
 use std::collections::HashMap;
 
 pub(crate) struct OwnerCounts {
@@ -9,6 +10,16 @@ pub(crate) struct OwnerCounts {
     pivot_container_valid: bool,
 }
 impl OwnerCounts {
+    pub(crate) fn for_plot(plot: &super::PlotArea) -> Self {
+        let mut axes = HashMap::new();
+        for owner in plot.value_axis() {
+            if let Some(id) = owner.axis_id().explicit_value() {
+                *axes.entry(id).or_insert(0) += 1;
+            }
+        }
+        Self { pivots: HashMap::new(), axes, pivot_container_valid: false }
+    }
+
     pub(crate) fn new(chart: &Chart) -> Self {
         let mut pivots = HashMap::new();
         if let Some(owners) = chart.pivot_formats() {
@@ -34,88 +45,79 @@ pub(crate) enum Phase8ReferenceIdentity {
     DisplayUnitsLabel(u32),
 }
 
-fn pivot_mut(pivot: &mut PivotFormat, identity: Option<Phase8ReferenceIdentity>, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &mut StringReference)) {
-    if let Some(r) = pivot.label_mut().and_then(DataLabel::text_mut).and_then(|t| t.string_reference_mut()) { visit(identity, r); }
-    for label in pivot.extra_labels_mut() {
-        if let Some(r) = label.text_mut().and_then(|t| t.string_reference_mut()) { visit(None, r); }
+// Compatibility projection for the already-reviewed phase8 direct-role tests.
+// The ownership definition now lives only in chart_reference_roles.
+fn direct_role(role: &str) -> bool {
+    // Reporting roles outside these four are not Phase8 direct cache owners.
+    role == "pivot_label"
+        || role == "pivot_label_extra"
+        || role == "display_units_label"
+        || role == "display_units_text_extra"
+}
+
+fn identity(value: Option<&ReferenceIdentity>) -> Option<Phase8ReferenceIdentity> {
+    match value {
+        Some(ReferenceIdentity::PivotFormatLabel(pivot_index)) => {
+            Some(Phase8ReferenceIdentity::PivotFormatLabel(*pivot_index))
+        }
+        Some(ReferenceIdentity::DisplayUnitsLabel(axis_id)) => {
+            Some(Phase8ReferenceIdentity::DisplayUnitsLabel(*axis_id))
+        }
+        Some(
+            ReferenceIdentity::ChartTitle
+            | ReferenceIdentity::Category(..)
+            | ReferenceIdentity::SeriesText(..)
+            | ReferenceIdentity::AxisTitle(..)
+            | ReferenceIdentity::TrendlineLabel(..)
+            | ReferenceIdentity::Extension(..),
+        )
+        | None => None,
     }
-}
-fn container_mut(container: &mut DrawingChartParts, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &mut StringReference)) {
-    if let Some(pivots) = container.pivot_formats_mut() { for p in pivots { pivot_mut(p, None, visit); } }
-    for child in container.duplicate_containers_mut() { container_mut(child, visit); }
-}
-fn units_mut(units: &mut DisplayUnits, identity: Option<Phase8ReferenceIdentity>, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &mut StringReference)) {
-    if let Some(label) = units.label_mut() { display_label_mut(label, identity, visit); }
-    for label in units.extra_labels_mut() { display_label_mut(label, None, visit); }
-}
-fn display_label_mut(label: &mut DisplayUnitsLabel, identity: Option<Phase8ReferenceIdentity>, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &mut StringReference)) {
-    if let Some(r) = label.text_mut().and_then(|t| t.string_reference_mut()) { visit(identity, r); }
-    for item in label.extra_children_mut() { if let DisplayLabelChild::Text(text) = item.child_mut() {
-        if let Some(r) = text.string_reference_mut() { visit(None, r); }
-    }}
-}
-fn pivot_ref<'a>(pivot: &'a PivotFormat, identity: Option<Phase8ReferenceIdentity>, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &'a StringReference)) {
-    if let Some(r) = pivot.label().and_then(DataLabel::text).and_then(|t| t.string_reference()) { visit(identity, r); }
-    for label in pivot.extra_labels() { if let Some(r) = label.text().and_then(|t| t.string_reference()) { visit(None, r); } }
-}
-fn container_ref<'a>(container: &'a DrawingChartParts, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &'a StringReference)) {
-    if let Some(pivots) = container.pivot_formats() { for p in pivots { pivot_ref(p, None, visit); } }
-    for child in container.duplicate_containers() { container_ref(child, visit); }
-}
-fn units_ref<'a>(units: &'a DisplayUnits, identity: Option<Phase8ReferenceIdentity>, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &'a StringReference)) {
-    if let Some(label) = units.label() { display_label_ref(label, identity, visit); }
-    for label in units.extra_labels() { display_label_ref(label, None, visit); }
-}
-fn display_label_ref<'a>(label: &'a DisplayUnitsLabel, identity: Option<Phase8ReferenceIdentity>, visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &'a StringReference)) {
-    if let Some(r) = label.text().and_then(|t| t.string_reference()) { visit(identity, r); }
-    for item in label.extra_children() { if let DisplayLabelChild::Text(text) = item.child() {
-        if let Some(r) = text.string_reference() { visit(None, r); }
-    }}
 }
 
 pub(crate) fn visit_phase8_references_mut(
     chart: &mut Chart,
     visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &mut StringReference),
 ) {
-    let counts = OwnerCounts::new(chart);
-    if let Some(pivots) = chart.pivot_formats_mut() {
-        for pivot in pivots {
-            let identity = counts.pivot(pivot).map(Phase8ReferenceIdentity::PivotFormatLabel);
-            pivot_mut(pivot, identity, visit);
+    super::chart_reference_roles::visit_chart_mut(chart, &mut |metadata, target| {
+        if !direct_role(metadata.role) {
+            return;
         }
-    }
-    if let Some(containers) = chart.duplicate_pivot_containers_mut() { for c in containers { container_mut(c, visit); } }
-    for axis in chart.plot_area_mut().value_axis_mut() {
-        let identity = counts.axis(axis).map(Phase8ReferenceIdentity::DisplayUnitsLabel);
-        if let Some(units) = axis.display_units_mut() { units_mut(units, identity, visit); }
-        if let Some(extra) = axis.extra_display_units_mut() { for units in extra { units_mut(units, None, visit); } }
-    }
+        match target {
+            super::chart_reference_roles::ReferenceTargetMut::String(reference) => {
+                visit(identity(metadata.cache_identity.as_ref()), reference);
+            }
+            super::chart_reference_roles::ReferenceTargetMut::Number(..)
+            | super::chart_reference_roles::ReferenceTargetMut::MultiLevel(..)
+            | super::chart_reference_roles::ReferenceTargetMut::Formula(..) => (),
+        }
+    });
 }
 
 pub(crate) fn visit_phase8_references<'a>(
     chart: &'a Chart,
     visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &'a StringReference),
 ) {
-    let counts = OwnerCounts::new(chart);
-    if let Some(pivots) = chart.pivot_formats() {
-        for pivot in pivots {
-            let identity = counts.pivot(pivot).map(Phase8ReferenceIdentity::PivotFormatLabel);
-            pivot_ref(pivot, identity, visit);
+    super::chart_reference_roles::visit_chart_ref(chart, &mut |metadata, target| {
+        if !direct_role(metadata.role) {
+            return;
         }
-    }
-    for c in chart.duplicate_pivot_containers() { container_ref(c, visit); }
-    for axis in chart.plot_area().value_axis() {
-        let identity = counts.axis(axis).map(Phase8ReferenceIdentity::DisplayUnitsLabel);
-        if let Some(units) = axis.display_units() { units_ref(units, identity, visit); }
-        for units in axis.extra_display_units() { units_ref(units, None, visit); }
-    }
+        match target {
+            super::chart_reference_roles::ReferenceTargetRef::String(reference) => {
+                visit(identity(metadata.cache_identity.as_ref()), reference);
+            }
+            super::chart_reference_roles::ReferenceTargetRef::Number(..)
+            | super::chart_reference_roles::ReferenceTargetRef::MultiLevel(..)
+            | super::chart_reference_roles::ReferenceTargetRef::Formula(..) => (),
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::structs::drawing::charts::{
-        ChartText, DisplayUnit, Formula, Index,
+        ChartText, DataLabel, DisplayUnit, DisplayUnits, DisplayUnitsLabel, Formula, Index,
     };
 
     fn reference(address: &str) -> ChartText {

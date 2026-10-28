@@ -55,15 +55,6 @@ impl StringLiteral {
         self
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(parts) = &mut self.parts {
-            if let Some(ext) = &mut parts.extensions {
-                result.extend(ext.formulas_mut());
-            }
-        }
-        result
-    }
 
     #[must_use]
     pub fn point_count(&self) -> Option<&XmlUnsignedInt> {

@@ -210,15 +210,6 @@ impl Extension {
     }
 }
 impl ExtensionList {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        for entry in &mut self.entries {
-            for node in &mut entry.nodes {
-                result.extend(node.formulas_mut());
-            }
-        }
-        result
-    }
 
     #[must_use]
     pub fn source_part_sha256(&self) -> &str {

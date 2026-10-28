@@ -70,7 +70,83 @@ pub struct AreaChartSeries {
     parts:              Option<Box<SeriesParts>>,
 }
 
+pub(crate) struct SeriesReferenceParts<'a> {
+    pub(crate) category:   Option<&'a CategoryAxisData>,
+    pub(crate) text:       Option<&'a ChartText>,
+    pub(crate) shape:      Option<&'a ShapeProperties>,
+    pub(crate) marker:     Option<&'a Marker>,
+    pub(crate) labels:     Option<&'a DataLabels>,
+    pub(crate) values:     Option<&'a Values>,
+    pub(crate) xvalues:    Option<&'a XValues>,
+    pub(crate) yvalues:    Option<&'a YValues>,
+    pub(crate) bubble:     Option<&'a BubbleSize>,
+    pub(crate) points:     &'a [DataPoint],
+    pub(crate) trends:     &'a [Trendline],
+    pub(crate) errors:     &'a [ErrorBars],
+    pub(crate) extensions: Option<&'a super::ExtensionList>,
+}
+
+pub(crate) struct SeriesReferencePartsMut<'a> {
+    pub(crate) category:   Option<&'a mut CategoryAxisData>,
+    pub(crate) text:       Option<&'a mut ChartText>,
+    pub(crate) shape:      Option<&'a mut ShapeProperties>,
+    pub(crate) marker:     Option<&'a mut Marker>,
+    pub(crate) labels:     Option<&'a mut DataLabels>,
+    pub(crate) values:     Option<&'a mut Values>,
+    pub(crate) xvalues:    Option<&'a mut XValues>,
+    pub(crate) yvalues:    Option<&'a mut YValues>,
+    pub(crate) bubble:     Option<&'a mut BubbleSize>,
+    pub(crate) points:     &'a mut [DataPoint],
+    pub(crate) trends:     &'a mut [Trendline],
+    pub(crate) errors:     &'a mut [ErrorBars],
+    pub(crate) extensions: Option<&'a mut super::ExtensionList>,
+}
+
 impl AreaChartSeries {
+    pub(crate) fn reference_role_parts(&self) -> SeriesReferenceParts<'_> {
+        let (points, trends, errors, extensions) = match self.parts.as_deref() {
+            Some(parts) => parts.reference_role_parts(),
+            None => (&[][..], &[][..], &[][..], None),
+        };
+        SeriesReferenceParts {
+            category: self.category_axis_data.as_ref(),
+            text: self.chart_text.as_ref(),
+            shape: self.shape_properties.as_ref(),
+            marker: self.marker.as_ref(),
+            labels: self.data_labels.as_ref(),
+            values: self.values.as_ref(),
+            xvalues: self.x_values.as_ref(),
+            yvalues: self.y_values.as_ref(),
+            bubble: self.bubble_size.as_ref(),
+            points,
+            trends,
+            errors,
+            extensions,
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
+        let (points, trends, errors, extensions) = match self.parts.as_deref_mut() {
+            Some(parts) => parts.reference_role_parts_mut(),
+            None => (&mut [][..], &mut [][..], &mut [][..], None),
+        };
+        SeriesReferencePartsMut {
+            category: self.category_axis_data.as_mut(),
+            text: self.chart_text.as_mut(),
+            shape: self.shape_properties.as_mut(),
+            marker: self.marker.as_mut(),
+            labels: self.data_labels.as_mut(),
+            values: self.values.as_mut(),
+            xvalues: self.x_values.as_mut(),
+            yvalues: self.y_values.as_mut(),
+            bubble: self.bubble_size.as_mut(),
+            points,
+            trends,
+            errors,
+            extensions,
+        }
+    }
+
     pub(crate) fn labels_for_roles(&self) -> Option<&DataLabels> {
         self.data_labels.as_ref()
     }
@@ -542,38 +618,7 @@ impl AreaChartSeries {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.chart_text {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.marker {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.category_axis_data {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.values {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.x_values {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.y_values {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.bubble_size {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.data_labels {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.parts {
-            result.extend(v.formulas_mut());
-        }
-        result
+        super::chart_reference_roles::collect_series_formulas_mut(self)
     }
 
     #[deprecated(since = "3.0.0", note = "Use formula_mut()")]

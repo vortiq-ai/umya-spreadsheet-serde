@@ -33,11 +33,6 @@ pub struct SideWall {
 }
 
 impl SideWall {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        self.shape_properties
-            .as_mut()
-            .map_or_else(Vec::new, |v| v.formulas_mut())
-    }
 
     #[must_use]
     pub fn thickness(&self) -> Option<&Thickness> {

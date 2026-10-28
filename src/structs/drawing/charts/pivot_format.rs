@@ -25,6 +25,18 @@ pub struct DrawingChartParts {
     duplicate_containers: Vec<DrawingChartParts>,
 }
 impl DrawingChartParts {
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&[PivotFormat]>, &[DrawingChartParts],
+    ) {
+        (self.pivot_formats.as_deref(), &self.duplicate_containers)
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut [PivotFormat]>, &mut [DrawingChartParts],
+    ) {
+        (self.pivot_formats.as_deref_mut(), &mut self.duplicate_containers)
+    }
+
     pub(crate) fn duplicate_containers_for_roles(&self) -> &[DrawingChartParts] { self.duplicate_containers() }
     pub(crate) fn duplicate_containers_for_roles_mut(&mut self) -> &mut [DrawingChartParts] { self.duplicate_containers_mut() }
     #[must_use]
@@ -41,16 +53,7 @@ impl DrawingChartParts {
     pub fn pivot_formats_mut(&mut self) -> Option<&mut [PivotFormat]> {
         self.pivot_formats.as_deref_mut()
     }
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut out = Vec::new();
-        if let Some(items) = &mut self.pivot_formats {
-            for item in items {
-                out.extend(item.formulas_mut());
-            }
-        }
-        for duplicate in &mut self.duplicate_containers { out.extend(duplicate.formulas_mut()); }
-        out
-    }
+
     #[must_use]
     pub fn pivot_formats(&self) -> Option<&[PivotFormat]> {
         self.pivot_formats.as_deref()
@@ -162,6 +165,32 @@ mod phase8_pivot_wire_tests {
     }
 }
 impl PivotFormat {
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::PivotParts<'_> {
+        super::chart_reference_roles::PivotParts {
+            shape: self.shape_properties.as_ref(),
+            marker: self.marker.as_ref(),
+            label: self.label.as_ref(),
+            extensions: self.extensions.as_ref(),
+            extra_shapes: &self.extra_shapes,
+            extra_markers: &self.extra_markers,
+            extra_labels: &self.extra_labels,
+            extra_extensions: &self.extra_extensions,
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::PivotPartsMut<'_> {
+        super::chart_reference_roles::PivotPartsMut {
+            shape: self.shape_properties.as_mut(),
+            marker: self.marker.as_mut(),
+            label: self.label.as_mut(),
+            extensions: self.extensions.as_mut(),
+            extra_shapes: &mut self.extra_shapes,
+            extra_markers: &mut self.extra_markers,
+            extra_labels: &mut self.extra_labels,
+            extra_extensions: &mut self.extra_extensions,
+        }
+    }
+
     pub(crate) fn shape_for_roles_mut(&mut self) -> Option<&mut ShapeProperties> { self.shape_properties.as_mut() }
     pub(crate) fn marker_for_roles_mut(&mut self) -> Option<&mut Marker> { self.marker.as_mut() }
     pub(crate) fn extensions_for_roles_mut(&mut self) -> Option<&mut ExtensionList> { self.extensions.as_mut() }
@@ -193,22 +222,7 @@ impl PivotFormat {
     pub fn extra_labels_mut(&mut self) -> &mut [DataLabel] { &mut self.extra_labels }
     #[must_use]
     pub fn invalid_first_index(&self) -> Option<&Option<String>> { self.invalid_first_index.as_ref().map(|v| &v.0) }
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut out = Vec::new();
-        if let Some(shape) = &mut self.shape_properties { out.extend(shape.formulas_mut()); }
-        if let Some(marker) = &mut self.marker { out.extend(marker.formulas_mut()); }
-        if let Some(label) = &mut self.label {
-            out.extend(label.formulas_mut());
-        }
-        if let Some(ext) = &mut self.extensions {
-            out.extend(ext.formulas_mut());
-        }
-        for label in &mut self.extra_labels { out.extend(label.formulas_mut()); }
-        for shape in &mut self.extra_shapes { out.extend(shape.formulas_mut()); }
-        for marker in &mut self.extra_markers { out.extend(marker.formulas_mut()); }
-        for ext in &mut self.extra_extensions { out.extend(ext.formulas_mut()); }
-        out
-    }
+
     #[must_use]
     pub fn index(&self) -> &Index {
         &self.index

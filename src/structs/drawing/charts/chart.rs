@@ -94,6 +94,22 @@ impl Default for Chart {
 }
 
 impl Chart {
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::ChartParts<'_> {
+        super::chart_reference_roles::ChartParts {
+            title: self.title.as_ref(), plot: &self.plot_area, legend: &self.legend,
+            floor: self.floor.as_ref(), side_wall: self.side_wall.as_ref(), back_wall: self.back_wall.as_ref(),
+            pivot_parts: self.parts.as_deref(),
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::ChartPartsMut<'_> {
+        super::chart_reference_roles::ChartPartsMut {
+            title: self.title.as_mut(), plot: &mut self.plot_area, legend: &mut self.legend,
+            floor: self.floor.as_mut(), side_wall: self.side_wall.as_mut(), back_wall: self.back_wall.as_mut(),
+            pivot_parts: self.parts.as_deref_mut(),
+        }
+    }
+
     pub(crate) fn duplicate_containers_for_roles(&self) -> &[DrawingChartParts] { self.duplicate_pivot_containers() }
     pub(crate) fn duplicate_containers_for_roles_mut(&mut self) -> &mut [DrawingChartParts] { self.duplicate_pivot_containers_mut().unwrap_or_default() }
     pub fn pivot_container_has_conflict(&self) -> bool {
@@ -442,22 +458,7 @@ impl Chart {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result = self.plot_area.formula_mut();
-        if let Some(v) = &mut self.title {
-            result.extend(v.formulas_mut());
-        }
-        result.extend(self.legend.formulas_mut());
-        if let Some(v) = &mut self.floor {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.side_wall {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.back_wall {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(parts) = &mut self.parts { result.extend(parts.formulas_mut()); }
-        result
+        super::chart_reference_roles::collect_chart_formulas_mut(self)
     }
 
     #[deprecated(since = "3.0.0", note = "Use formula_mut()")]
@@ -621,12 +622,9 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.plot_area.adjustment_insert_coordinate_with_sheet(
-            sheet_name,
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Chart(self), sheet_name,
+            root_col_num, offset_col_num, root_row_num, offset_row_num, false,
         );
     }
 
@@ -638,12 +636,9 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.plot_area.adjustment_remove_coordinate_with_sheet(
-            sheet_name,
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Chart(self), sheet_name,
+            root_col_num, offset_col_num, root_row_num, offset_row_num, true,
         );
     }
 }

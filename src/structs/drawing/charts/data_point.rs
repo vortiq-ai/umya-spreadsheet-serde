@@ -39,19 +39,31 @@ pub struct DataPoint {
     extensions:         Option<Box<super::ExtensionList>>,
 }
 impl DataPoint {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(value) = &mut self.marker {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.shape_properties {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.extensions {
-            result.extend(value.formulas_mut());
-        }
-        result
+    // Projection only: retain diagnostics and absent children exactly.
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&Marker>,
+        Option<&ShapeProperties>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            self.marker.as_ref(),
+            self.shape_properties.as_ref(),
+            self.extensions.as_deref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut Marker>,
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            self.marker.as_mut(),
+            self.shape_properties.as_mut(),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

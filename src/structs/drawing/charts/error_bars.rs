@@ -73,7 +73,48 @@ pub struct ErrorBars {
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:         Option<Box<super::ExtensionList>>,
 }
+type ErrorBarReferenceParts<'a> = (
+    Option<&'a NumericDataSource>,
+    Option<&'a NumericDataSource>,
+    &'a [NumericDataSource],
+    &'a [NumericDataSource],
+    Option<&'a ShapeProperties>,
+    Option<&'a super::ExtensionList>,
+);
+
+type ErrorBarReferencePartsMut<'a> = (
+    Option<&'a mut NumericDataSource>,
+    Option<&'a mut NumericDataSource>,
+    &'a mut [NumericDataSource],
+    &'a mut [NumericDataSource],
+    Option<&'a mut ShapeProperties>,
+    Option<&'a mut super::ExtensionList>,
+);
+
 impl ErrorBars {
+    // Projection only: retain diagnostics and absent children exactly.
+    pub(crate) fn reference_role_parts(&self) -> ErrorBarReferenceParts<'_> {
+        (
+            self.plus.as_ref(),
+            self.minus.as_ref(),
+            &self.extra_plus,
+            &self.extra_minus,
+            self.shape_properties.as_ref(),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> ErrorBarReferencePartsMut<'_> {
+        (
+            self.plus.as_mut(),
+            self.minus.as_mut(),
+            &mut self.extra_plus,
+            &mut self.extra_minus,
+            self.shape_properties.as_mut(),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
     const EMPTY_MINUS: u8 = 2;
     const EMPTY_PLUS: u8 = 1;
 
@@ -95,28 +136,6 @@ impl ErrorBars {
         self
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.plus {
-            result.extend(v.formulas_mut());
-        }
-        for v in &mut self.extra_plus {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.minus {
-            result.extend(v.formulas_mut());
-        }
-        for v in &mut self.extra_minus {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.extensions {
-            result.extend(v.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn direction(&self) -> Option<&ScalarElement<ErrorBarDirection>> {

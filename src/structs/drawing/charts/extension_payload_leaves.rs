@@ -70,6 +70,18 @@ pub struct InvertSolidFill {
     invalid:          bool,
 }
 impl InvertSolidFill {
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&ShapeProperties>, &[ShapeProperties],
+    ) {
+        (self.shape_properties.as_ref(), &self.extra_shapes)
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut ShapeProperties>, &mut [ShapeProperties],
+    ) {
+        (self.shape_properties.as_mut(), &mut self.extra_shapes)
+    }
+
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {
         self.shape_properties.as_ref()

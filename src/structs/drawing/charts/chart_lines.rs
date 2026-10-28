@@ -30,13 +30,6 @@ pub struct ChartLines {
     duplicate_shape:  bool,
 }
 impl ChartLines {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {

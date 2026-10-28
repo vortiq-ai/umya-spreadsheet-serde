@@ -36,16 +36,18 @@ pub struct Legend {
 }
 
 impl Legend {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.layout {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        result
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&Layout>, Option<&ShapeProperties>,
+    ) {
+        (self.layout.as_deref(), self.shape_properties.as_deref())
     }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut Layout>, Option<&mut ShapeProperties>,
+    ) {
+        (self.layout.as_deref_mut(), self.shape_properties.as_deref_mut())
+    }
+
 
     #[must_use]
     pub fn legend_position(&self) -> &LegendPosition {

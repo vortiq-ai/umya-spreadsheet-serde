@@ -68,22 +68,39 @@ pub struct DataLabel {
     invalid_index:      bool,
 }
 impl DataLabel {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(value) = &mut self.layout {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.text {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.shape_properties {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(value) = &mut self.extensions {
-            result.extend(value.formulas_mut());
-        }
-        result
+    // Disjoint stored children; preserves absent/invalid source states.
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
+        Option<&ChartText>,
+        Option<&Layout>,
+        Option<&ShapeProperties>,
+        Option<&ExtensionList>,
+    ) {
+        (
+            self.text.as_ref(),
+            self.layout.as_ref(),
+            self.shape_properties.as_ref(),
+            self.extensions.as_ref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ChartText>,
+        Option<&mut Layout>,
+        Option<&mut ShapeProperties>,
+        Option<&mut ExtensionList>,
+    ) {
+        (
+            self.text.as_mut(),
+            self.layout.as_mut(),
+            self.shape_properties.as_mut(),
+            self.extensions.as_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn extensions(&self) -> Option<&ExtensionList> {

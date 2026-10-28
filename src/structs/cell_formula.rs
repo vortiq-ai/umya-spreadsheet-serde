@@ -15,8 +15,6 @@ use crate::{
         formula::{
             FormulaToken,
             adjustment_formula_coordinate,
-            adjustment_insert_formula_coordinate,
-            adjustment_remove_formula_coordinate,
             parse_to_tokens,
             render,
         },
@@ -516,6 +514,48 @@ impl CellFormula {
         write_end_tag(writer, "f");
     }
 }
+impl CellFormula {
+    pub(crate) fn adjust_array_geometry(&mut self, same_sheet: bool, root_col: u32, col_count: u32, root_row: u32, row_count: u32, remove: bool) {
+        if !same_sheet { return; }
+        if remove {
+            if let Some(reference) = self.array_reference_after_removal(root_col, col_count, root_row, row_count) {
+                self.reference.set_value(reference);
+            }
+        } else if let Some(mut range) = self.array_reference_range() {
+            range.adjustment_insert_coordinate(root_col, col_count, root_row, row_count);
+            self.reference.set_value(range.range());
+        }
+    }
+
+    pub(crate) fn adjust_reference_texts_prepared(
+        &mut self,
+        host: &str,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+        moved: bool,
+    ) -> bool {
+        use crate::drawing::charts::reference_edit_engine::{edit_prepared_formula_text, edit_prepared_formula_text_for_moved_cell};
+        let mut changed = false;
+        for text in [&mut self.text, &mut self.text_view] {
+            if let Some(before) = text.value() {
+                let result = if moved {
+                    edit_prepared_formula_text_for_moved_cell(before, host, prepared, false)
+                } else {
+                    edit_prepared_formula_text(before, host, prepared, false)
+                };
+                if result.text != before { text.set_value(result.text); changed = true; }
+            }
+        }
+        changed
+    }
+
+    fn adjust_reference_texts(&mut self, host: &str, edits: &[crate::drawing::charts::ChartReferenceEdit]) {
+        use crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit;
+        for edit in edits {
+            let Ok(prepared) = PreparedReferenceEdit::new(edit) else { return; };
+            self.adjust_reference_texts_prepared(host, &prepared, false);
+        }
+    }
+}
 impl AdjustmentCoordinateWith2Sheet for CellFormula {
     #[inline]
     fn adjustment_insert_coordinate_with_2sheet(
@@ -527,6 +567,7 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        use crate::drawing::charts::ChartReferenceEdit;
         // An array's ref describes owned cells on this sheet, not references in
         // the formula text. Its geometry moves even when its coordinates use $.
         if self_sheet_name == sheet_name {
@@ -540,32 +581,10 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
                 self.reference.set_value(range.range());
             }
         }
-        if let Some(v) = self.text.value() {
-            let formula = adjustment_insert_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text.set_value(formula);
-        }
-        if let Some(v) = self.text_view.value() {
-            let formula = adjustment_insert_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text_view.set_value(formula);
-        }
+        let mut edits = Vec::new();
+        if offset_col_num != 0 { edits.push(ChartReferenceEdit::InsertColumns { sheet: sheet_name.into(), at: root_col_num, count: offset_col_num }); }
+        if offset_row_num != 0 { edits.push(ChartReferenceEdit::InsertRows { sheet: sheet_name.into(), at: root_row_num, count: offset_row_num }); }
+        self.adjust_reference_texts(self_sheet_name, &edits);
     }
 
     #[inline]
@@ -578,6 +597,7 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        use crate::drawing::charts::ChartReferenceEdit;
         if self_sheet_name == sheet_name {
             if let Some(reference) = self.array_reference_after_removal(
                 root_col_num,
@@ -588,32 +608,14 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
                 self.reference.set_value(reference);
             }
         }
-        if let Some(v) = self.text.value() {
-            let formula = adjustment_remove_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text.set_value(formula);
-        }
-        if let Some(v) = self.text_view.value() {
-            let formula = adjustment_remove_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text_view.set_value(formula);
-        }
+        let mut edits = Vec::new();
+        if offset_col_num != 0 { edits.push(ChartReferenceEdit::DeleteColumns {
+            sheet: sheet_name.into(), columns: (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385)).collect(),
+        }); }
+        if offset_row_num != 0 { edits.push(ChartReferenceEdit::DeleteRows {
+            sheet: sheet_name.into(), rows: (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577)).collect(),
+        }); }
+        self.adjust_reference_texts(self_sheet_name, &edits);
     }
 }
 

@@ -37,18 +37,25 @@ pub struct LayoutParts {
 }
 
 impl Layout {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(value) = &mut self.manual_layout {
-            result.extend(value.formulas_mut());
-        }
-        if let Some(parts) = &mut self.parts {
-            if let Some(ext) = &mut parts.extensions {
-                result.extend(ext.formulas_mut());
-            }
-        }
-        result
+    // Structural field partition only: no allocation or presence changes.
+    pub(crate) fn reference_role_parts(&self) -> (Option<&ManualLayout>, Option<&ExtensionList>) {
+        (
+            self.manual_layout.as_ref(),
+            self.parts.as_deref().and_then(|p| p.extensions.as_ref()),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut ManualLayout>, Option<&mut ExtensionList>) {
+        (
+            self.manual_layout.as_mut(),
+            self.parts
+                .as_deref_mut()
+                .and_then(|p| p.extensions.as_mut()),
+        )
+    }
+
 
     #[must_use]
     pub fn extensions(&self) -> Option<&ExtensionList> {

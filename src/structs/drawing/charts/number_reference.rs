@@ -35,14 +35,13 @@ pub struct NumberReference {
 }
 
 impl NumberReference {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result = Vec::new();
-        result.push(&mut self.formula);
-        if let Some(value) = &mut self.extensions {
-            result.extend(value.formulas_mut());
-        }
-        result
+    // A retaining Formula projection must consume these disjoint fields once.
+    pub(crate) fn split_formula_extensions_mut(
+        &mut self,
+    ) -> (&mut Formula, Option<&mut super::ExtensionList>) {
+        (&mut self.formula, self.extensions.as_deref_mut())
     }
+
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

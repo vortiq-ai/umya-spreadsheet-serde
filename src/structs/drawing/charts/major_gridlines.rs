@@ -29,11 +29,6 @@ pub struct MajorGridlines {
 }
 
 impl MajorGridlines {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        self.shape_properties
-            .as_mut()
-            .map_or_else(Vec::new, |v| v.formulas_mut())
-    }
 
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {

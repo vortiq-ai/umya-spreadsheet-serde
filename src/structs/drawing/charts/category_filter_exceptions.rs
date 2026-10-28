@@ -45,20 +45,39 @@ pub struct CategoryFilterException {
     invalid:            bool,
 }
 impl CategoryFilterException {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        result.extend(self.references.references_mut().iter_mut());
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.marker {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.data_label {
-            result.extend(v.formulas_mut());
-        }
-        result
+    // Structural field partition only: no allocation or presence changes.
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
+        &ReferenceSequence,
+        Option<&ShapeProperties>,
+        Option<&Marker>,
+        Option<&DataLabel>,
+    ) {
+        (
+            &self.references,
+            self.shape_properties.as_ref(),
+            self.marker.as_ref(),
+            self.data_label.as_ref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
+        &mut ReferenceSequence,
+        Option<&mut ShapeProperties>,
+        Option<&mut Marker>,
+        Option<&mut DataLabel>,
+    ) {
+        (
+            &mut self.references,
+            self.shape_properties.as_mut(),
+            self.marker.as_mut(),
+            self.data_label.as_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn references(&self) -> &ReferenceSequence {
@@ -67,6 +86,11 @@ impl CategoryFilterException {
 
     pub fn references_mut(&mut self) -> &mut ReferenceSequence {
         self.references_present = true;
+        &mut self.references
+    }
+
+    // Structural traversal must preserve a missing required sqref child.
+    pub(crate) fn references_for_roles_mut(&mut self) -> &mut ReferenceSequence {
         &mut self.references
     }
 
@@ -294,13 +318,6 @@ pub struct CategoryFilterExceptions {
     invalid: bool,
 }
 impl CategoryFilterExceptions {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        for entry in &mut self.entries {
-            result.extend(entry.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn entries(&self) -> &[CategoryFilterException] {

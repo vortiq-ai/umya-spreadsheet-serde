@@ -142,13 +142,6 @@ pub struct NumericData {
     extensions:  Option<Box<super::ExtensionList>>,
 }
 impl NumericData {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.extensions {
-            result.extend(v.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
@@ -311,12 +304,6 @@ pub enum NumericDataSource {
     Literal(Box<NumericData>),
 }
 impl NumericDataSource {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        match self {
-            Self::Reference(v) => v.formulas_mut(),
-            Self::Literal(v) => v.formulas_mut(),
-        }
-    }
 
     #[must_use]
     pub fn literal(&self) -> Option<&NumericData> {

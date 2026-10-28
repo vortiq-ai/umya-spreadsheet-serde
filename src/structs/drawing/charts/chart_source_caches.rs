@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use super::{
     ChartSpace,
+    chart_reference_roles::ReferenceCachePhase,
     StringReference,
 };
 use crate::structs::CacheDisplay;
@@ -440,136 +441,59 @@ pub(crate) enum ReferenceIdentity {
     DisplayUnitsLabel(u32),
 }
 
-// Define the traversal once for borrowed and mutable references. Each visit
-// carries its identity, so capture and boundary operations cannot disagree
-// about reference locations or maintain a parallel list of roles.
-macro_rules! string_reference_traversal {
-    ($name:ident, $extension_walk:ident, $phase8_walk:ident, $phase8_nested_walk:ident, ($($mutable:tt)*), ($($borrow:lifetime)?),
-     $chart:ident, $title:ident, $text:ident,
-     $reference:ident, $plot:ident, $groups:ident, $series:ident, $items:ident,
-     $category:ident, $trends:ident, $label:ident, $label_text:ident, [$($axes:ident),*]) => {
-        pub(crate) fn $name $(<$borrow>)? (
-            space: & $($borrow)? $($mutable)* ChartSpace,
-            visit: &mut dyn FnMut(
-                Option<ReferenceIdentity>,
-                & $($borrow)? $($mutable)* StringReference,
-            ),
-        ) {
-            let chart = space.$chart();
-            if let Some(reference) = chart
-                .$title()
-                .and_then(|title| title.$text())
-                .and_then(|text| text.$reference())
-            {
-                visit(Some(ReferenceIdentity::ChartTitle), reference);
+// Cache operations are a projection of the shared native reference topology.
+// New numeric/multilevel/sqref slots never gain source-cache behavior.
+pub(crate) fn visit_string_references_in_phase(
+    space: &mut ChartSpace,
+    phase: ReferenceCachePhase,
+    visit: &mut dyn FnMut(Option<ReferenceIdentity>, &mut StringReference),
+) -> bool {
+    let mut deferred = false;
+    super::chart_reference_roles::visit_mut(space, &mut |metadata, target| {
+        if let super::chart_reference_roles::ReferenceTargetMut::String(reference) = target {
+            deferred |= metadata.cache_phase == ReferenceCachePhase::Deferred;
+            if metadata.cache_phase == phase {
+                visit(metadata.cache_identity, reference);
             }
-
-            let plot = chart.$plot();
-            for group in plot.$groups() {
-                for series in group.$series().$items() {
-                    let identity = series.index().explicit_value();
-                    if let Some(reference) = series
-                        .$category()
-                        .and_then(|data| data.$reference())
-                    {
-                        visit(identity.map(ReferenceIdentity::Category), reference);
-                    }
-                    if let Some(reference) = series
-                        .$text()
-                        .and_then(|text| text.$reference())
-                    {
-                        visit(identity.map(ReferenceIdentity::SeriesText), reference);
-                    }
-                }
-            }
-
-            $(for axis in plot.$axes() {
-                let identity = axis.axis_id().explicit_value();
-                if let Some(reference) = axis
-                    .$title()
-                    .and_then(|title| title.$text())
-                    .and_then(|text| text.$reference())
-                {
-                    visit(identity.map(ReferenceIdentity::AxisTitle), reference);
-                }
-            })*
-
-            // Existing roles keep their admission order and priority globally,
-            // including later series and axis titles. New label roles follow
-            // in their own document order through this same traversal owner.
-            for group in plot.$groups() {
-                for series in group.$series().$items() {
-                    let identity = series.index().explicit_value();
-                    for trendline in series.$trends() {
-                        if let Some(reference) = trendline
-                            .$label()
-                            .and_then(|label| label.$label_text())
-                            .and_then(|text| text.$reference())
-                        {
-                            let key = identity.map(|id| ReferenceIdentity::TrendlineLabel(
-                                id, reference.formula().address_str(),
-                            ));
-                            visit(key,reference);
-                        }
-                    }
-                }
-            }
-            super::$extension_walk(space,&mut |identity,reference|{
-                let identity=identity.map(ReferenceIdentity::Extension);
-                visit(identity,reference);
-            });
-            super::phase8_cache_roles::$phase8_walk(space.$chart(), &mut |identity, reference| {
-                let identity = identity.map(|id| match id {
-                    super::phase8_cache_roles::Phase8ReferenceIdentity::PivotFormatLabel(v) => ReferenceIdentity::PivotFormatLabel(v),
-                    super::phase8_cache_roles::Phase8ReferenceIdentity::DisplayUnitsLabel(v) => ReferenceIdentity::DisplayUnitsLabel(v),
-                });
-                visit(identity, reference);
-            });
-            super::phase8_extension_roles::$phase8_nested_walk(space.$chart(), &mut |identity, reference| {
-                visit(identity.map(ReferenceIdentity::Extension), reference);
-            });
         }
-    };
+    });
+    deferred
 }
 
-string_reference_traversal!(
-    visit_string_references,
-    visit_extension_references,
-    visit_phase8_references_mut,
-    visit_phase8_nested_mut,
-    (mut),
-    (),
-    chart_mut,
-    title_mut,
-    chart_text_mut,
-    string_reference_mut,
-    plot_area_mut,
-    chart_groups_mut,
-    series_mut,
-    area_chart_series_mut,
-    category_axis_data_mut,
-    trendlines_iter_mut, label_mut, text_mut,
-    [category_axis_mut, date_axis_mut, value_axis_mut, series_axis_mut]
-);
-string_reference_traversal!(
-    visit_string_references_ref,
-    visit_extension_references_ref,
-    visit_phase8_references,
-    visit_phase8_nested,
-    (),
-    ('a),
-    chart,
-    title,
-    chart_text,
-    string_reference,
-    plot_area,
-    chart_groups,
-    series,
-    area_chart_series,
-    category_axis_data,
-    trendlines, label, text,
-    [category_axis, date_axis, value_axis, series_axis]
-);
+pub(crate) fn visit_string_references_ref_in_phase<'a>(
+    space: &'a ChartSpace,
+    phase: ReferenceCachePhase,
+    visit: &mut dyn FnMut(Option<ReferenceIdentity>, &'a StringReference),
+) -> bool {
+    let mut deferred = false;
+    super::chart_reference_roles::visit_ref(space, &mut |metadata, target| {
+        if let super::chart_reference_roles::ReferenceTargetRef::String(reference) = target {
+            deferred |= metadata.cache_phase == ReferenceCachePhase::Deferred;
+            if metadata.cache_phase == phase {
+                visit(metadata.cache_identity, reference);
+            }
+        }
+    });
+    deferred
+}
+
+pub(crate) fn visit_string_references(
+    space: &mut ChartSpace,
+    visit: &mut dyn FnMut(Option<ReferenceIdentity>, &mut StringReference),
+) {
+    if visit_string_references_in_phase(space, ReferenceCachePhase::Legacy, visit) {
+        visit_string_references_in_phase(space, ReferenceCachePhase::Deferred, visit);
+    }
+}
+
+pub(crate) fn visit_string_references_ref<'a>(
+    space: &'a ChartSpace,
+    visit: &mut dyn FnMut(Option<ReferenceIdentity>, &'a StringReference),
+) {
+    if visit_string_references_ref_in_phase(space, ReferenceCachePhase::Legacy, visit) {
+        visit_string_references_ref_in_phase(space, ReferenceCachePhase::Deferred, visit);
+    }
+}
 
 /// Removes every source cache of the chart.
 pub(crate) fn clear_source_caches(space: &mut ChartSpace) {

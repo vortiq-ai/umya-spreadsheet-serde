@@ -36,19 +36,35 @@ pub struct Title {
 }
 
 impl Title {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.chart_text {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.layout {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        result
+    // Structural field partition only: no allocation or presence changes.
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
+        Option<&ChartText>,
+        Option<&ShapeProperties>,
+        Option<&Layout>,
+    ) {
+        (
+            self.chart_text.as_ref(),
+            self.shape_properties.as_ref(),
+            self.layout.as_ref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ChartText>,
+        Option<&mut ShapeProperties>,
+        Option<&mut Layout>,
+    ) {
+        (
+            self.chart_text.as_mut(),
+            self.shape_properties.as_mut(),
+            self.layout.as_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn chart_text(&self) -> Option<&ChartText> {

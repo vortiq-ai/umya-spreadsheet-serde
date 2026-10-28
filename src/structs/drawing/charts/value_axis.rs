@@ -7,8 +7,7 @@ use quick_xml::{
 };
 
 use super::{
-    AxisId, AxisPosition, CrossBetween, Crosses, CrossingAxis, Delete, DisplayUnits, Formula,
-    MajorGridlines, MajorTickMark, MinorTickMark, NumberingFormat, Scaling, ShapeProperties,
+    AxisId, AxisPosition, CrossBetween, Crosses, CrossingAxis, Delete, DisplayUnits, MajorGridlines, MajorTickMark, MinorTickMark, NumberingFormat, Scaling, ShapeProperties,
     TextProperties, TickLabelPosition, Title, ValueAxisParts,
 };
 use crate::{
@@ -78,6 +77,20 @@ mod phase8_wire_ledger_tests {
 }
 
 impl ValueAxis {
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
+        super::chart_reference_roles::AxisParts {
+            id: self.axis_id.explicit_value(), title: self.title.as_ref(),
+            shape: self.shape_properties.as_ref(), gridlines: self.major_gridlines.as_ref(), display_parts: self.parts.as_deref(),
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        super::chart_reference_roles::AxisPartsMut {
+            id: self.axis_id.explicit_value(), title: self.title.as_mut(),
+            shape: self.shape_properties.as_mut(), gridlines: self.major_gridlines.as_mut(), display_parts: self.parts.as_deref_mut(),
+        }
+    }
+
     pub(crate) fn extra_display_units_for_roles_mut(&mut self) -> &mut [DisplayUnits] { self.extra_display_units_mut().unwrap_or_default() }
     pub fn display_units_has_conflict(&self) -> bool {
         self.parts.as_deref().is_some_and(ValueAxisParts::has_conflict)
@@ -88,22 +101,7 @@ impl ValueAxis {
     pub fn extra_display_units_mut(&mut self) -> Option<&mut [DisplayUnits]> {
         self.parts.as_deref_mut().map(ValueAxisParts::extra_display_units_mut)
     }
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut Formula> {
-        let mut out = Vec::new();
-        if let Some(title) = &mut self.title {
-            out.extend(title.formulas_mut());
-        }
-        if let Some(grid) = &mut self.major_gridlines {
-            out.extend(grid.formulas_mut());
-        }
-        if let Some(shape) = &mut self.shape_properties {
-            out.extend(shape.formulas_mut());
-        }
-        if let Some(parts) = &mut self.parts {
-            out.extend(parts.formulas_mut());
-        }
-        out
-    }
+
     pub fn display_units(&self) -> Option<&DisplayUnits> {
         self.parts
             .as_deref()

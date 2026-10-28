@@ -13,6 +13,7 @@ use crate::{
     helper::address::{
         is_address,
         quote_sheet_name,
+        split_address,
         unescape_sheet_name,
     },
     traits::AdjustmentCoordinateWithSheet,
@@ -88,6 +89,25 @@ impl Formula {
         self
     }
 
+    /// Replace a decided reference without normalizing an unchanged sheet
+    /// qualifier's stored spelling. Address callers may have supplied either
+    /// raw or escaped apostrophes; that identity is independently observable.
+    pub(crate) fn replace_reference_text_preserving_address_identity(&mut self, text: &str) -> bool {
+        let before = self.address_str();
+        if before == text { return false; }
+        let preserve_sheet = !self.string_value.has_value() && is_address(text)
+            && split_address(&before).0 == split_address(text).0;
+        let old_sheet = preserve_sheet.then(|| self.address.sheet_name().to_owned());
+        let mut replacement = Self::default();
+        replacement.set_address_str(text);
+        if replacement.address_str() != text { replacement.set_string_value(text); }
+        if let Some(sheet) = old_sheet {
+            if !replacement.string_value.has_value() { replacement.address.set_sheet_name(sheet); }
+        }
+        *self = replacement;
+        true
+    }
+
     pub(crate) fn has_string_value(&self) -> bool {
         self.string_value.has_value()
     }
@@ -96,6 +116,7 @@ impl Formula {
         let value = value.into();
         if is_address(&value) {
             self.address.set_address(value);
+            self.string_value.remove_value();
         } else {
             self.set_string_value(value);
         }
@@ -180,5 +201,24 @@ impl AdjustmentCoordinateWithSheet for Formula {
             root_row_num,
             offset_row_num,
         );
+    }
+}
+
+#[cfg(test)]
+mod reference_identity_regression {
+    use super::Formula;
+    use crate::structs::Address;
+
+    #[test]
+    fn range_edit_preserves_raw_sheet_identity_but_rename_replaces_it() {
+        let mut address = Address::default();
+        address.set_address("Sheet1!$B$2:$B$4"); address.set_sheet_name("Bob's");
+        let mut formula = Formula::default(); formula.set_address(address);
+        assert!(formula.replace_reference_text_preserving_address_identity("'Bob''s'!$B$3:$B$5"));
+        assert_eq!(formula.address_str(), "'Bob''s'!$B$3:$B$5");
+        assert_eq!(formula.address().sheet_name(), "Bob's");
+        assert!(formula.replace_reference_text_preserving_address_identity("Data!$B$3:$B$5"));
+        assert_eq!(formula.address_str(), "Data!$B$3:$B$5");
+        assert_eq!(formula.address().sheet_name(), "Data");
     }
 }

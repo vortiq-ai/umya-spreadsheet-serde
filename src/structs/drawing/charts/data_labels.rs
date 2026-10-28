@@ -78,6 +78,44 @@ pub struct DataLabelsParts {
 }
 
 impl DataLabels {
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
+        &[DataLabel],
+        Option<&ShapeProperties>,
+        Option<&ChartLines>,
+        Option<&ExtensionList>,
+    ) {
+        match self.parts.as_deref() {
+            Some(p) => (
+                &p.labels,
+                p.shape_properties.as_ref(),
+                p.leader_lines.as_ref(),
+                p.extensions.as_ref(),
+            ),
+            None => (&[], None, None, None),
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
+        &mut [DataLabel],
+        Option<&mut ShapeProperties>,
+        Option<&mut ChartLines>,
+        Option<&mut ExtensionList>,
+    ) {
+        match self.parts.as_deref_mut() {
+            Some(p) => (
+                &mut p.labels,
+                p.shape_properties.as_mut(),
+                p.leader_lines.as_mut(),
+                p.extensions.as_mut(),
+            ),
+            None => (&mut [], None, None, None),
+        }
+    }
+
     pub(crate) fn extensions_for_roles_mut(&mut self) -> Option<&mut ExtensionList> {
         self.parts
             .as_mut()
@@ -112,24 +150,6 @@ impl DataLabels {
         self.parts.as_mut().and_then(|p| p.leader_lines.as_mut())
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(parts) = &mut self.parts {
-            for label in &mut parts.labels {
-                result.extend(label.formulas_mut());
-            }
-            if let Some(v) = &mut parts.shape_properties {
-                result.extend(v.formulas_mut());
-            }
-            if let Some(v) = &mut parts.leader_lines {
-                result.extend(v.formulas_mut());
-            }
-            if let Some(v) = &mut parts.extensions {
-                result.extend(v.formulas_mut());
-            }
-        }
-        result
-    }
 
     #[must_use]
     pub fn show_legend_key(&self) -> &ShowLegendKey {

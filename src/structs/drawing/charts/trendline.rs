@@ -111,19 +111,31 @@ impl Default for Trendline {
     }
 }
 impl Trendline {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.label {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.extensions {
-            result.extend(v.formulas_mut());
-        }
-        result
+    // Projection only: retain diagnostics and absent children exactly.
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&TrendlineLabel>,
+        Option<&ShapeProperties>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            self.label.as_deref(),
+            self.shape_properties.as_ref(),
+            self.extensions.as_deref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut TrendlineLabel>,
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            self.label.as_deref_mut(),
+            self.shape_properties.as_mut(),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

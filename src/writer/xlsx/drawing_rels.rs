@@ -57,26 +57,21 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         false,
     );
 
-    for (r_id, chart_no) in (1..).zip(chart_no_list.iter()) {
-        is_write = write_relationship(
-            &mut writer,
-            r_id,
-            CHART_NS,
-            format!("../charts/chart{chart_no}.xml").as_str(),
-            "",
-        );
-    }
-
+    let mut chart_numbers = chart_no_list.iter();
     for (r_id, (key, value)) in (1..).zip(rel_list.iter()) {
-        if key == "IMAGE" {
+        if key == "CHART" {
+            let chart_no = chart_numbers.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "drawing chart relationship has no chart part"))?;
             is_write = write_relationship(
-                &mut writer,
-                r_id,
-                IMAGE_NS,
-                format!("../media/{value}").as_str(),
-                "",
+                &mut writer, r_id, CHART_NS, format!("../charts/chart{chart_no}.xml").as_str(), "",
+            );
+        } else if key == "IMAGE" {
+            is_write = write_relationship(
+                &mut writer, r_id, IMAGE_NS, format!("../media/{value}").as_str(), "",
             );
         }
+    }
+    if chart_numbers.next().is_some() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "chart part has no drawing relationship").into());
     }
     write_end_tag(&mut writer, "Relationships");
 

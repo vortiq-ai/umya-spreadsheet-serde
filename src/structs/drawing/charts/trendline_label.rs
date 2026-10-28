@@ -45,22 +45,35 @@ pub struct TrendlineLabel {
     extensions:         Option<Box<super::ExtensionList>>,
 }
 impl TrendlineLabel {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.layout {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.text {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.extensions {
-            result.extend(v.formulas_mut());
-        }
-        result
+    // Projection only: retain diagnostics and absent children exactly.
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&ChartText>,
+        Option<&Layout>,
+        Option<&ShapeProperties>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            self.text.as_ref(),
+            self.layout.as_ref(),
+            self.shape_properties.as_ref(),
+            self.extensions.as_deref(),
+        )
     }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut ChartText>,
+        Option<&mut Layout>,
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            self.text.as_mut(),
+            self.layout.as_mut(),
+            self.shape_properties.as_mut(),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

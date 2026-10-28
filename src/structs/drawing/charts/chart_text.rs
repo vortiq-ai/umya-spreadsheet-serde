@@ -34,13 +34,6 @@ pub struct ChartText {
 }
 
 impl ChartText {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(value) = &mut self.string_reference {
-            result.extend(value.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn rich_text(&self) -> Option<&RichText> {

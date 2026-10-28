@@ -44,21 +44,6 @@ pub struct AxisDataSource {
     invalid: bool,
 }
 impl AxisDataSource {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        for choice in &mut self.choices {
-            match choice {
-                AxisDataSourceChoice::MultiLevelStringReference(v) => {
-                    result.extend(v.formulas_mut());
-                }
-                AxisDataSourceChoice::NumberReference(v) => result.extend(v.formulas_mut()),
-                AxisDataSourceChoice::NumericLiteral(v) => result.extend(v.formulas_mut()),
-                AxisDataSourceChoice::StringReference(v) => result.extend(v.formulas_mut()),
-                AxisDataSourceChoice::StringLiteral(v) => result.extend(v.formulas_mut()),
-            }
-        }
-        result
-    }
 
     #[must_use]
     pub fn choices(&self) -> &[AxisDataSourceChoice] {

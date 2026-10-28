@@ -45,6 +45,22 @@ pub struct Area3DChart {
 }
 
 impl Area3DChart {
+    pub(crate) fn reference_group_parts(&self) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (&self.area_chart_series_list, self.data_labels.as_deref(), self.extensions.as_deref())
+    }
+
+    pub(crate) fn reference_group_parts_mut(&mut self) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (&mut self.area_chart_series_list, self.data_labels.as_deref_mut(), self.extensions.as_deref_mut())
+    }
+
     pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
         self.data_labels.as_deref().into_iter()
     }
@@ -53,19 +69,6 @@ impl Area3DChart {
         self.data_labels.as_deref_mut().into_iter()
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        for series in self.area_chart_series_list.area_chart_series_mut() {
-            result.extend(series.formula_mut());
-        }
-        if let Some(v) = &mut self.data_labels {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.extensions {
-            result.extend(v.formulas_mut());
-        }
-        result
-    }
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

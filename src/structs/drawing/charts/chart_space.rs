@@ -54,6 +54,16 @@ pub struct ChartSpace {
 }
 
 impl ChartSpace {
+    pub(crate) fn reference_role_parts(&self) -> (&Chart, Option<&ShapeProperties>) {
+        (&self.chart, self.shape_properties.as_ref())
+    }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (&mut Chart, Option<&mut ShapeProperties>) {
+        (&mut self.chart, self.shape_properties.as_mut())
+    }
+
     #[must_use]
     pub fn date1904(&self) -> Option<&Date1904> {
         self.date1904.as_ref()
@@ -355,12 +365,9 @@ impl AdjustmentCoordinateWithSheet for ChartSpace {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.chart.adjustment_insert_coordinate_with_sheet(
-            sheet_name,
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Space(self), sheet_name,
+            root_col_num, offset_col_num, root_row_num, offset_row_num, false,
         );
     }
 
@@ -372,12 +379,9 @@ impl AdjustmentCoordinateWithSheet for ChartSpace {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.chart.adjustment_remove_coordinate_with_sheet(
-            sheet_name,
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Space(self), sheet_name,
+            root_col_num, offset_col_num, root_row_num, offset_row_num, true,
         );
     }
 }

@@ -140,6 +140,24 @@ macro_rules! ordered_group_views_mut {
 }
 
 impl PlotArea {
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::PlotParts<'_> {
+        let groups = self.chart_groups().collect();
+        super::chart_reference_roles::PlotParts {
+            layout: &self.layout, shape: self.shape_properties.as_ref(), groups,
+            category_axes: &self.category_axis, date_axes: &self.date_axis,
+            value_axes: &self.value_axis, series_axes: &self.series_axis,
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::PlotPartsMut<'_> {
+        let groups = ordered_group_views_mut!(self).collect();
+        super::chart_reference_roles::PlotPartsMut {
+            layout: &mut self.layout, shape: self.shape_properties.as_mut(), groups,
+            category_axes: &mut self.category_axis, date_axes: &mut self.date_axis,
+            value_axes: &mut self.value_axis, series_axes: &mut self.series_axis,
+        }
+    }
+
     /// The stored series parts the writer leaves out because the series type
     /// of their plot group cannot hold them.
     ///
@@ -900,26 +918,7 @@ impl PlotArea {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result = self.layout.formulas_mut();
-        for axis in &mut self.category_axis {
-            result.extend(axis.formulas_mut());
-        }
-        for axis in &mut self.date_axis {
-            result.extend(axis.formulas_mut());
-        }
-        for axis in &mut self.value_axis {
-            result.extend(axis.formulas_mut());
-        }
-        for axis in &mut self.series_axis {
-            result.extend(axis.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        for group in ordered_group_views_mut!(self) {
-            result.extend(group.formulas_mut());
-        }
-        result
+        super::chart_reference_roles::collect_plot_formulas_mut(self)
     }
 
     #[deprecated(since = "3.0.0", note = "Use formula_mut()")]
@@ -1094,15 +1093,10 @@ impl AdjustmentCoordinateWithSheet for PlotArea {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        for formula in self.formula_mut() {
-            formula.adjustment_insert_coordinate_with_sheet(
-                sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Plot(self), sheet_name,
+            root_col_num, offset_col_num, root_row_num, offset_row_num, false,
+        );
     }
 
     fn adjustment_remove_coordinate_with_sheet(
@@ -1113,15 +1107,10 @@ impl AdjustmentCoordinateWithSheet for PlotArea {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        for formula in self.formula_mut() {
-            formula.adjustment_remove_coordinate_with_sheet(
-                sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Plot(self), sheet_name,
+            root_col_num, offset_col_num, root_row_num, offset_row_num, true,
+        );
     }
 }
 

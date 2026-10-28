@@ -149,6 +149,34 @@ impl Default for Chart {
     }
 }
 impl Chart {
+    /// Adjust native chart references for an edit in one-based Excel geometry.
+    ///
+    /// Coordinates must be in the native worksheet grid and a `DeleteSheet`
+    /// must supply its complete pre-delete sheet order. An out-of-domain edit
+    /// leaves this chart unchanged; the report still counts visited references.
+    /// Workbook operations validate their arguments through their existing APIs.
+    pub fn adjust_references(
+        &mut self,
+        host_sheet: &str,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) -> crate::drawing::charts::ReferenceAdjustmentReport {
+        use crate::drawing::charts::{chart_reference_roles::{visit_mut, visit_ref, ReferenceGrammar}, reference_edit_engine::{PreparedReferenceEdit, edit_prepared_formula_text}, ReferenceAdjustmentReport};
+        if self.two_cell_anchor.graphic_frame().is_none() { return ReferenceAdjustmentReport::default(); }
+        let Ok(prepared) = PreparedReferenceEdit::new(edit) else {
+            let mut report = ReferenceAdjustmentReport::default();
+            report.preserved_opaque_extensions = visit_ref(self.chart_space(), &mut |_metadata, _target| report.visited += 1);
+            return report;
+        };
+        let mut report = ReferenceAdjustmentReport::default();
+        report.preserved_opaque_extensions = visit_mut(self.chart_space_mut(), &mut |metadata, mut target| {
+            report.visited += 1;
+            let decision = edit_prepared_formula_text(&target.formula().address_str(), host_sheet, &prepared, metadata.grammar == ReferenceGrammar::LabelRangeFormula);
+            if target.replace_decided_text(&decision.text) { report.changed += 1; }
+            report.invalidated += decision.invalidated;
+        });
+        report
+    }
+
     #[inline]
     pub fn set_title<S: Into<String>>(&mut self, value: S) -> &mut Self {
         let title = self.make_title(value);
@@ -2443,15 +2471,16 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.two_cell_anchor
-            .as_mut()
-            .adjustment_insert_coordinate_with_sheet(
-                sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
+        if offset_col_num != 0 {
+            self.adjust_references("", &crate::drawing::charts::ChartReferenceEdit::InsertColumns {
+                sheet: sheet_name.into(), at: root_col_num, count: offset_col_num,
+            });
+        }
+        if offset_row_num != 0 {
+            self.adjust_references("", &crate::drawing::charts::ChartReferenceEdit::InsertRows {
+                sheet: sheet_name.into(), at: root_row_num, count: offset_row_num,
+            });
+        }
     }
 
     #[inline]
@@ -2463,14 +2492,17 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.two_cell_anchor
-            .as_mut()
-            .adjustment_remove_coordinate_with_sheet(
-                sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
+        if offset_col_num != 0 {
+            let columns = (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385)).collect();
+            self.adjust_references("", &crate::drawing::charts::ChartReferenceEdit::DeleteColumns {
+                sheet: sheet_name.into(), columns,
+            });
+        }
+        if offset_row_num != 0 {
+            let rows = (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577)).collect();
+            self.adjust_references("", &crate::drawing::charts::ChartReferenceEdit::DeleteRows {
+                sheet: sheet_name.into(), rows,
+            });
+        }
     }
 }

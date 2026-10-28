@@ -579,24 +579,9 @@ impl OpaqueElement {
         Ok(())
     }
 
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        self.children
-            .iter_mut()
-            .filter_map(|token| match token {
-                OpaqueToken::Reference(value) => Some(value.sequence.references_mut()),
-                _ => None,
-            })
-            .flatten()
-            .collect()
-    }
+
 }
 
 impl ExtensionNode {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        match self {
-            Self::Known(v) => v.formulas_mut(),
-            Self::Unknown(v) => v.formulas_mut(),
-            _ => Vec::new(),
-        }
-    }
+
 }

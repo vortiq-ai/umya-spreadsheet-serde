@@ -104,14 +104,19 @@ pub struct ValueAxisParts {
     extra_display_units: Vec<DisplayUnits>,
 }
 impl ValueAxisParts {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = self.display_units
-            .as_mut()
-            .map(DisplayUnits::formulas_mut)
-            .unwrap_or_default();
-        for units in &mut self.extra_display_units { result.extend(units.formulas_mut()); }
-        result
+    pub(crate) fn reference_role_parts(&self) -> (
+        Option<&DisplayUnits>, &[DisplayUnits],
+    ) {
+        (self.display_units.as_ref(), &self.extra_display_units)
     }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+        Option<&mut DisplayUnits>, &mut [DisplayUnits],
+    ) {
+        (self.display_units.as_mut(), &mut self.extra_display_units)
+    }
+
+
     pub fn has_conflict(&self) -> bool {
         !self.extra_display_units.is_empty() || self.display_units.as_ref().is_some_and(DisplayUnits::has_conflict)
     }
@@ -161,6 +166,24 @@ impl Default for DisplayUnits {
     }
 }
 impl DisplayUnits {
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::UnitsParts<'_> {
+        super::chart_reference_roles::UnitsParts {
+            label: self.label.as_deref(),
+            extensions: self.extensions.as_ref(),
+            extra_labels: &self.extra_labels,
+            extra_extensions: &self.extra_extensions,
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::UnitsPartsMut<'_> {
+        super::chart_reference_roles::UnitsPartsMut {
+            label: self.label.as_deref_mut(),
+            extensions: self.extensions.as_mut(),
+            extra_labels: &mut self.extra_labels,
+            extra_extensions: &mut self.extra_extensions,
+        }
+    }
+
     pub(crate) fn extra_extensions_for_roles(&self) -> &[ExtensionList] { &self.extra_extensions }
     pub(crate) fn extensions_for_roles_mut(&mut self) -> Option<&mut ExtensionList> { self.extensions.as_mut() }
     pub(crate) fn extra_extensions_for_roles_mut(&mut self) -> &mut [ExtensionList] { &mut self.extra_extensions }
@@ -181,18 +204,7 @@ impl DisplayUnits {
     pub fn extra_labels_mut(&mut self) -> &mut [DisplayUnitsLabel] { &mut self.extra_labels }
     #[must_use]
     pub fn extra_extensions(&self) -> &[ExtensionList] { &self.extra_extensions }
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut out = Vec::new();
-        if let Some(label) = &mut self.label {
-            out.extend(label.formulas_mut());
-        }
-        if let Some(ext) = &mut self.extensions {
-            out.extend(ext.formulas_mut());
-        }
-        for label in &mut self.extra_labels { out.extend(label.formulas_mut()); }
-        for ext in &mut self.extra_extensions { out.extend(ext.formulas_mut()); }
-        out
-    }
+
     #[must_use]
     pub fn unit(&self) -> &DisplayUnit {
         &self.unit
@@ -386,6 +398,24 @@ impl Default for DisplayUnitsLabel {
     }
 }
 impl DisplayUnitsLabel {
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::DisplayLabelParts<'_> {
+        super::chart_reference_roles::DisplayLabelParts {
+            text: self.text.as_ref(),
+            layout: self.layout.as_ref(),
+            shape: self.shape_properties.as_ref(),
+            extra_children: &self.extra_children,
+        }
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::DisplayLabelPartsMut<'_> {
+        super::chart_reference_roles::DisplayLabelPartsMut {
+            text: self.text.as_mut(),
+            layout: self.layout.as_mut(),
+            shape: self.shape_properties.as_mut(),
+            extra_children: &mut self.extra_children,
+        }
+    }
+
     pub(crate) fn layout_for_roles_mut(&mut self) -> Option<&mut Layout> { self.layout.as_mut() }
     pub(crate) fn shape_for_roles_mut(&mut self) -> Option<&mut ShapeProperties> { self.shape_properties.as_mut() }
     #[must_use]
@@ -412,23 +442,7 @@ impl DisplayUnitsLabel {
     #[must_use]
     pub fn extra_children(&self) -> &[DisplayLabelOccurrence] { &self.extra_children }
     pub fn extra_children_mut(&mut self) -> &mut [DisplayLabelOccurrence] { &mut self.extra_children }
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = self.text
-            .as_mut()
-            .map(ChartText::formulas_mut)
-            .unwrap_or_default();
-        if let Some(layout) = &mut self.layout { result.extend(layout.formulas_mut()); }
-        if let Some(shape) = &mut self.shape_properties { result.extend(shape.formulas_mut()); }
-        for occurrence in &mut self.extra_children {
-            match &mut occurrence.child {
-                DisplayLabelChild::Text(v) => result.extend(v.formulas_mut()),
-                DisplayLabelChild::Layout(v) => result.extend(v.formulas_mut()),
-                DisplayLabelChild::Shape(v) => result.extend(v.formulas_mut()),
-                DisplayLabelChild::TextProperties(_) => {},
-            }
-        }
-        result
-    }
+
     #[must_use]
     pub fn text(&self) -> Option<&ChartText> {
         self.text.as_ref()
