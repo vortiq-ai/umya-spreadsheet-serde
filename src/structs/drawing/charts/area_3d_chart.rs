@@ -40,9 +40,47 @@ pub struct Area3DChart {
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            Option<Box<DataLabels>>,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl Area3DChart {
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        self.data_labels.as_deref().into_iter()
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        self.data_labels.as_deref_mut().into_iter()
+    }
+
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        for series in self.area_chart_series_list.area_chart_series_mut() {
+            result.extend(series.formula_mut());
+        }
+        if let Some(v) = &mut self.data_labels {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn grouping(&self) -> &Grouping {
         &self.grouping
@@ -130,6 +168,9 @@ impl Area3DChart {
     }
 
     pub fn data_labels_mut(&mut self) -> Option<&mut DataLabels> {
+        if let Some(labels) = &mut self.data_labels {
+            labels.mark_owner_present();
+        }
         self.data_labels.as_deref_mut()
     }
 
@@ -140,6 +181,9 @@ impl Area3DChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Self {
         self.data_labels = Some(Box::new(value));
+        if let Some(labels) = &mut self.data_labels {
+            labels.mark_owner_present();
+        }
         self
     }
 
@@ -176,14 +220,16 @@ impl Area3DChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty,session)));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e, session);
@@ -192,7 +238,11 @@ impl Area3DChart {
                         }
                     b"dLbls" => {
                         let mut obj = DataLabels::default();
-                        obj.set_attributes(reader, e);
+                        if is_empty {
+                            obj.mark_empty_import();
+                        } else {
+                            obj.set_attributes(reader, e, session);
+                        }
                         self.set_data_labels(obj);
                     }
                     b"grouping" => {
@@ -239,7 +289,7 @@ impl Area3DChart {
 
         // c:dLbls
         if let Some(v) = &self.data_labels {
-            v.write_to(writer);
+            v.write_to_present(writer, wb);
         }
 
         // c:axId
@@ -247,6 +297,9 @@ impl Area3DChart {
             v.write_to(writer);
         }
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "area3DChart", Some(SeriesFamily::Area));
+        }
         write_end_tag(writer, "c:area3DChart");
     }
 }

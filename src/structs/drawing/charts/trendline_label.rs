@@ -41,8 +41,41 @@ pub struct TrendlineLabel {
     shape_properties:   Option<ShapeProperties>,
     text_properties:    Option<TextProperties>,
     duplicate_children: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:         Option<Box<super::ExtensionList>>,
 }
 impl TrendlineLabel {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.layout {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.text {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn layout(&self) -> Option<&Layout> {
         self.layout.as_ref()
@@ -162,6 +195,7 @@ impl TrendlineLabel {
         empty: bool,
         session: &SourceCacheSession,
     ) -> Self {
+        let _scope_guard = session.enter_child_scope(e);
         let mut result = Self::default();
         if empty {
             return result;
@@ -179,10 +213,11 @@ impl TrendlineLabel {
                 {
                     result.duplicate_children=true;
                 }
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
+                    b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)));consumed=true;},
                     b"layout" => {
                         let mut v = Layout::default();
-                        v.set_attributes(reader, e, empty);
+                        v.set_attributes(reader, e, empty, session);
                         result.layout = Some(v);
                         consumed = true;
                     }
@@ -202,7 +237,7 @@ impl TrendlineLabel {
                     b"spPr" => {
                         let mut v = ShapeProperties::default();
                         if !empty {
-                            v.set_attributes(reader, e);
+                            v.set_attributes_with_session(reader, e, session);
                         }
                         result.shape_properties = Some(v);
                         consumed = true;
@@ -246,6 +281,9 @@ impl TrendlineLabel {
         }
         if let Some(v) = &self.text_properties {
             v.write_to(writer);
+        }
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "trendlineLbl", None);
         }
         write_end_tag(writer, "c:trendlineLbl");
     }

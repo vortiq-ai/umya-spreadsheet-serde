@@ -36,6 +36,20 @@ pub struct Title {
 }
 
 impl Title {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.chart_text {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.layout {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
     #[must_use]
     pub fn chart_text(&self) -> Option<&ChartText> {
         self.chart_text.as_ref()
@@ -139,12 +153,13 @@ impl Title {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
                 b"tx" => {
                     let mut obj = ChartText::default();
                     obj.set_attributes(reader, e, session);
@@ -152,23 +167,23 @@ impl Title {
                 }
                 b"layout" => {
                     let mut obj = Layout::default();
-                    obj.set_attributes(reader, e, false);
+                    obj.set_attributes(reader, e, false, session);
                     self.set_layout(obj);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_shape_properties(obj);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match local_name(e.name().0) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
                 b"overlay" => {
                     self.overlay.set_attributes(reader, e);
                 }
                 b"layout" => {
                     let mut obj = Layout::default();
-                    obj.set_attributes(reader, e, true);
+                    obj.set_attributes(reader, e, true, session);
                     self.set_layout(obj);
                 }
                 _ => (),

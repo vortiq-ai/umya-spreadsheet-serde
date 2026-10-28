@@ -11,6 +11,7 @@ use quick_xml::{
 };
 
 use super::{
+    ExtensionList,
     Height,
     HeightMode,
     LayoutTarget,
@@ -42,9 +43,39 @@ pub struct ManualLayout {
     top_mode:      Option<TopMode>,
     width:         Option<Width>,
     width_mode:    Option<WidthMode>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:         Option<Box<ManualLayoutParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct ManualLayoutParts {
+    extensions: Option<ExtensionList>,
 }
 
 impl ManualLayout {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(parts) = &mut self.parts {
+            if let Some(ext) = &mut parts.extensions {
+                result.extend(ext.formulas_mut());
+            }
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts.as_mut().and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+    }
+
     #[must_use]
     pub fn height(&self) -> Option<&Height> {
         self.height.as_ref()
@@ -302,12 +333,17 @@ impl ManualLayout {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard = session.enter_child_scope(e);
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                match local_name(e.name().0) {
+                let empty=matches!(event,Event::Empty(_));
+                let mut consumed=false;
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().0)} else {b""} {
+                    b"extLst" => { self.set_extensions(Some(ExtensionList::read(reader,e,empty,session))); consumed=true; },
                     b"h" => {
                         let mut obj = Height::default();
                         obj.set_attributes(reader, e);
@@ -355,7 +391,7 @@ impl ManualLayout {
                     }
                     _ => (),
                 }
-                if matches!(event, Event::Start(_)) {
+                if !empty && !consumed {
                     crate::reader::driver::skip_element(reader, e);
                 }
             },
@@ -417,6 +453,9 @@ impl ManualLayout {
             v.write_to(writer);
         }
 
+        if let Some(v) = self.extensions() {
+            v.write_for_owner(writer, None, "manualLayout", None);
+        }
         write_end_tag(writer, "c:manualLayout");
     }
 }

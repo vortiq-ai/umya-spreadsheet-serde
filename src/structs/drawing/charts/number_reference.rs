@@ -30,9 +30,34 @@ use crate::{
 pub struct NumberReference {
     formula:         Formula,
     numbering_cache: NumberingCache,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:      Option<Box<super::ExtensionList>>,
 }
 
 impl NumberReference {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut Formula> {
+        let mut result = Vec::new();
+        result.push(&mut self.formula);
+        if let Some(value) = &mut self.extensions {
+            result.extend(value.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn formula(&self) -> &Formula {
         &self.formula
@@ -90,7 +115,7 @@ impl NumberReference {
     ) {
         // Existing callers keep source format-code handling. The policy is
         // explicit only for new roles; no new numeric cache storage is added.
-        let (parsed, _) = self.read_status(reader, e, false, NumericSourceCachePolicy::Read);
+        let (parsed, _) = self.read_status(reader, e, false, NumericSourceCachePolicy::Read, None);
         assert!(parsed, "Could not read numeric reference");
     }
 
@@ -101,7 +126,35 @@ impl NumberReference {
         empty: bool,
         policy: NumericSourceCachePolicy,
     ) -> bool {
-        let (parsed, valid) = self.read_status(reader, e, empty, policy);
+        let (parsed, valid) = self.read_status(reader, e, empty, policy, None);
+        parsed && valid
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        let (parsed, _) = self.read_status(
+            reader,
+            e,
+            false,
+            NumericSourceCachePolicy::Read,
+            Some(session),
+        );
+        assert!(parsed, "Could not read numeric reference");
+    }
+
+    pub(crate) fn read_with_policy_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        policy: NumericSourceCachePolicy,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> bool {
+        let (parsed, valid) = self.read_status(reader, e, empty, policy, Some(session));
         parsed && valid
     }
 
@@ -114,11 +167,14 @@ impl NumberReference {
         e: &BytesStart,
         empty: bool,
         policy: NumericSourceCachePolicy,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) -> (bool, bool) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let mut formulas = 0usize;
         let mut valid = true;
         let complete = children(reader, e, empty, |reader, child, empty| {
-            match local_name(child.name().into_inner()) {
+            match if session.is_none_or(|session|session.accepts_child_namespace(child,super::extension_registry::NS_C)) {local_name(child.name().into_inner())} else {b""} {
+                b"extLst" if session.is_some()=>{self.set_extensions(Some(super::ExtensionList::read(reader,child,empty,session.expect("checked session"))));true},
                 b"f" => {
                     formulas += 1;
                     if empty {
@@ -153,6 +209,9 @@ impl NumberReference {
         self.numbering_cache
             .write_to(writer, self.formula().address(), wb);
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "numRef", None);
+        }
         write_end_tag(writer, "c:numRef");
     }
 }

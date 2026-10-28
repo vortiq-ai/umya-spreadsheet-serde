@@ -65,13 +65,36 @@ impl NumericPoint {
     }
 
     fn read<R: std::io::BufRead>(reader: &mut Reader<R>, e: &BytesStart, empty: bool) -> Self {
+        Self::read_common(reader, e, empty, None)
+    }
+
+    fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Self {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+
         let mut point = Self::default();
         point
             .index
             .set_lexical_attribute(crate::drawing::get_unescaped_attribute(e, b"idx"));
         point.format_code = crate::drawing::get_unescaped_attribute(e, b"formatCode");
         let complete = children(reader, e, empty, |reader, child, empty| {
-            if local_name(child.name().into_inner()) == b"v" {
+            if session.is_none_or(|session| {
+                session.accepts_child_namespace(child, super::extension_registry::NS_C)
+            }) && local_name(child.name().into_inner()) == b"v"
+            {
                 point.invalid |= point.value.is_some();
                 point.value = read_text(reader, child, empty);
                 point.invalid |= point.value.is_none();
@@ -115,8 +138,32 @@ pub struct NumericData {
     point_count: Option<XmlUnsignedInt>,
     points:      Vec<NumericPoint>,
     invalid:     bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:  Option<Box<super::ExtensionList>>,
 }
 impl NumericData {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn format_code(&self) -> Option<&str> {
         self.format_code.as_deref()
@@ -151,9 +198,43 @@ impl NumericData {
         e: &BytesStart,
         empty: bool,
     ) -> Self {
+        Self::read_common(reader, e, empty, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Self {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let mut data = Self::default();
         let complete = children(reader, e, empty, |reader, child, empty| {
-            match local_name(child.name().into_inner()) {
+            match if session.is_none_or(|session| {
+                session.accepts_child_namespace(child, super::extension_registry::NS_C)
+            }) {
+                local_name(child.name().into_inner())
+            } else {
+                b""
+            } {
+                b"extLst" if session.is_some() => {
+                    data.set_extensions(Some(super::ExtensionList::read(
+                        reader,
+                        child,
+                        empty,
+                        session.expect("checked session"),
+                    )));
+                    true
+                }
                 b"formatCode" => {
                     data.invalid |= data.format_code.is_some();
                     data.format_code = read_text(reader, child, empty);
@@ -166,7 +247,12 @@ impl NumericData {
                     false
                 }
                 b"pt" => {
-                    data.points.push(NumericPoint::read(reader, child, empty));
+                    data.points.push(match session {
+                        Some(session) => {
+                            NumericPoint::read_with_session(reader, child, empty, session)
+                        }
+                        None => NumericPoint::read(reader, child, empty),
+                    });
                     true
                 }
                 _ => false,
@@ -211,6 +297,9 @@ impl NumericData {
         for point in &self.points {
             point.write_to(writer);
         }
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, None, "numLit", None);
+        }
         write_end_tag(writer, "c:numLit");
     }
 }
@@ -222,6 +311,13 @@ pub enum NumericDataSource {
     Literal(Box<NumericData>),
 }
 impl NumericDataSource {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        match self {
+            Self::Reference(v) => v.formulas_mut(),
+            Self::Literal(v) => v.formulas_mut(),
+        }
+    }
+
     #[must_use]
     pub fn literal(&self) -> Option<&NumericData> {
         match self {
@@ -316,50 +412,4 @@ fn skip<R: std::io::BufRead>(reader: &mut Reader<R>) -> bool {
         buf.clear();
     }
 }
-/// Decode one simple XML text owner for numeric literals and formulas. Preserve
-/// significant text, decode entities exactly once, and restore caller settings.
-pub(crate) fn read_text<R: std::io::BufRead>(
-    reader: &mut Reader<R>,
-    e: &BytesStart,
-    empty: bool,
-) -> Option<String> {
-    if empty {
-        return Some(String::new());
-    }
-    let config = reader.config().clone();
-    reader.config_mut().trim_text(false);
-    let end = e.name().into_inner().to_vec();
-    let result = (|| {
-        let mut value = String::new();
-        let mut buffer = Vec::new();
-        let mut invalid = false;
-        loop {
-            match reader.read_event_into(&mut buffer).ok()? {
-                Event::Text(text) => {
-                    let decoded = text.decode().ok()?;
-                    value.push_str(&quick_xml::escape::unescape(&decoded).ok()?);
-                }
-                Event::CData(text) => value.push_str(&text.decode().ok()?),
-                Event::GeneralRef(reference) => {
-                    let escaped = format!("&{};", reference.decode().ok()?);
-                    value.push_str(&quick_xml::escape::unescape(&escaped).ok()?);
-                }
-                Event::Start(_) => {
-                    invalid = true;
-                    if !skip(reader) {
-                        return None;
-                    }
-                }
-                Event::Empty(_) => invalid = true,
-                Event::End(child) if child.name().into_inner() == end.as_slice() => {
-                    return (!invalid).then_some(value);
-                }
-                Event::End(_) | Event::Eof | Event::Decl(_) | Event::DocType(_) => return None,
-                _ => (),
-            }
-            buffer.clear();
-        }
-    })();
-    *reader.config_mut() = config;
-    result
-}
+pub(crate) use crate::reader::driver::read_simple_text as read_text;

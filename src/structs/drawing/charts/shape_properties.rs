@@ -44,9 +44,40 @@ pub struct ShapeProperties {
     effect_list:     Option<EffectList>,
     scene_3d_type:   Option<Scene3DType>,
     shape_3d_type:   Option<Shape3DType>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:           Option<Box<ShapePropertiesParts>>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct ShapePropertiesParts {
+    extensions: Option<super::ExtensionList>,
+}
 impl ShapeProperties {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(parts) = &mut self.parts {
+            if let Some(ext) = &mut parts.extensions {
+                result.extend(ext.formulas_mut());
+            }
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts.as_mut().and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+        self
+    }
+
     #[must_use]
     pub fn pattern_fill(&self) -> Option<&PatternFill> {
         self.pattern_fill.as_ref()
@@ -275,12 +306,32 @@ impl ShapeProperties {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        self.read_with_session(reader, e, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.read_with_session(reader, e, Some(session));
+    }
+
+    fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
+                match if session.is_none_or(|session|session.accepts_child_namespace(e,"http://schemas.openxmlformats.org/drawingml/2006/main")) {local_name(e.name().0)} else {b""} {
+                    b"extLst"=>{let session=session.expect("Chart extension namespace context is required");self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
                     b"noFill" => { NoFill::set_attributes(reader,e,false); self.set_no_fill(NoFill::default()); }
                     b"pattFill" => {
                         let mut obj = PatternFill::default();
@@ -326,6 +377,7 @@ impl ShapeProperties {
                 }
             },
             Event::Empty(ref e) => {
+                if local_name(e.name().0)==b"extLst" {let session=session.expect("Chart extension namespace context is required");self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));}
                 if local_name(e.name().0) == b"effectLst" {
                     self.set_effect_list(EffectList::default());
                 }
@@ -346,8 +398,11 @@ impl ShapeProperties {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        // c:spPr
-        write_start_tag(writer, "c:spPr", vec![], false);
+        self.write_to_as(writer, "c:spPr");
+    }
+
+    pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
+        write_start_tag(writer, name, vec![], false);
 
         // a:pattFill
         if let Some(v) = &self.pattern_fill {
@@ -394,6 +449,9 @@ impl ShapeProperties {
             v.write_to(writer);
         }
 
-        write_end_tag(writer, "c:spPr");
+        if let Some(extensions) = self.extensions() {
+            extensions.write_for_owner(writer,None,"spPr",None);
+        }
+        write_end_tag(writer, name);
     }
 }

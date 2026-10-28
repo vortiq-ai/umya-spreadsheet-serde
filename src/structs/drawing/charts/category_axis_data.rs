@@ -39,6 +39,23 @@ pub struct CategoryAxisData {
 }
 
 impl CategoryAxisData {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(value) = &mut self.string_reference {
+            result.extend(value.formulas_mut());
+        }
+        if let Some(value) = &mut self.number_reference {
+            result.extend(value.formulas_mut());
+        }
+        if let Some(value) = &mut self.multi_level_string_reference {
+            result.extend(value.formulas_mut());
+        }
+        if let Some(value) = &mut self.string_literal {
+            result.extend(value.formulas_mut());
+        }
+        result
+    }
+
     #[must_use]
     pub fn multi_level_string_reference(&self) -> Option<&MultiLevelStringReference> {
         self.multi_level_string_reference.as_ref()
@@ -154,16 +171,17 @@ impl CategoryAxisData {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
                     b"multiLvlStrRef" => {
                         let mut obj = MultiLevelStringReference::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes_with_session(reader, e, session);
                         self.set_multi_level_string_reference(obj);
                     }
                     b"strRef" => {
@@ -173,12 +191,12 @@ impl CategoryAxisData {
                     }
                     b"strLit" => {
                         let mut obj = StringLiteral::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes_with_session(reader, e, session);
                         self.set_string_literal(obj);
                     }
                     b"numRef" => {
                         let mut obj = NumberReference::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes_with_session(reader, e, session);
                         self.set_number_reference(obj);
                     }
                     _ => (),

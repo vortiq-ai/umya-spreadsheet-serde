@@ -213,9 +213,13 @@ impl XmlUnsignedInt {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        self.write_to_as(writer, "c:idx");
+    }
+
+    pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
         write_start_tag(
             writer,
-            "c:idx",
+            name,
             self.attribute
                 .as_deref()
                 .map(|v| vec![("val", v).into()])

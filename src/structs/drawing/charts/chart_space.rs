@@ -232,15 +232,29 @@ impl ChartSpace {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_chart_root(owner);
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+            Event::Start(ref e) => match if local_name(e.name().into_inner()) == b"AlternateContent" {
+                if session.accepts_child_namespace(e, crate::helper::const_str::MC_NS) {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                }
+            } else if session.accepts_child_namespace(e, super::extension_registry::NS_C)
+                || (local_name(e.name().into_inner()) == b"style"
+                    && session.accepts_child_namespace(e, super::extension_registry::NS_C14))
+            {
+                local_name(e.name().into_inner())
+            } else {
+                b""
+            } {
                 b"AlternateContent" => {
                     let mut obj = Style::default();
-                    obj.set_attributes(reader, e, true);
+                    obj.set_attributes(reader, e, true, session);
                     self.set_style(obj);
                 }
                 b"chart" => {
@@ -253,12 +267,12 @@ impl ChartSpace {
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_shape_properties(obj);
                 }
                 _ => skip_element(reader, e),
             },
-            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)||(local_name(e.name().into_inner())==b"style"&&session.accepts_child_namespace(e,super::extension_registry::NS_C14)){local_name(e.name().into_inner())}else{b""} {
                 b"date1904" => {
                     let mut obj = Date1904::default();
                     obj.set_attributes(reader, e);
@@ -272,7 +286,7 @@ impl ChartSpace {
                 }
                 b"style" => {
                     let mut obj = Style::default();
-                    obj.set_attributes(reader, e, false);
+                    obj.set_attributes(reader, e, false, session);
                     self.set_style(obj);
                 }
                 _ => (),

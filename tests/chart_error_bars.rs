@@ -266,7 +266,8 @@ fn invalid_sources_are_retained_reported_and_not_emitted() {
         bincode::serialize(&umya_spreadsheet::drawing::charts::ErrorBars::default())
             .unwrap()
             .len(),
-        36
+        // Existing 36 bytes plus one absent extension Option tag.
+        37
     );
     for (case, (content, reason)) in [
         (

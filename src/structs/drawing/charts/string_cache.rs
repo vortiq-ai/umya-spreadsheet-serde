@@ -385,6 +385,15 @@ impl StringCache {
         reader: &mut Reader<R>,
         formula: String,
     ) -> (Option<String>, Self, Option<DenseSummary>) {
+        Self::read_deferred_named(reader, formula, b"strCache", false)
+    }
+
+    pub(crate) fn read_deferred_named<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        formula: String,
+        end: &[u8],
+        exact: bool,
+    ) -> (Option<String>, Self, Option<DenseSummary>) {
         let mut cached_value = None;
         let mut proof = DenseProof::default();
         let mut scratch = PointScratch::default();
@@ -416,7 +425,8 @@ impl StringCache {
                     b"strCache" => proof.broken = true,
                     _ => (),
                 },
-                Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => {
+                Event::End(e) if if exact { e.name().into_inner() == end } else {
+                    local_name(e.name().into_inner()) == end } => {
                     return (cached_value, Self::empty_source(formula), proof.finish());
                 }
                 Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
@@ -429,10 +439,11 @@ impl StringCache {
     /// zero, which series names use, and every point the file stored.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         formula: String,
     ) -> (Option<String>, Self) {
-        let (cached_value, source) = Self::read_source_attributes(reader, formula);
+        let (cached_value, source) =
+            Self::read_source_named(reader, formula, owner.name().into_inner(), true);
         (
             cached_value,
             Self {
@@ -448,6 +459,15 @@ impl StringCache {
     pub(crate) fn read_source_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         formula: String,
+    ) -> (Option<String>, SourceCache) {
+        Self::read_source_named(reader, formula, b"strCache", false)
+    }
+
+    fn read_source_named<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        formula: String,
+        end: &[u8],
+        exact: bool,
     ) -> (Option<String>, SourceCache) {
         let mut cached_value = None;
         let mut point_count = None;
@@ -484,7 +504,8 @@ impl StringCache {
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"strCache" {
+                if if exact { e.name().into_inner() == end } else {
+                    local_name(e.name().into_inner()) == end } {
                     let source = SourceCache::as_read(formula, point_count, points);
                     return (cached_value, source);
                 }
@@ -502,15 +523,30 @@ impl StringCache {
         formula: &Formula,
         wb: &Workbook,
     ) {
+        self.write_to_as(writer, formula, wb, "c:strCache");
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        formula: &Formula,
+        wb: &Workbook,
+        name: &str,
+    ) {
         match &self.source {
             Some(source) if source.formula() == formula.address_str() => {
-                Self::write_stored(writer, source, formula, wb);
+                Self::write_stored(writer, source, formula, wb, name);
             }
-            _ => Self::write_generated(writer, formula, wb),
+            _ => Self::write_generated(writer, formula, wb, name),
         }
     }
 
-    fn write_generated(writer: &mut Writer<Cursor<Vec<u8>>>, formula: &Formula, wb: &Workbook) {
+    fn write_generated(
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        formula: &Formula,
+        wb: &Workbook,
+        name: &str,
+    ) {
         let cell_value_list = if formula.has_string_value() {
             let value = formula.address_str();
             let value = match value
@@ -534,7 +570,7 @@ impl StringCache {
         };
         let coll_value_count = cell_value_list.len().to_string();
         // c:strCache
-        write_start_tag(writer, "c:strCache", vec![], false);
+        write_start_tag(writer, name, vec![], false);
 
         // c:ptCount
         write_start_tag(
@@ -556,7 +592,7 @@ impl StringCache {
             write_end_tag(writer, "c:pt");
         }
 
-        write_end_tag(writer, "c:strCache");
+        write_end_tag(writer, name);
     }
 
     /// Writes the stored points in file order. A point the cells reproduce gets
@@ -568,11 +604,12 @@ impl StringCache {
         cache: &SourceCache,
         formula: &Formula,
         wb: &Workbook,
+        name: &str,
     ) {
         let current = DisplaySource::new(formula, wb, cache.indices());
 
         // c:strCache
-        write_start_tag(writer, "c:strCache", vec![], false);
+        write_start_tag(writer, name, vec![], false);
 
         // c:ptCount
         if let Some(count) = cache.point_count() {
@@ -596,7 +633,7 @@ impl StringCache {
             write_point(writer, &index.to_string(), value.as_deref());
         }
 
-        write_end_tag(writer, "c:strCache");
+        write_end_tag(writer, name);
     }
 }
 
@@ -814,8 +851,8 @@ pub(crate) fn visit_deferred_indices(data: &[u8], mut visit: impl FnMut(u32)) {
                     visit(index);
                 }
             }
-            Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => return,
-            Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => return,
+            Event::Empty(e) if is_string_cache_name(local_name(e.name().into_inner())) => return,
+            Event::End(e) if is_string_cache_name(local_name(e.name().into_inner())) => return,
             Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
             _ => (),
         }
@@ -832,10 +869,11 @@ pub(crate) fn materialize_deferred_cache(data: &[u8], formula: String) -> Source
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).unwrap() {
-            Event::Start(e) if local_name(e.name().into_inner()) == b"strCache" => {
-                return StringCache::read_source_attributes(&mut reader, formula).1;
+            Event::Start(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
+                return StringCache::read_source_named(&mut reader, formula,
+                    e.name().into_inner(), true).1;
             }
-            Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => {
+            Event::Empty(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
                 return SourceCache::as_read(formula, None, Vec::new());
             }
             Event::Eof => panic!("Error: Could not find {} start element", "c:strCache"),
@@ -1339,4 +1377,11 @@ mod tests {
             );
         }
     }
+}
+
+fn is_string_cache_name(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache"
+    )
 }

@@ -110,6 +110,35 @@ fn order_chart_groups<T>(
     result
 }
 
+// Expand the existing group-field borrowing at both callers. The order resolver
+// remains shared; borrowing unrelated layout/axis owners stays field-disjoint.
+macro_rules! ordered_group_views_mut {
+    ($owner:ident) => {{
+    let first = [
+                $owner.line_chart.as_mut().map(ChartGroupMut::LineChart),
+                $owner.line_3d_chart.as_mut().map(ChartGroupMut::Line3DChart),
+                $owner.pie_chart.as_mut().map(ChartGroupMut::PieChart),
+                $owner.pie_3d_chart.as_mut().map(ChartGroupMut::Pie3DChart),
+                $owner.doughnut_chart
+                    .as_mut()
+                    .map(ChartGroupMut::DoughnutChart),
+                $owner.scatter_chart.as_mut().map(ChartGroupMut::ScatterChart),
+                $owner.bar_chart.as_mut().map(ChartGroupMut::BarChart),
+                $owner.bar_3d_chart.as_mut().map(ChartGroupMut::Bar3DChart),
+                $owner.radar_chart.as_mut().map(ChartGroupMut::RadarChart),
+                $owner.bubble_chart.as_mut().map(ChartGroupMut::BubbleChart),
+                $owner.area_chart.as_mut().map(ChartGroupMut::AreaChart),
+                $owner.area_3d_chart.as_mut().map(ChartGroupMut::Area3DChart),
+                $owner.of_pie_chart.as_mut().map(ChartGroupMut::OfPieChart),
+            ];
+            let entries = $owner.chart_group_order.iter_mut().map(|entry| match entry {
+                ChartGroupEntry::First(kind) => (*kind, None),
+                ChartGroupEntry::Additional(group) => (group.kind(), Some(group.as_group_mut())),
+            });
+            order_chart_groups(first, entries).into_iter()
+        }};
+}
+
 impl PlotArea {
     /// The stored series parts the writer leaves out because the series type
     /// of their plot group cannot hold them.
@@ -166,28 +195,7 @@ impl PlotArea {
 
     #[must_use = "the iterator must be consumed to visit chart containers"]
     pub fn chart_groups_mut(&mut self) -> impl Iterator<Item = ChartGroupMut<'_>> {
-        let first = [
-            self.line_chart.as_mut().map(ChartGroupMut::LineChart),
-            self.line_3d_chart.as_mut().map(ChartGroupMut::Line3DChart),
-            self.pie_chart.as_mut().map(ChartGroupMut::PieChart),
-            self.pie_3d_chart.as_mut().map(ChartGroupMut::Pie3DChart),
-            self.doughnut_chart
-                .as_mut()
-                .map(ChartGroupMut::DoughnutChart),
-            self.scatter_chart.as_mut().map(ChartGroupMut::ScatterChart),
-            self.bar_chart.as_mut().map(ChartGroupMut::BarChart),
-            self.bar_3d_chart.as_mut().map(ChartGroupMut::Bar3DChart),
-            self.radar_chart.as_mut().map(ChartGroupMut::RadarChart),
-            self.bubble_chart.as_mut().map(ChartGroupMut::BubbleChart),
-            self.area_chart.as_mut().map(ChartGroupMut::AreaChart),
-            self.area_3d_chart.as_mut().map(ChartGroupMut::Area3DChart),
-            self.of_pie_chart.as_mut().map(ChartGroupMut::OfPieChart),
-        ];
-        let entries = self.chart_group_order.iter_mut().map(|entry| match entry {
-            ChartGroupEntry::First(kind) => (*kind, None),
-            ChartGroupEntry::Additional(group) => (group.kind(), Some(group.as_group_mut())),
-        });
-        order_chart_groups(first, entries).into_iter()
+        ordered_group_views_mut!(self)
     }
 
     fn replace_first_chart_group(&mut self, group: ChartGroup) -> Option<ChartGroup> {
@@ -892,11 +900,24 @@ impl PlotArea {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result = Vec::new();
-        for group in self.chart_groups_mut() {
-            for series in group.series_mut().area_chart_series_mut() {
-                result.extend(series.formula_mut());
-            }
+        let mut result = self.layout.formulas_mut();
+        for axis in &mut self.category_axis {
+            result.extend(axis.formulas_mut());
+        }
+        for axis in &mut self.date_axis {
+            result.extend(axis.formulas_mut());
+        }
+        for axis in &mut self.value_axis {
+            result.extend(axis.formulas_mut());
+        }
+        for axis in &mut self.series_axis {
+            result.extend(axis.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        for group in ordered_group_views_mut!(self) {
+            result.extend(group.formulas_mut());
         }
         result
     }
@@ -913,14 +934,15 @@ impl PlotArea {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
                 b"layout" => {
-                    self.layout.set_attributes(reader, e, false);
+                    self.layout.set_attributes(reader, e, false, session);
                 }
                 b"lineChart" => {
                     let mut obj = LineChart::default();
@@ -1009,7 +1031,7 @@ impl PlotArea {
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_shape_properties(obj);
                 }
                 _ => skip_element(reader, e),

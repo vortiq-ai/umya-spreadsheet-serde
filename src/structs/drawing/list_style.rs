@@ -456,75 +456,75 @@ impl ListStyle {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:effectLst" => {
-                        let obj = EffectList::default();
-                        self.set_effect_list(obj);
+        let end = e.name().into_inner().to_vec();
+        xml_read_loop!(reader,
+            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                let empty = matches!(event, Event::Empty(_));
+                match crate::reader::driver::local_name(child.name().into_inner()) {
+                    b"effectLst" => {
+                        let mut value = EffectList::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_effect_list(value);
                     }
-                    b"a:defPPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_default_paragraph_properties(obj);
+                    b"defPPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_default_paragraph_properties(value);
                     }
-                    b"a:lvl1pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level1_paragraph_properties(obj);
+                    b"lvl1pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level1_paragraph_properties(value);
                     }
-                    b"a:lvl2pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level2_paragraph_properties(obj);
+                    b"lvl2pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level2_paragraph_properties(value);
                     }
-                    b"a:lvl3pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level3_paragraph_properties(obj);
+                    b"lvl3pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level3_paragraph_properties(value);
                     }
-                    b"a:lvl4pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level4_paragraph_properties(obj);
+                    b"lvl4pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level4_paragraph_properties(value);
                     }
-                    b"a:lvl5pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level5_paragraph_properties(obj);
+                    b"lvl5pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level5_paragraph_properties(value);
                     }
-                    b"a:lvl6pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level6_paragraph_properties(obj);
+                    b"lvl6pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level6_paragraph_properties(value);
                     }
-                    b"a:lvl7pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level7_paragraph_properties(obj);
+                    b"lvl7pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level7_paragraph_properties(value);
                     }
-                    b"a:lvl8pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level8_paragraph_properties(obj);
+                    b"lvl8pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level8_paragraph_properties(value);
                     }
-                    b"a:lvl9pPr" => {
-                        let mut obj = TextParagraphPropertiesType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_level9_paragraph_properties(obj);
+                    b"lvl9pPr" => {
+                        let mut value = TextParagraphPropertiesType::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_level9_paragraph_properties(value);
                     }
-                    _ => (),
+                    _ => if !empty { crate::reader::driver::skip_element(reader, child); },
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:lstStyle" {
-                    return;
-                }
+            Event::End(ref child) => {
+                if child.name().into_inner() == end.as_slice() { return; }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:lstStyle")
+            Event::Eof => panic!("unterminated list style")
         );
     }
 

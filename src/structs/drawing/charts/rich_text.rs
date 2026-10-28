@@ -10,10 +10,13 @@ use quick_xml::{
     },
 };
 
-use super::super::{
-    BodyProperties,
-    ListStyle,
-    Paragraph,
+use super::{
+    super::{
+        BodyProperties,
+        ListStyle,
+        Paragraph,
+    },
+    text_properties::TextBodyParts,
 };
 use crate::{
     drawing::Run,
@@ -31,6 +34,8 @@ pub struct RichText {
     body_properties: BodyProperties,
     list_style:      ListStyle,
     paragraph:       Vec<Paragraph>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:           Option<Box<TextBodyParts>>,
 }
 
 impl RichText {
@@ -81,6 +86,9 @@ impl RichText {
     }
 
     pub fn list_style_mut(&mut self) -> &mut ListStyle {
+        if let Some(parts) = &mut self.parts {
+            parts.list_style_present = true;
+        }
         &mut self.list_style
     }
 
@@ -90,6 +98,9 @@ impl RichText {
     }
 
     pub fn set_list_style(&mut self, value: ListStyle) {
+        if let Some(parts) = &mut self.parts {
+            parts.list_style_present = true;
+        }
         self.list_style = value;
     }
 
@@ -122,6 +133,7 @@ impl RichText {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
+        self.parts = Some(Box::new(TextBodyParts::default()));
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
@@ -130,10 +142,16 @@ impl RichText {
                 match local_name(e.name().into_inner()) {
                     b"p" => {
                         let mut v = Paragraph::default();
-                        if !empty {
+                        if empty {
+                            v.mark_empty_import();
+                        } else {
                             v.set_attributes(reader, e);
                         }
                         self.add_paragraph(v);
+                    }
+                    b"lstStyle" => {
+                        if let Some(parts) = &mut self.parts { parts.list_style_present = true; }
+                        if !empty { self.list_style.set_attributes(reader, e); }
                     }
                     b"bodyPr" => {
                         let mut v = BodyProperties::default();
@@ -164,12 +182,49 @@ impl RichText {
         self.body_properties.write_to(writer);
 
         // a:lstStyle
-        write_start_tag(writer, "a:lstStyle", vec![], true);
+        if self
+            .parts
+            .as_ref()
+            .is_none_or(|parts| parts.list_style_present)
+        {
+            self.list_style.write_to(writer);
+        }
 
         for content in &self.paragraph {
             content.write_to(writer);
         }
 
         write_end_tag(writer, "c:rich");
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn absent_list_style_is_preserved_and_mutable_access_marks_presence() {
+        let mut reader = Reader::from_reader(b"<c:rich><a:bodyPr/><a:p/></c:rich>".as_slice());
+        let mut buf = Vec::new();
+        let e = match reader.read_event_into(&mut buf).unwrap() {
+            Event::Start(e) => e.into_owned(),
+            _ => panic!("expected rich text"),
+        };
+        let mut value = RichText::default();
+        value.set_attributes(&mut reader, &e);
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        value.write_to(&mut writer);
+        assert!(
+            !String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("lstStyle")
+        );
+        value.list_style_mut();
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        value.write_to(&mut writer);
+        assert!(
+            String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("<a:lstStyle/>")
+        );
     }
 }

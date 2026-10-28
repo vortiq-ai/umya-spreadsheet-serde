@@ -465,7 +465,53 @@ pub use self::trendline::*;
 mod trendline_label;
 pub use self::trendline_label::*;
 
+mod data_label_position;
+pub use self::data_label_position::*;
+mod data_label;
+pub use self::data_label::*;
 mod numeric_data;
 pub use self::numeric_data::*;
 mod error_bars;
 pub use self::error_bars::*;
+
+mod extension_names;
+pub use self::extension_names::{
+    NamespaceScope,
+    QName,
+};
+mod chart_namespaces;
+pub(crate) use self::chart_namespaces::*;
+mod opaque_element;
+pub use self::opaque_element::*;
+mod extension_payload_leaves;
+pub use self::extension_payload_leaves::*;
+
+mod chart_lines;
+pub use self::chart_lines::*;
+
+mod reference_sequence;
+pub use self::reference_sequence::*;
+
+mod label_reference;
+pub use self::label_reference::*;
+
+mod axis_data_source;
+pub use self::axis_data_source::*;
+
+mod category_filter_exceptions;
+pub use self::category_filter_exceptions::*;
+
+mod extension_payload;
+pub use self::extension_payload::*;
+
+mod extension_list;
+pub use self::extension_list::*;
+
+mod extension_registry;
+
+mod chart_extension_roles;
+pub(crate) use self::chart_extension_roles::*;
+
+#[cfg(test)]
+#[path="charts/extension_leaves_tests.rs"]
+mod extension_leaves_tests;

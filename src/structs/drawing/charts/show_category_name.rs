@@ -19,6 +19,10 @@ pub struct ShowCategoryName {
     val: BooleanValue,
 }
 impl ShowCategoryName {
+    pub(crate) fn has_val(&self) -> bool {
+        self.val.has_value()
+    }
+
     #[must_use]
     pub fn val(&self) -> bool {
         self.val.value()

@@ -33,9 +33,45 @@ pub struct Marker {
     symbol:           Option<Symbol>,
     size:             Option<Size>,
     shape_properties: Option<ShapeProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:            Option<Box<MarkerParts>>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+struct MarkerParts {
+    extensions: Option<super::ExtensionList>,
+}
 impl Marker {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(value) = &mut self.shape_properties {
+            result.extend(value.formulas_mut());
+        }
+        if let Some(parts) = &mut self.parts {
+            if let Some(ext) = &mut parts.extensions {
+                result.extend(ext.formulas_mut());
+            }
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts.as_deref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+        self
+    }
+
     #[must_use]
     pub fn symbol(&self) -> Option<&Symbol> {
         self.symbol.as_ref()
@@ -114,9 +150,31 @@ impl Marker {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
     ) {
+        self.read_with_session(reader, e, empty_flag, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.read_with_session(reader, e, empty, Some(session));
+    }
+
+    fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+        let end = e.name().into_inner().to_vec();
         if empty_flag {
             return;
         }
@@ -125,15 +183,16 @@ impl Marker {
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                match local_name(e.name().into_inner()) {
+                match if session.is_none_or(|session|session.accepts_child_namespace(e,super::extension_registry::NS_C)) {local_name(e.name().into_inner())} else {b""} {
                     b"symbol" => { let mut value=Symbol::default(); value.set_attributes(reader,e); self.symbol=Some(value); },
                     b"size" => { let mut value=Size::default(); value.set_attributes(reader,e); self.size=Some(value); },
-                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { value.set_attributes(reader,e); } self.shape_properties=Some(value); consumed=true; },
+                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session {Some(session)=>value.set_attributes_with_session(reader,e,session),None=>value.set_attributes(reader,e)} } self.shape_properties=Some(value); consumed=true; },
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session.expect("chart extension requires original chart session"))));consumed=true;},
                     _ => (),
                 }
                 if !empty && !consumed { skip_element(reader,e); }
             },
-            Event::End(ref e) => { if local_name(e.name().into_inner()) == b"marker" { return; } },
+            Event::End(ref e) => { if e.name().into_inner() == end.as_slice() { return; } },
             Event::Eof => panic!("Could not find marker end element"),
         );
     }
@@ -141,17 +200,32 @@ impl Marker {
     /// Invalid required symbol attributes and marker sizes are retained for
     /// diagnostics.
     pub(crate) fn is_valid(&self) -> bool {
+        self.structural_is_valid()
+            && self
+                .extensions()
+                .is_none_or(|ext| ext.conflict_for_owner("marker", None).is_none())
+    }
+
+    pub(crate) fn structural_is_valid(&self) -> bool {
         self.symbol.as_ref().is_none_or(Symbol::has_val)
             && self.size.as_ref().is_none_or(Size::is_valid)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        if !self.is_valid() {
+        self.write_to_as(writer, "c:marker");
+    }
+
+    pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
+        if !self.structural_is_valid() {
             return;
         }
         // c:marker
-        if self.symbol.is_some() || self.size.is_some() || self.shape_properties.is_some() {
-            write_start_tag(writer, "c:marker", vec![], false);
+        if self.symbol.is_some()
+            || self.size.is_some()
+            || self.shape_properties.is_some()
+            || self.extensions().is_some()
+        {
+            write_start_tag(writer, name, vec![], false);
 
             // a:symbol
             if let Some(v) = &self.symbol {
@@ -168,9 +242,12 @@ impl Marker {
                 v.write_to(writer);
             }
 
-            write_end_tag(writer, "c:marker");
+            if let Some(ext) = self.extensions() {
+                ext.write_for_owner(writer, None, "marker", None);
+            }
+            write_end_tag(writer, name);
         } else {
-            write_start_tag(writer, "c:marker", vec![], true);
+            write_start_tag(writer, name, vec![], true);
         }
     }
 }

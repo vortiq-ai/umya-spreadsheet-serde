@@ -351,6 +351,20 @@ fn point_labels_do_not_replace_the_series_data_label_settings() {
     let labels = read_series.data_labels().expect("series dLbls");
     assert!(labels.text_properties().is_none());
     assert!(!labels.show_value().val());
+    assert_eq!(labels.labels().len(), 1);
+    assert_eq!(labels.labels()[0].index().val(), 2);
+    assert!(
+        labels.labels()[0]
+            .flags()
+            .show_value
+            .as_ref()
+            .unwrap()
+            .value()
+            .unwrap()
+    );
+    let written = written_series(&book);
+    assert!(written.contains("<c:dLbl><c:idx val=\"2\"/>"));
+    assert!(written.contains("<c:delete val=\"1\"/>"));
 }
 
 #[test]
@@ -504,8 +518,37 @@ fn filtered_series_extensions_do_not_become_ordinary_series() {
             "{group}: {ser}"
         );
         assert!(ser.contains("Sheet1!$B$1:$B$3"), "{group}: {ser}");
-        assert!(!xml.contains("$C$1:$C$3"), "{group}: {xml}");
-        assert!(!xml.contains("idx val=\"7\""), "{group}: {xml}");
+        // Registered filtered series have their own typed owner. Retain them
+        // without promoting them into the ordinary series collection above.
+        if matches!(chart_type, ChartType::PieChart) {
+            // The pinned registration table has no filteredPieSeries row.
+            // This is retained invalid known-URI content, not a positive row.
+            let list = chart_of(&book)
+                .chart_space()
+                .chart()
+                .plot_area()
+                .pie_chart()
+                .unwrap()
+                .extensions()
+                .unwrap();
+            assert_eq!(list.entries.len(), 1);
+            assert!(matches!(&list.entries[0].nodes[0],
+                umya_spreadsheet::drawing::charts::ExtensionNode::Unknown(value)
+                if value.name.local_name=="filteredPieSeries" && value.name.namespace_uri==C15_NS));
+            let diagnostic = list.export_diagnostics_for_owner(
+                Some(&book),
+                "pieChart",
+                Some(umya_spreadsheet::drawing::charts::SeriesFamily::Pie),
+            );
+            assert_eq!(diagnostic.len(), 1);
+            assert_eq!(diagnostic[0].reason, "NotAllowed");
+            assert!(!xml.contains("$C$1:$C$3"));
+            continue;
+        }
+        assert!(xml.contains("$C$1:$C$3"), "{group}: {xml}");
+        assert!(xml.contains("idx val=\"7\""), "{group}: {xml}");
+        assert_eq!(xml.matches(&format!("<c15:{filtered_tag}>")).count(), 1);
+        assert_eq!(xml.matches(FILTERING_URI).count(), 1);
     }
 }
 
@@ -662,9 +705,30 @@ fn skipped_series_extensions_do_not_admit_or_request_their_string_caches() {
         "<c:cat><c:strRef><c:f>Data!$A$1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt \
          idx=\"0\"><c:v>A</c:v></c:pt></c:strCache></c:strRef></c:cat>"
     );
-    for skipped in ["Data!$B$1", "Data!$C$1", "Data!$D$1"] {
-        assert!(!written.contains(skipped), "{written}");
-    }
+    // Invalid registered series (missing idx/order) remain diagnosed and
+    // omitted; the unchanged report above proves no cache was admitted.
+    assert!(!written.contains("Data!$B$1"), "{written}");
+    assert_eq!(
+        series.extensions().unwrap().conflict(),
+        None,
+        "opaque stored syntax does not invent a grammar refusal"
+    );
+    let diagnostic = series.extensions().unwrap().export_diagnostics_for_owner(
+        Some(&book),
+        "ser",
+        Some(umya_spreadsheet::drawing::charts::SeriesFamily::Line),
+    );
+    assert_eq!(diagnostic.len(), 1);
+    assert_eq!(diagnostic[0].reason, "NotAllowed");
+    // An unknown group extension stays opaque, including its native-looking
+    // reference/cache subtree; that language never joins chart cache roles.
+    assert!(written.contains("Data!$C$1"), "{written}");
+    assert_eq!(
+        line.extensions().unwrap().entries[0].uri.as_deref(),
+        Some("family")
+    );
+    // Unsupported chart-root extension ownership is unchanged at this stage.
+    assert!(!written.contains("Data!$D$1"), "{written}");
 }
 
 #[test]
@@ -691,7 +755,7 @@ fn nested_leader_lines_extension_does_not_set_the_ordinary_leader_lines() {
     let plot = chart_of(&book).chart_space().chart().plot_area();
     let group = plot.line_chart().unwrap();
     assert!(group.data_labels().show_leader_lines().is_none());
-    assert!(!chart_part(&write(&book)).contains("showLeaderLines"));
+    assert!(chart_part(&write(&book)).contains("c15:showLeaderLines"));
 }
 
 #[test]

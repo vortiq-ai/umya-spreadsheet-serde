@@ -40,9 +40,45 @@ pub struct Line3DChart {
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            DataLabels,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl Line3DChart {
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        for series in self.area_chart_series_list.area_chart_series_mut() {
+            result.extend(series.formula_mut());
+        }
+        result.extend(self.data_labels.formulas_mut());
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn grouping(&self) -> &Grouping {
         &self.grouping
@@ -130,6 +166,7 @@ impl Line3DChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -140,6 +177,7 @@ impl Line3DChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Line3DChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -176,13 +214,16 @@ impl Line3DChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
+        self.data_labels.mark_group_absent();
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e, session);
@@ -190,13 +231,15 @@ impl Line3DChart {
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session);
                     }
                     _ => skip_element(reader, e),
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                     b"grouping" => {
                         self.grouping.set_attributes(reader, e);
                     }
@@ -236,13 +279,21 @@ impl Line3DChart {
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb);
 
         // c:axId
         for v in &self.axis_id {
             v.write_to(writer);
         }
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(
+                writer,
+                Some(wb),
+                "line3DChart",
+                Some(SeriesFamily::Line),
+            );
+        }
         write_end_tag(writer, "c:line3DChart");
     }
 }

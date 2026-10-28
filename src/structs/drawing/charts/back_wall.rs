@@ -33,6 +33,12 @@ pub struct BackWall {
 }
 
 impl BackWall {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        self.shape_properties
+            .as_mut()
+            .map_or_else(Vec::new, |v| v.formulas_mut())
+    }
+
     #[must_use]
     pub fn thickness(&self) -> Option<&Thickness> {
         self.thickness.as_ref()
@@ -86,8 +92,28 @@ impl BackWall {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
     ) {
+        self.read_with_session(reader, owner, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.read_with_session(reader, e, Some(session));
+    }
+
+    fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
@@ -99,7 +125,7 @@ impl BackWall {
                 }
                 if local_name(e.name().into_inner()) == b"spPr" {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
+                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,session),None=>obj.set_attributes(reader,e)}
                     self.set_shape_properties(obj);
                 }
             },

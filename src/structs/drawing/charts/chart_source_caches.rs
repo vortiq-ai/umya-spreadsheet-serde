@@ -435,13 +435,14 @@ pub(crate) enum ReferenceIdentity {
     SeriesText(u32),
     AxisTitle(u32),
     TrendlineLabel(u32, String),
+    Extension(String),
 }
 
 // Define the traversal once for borrowed and mutable references. Each visit
 // carries its identity, so capture and boundary operations cannot disagree
 // about reference locations or maintain a parallel list of roles.
 macro_rules! string_reference_traversal {
-    ($name:ident, ($($mutable:tt)*), ($($borrow:lifetime)?),
+    ($name:ident, $extension_walk:ident, ($($mutable:tt)*), ($($borrow:lifetime)?),
      $chart:ident, $title:ident, $text:ident,
      $reference:ident, $plot:ident, $groups:ident, $series:ident, $items:ident,
      $category:ident, $trends:ident, $label:ident, $label_text:ident, [$($axes:ident),*]) => {
@@ -511,12 +512,17 @@ macro_rules! string_reference_traversal {
                     }
                 }
             }
+            super::$extension_walk(space,&mut |identity,reference|{
+                let identity=identity.map(ReferenceIdentity::Extension);
+                visit(identity,reference);
+            });
         }
     };
 }
 
 string_reference_traversal!(
     visit_string_references,
+    visit_extension_references,
     (mut),
     (),
     chart_mut,
@@ -533,6 +539,7 @@ string_reference_traversal!(
 );
 string_reference_traversal!(
     visit_string_references_ref,
+    visit_extension_references_ref,
     (),
     ('a),
     chart,

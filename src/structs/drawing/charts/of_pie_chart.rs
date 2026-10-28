@@ -44,9 +44,45 @@ pub struct OfPieChart {
     gap_width:              GapWidth,
     second_pie_size:        SecondPieSize,
     series_lines:           SeriesLines,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl OfPieChart {
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        for series in self.area_chart_series_list.area_chart_series_mut() {
+            result.extend(series.formula_mut());
+        }
+        result.extend(self.data_labels.formulas_mut());
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn of_pie_type(&self) -> &OfPieType {
         &self.of_pie_type
@@ -134,6 +170,7 @@ impl OfPieChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -144,6 +181,7 @@ impl OfPieChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut OfPieChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -225,13 +263,16 @@ impl OfPieChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
+        self.data_labels.mark_group_absent();
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e, session);
@@ -239,7 +280,7 @@ impl OfPieChart {
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session);
                     }
                     b"serLines" => {
                         SeriesLines::set_attributes(reader, e);
@@ -248,7 +289,9 @@ impl OfPieChart {
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                     b"ofPieType" => {
                         self.of_pie_type.set_attributes(reader, e);
                     }
@@ -289,7 +332,7 @@ impl OfPieChart {
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb);
 
         // c:gapWidth
         self.gap_width.write_to(writer);
@@ -300,6 +343,14 @@ impl OfPieChart {
         // c:serLines
         SeriesLines::write_to(writer);
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(
+                writer,
+                Some(wb),
+                "ofPieChart",
+                Some(SeriesFamily::Pie),
+            );
+        }
         write_end_tag(writer, "c:ofPieChart");
     }
 }

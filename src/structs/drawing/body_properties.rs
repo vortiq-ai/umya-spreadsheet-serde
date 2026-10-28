@@ -47,9 +47,94 @@ pub struct BodyProperties {
     bottom_inset:          Int32Value,
     use_paragraph_spacing: BooleanValue,
     shape_auto_fit:        Option<ShapeAutoFit>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:                 Option<Box<BodyPropertiesParts>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextVertical {
+    Horizontal,
+    Vertical,
+    Vertical270,
+    WordArtVertical,
+    EastAsianVertical,
+    MongolianVertical,
+    WordArtVerticalRightToLeft,
+}
+impl TextVertical {
+    fn read(value: &str) -> Option<Self> {
+        Some(match value {
+            "horz" => Self::Horizontal,
+            "vert" => Self::Vertical,
+            "vert270" => Self::Vertical270,
+            "wordArtVert" => Self::WordArtVertical,
+            "eaVert" => Self::EastAsianVertical,
+            "mongolianVert" => Self::MongolianVertical,
+            "wordArtVertRtl" => Self::WordArtVerticalRightToLeft,
+            _ => return None,
+        })
+    }
+
+    fn xml(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horz",
+            Self::Vertical => "vert",
+            Self::Vertical270 => "vert270",
+            Self::WordArtVertical => "wordArtVert",
+            Self::EastAsianVertical => "eaVert",
+            Self::MongolianVertical => "mongolianVert",
+            Self::WordArtVerticalRightToLeft => "wordArtVertRtl",
+        }
+    }
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct BodyPropertiesParts {
+    vertical:              Option<TextVertical>,
+    anchor_center:         Option<super::charts::BooleanLexeme>,
+    invalid_vertical:      bool,
+    invalid_anchor_center: bool,
 }
 
 impl BodyProperties {
+    #[must_use]
+    pub fn vertical(&self) -> Option<TextVertical> {
+        self.parts.as_ref().and_then(|p| p.vertical)
+    }
+
+    pub fn set_vertical(&mut self, value: Option<TextVertical>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.vertical = value;
+        p.invalid_vertical = false;
+    }
+
+    pub fn anchor_center(&self) -> Option<bool> {
+        self.parts
+            .as_ref()
+            .and_then(|p| p.anchor_center)
+            .map(super::charts::BooleanLexeme::value)
+    }
+
+    pub fn set_anchor_center(&mut self, value: Option<bool>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.anchor_center = value.map(|v| {
+            if v {
+                super::charts::BooleanLexeme::One
+            } else {
+                super::charts::BooleanLexeme::Zero
+            }
+        });
+        p.invalid_anchor_center = false;
+    }
+
+    #[must_use]
+    pub fn supplemental_attributes_valid(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_none_or(|p| !p.invalid_vertical && !p.invalid_anchor_center)
+    }
+
     #[inline]
     #[must_use]
     pub fn vert_overflow(&self) -> Option<&str> {
@@ -297,6 +382,19 @@ impl BodyProperties {
                 b"anchor" => {
                     self.set_anchor(unescape_attribute(value));
                 }
+                b"vert" => {
+                    let parsed=TextVertical::read(&unescape_attribute(value));
+                    let p=self.parts.get_or_insert_with(Default::default);
+                    p.vertical=parsed;
+                    p.invalid_vertical=parsed.is_none();
+                }
+                b"anchorCtr" => {
+                    let v=unescape_attribute(value);
+                    let parsed=match v.as_str() { "0"=>Some(super::charts::BooleanLexeme::Zero), "1"=>Some(super::charts::BooleanLexeme::One), "false"=>Some(super::charts::BooleanLexeme::False), "true"=>Some(super::charts::BooleanLexeme::True), _=>None };
+                    let p=self.parts.get_or_insert_with(Default::default);
+                    p.anchor_center=parsed;
+                    p.invalid_anchor_center=parsed.is_none();
+                }
                 b"wrap" => {
                     self.wrap.set_value_string(value);
                 }
@@ -362,6 +460,14 @@ impl BodyProperties {
         if let Some(v) = self.anchor.value() {
             attributes.push(("anchor", v).into());
         }
+        if let Some(p) = &self.parts {
+            if let Some(v) = p.vertical {
+                attributes.push(("vert", v.xml()).into());
+            }
+            if let Some(v) = p.anchor_center {
+                attributes.push(("anchorCtr", v.lexical()).into());
+            }
+        }
         if self.wrap.has_value() {
             attributes.push(("wrap", self.wrap.value_string()).into());
         }
@@ -404,5 +510,39 @@ impl BodyProperties {
 
             write_end_tag(writer, "a:bodyPr");
         }
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn vertical_and_anchor_center_preserve_spelling_then_mutate() {
+        let xml = "<a:bodyPr vert=\"vert270\" anchorCtr=\"true\"/>";
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let mut buffer = Vec::new();
+        let e = match reader.read_event_into(&mut buffer).unwrap() {
+            Event::Empty(e) => e.into_owned(),
+            _ => panic!("expected empty body"),
+        };
+        let mut body = BodyProperties::default();
+        body.set_attributes(&mut reader, &e, true);
+        assert_eq!(body.vertical(), Some(TextVertical::Vertical270));
+        assert_eq!(body.anchor_center(), Some(true));
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        body.write_to(&mut writer);
+        assert!(
+            String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("anchorCtr=\"true\"")
+        );
+        body.set_anchor_center(Some(false));
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        body.write_to(&mut writer);
+        assert!(
+            String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("anchorCtr=\"0\"")
+        );
     }
 }

@@ -808,10 +808,10 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
                     }
                 }
                 b"ptCount" => shape.point_count = parse_point_count(&e),
-                b"strCache" => break,
+                b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache" => break,
                 _ => (),
             },
-            Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+            Event::End(e) if matches!(local_name(e.name().into_inner()), b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache") => break,
             Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
             _ => (),
         }
@@ -935,8 +935,8 @@ fn reduce_cache<'a>(
                 Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
                     attribute_u32(&e, b"idx").map(|index| (index, None))
                 }
-                Event::Empty(e) if local_name(e.name().into_inner()) == b"strCache" => break,
-                Event::End(e) if local_name(e.name().into_inner()) == b"strCache" => break,
+                Event::Empty(e) if matches!(local_name(e.name().into_inner()), b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache") => break,
+                Event::End(e) if matches!(local_name(e.name().into_inner()), b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache") => break,
                 Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
                 _ => None,
             };
@@ -1076,6 +1076,8 @@ pub(crate) struct SourceCacheSession {
     descriptors:                  Rc<RefCell<HashMap<usize, DeferredSource>>>,
     parts:                        Rc<RefCell<Vec<ChartPart>>>,
     current_part:                 Rc<StateCell<Option<usize>>>,
+    chart_namespaces:             Rc<RefCell<Option<crate::drawing::charts::ChartNamespaces>>>,
+    extension_scopes:             Rc<RefCell<Vec<crate::drawing::charts::NamespaceScope>>>,
     #[cfg(test)]
     registered_keys:              Rc<RefCell<Vec<usize>>>,
     #[cfg(test)]
@@ -1088,13 +1090,64 @@ pub(crate) struct SourceCacheSession {
     rejection_backing:            Rc<RefCell<RejectionBacking>>,
 }
 
+pub(crate) struct ExtensionScopeGuard {
+    scopes: Rc<RefCell<Vec<crate::drawing::charts::NamespaceScope>>>,
+}
+impl Drop for ExtensionScopeGuard {
+    fn drop(&mut self) {
+        self.scopes.borrow_mut().pop();
+    }
+}
 impl SourceCacheSession {
+    /// The original chart part root supplies the genuine inherited bindings.
+    /// Descendant owners push their own declarations on this same session.
+    pub(crate) fn enter_chart_root(&self,e:&quick_xml::events::BytesStart)->ExtensionScopeGuard{
+        let scope=crate::drawing::charts::NamespaceScope::default().child(e).expect("valid chart root namespace declarations");
+        let name=scope.resolve(e.name().into_inner(),false).expect("bound chart root QName");
+        assert!(name.namespace_uri=="http://schemas.openxmlformats.org/drawingml/2006/chart"&&name.local_name=="chartSpace","invalid chart root expanded name");
+        self.push_extension_scope(scope)
+    }
+
+    pub(crate) fn push_extension_scope(
+        &self,
+        scope: crate::drawing::charts::NamespaceScope,
+    ) -> ExtensionScopeGuard {
+        self.extension_scopes.borrow_mut().push(scope);
+        ExtensionScopeGuard {
+            scopes: Rc::clone(&self.extension_scopes),
+        }
+    }
+
+    pub(crate) fn enter_child_scope(
+        &self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Option<ExtensionScopeGuard> {
+        let scope = self.extension_scopes.borrow().last().cloned()?;
+        Some(self.push_extension_scope(scope.child(e).expect("valid chart namespace declaration")))
+    }
+
+    pub(crate) fn accepts_child_namespace(
+        &self,
+        e: &quick_xml::events::BytesStart,
+        namespace: &str,
+    ) -> bool {
+        let scopes = self.extension_scopes.borrow();
+        scopes.last().is_none_or(|scope| {
+            scope
+                .child(e)
+                .and_then(|scope| scope.resolve(e.name().into_inner(), false))
+                .is_ok_and(|name| name.namespace_uri == namespace)
+        })
+    }
+
     pub(crate) fn deferred() -> Self {
         Self {
             mode:                                      SourceCacheSessionMode::Deferred,
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
+            chart_namespaces:                          Rc::new(RefCell::new(None)),
+            extension_scopes: Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
             registered_keys:                           Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
@@ -1117,6 +1170,8 @@ impl SourceCacheSession {
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
+            chart_namespaces:                          Rc::new(RefCell::new(None)),
+            extension_scopes: Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
             registered_keys:                           Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
@@ -1138,6 +1193,8 @@ impl SourceCacheSession {
             descriptors:                               Rc::clone(&self.descriptors),
             parts:                                     Rc::clone(&self.parts),
             current_part:                              Rc::clone(&self.current_part),
+            chart_namespaces:                          Rc::clone(&self.chart_namespaces),
+            extension_scopes: Rc::clone(&self.extension_scopes),
             #[cfg(test)]
             registered_keys:                           Rc::clone(&self.registered_keys),
             #[cfg(test)]
@@ -1157,6 +1214,22 @@ impl SourceCacheSession {
         self.mode == SourceCacheSessionMode::Deferred
     }
 
+    // Namespace metadata has exactly the current chart-part lifetime. It never
+    // changes deferred source ranges, admission order, caps or cache ownership.
+    pub(crate) fn prepare_chart_namespaces(&self, data: &[u8], part: &str) -> Result<(), String> {
+        *self.chart_namespaces.borrow_mut() =
+            Some(crate::drawing::charts::ChartNamespaces::read(data, part)?);
+        Ok(())
+    }
+
+    pub(crate) fn extension_context(
+        &self,
+        offset: u64,
+        e: &quick_xml::events::BytesStart,
+    ) -> Option<crate::drawing::charts::ExtensionReadContext> {
+        self.chart_namespaces.borrow().as_ref()?.get(offset, e)
+    }
+
     pub(crate) fn begin_chart_part(&self, target: &str) {
         if !self.is_deferred() {
             return;
@@ -1165,6 +1238,8 @@ impl SourceCacheSession {
     }
 
     pub(crate) fn end_chart_part(&self) {
+        self.chart_namespaces.borrow_mut().take();
+        self.extension_scopes.borrow_mut().clear();
         self.current_part.set(None);
     }
 

@@ -10,7 +10,10 @@ use quick_xml::{
     },
 };
 
-use super::ManualLayout;
+use super::{
+    ExtensionList,
+    ManualLayout,
+};
 use crate::{
     reader::driver::local_name,
     writer::driver::{
@@ -24,9 +27,42 @@ use crate::{
 #[derive(Clone, Default, Debug)]
 pub struct Layout {
     manual_layout: Option<ManualLayout>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:         Option<Box<LayoutParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct LayoutParts {
+    extensions: Option<ExtensionList>,
 }
 
 impl Layout {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(value) = &mut self.manual_layout {
+            result.extend(value.formulas_mut());
+        }
+        if let Some(parts) = &mut self.parts {
+            if let Some(ext) = &mut parts.extensions {
+                result.extend(ext.formulas_mut());
+            }
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts.as_mut().and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+    }
+
     #[must_use]
     pub fn manual_layout(&self) -> Option<&ManualLayout> {
         self.manual_layout.as_ref()
@@ -54,7 +90,7 @@ impl Layout {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.manual_layout.is_none()
+        self.manual_layout.is_none() && self.extensions().is_none()
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
@@ -62,7 +98,9 @@ impl Layout {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard = session.enter_child_scope(e);
         if empty_flag {
             return;
         }
@@ -75,9 +113,11 @@ impl Layout {
                 if local_name(e.name().into_inner()) == b"manualLayout" {
                     let mut v = ManualLayout::default();
                     if !empty {
-                        v.set_attributes(reader, e);
+                        v.set_attributes(reader, e, session);
                     }
                     self.set_manual_layout(v);
+                } else if local_name(e.name().into_inner()) == b"extLst" {
+                    self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)));
                 } else if !empty {
                     crate::reader::driver::skip_element(reader, e);
                 }
@@ -104,6 +144,7 @@ impl Layout {
                 v.write_to(writer);
             }
 
+            if let Some(v)=self.extensions() { v.write_for_owner(writer, None, "layout", None); }
             write_end_tag(writer, "c:layout");
         }
     }

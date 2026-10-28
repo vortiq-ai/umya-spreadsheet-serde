@@ -3,10 +3,7 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 // c:val
@@ -18,7 +15,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -28,6 +24,12 @@ pub struct Values {
 }
 
 impl Values {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        result.extend(self.number_reference.formulas_mut());
+        result
+    }
+
     #[must_use]
     pub fn number_reference(&self) -> &NumberReference {
         &self.number_reference
@@ -56,22 +58,42 @@ impl Values {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
     ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().0) == b"numRef" {
-                    self.number_reference.set_attributes(reader, e);
+        self.read_common(reader, owner, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.read_common(reader, e, Some(session));
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+        let complete = super::numeric_data::children(reader, e, false, |reader, child, empty| {
+            if local_name(child.name().into_inner()) != b"numRef" {
+                return false;
+            }
+            if !empty {
+                match session {
+                    Some(session) => self
+                        .number_reference
+                        .set_attributes_with_session(reader, child, session),
+                    None => self.number_reference.set_attributes(reader, child),
                 }
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"val" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:val"),
-        );
+            }
+            true
+        });
+        assert!(complete, "Could not read numeric data source");
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {

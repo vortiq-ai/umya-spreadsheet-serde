@@ -18,6 +18,7 @@ use crate::{
     },
     reader::driver::{
         get_attribute,
+        local_name,
         xml_read_loop,
     },
     set_string_from_xml,
@@ -79,20 +80,37 @@ impl Style {
         reader: &mut Reader<R>,
         e: &BytesStart,
         include_alternate_content: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         self.include_alternate_content = include_alternate_content;
 
         if include_alternate_content {
+            let owner = e.name().into_inner().to_vec();
+            let _owner_scope = session.enter_child_scope(e);
+            let mut scopes = Vec::new();
+            let mut fallback_depth = None;
             xml_read_loop!(
                 reader,
+                Event::Start(ref e) => {
+                    if scopes.is_empty() && local_name(e.name().into_inner()) == b"Fallback"
+                        && session.accepts_child_namespace(e, MC_NS) {
+                        fallback_depth = Some(1);
+                    }
+                    scopes.push(session.enter_child_scope(e));
+                },
                 Event::Empty(ref e) => {
-                    if e.name().into_inner() == b"c:style" {
+                    if fallback_depth == Some(scopes.len())
+                        && local_name(e.name().into_inner()) == b"style"
+                        && session.accepts_child_namespace(e, crate::helper::const_str::DRAWINGML_CHART_NS) {
                         self.val.set_value_string(get_attribute(e, b"val").unwrap());
                     }
                 },
                 Event::End(ref e) => {
-                    if e.name().into_inner() == b"mc:AlternateContent" {
-                        return
+                    if scopes.is_empty() {
+                        if e.name().into_inner() == owner.as_slice() { return; }
+                    } else {
+                        if fallback_depth == Some(scopes.len()) { fallback_depth = None; }
+                        scopes.pop();
                     }
                 },
                 Event::Eof => panic!("Error: Could not find {} end element", "mc:AlternateContent")

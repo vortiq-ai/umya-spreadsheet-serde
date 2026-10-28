@@ -879,7 +879,7 @@ fn appended_series_vector_and_number_format_wire_costs_are_exact() {
     assert_eq!(bincode::serialize(&series).unwrap(), vec![0; 16]);
     let mut series = series;
     series.parts_mut();
-    assert_eq!(bincode::serialize(&series).unwrap().len(), 40); // Fifteen absent originals, Some, three eight-byte vectors.
+    assert_eq!(bincode::serialize(&series).unwrap().len(), 41); // Fifteen absent originals, Some, three eight-byte vectors, absent extension option.
     let format = NumberingFormat::default();
     assert_eq!(bincode::serialize(&format).unwrap(), vec![0, 0, 0]);
     assert_eq!(
@@ -1229,21 +1229,23 @@ fn layout_coordinate_setters_keep_special_doubles_through_json_and_binary() {
     for value in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
         macro_rules! check {
             ($owner:ty) => {{
-                            let mut scalar=<$owner>::default();
-                            scalar.set_val(value);
-                            assert!(scalar.is_valid());
-                            let json:$owner=serde_json::from_str(
-                                &serde_json::to_string(&scalar).unwrap(),
-                            ).unwrap();
-                            let binary:$owner=bincode::deserialize(
-                                &bincode::serialize(&scalar).unwrap(),
-                            ).unwrap();
-                            for restored in [json,binary] {
-                                assert!(restored.is_valid());
-                                let actual=restored.parsed_val().unwrap();
-                                assert!(if value.is_nan(){actual.is_nan()}else{actual==value});
-                            }
-                        }};
+                let mut scalar = <$owner>::default();
+                scalar.set_val(value);
+                assert!(scalar.is_valid());
+                let json: $owner =
+                    serde_json::from_str(&serde_json::to_string(&scalar).unwrap()).unwrap();
+                let binary: $owner =
+                    bincode::deserialize(&bincode::serialize(&scalar).unwrap()).unwrap();
+                for restored in [json, binary] {
+                    assert!(restored.is_valid());
+                    let actual = restored.parsed_val().unwrap();
+                    assert!(if value.is_nan() {
+                        actual.is_nan()
+                    } else {
+                        actual == value
+                    });
+                }
+            }};
         }
         check!(Left);
         check!(Top);

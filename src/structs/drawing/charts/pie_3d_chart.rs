@@ -36,9 +36,45 @@ pub struct Pie3DChart {
     vary_colors:            VaryColors,
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            DataLabels,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl Pie3DChart {
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        for series in self.area_chart_series_list.area_chart_series_mut() {
+            result.extend(series.formula_mut());
+        }
+        result.extend(self.data_labels.formulas_mut());
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn vary_colors(&self) -> &VaryColors {
         &self.vary_colors
@@ -101,6 +137,7 @@ impl Pie3DChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -111,19 +148,23 @@ impl Pie3DChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Pie3DChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
+        self.data_labels.mark_group_absent();
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
                         obj.set_attributes(reader, e, session);
@@ -131,13 +172,17 @@ impl Pie3DChart {
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session);
                     }
                     _ => skip_element(reader, e),
                 }
             },
             Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"varyColors" {
+                if local_name(e.name().into_inner())==b"extLst"{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));}
+
+                if local_name(e.name().0) == b"dLbls" {
+                    self.data_labels.mark_empty_import();
+                } else if local_name(e.name().0) == b"varyColors" {
                     self.vary_colors.set_attributes(reader, e);
                 }
             },
@@ -163,8 +208,16 @@ impl Pie3DChart {
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb);
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(
+                writer,
+                Some(wb),
+                "pie3DChart",
+                Some(SeriesFamily::Pie),
+            );
+        }
         write_end_tag(writer, "c:pie3DChart");
     }
 }

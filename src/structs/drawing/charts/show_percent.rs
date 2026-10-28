@@ -19,6 +19,10 @@ pub struct ShowPercent {
     val: BooleanValue,
 }
 impl ShowPercent {
+    pub(crate) fn has_val(&self) -> bool {
+        self.val.has_value()
+    }
+
     #[must_use]
     pub fn val(&self) -> bool {
         self.val.value()

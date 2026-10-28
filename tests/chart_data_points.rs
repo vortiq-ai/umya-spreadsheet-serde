@@ -559,9 +559,16 @@ fn unmodeled_point_extensions_cannot_overwrite_typed_point_or_parent_fields() {
     let picture = series.data_points()[0].picture_options().unwrap();
     assert!(picture.apply_to_front().is_none());
     assert_eq!(picture.apply_to_end().unwrap().value(), Some(true));
-    // Extension preservation belongs to its extension owner, not a shadow raw
-    // XML field.
-    assert!(!series_xml(&book).contains("future"));
+    // The actual extension owner now retains opaque future children; they
+    // must not overwrite any independently asserted typed point/series field.
+    let extension = series.data_points()[0].extensions().unwrap();
+    assert_eq!(extension.entries.len(), 1);
+    assert_eq!(extension.entries[0].uri.as_deref(), Some("future"));
+    assert_eq!(extension.entries[0].nodes.len(), 2);
+    let output = series_xml(&book);
+    assert!(output.contains("uri=\"future\""));
+    assert!(output.contains("val=\"77\""));
+    assert!(output.contains("val=\"triangle\""));
 }
 
 #[test]

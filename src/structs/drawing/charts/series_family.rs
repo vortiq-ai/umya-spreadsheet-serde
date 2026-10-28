@@ -46,8 +46,7 @@ impl From<&ChartType> for SeriesFamily {
 /// `c:dLbls`) are not listed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum SeriesPartKind {
-    Explosion,
+pub enum SeriesPartKind {    Explosion,
     InvertIfNegative,
     Marker,
     Categories,
@@ -61,6 +60,10 @@ pub enum SeriesPartKind {
     DataPoints,
     /// Ordered trendlines and their labels.
     Trendlines,
+    /// Group and point data label content.
+    DataLabels,
+    /// Ordered native extension occurrences.
+    Extensions,
     /// Ordered error-bar occurrences with family-specific cardinality.
     ErrorBars,
 }
@@ -103,7 +106,10 @@ impl SeriesFamily {
         if part == SeriesPartKind::Trendlines {
             return !matches!(self, Self::Pie | Self::Radar);
         }
-        if part == SeriesPartKind::DataPoints {
+        if matches!(
+            part,
+            SeriesPartKind::DataPoints | SeriesPartKind::DataLabels | SeriesPartKind::Extensions
+        ) {
             return true;
         }
         match self {

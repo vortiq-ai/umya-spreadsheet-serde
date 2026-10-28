@@ -65,6 +65,20 @@ pub struct CategoryAxis {
 }
 
 impl CategoryAxis {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.title {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.major_gridlines {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
         &self.axis_id
@@ -493,12 +507,13 @@ impl CategoryAxis {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
                 b"title" => {
                     let mut obj = Title::default();
                     obj.set_attributes(reader, e, session);
@@ -509,7 +524,7 @@ impl CategoryAxis {
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_shape_properties(obj);
                 }
                 b"txPr" => {
@@ -519,12 +534,12 @@ impl CategoryAxis {
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes(reader, e, false);
+                    obj.set_attributes_with_session(reader, e, false, session);
                     self.set_major_gridlines(obj);
                 }
                 _ => skip_element(reader, e),
             },
-            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
                 b"axId" => {
                     self.axis_id.set_attributes(reader, e);
                 }
@@ -536,7 +551,7 @@ impl CategoryAxis {
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes(reader, e, true);
+                    obj.set_attributes_with_session(reader, e, true, session);
                     self.set_major_gridlines(obj);
                 }
                 b"majorTickMark" => {

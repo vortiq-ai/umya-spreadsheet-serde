@@ -213,6 +213,24 @@ impl<'a> ChartGroupRef<'a> {
 }
 
 impl<'a> ChartGroupMut<'a> {
+    pub(crate) fn formulas_mut(self) -> Vec<&'a mut super::Formula> {
+        match self {
+            Self::LineChart(chart) => chart.formulas_mut(),
+            Self::Line3DChart(chart) => chart.formulas_mut(),
+            Self::PieChart(chart) => chart.formulas_mut(),
+            Self::Pie3DChart(chart) => chart.formulas_mut(),
+            Self::DoughnutChart(chart) => chart.formulas_mut(),
+            Self::ScatterChart(chart) => chart.formulas_mut(),
+            Self::BarChart(chart) => chart.formulas_mut(),
+            Self::Bar3DChart(chart) => chart.formulas_mut(),
+            Self::RadarChart(chart) => chart.formulas_mut(),
+            Self::BubbleChart(chart) => chart.formulas_mut(),
+            Self::AreaChart(chart) => chart.formulas_mut(),
+            Self::Area3DChart(chart) => chart.formulas_mut(),
+            Self::OfPieChart(chart) => chart.formulas_mut(),
+        }
+    }
+
     #[must_use]
     pub fn kind(&self) -> ChartType {
         match self {

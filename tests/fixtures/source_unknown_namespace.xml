@@ -1,0 +1,1 @@
+<c:dLbls><c:dLbl><c:idx val="9"/></c:dLbl><c:extLst><c:ext uri="{01234567-89AB-CDEF-0123-456789ABCDEF}" xmlns:p="urn:outer"><z:payload xmlns:z="urn:payload" xmlns="urn:default" xmlns:q="urn:attr"><p:child xmlns:p="urn:inner" type="q:Kind">left<![CDATA[x<y]]><!--keep--><?audit keep?>right<leaf/></p:child></z:payload></c:ext></c:extLst></c:dLbls>

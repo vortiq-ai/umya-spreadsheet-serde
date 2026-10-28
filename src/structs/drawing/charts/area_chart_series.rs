@@ -71,6 +71,50 @@ pub struct AreaChartSeries {
 }
 
 impl AreaChartSeries {
+    pub(crate) fn labels_for_roles(&self) -> Option<&DataLabels> {
+        self.data_labels.as_ref()
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> Option<&mut DataLabels> {
+        self.data_labels.as_mut()
+    }
+
+    pub(crate) fn points_for_roles(&self) -> impl Iterator<Item = &DataPoint> {
+        self.data_points().iter()
+    }
+
+    pub(crate) fn points_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataPoint> {
+        self.parts.iter_mut().flat_map(|p| p.data_points_mut())
+    }
+
+    pub(crate) fn errors_for_roles(&self) -> impl Iterator<Item = &ErrorBars> {
+        self.error_bars().iter()
+    }
+
+    pub(crate) fn errors_for_roles_mut(&mut self) -> impl Iterator<Item = &mut ErrorBars> {
+        self.parts.iter_mut().flat_map(|p| p.error_bars_mut())
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts
+            .as_deref()
+            .and_then(SeriesParts::extensions)
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(SeriesParts::extensions_mut)
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.parts
+            .get_or_insert_with(Default::default)
+            .set_extensions(value);
+        self
+    }
+
     #[must_use]
     pub fn error_bars(&self) -> &[ErrorBars] {
         self.parts()
@@ -478,6 +522,9 @@ impl AreaChartSeries {
     }
 
     pub fn data_labels_mut(&mut self) -> Option<&mut DataLabels> {
+        if let Some(labels) = &mut self.data_labels {
+            labels.mark_owner_present();
+        }
         self.data_labels.as_mut()
     }
 
@@ -488,33 +535,43 @@ impl AreaChartSeries {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Self {
         self.data_labels = Some(value);
+        if let Some(labels) = &mut self.data_labels {
+            labels.mark_owner_present();
+        }
         self
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result: Vec<&mut Formula> = Vec::default();
-
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.chart_text {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.marker {
+            result.extend(v.formulas_mut());
+        }
         if let Some(v) = &mut self.category_axis_data {
-            if let Some(h) = v.string_reference_mut() {
-                result.push(h.formula_mut());
-            }
+            result.extend(v.formulas_mut());
         }
         if let Some(v) = &mut self.values {
-            result.push(v.number_reference_mut().formula_mut());
+            result.extend(v.formulas_mut());
         }
         if let Some(v) = &mut self.x_values {
-            result.push(v.number_reference_mut().formula_mut());
+            result.extend(v.formulas_mut());
         }
         if let Some(v) = &mut self.y_values {
-            result.push(v.number_reference_mut().formula_mut());
+            result.extend(v.formulas_mut());
         }
         if let Some(v) = &mut self.bubble_size {
-            result.push(v.number_reference_mut().formula_mut());
+            result.extend(v.formulas_mut());
         }
-        if let Some(parts) = self.parts.as_mut() {
-            for bars in parts.error_bars_mut() {
-                result.extend(bars.formulas_mut());
-            }
+        if let Some(v) = &mut self.data_labels {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.parts {
+            result.extend(v.formulas_mut());
         }
         result
     }
@@ -527,9 +584,10 @@ impl AreaChartSeries {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
@@ -537,10 +595,11 @@ impl AreaChartSeries {
                 // skipped whole so nested names cannot overwrite the
                 // series fields.
                 let is_empty_element = matches!(n, Event::Empty(_));
-                match local_name(e.name().into_inner()) {
-                    b"errBars" => {
-                        self.error_bars_mut().push(ErrorBars::read(
-                            reader,e,is_empty_element,
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty_element,session)));},
+                b"errBars" => {
+                        self.error_bars_mut().push(ErrorBars::read_with_session(
+                            reader,e,is_empty_element,session,
                         ));
                     }
                     b"trendline" => {
@@ -553,7 +612,7 @@ impl AreaChartSeries {
                     }
                     b"dPt" => {
                         self.data_points_mut()
-                            .push(DataPoint::read(reader, is_empty_element));
+                            .push(DataPoint::read_with_session(reader, e, is_empty_element, session));
                     }
                     b"tx" => {
                         let mut obj = ChartText::default();
@@ -564,13 +623,13 @@ impl AreaChartSeries {
                     }
                     b"marker" => {
                         let mut obj = Marker::default();
-                        obj.set_attributes(reader, e, is_empty_element);
+                        obj.set_attributes_with_session(reader, e, is_empty_element, session);
                         self.set_marker(obj);
                     }
                     b"spPr" => {
                         let mut obj = ShapeProperties::default();
                         if !is_empty_element {
-                            obj.set_attributes(reader, e);
+                            obj.set_attributes_with_session(reader, e, session);
                         }
                         self.set_shape_properties(obj);
                     }
@@ -586,7 +645,7 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = Values::default();
-                            obj.set_attributes(reader, e);
+                            obj.set_attributes_with_session(reader, e, session);
                             self.set_values(obj);
                         }
                     }
@@ -594,7 +653,7 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = XValues::default();
-                            obj.set_attributes(reader, e);
+                            obj.set_attributes_with_session(reader, e, session);
                             self.set_x_values(obj);
                         }
                     }
@@ -602,19 +661,21 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = YValues::default();
-                            obj.set_attributes(reader, e);
+                            obj.set_attributes_with_session(reader, e, session);
                             self.set_y_values(obj);
                         }
                     }
                     b"bubbleSize" => {
                         let mut obj = BubbleSize::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes_with_session(reader, e, session);
                         self.set_bubble_size(obj);
                     }
                     b"dLbls" => {
                         let mut obj = DataLabels::default();
-                        if !is_empty_element {
-                            obj.set_attributes(reader, e);
+                        if is_empty_element {
+                            obj.mark_empty_import();
+                        } else {
+                            obj.set_attributes(reader, e, session);
                         }
                         self.set_data_labels(obj);
                     }
@@ -673,6 +734,8 @@ impl AreaChartSeries {
             SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
             SeriesPartKind::Smooth => self.smooth.is_some(),
             SeriesPartKind::DataPoints => !self.data_points().is_empty(),
+            SeriesPartKind::DataLabels => self.data_labels.is_some(),
+            SeriesPartKind::Extensions => self.extensions().is_some(),
             SeriesPartKind::ErrorBars => !self.error_bars().is_empty(),
             SeriesPartKind::Trendlines => !self.trendlines().is_empty(),
         }
@@ -690,7 +753,7 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size = None,
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
-            SeriesPartKind::DataPoints => (),
+            SeriesPartKind::DataPoints | SeriesPartKind::DataLabels | SeriesPartKind::Extensions => (),
             SeriesPartKind::ErrorBars => {
                 if let Some(parts)=self.parts.as_mut(){parts.error_bars_mut().clear();}
             },
@@ -713,6 +776,7 @@ impl AreaChartSeries {
             .filter(|part| self.has_part(*part) && !family.allows(*part))
             .map(|part| (part, 0, SeriesPartConflictReason::NotAllowed))
             .collect();
+        if let Some(reason)=self.extensions().and_then(|ext|ext.conflict_for_owner("ser",Some(family))){conflicts.push((SeriesPartKind::Extensions,0,reason));}
         if family.allows(SeriesPartKind::Marker)
             && self.marker.as_ref().is_some_and(|v| !v.is_valid())
         {
@@ -733,6 +797,16 @@ impl AreaChartSeries {
                         SeriesPartConflictReason::MissingRequiredChild
                     },
                 ));
+            }
+        }
+        if let Some(labels) = &self.data_labels {
+            let reason = if labels.owner_is_absent() {
+                Some(SeriesPartConflictReason::ConflictingChoice)
+            } else {
+                labels.conflict()
+            };
+            if let Some(reason) = reason {
+                conflicts.push((SeriesPartKind::DataLabels, 0, reason));
             }
         }
         for (occurrence, point) in self.data_points().iter().enumerate() {
@@ -784,11 +858,14 @@ impl AreaChartSeries {
         let mut removed: Vec<_> = self
             .part_conflicts(family)
             .into_iter()
-            .filter(|(_, _, reason)| *reason == SeriesPartConflictReason::NotAllowed)
+            .filter(|(part, _, reason)| *part!=SeriesPartKind::Extensions && *reason == SeriesPartConflictReason::NotAllowed)
             .map(|(part, occurrence, _)| (part, occurrence))
             .collect();
         for (part, _) in &removed {
             self.clear_part(*part);
+        }
+        if let Some(extensions)=self.extensions_mut(){
+            removed.extend(extensions.remove_not_allowed_for_owner("ser",Some(family)).into_iter().map(|occurrence|(SeriesPartKind::Extensions,occurrence)));
         }
         let limit = super::error_bars::error_bar_limit(family);
         if limit > 0 {
@@ -811,8 +888,17 @@ impl AreaChartSeries {
         wb: &Workbook,
         family: SeriesFamily,
     ) {
-        // c:ser
-        write_start_tag(writer, "c:ser", vec![], false);
+        self.write_to_as(writer, wb, family, "c:ser");
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        family: SeriesFamily,
+        name: &str,
+    ) {
+        write_start_tag(writer, name, vec![], false);
 
         // c:idx
         self.index.write_to(writer);
@@ -864,7 +950,7 @@ impl AreaChartSeries {
 
         // c:dLbls
         if let Some(v) = &self.data_labels {
-            v.write_to(writer);
+            v.write_to_present(writer, wb);
         }
 
         if family.allows(SeriesPartKind::Trendlines) {
@@ -944,6 +1030,9 @@ impl AreaChartSeries {
             v.write_to(writer);
         }
 
-        write_end_tag(writer, "c:ser");
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "ser", Some(family));
+        }
+        write_end_tag(writer, name);
     }
 }

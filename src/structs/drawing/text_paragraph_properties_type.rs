@@ -195,50 +195,41 @@ impl TextParagraphPropertiesType {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        empty: bool,
     ) {
         set_string_from_xml!(self, e, right_to_left, "rtl");
         set_string_from_xml!(self, e, alignment, "algn");
         set_string_from_xml!(self, e, font_alignment, "fontAlgn");
-
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:spcBef" => {
-                    let mut obj = SpaceBefore::default();
-                    obj.set_attributes(reader, e);
-                    self.set_space_before(obj);
-                }
-                b"a:spcAft" => {
-                    let mut obj = SpaceAfter::default();
-                    obj.set_attributes(reader, e);
-                    self.set_space_after(obj);
-                }
-                b"a:defRPr" => {
-                    let mut obj = RunProperties::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_default_run_properties(obj);
-                }
-                _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                match e.name().into_inner() {
-                    b"a:defPPr"  |
-                    b"a:lvl1pPr" |
-                    b"a:lvl2pPr" |
-                    b"a:lvl3pPr" |
-                    b"a:lvl4pPr" |
-                    b"a:lvl5pPr" |
-                    b"a:lvl6pPr" |
-                    b"a:lvl7pPr" |
-                    b"a:lvl8pPr" |
-                    b"a:lvl9pPr" => return,
-                    _ =>()
+        if empty {
+            return;
+        }
+        let end = e.name().into_inner().to_vec();
+        xml_read_loop!(reader,
+            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                let empty = matches!(event, Event::Empty(_));
+                match crate::reader::driver::local_name(child.name().into_inner()) {
+                    b"spcBef" => {
+                        let mut value = SpaceBefore::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_space_before(value);
+                    }
+                    b"spcAft" => {
+                        let mut value = SpaceAfter::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_space_after(value);
+                    }
+                    b"defRPr" => {
+                        let mut value = RunProperties::default();
+                        value.set_attributes(reader, child, empty);
+                        self.set_default_run_properties(value);
+                    }
+                    _ => if !empty { crate::reader::driver::skip_element(reader, child); },
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:lvl1pPr-lvl9pPr")
+            Event::End(ref child) => {
+                if child.name().into_inner() == end.as_slice() { return; }
+            },
+            Event::Eof => panic!("unterminated list-style paragraph properties")
         );
     }
 

@@ -37,9 +37,41 @@ pub struct ParagraphProperties {
     alignment:              EnumValue<TextAlignmentTypeValues>,
     default_run_properties: Option<Box<RunProperties>>,
     line_spacing:           Option<LineSpacing>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:                  Option<Box<ParagraphPropertiesParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct ParagraphPropertiesParts {
+    level:         Option<u8>,
+    invalid_level: bool,
 }
 
 impl ParagraphProperties {
+    #[must_use]
+    pub fn level(&self) -> Option<u8> {
+        self.parts.as_ref().and_then(|p| p.level)
+    }
+
+    pub fn set_level(&mut self, value: Option<u8>) -> bool {
+        if value.is_some_and(|v| v > 8) {
+            return false;
+        }
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.level = value;
+        p.invalid_level = false;
+        true
+    }
+
+    #[must_use]
+    pub fn supplemental_attributes_valid(&self) -> bool {
+        self.parts.as_ref().is_none_or(|p| !p.invalid_level)
+            && self
+                .default_run_properties
+                .as_ref()
+                .is_none_or(|v| v.supplemental_attributes_valid())
+    }
+
     #[inline]
     #[must_use]
     pub fn right_to_left(&self) -> Option<&str> {
@@ -144,6 +176,12 @@ impl ParagraphProperties {
         e: &BytesStart,
         empty_flag: bool,
     ) {
+        if let Some(v) = get_unescaped_attribute(e, b"lvl") {
+            let value = v.parse::<u8>().ok().filter(|v| *v <= 8);
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.level = value;
+            p.invalid_level = value.is_none();
+        }
         if let Some(v) = get_unescaped_attribute(e, b"rtl") {
             self.set_right_to_left(v);
         }
@@ -195,6 +233,11 @@ impl ParagraphProperties {
         }
         if self.alignment.has_value() {
             attributes.push(("algn", self.alignment.value_string()).into());
+        }
+
+        let level = self.level().map(|v| v.to_string());
+        if let Some(v) = &level {
+            attributes.push(("lvl", v.as_str()).into());
         }
 
         let empty_flag = self.default_run_properties.is_none() && self.line_spacing.is_none();

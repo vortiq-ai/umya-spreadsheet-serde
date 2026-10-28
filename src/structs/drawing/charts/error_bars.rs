@@ -70,19 +70,52 @@ pub struct ErrorBars {
     extra_minus:        Vec<NumericDataSource>,
     empty_sources:      u8,
     invalid_attributes: Vec<(String, String)>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:         Option<Box<super::ExtensionList>>,
 }
 impl ErrorBars {
     const EMPTY_MINUS: u8 = 2;
     const EMPTY_PLUS: u8 = 1;
 
-    pub(crate) fn formulas_mut(&mut self) -> impl Iterator<Item = &mut super::Formula> {
-        self.plus
-            .iter_mut()
-            .chain(self.extra_plus.iter_mut())
-            .chain(self.minus.iter_mut())
-            .chain(self.extra_minus.iter_mut())
-            .filter_map(NumericDataSource::reference_mut)
-            .map(NumberReference::formula_mut)
+    pub fn shape_properties_mut(&mut self) -> Option<&mut ShapeProperties> {
+        self.shape_properties.as_mut()
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.plus {
+            result.extend(v.formulas_mut());
+        }
+        for v in &mut self.extra_plus {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.minus {
+            result.extend(v.formulas_mut());
+        }
+        for v in &mut self.extra_minus {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
     }
 
     #[must_use]
@@ -283,10 +316,35 @@ impl ErrorBars {
         e: &BytesStart,
         empty: bool,
     ) -> Self {
+        Self::read_common(reader, e, empty, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Self {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let mut result = Self::default();
         let mut seen = std::collections::HashSet::new();
         let complete = children(reader, e, empty, |reader, child, empty| {
-            let name = local_name(child.name().into_inner());
+            let name = if session.is_none_or(|session| {
+                session.accepts_child_namespace(child, super::extension_registry::NS_C)
+            }) {
+                local_name(child.name().into_inner())
+            } else {
+                b""
+            };
             let known = matches!(
                 name,
                 b"errDir"
@@ -303,6 +361,15 @@ impl ErrorBars {
             }
             let raw = crate::drawing::get_unescaped_attribute(child, b"val");
             match name {
+                b"extLst" if session.is_some() => {
+                    result.set_extensions(Some(super::ExtensionList::read(
+                        reader,
+                        child,
+                        empty,
+                        session.expect("checked session"),
+                    )));
+                    return true;
+                }
                 b"errDir" => {
                     let parsed = raw.as_deref().and_then(ErrorBarDirection::parse);
                     if let Some(raw) = raw.filter(|_| parsed.is_none()) {
@@ -337,13 +404,16 @@ impl ErrorBars {
                 b"spPr" => {
                     let mut v = ShapeProperties::default();
                     if !empty {
-                        v.set_attributes(reader, child);
+                        match session {
+                            Some(session) => v.set_attributes_with_session(reader, child, session),
+                            None => v.set_attributes(reader, child),
+                        }
                     }
                     result.shape_properties = Some(v);
                     return true;
                 }
                 b"plus" | b"minus" => {
-                    let (sources, invalid) = read_source(reader, child, empty);
+                    let (sources, invalid) = read_source(reader, child, empty, session);
                     result.invalid |= invalid;
                     if sources.is_empty() {
                         result.empty_sources |= if name == b"plus" {
@@ -408,6 +478,9 @@ impl ErrorBars {
         if let Some(v) = &self.shape_properties {
             v.write_to(writer);
         }
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(workbook), "errBars", None);
+        }
         write_end_tag(writer, "c:errBars");
     }
 }
@@ -423,29 +496,39 @@ fn read_source<R: std::io::BufRead>(
     reader: &mut Reader<R>,
     owner: &BytesStart,
     empty: bool,
+    session: Option<&crate::reader::xlsx::SourceCacheSession>,
 ) -> (Vec<NumericDataSource>, bool) {
+    let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
     let mut sources = Vec::new();
     let mut invalid = false;
     let complete = children(reader, owner, empty, |reader, child, empty| {
-        match local_name(child.name().into_inner()) {
+        match if session.is_none_or(|session| {
+            session.accepts_child_namespace(child, super::extension_registry::NS_C)
+        }) {
+            local_name(child.name().into_inner())
+        } else {
+            b""
+        } {
             b"numRef" => {
                 // Numeric source caches are not imported or admitted. Only the
                 // existing NumberReference formula is
                 // populated; its writer regenerates caches.
                 let mut reference = NumberReference::default();
-                invalid |= !reference.read_with_policy(
-                    reader,
-                    child,
-                    empty,
-                    super::number_reference::NumericSourceCachePolicy::SkipSourceCache,
-                );
+                let policy = super::number_reference::NumericSourceCachePolicy::SkipSourceCache;
+                invalid |= !match session {
+                    Some(session) => {
+                        reference.read_with_policy_session(reader, child, empty, policy, session)
+                    }
+                    None => reference.read_with_policy(reader, child, empty, policy),
+                };
                 sources.push(NumericDataSource::Reference(Box::new(reference)));
                 true
             }
             b"numLit" => {
-                sources.push(NumericDataSource::Literal(Box::new(NumericData::read(
-                    reader, child, empty,
-                ))));
+                sources.push(NumericDataSource::Literal(Box::new(match session {
+                    Some(session) => NumericData::read_with_session(reader, child, empty, session),
+                    None => NumericData::read(reader, child, empty),
+                })));
                 true
             }
             _ => false,

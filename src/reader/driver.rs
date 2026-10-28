@@ -276,3 +276,53 @@ pub(crate) fn try_attribute_u32(
     };
     Ok(std::str::from_utf8(&raw)?.parse().ok())
 }
+
+/// Decode one simple XML text owner for numeric literals and formulas. Preserve
+/// significant text, decode entities exactly once, and restore caller settings.
+pub(crate) fn read_simple_text<R: io::BufRead>(
+    reader: &mut quick_xml::Reader<R>,
+    e: &quick_xml::events::BytesStart,
+    empty: bool,
+) -> Option<String> {
+    use quick_xml::events::Event;
+
+    if empty {
+        return Some(String::new());
+    }
+    let config = reader.config().clone();
+    reader.config_mut().trim_text(false);
+    let end = e.name().into_inner().to_vec();
+    let result = (|| {
+        let mut value = String::new();
+        let mut buffer = Vec::new();
+        let mut invalid = false;
+        loop {
+            match reader.read_event_into(&mut buffer).ok()? {
+                Event::Text(text) => {
+                    let decoded = text.decode().ok()?;
+                    value.push_str(&quick_xml::escape::unescape(&decoded).ok()?);
+                }
+                Event::CData(text) => value.push_str(&text.decode().ok()?),
+                Event::GeneralRef(reference) => {
+                    let escaped = format!("&{};", reference.decode().ok()?);
+                    value.push_str(&quick_xml::escape::unescape(&escaped).ok()?);
+                }
+                Event::Start(child) => {
+                    invalid = true;
+                    reader
+                        .read_to_end_into(child.name(), &mut Vec::new())
+                        .ok()?;
+                }
+                Event::Empty(_) => invalid = true,
+                Event::End(child) if child.name().into_inner() == end.as_slice() => {
+                    return (!invalid).then_some(value);
+                }
+                Event::End(_) | Event::Eof | Event::Decl(_) | Event::DocType(_) => return None,
+                _ => (),
+            }
+            buffer.clear();
+        }
+    })();
+    *reader.config_mut() = config;
+    result
+}

@@ -71,9 +71,147 @@ pub struct RunProperties {
     gradient_fill:        Option<Box<GradientFill>>,
     no_fill:              Option<NoFill>,
     effect_list:          Option<Box<EffectList>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:                Option<Box<RunPropertiesParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextUnderline {
+    None,
+    Words,
+    Single,
+    Double,
+    Heavy,
+    Dotted,
+    DottedHeavy,
+    Dash,
+    DashHeavy,
+    DashLong,
+    DashLongHeavy,
+    DotDash,
+    DotDashHeavy,
+    DotDotDash,
+    DotDotDashHeavy,
+    Wavy,
+    WavyHeavy,
+    WavyDouble,
+}
+impl TextUnderline {
+    fn read(v: &str) -> Option<Self> {
+        Some(match v {
+            "none" => Self::None,
+            "words" => Self::Words,
+            "sng" => Self::Single,
+            "dbl" => Self::Double,
+            "heavy" => Self::Heavy,
+            "dotted" => Self::Dotted,
+            "dottedHeavy" => Self::DottedHeavy,
+            "dash" => Self::Dash,
+            "dashHeavy" => Self::DashHeavy,
+            "dashLong" => Self::DashLong,
+            "dashLongHeavy" => Self::DashLongHeavy,
+            "dotDash" => Self::DotDash,
+            "dotDashHeavy" => Self::DotDashHeavy,
+            "dotDotDash" => Self::DotDotDash,
+            "dotDotDashHeavy" => Self::DotDotDashHeavy,
+            "wavy" => Self::Wavy,
+            "wavyHeavy" => Self::WavyHeavy,
+            "wavyDbl" => Self::WavyDouble,
+            _ => return None,
+        })
+    }
+
+    fn xml(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Words => "words",
+            Self::Single => "sng",
+            Self::Double => "dbl",
+            Self::Heavy => "heavy",
+            Self::Dotted => "dotted",
+            Self::DottedHeavy => "dottedHeavy",
+            Self::Dash => "dash",
+            Self::DashHeavy => "dashHeavy",
+            Self::DashLong => "dashLong",
+            Self::DashLongHeavy => "dashLongHeavy",
+            Self::DotDash => "dotDash",
+            Self::DotDashHeavy => "dotDashHeavy",
+            Self::DotDotDash => "dotDotDash",
+            Self::DotDotDashHeavy => "dotDotDashHeavy",
+            Self::Wavy => "wavy",
+            Self::WavyHeavy => "wavyHeavy",
+            Self::WavyDouble => "wavyDbl",
+        }
+    }
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct RunPropertiesParts {
+    underline:                Option<TextUnderline>,
+    underline_uses_text_fill: bool,
+    kerning:                  Option<u32>,
+    baseline:                 Option<i32>,
+    invalid_attributes:       u8,
 }
 
 impl RunProperties {
+    #[must_use]
+    pub fn underline(&self) -> Option<TextUnderline> {
+        self.parts.as_ref().and_then(|p| p.underline)
+    }
+
+    pub fn set_underline(&mut self, v: Option<TextUnderline>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.underline = v;
+        p.invalid_attributes &= !1;
+    }
+
+    #[must_use]
+    pub fn underline_uses_text_fill(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_some_and(|p| p.underline_uses_text_fill)
+    }
+
+    pub fn set_underline_uses_text_fill(&mut self, v: bool) {
+        self.parts
+            .get_or_insert_with(Default::default)
+            .underline_uses_text_fill = v;
+    }
+
+    #[must_use]
+    pub fn kerning(&self) -> Option<u32> {
+        self.parts.as_ref().and_then(|p| p.kerning)
+    }
+
+    pub fn set_kerning(&mut self, v: Option<u32>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.kerning = v;
+        p.invalid_attributes &= !2;
+    }
+
+    #[must_use]
+    pub fn baseline(&self) -> Option<i32> {
+        self.parts.as_ref().and_then(|p| p.baseline)
+    }
+
+    pub fn set_baseline(&mut self, v: Option<i32>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.baseline = v;
+        p.invalid_attributes &= !4;
+    }
+
+    #[must_use]
+    pub fn supplemental_attributes_valid(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_none_or(|p| p.invalid_attributes == 0)
+            && usize::from(self.solid_fill.is_some())
+                + usize::from(self.gradient_fill.is_some())
+                + usize::from(self.no_fill.is_some())
+                <= 1
+    }
+
     #[inline]
     #[must_use]
     pub fn text(&self) -> &str {
@@ -510,6 +648,24 @@ impl RunProperties {
         e: &BytesStart,
         empty_flag: bool,
     ) {
+        if let Some(v) = get_unescaped_attribute(e, b"u") {
+            let parsed = TextUnderline::read(&v);
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.underline = parsed;
+            p.invalid_attributes |= u8::from(parsed.is_none());
+        }
+        if let Some(v) = get_unescaped_attribute(e, b"kern") {
+            let parsed = v.parse().ok();
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.kerning = parsed;
+            p.invalid_attributes |= u8::from(parsed.is_none()) << 1;
+        }
+        if let Some(v) = get_unescaped_attribute(e, b"baseline") {
+            let parsed = v.parse().ok();
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.baseline = parsed;
+            p.invalid_attributes |= u8::from(parsed.is_none()) << 2;
+        }
         if let Some(v) = get_unescaped_attribute(e, b"kumimoji") {
             self.set_kumimoji(v);
         }
@@ -548,6 +704,7 @@ impl RunProperties {
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
                 match crate::reader::driver::local_name(e.name().into_inner()) {
+                    b"uFillTx" => { self.parts.get_or_insert_with(Default::default).underline_uses_text_fill=true; if !is_empty { crate::reader::driver::skip_element(reader,e); } }
                     b"solidFill" => {
                         let mut obj = SolidFill::default();
                         obj.read_attributes(reader, e, is_empty);
@@ -654,7 +811,18 @@ impl RunProperties {
         if self.strike.has_value() {
             attributes.push(("strike", self.strike.value_str()).into());
         }
-        if self.solid_fill.is_some()
+        let kern = self.kerning().map(|v| v.to_string());
+        let baseline = self.baseline().map(|v| v.to_string());
+        if let Some(v) = self.underline() {
+            attributes.push(("u", v.xml()).into());
+        }
+        if let Some(v) = &kern {
+            attributes.push(("kern", v.as_str()).into());
+        }
+        if let Some(v) = &baseline {
+            attributes.push(("baseline", v.as_str()).into());
+        }
+        if self.underline_uses_text_fill() || self.solid_fill.is_some()
             || self.outline.is_some()
             || self.latin_font.is_some()
             || self.east_asian_font.is_some()
@@ -668,9 +836,10 @@ impl RunProperties {
             // Native character-property sequence: line, fill choice, effects, fonts.
             if let Some(v)=&self.outline {v.write_to(writer);}
             if let Some(v)=&self.solid_fill {v.write_to(writer);}
-            if let Some(v)=&self.gradient_fill {v.write_to(writer);}
-            if self.no_fill.is_some(){NoFill::write_to(writer);}
+            else if let Some(v)=&self.gradient_fill {v.write_to(writer);}
+            else if self.no_fill.is_some(){NoFill::write_to(writer);}
             if let Some(v)=&self.effect_list {v.write_to(writer);}
+            if self.underline_uses_text_fill() { write_start_tag(writer,"a:uFillTx",vec![],true); }
             if let Some(v)=&self.latin_font {v.write_to_latin(writer);}
             if let Some(v)=&self.east_asian_font {v.write_to_ea(writer);}
             if let Some(v)=&self.complex_script_font {v.write_to_cs(writer);}
@@ -679,5 +848,44 @@ impl RunProperties {
         } else {
             write_start_tag(writer, tag_name, attributes, true);
         }
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn underline_and_numeric_attributes_roundtrip() {
+        let xml = "<a:rPr u=\"wavyDbl\" kern=\"1200\" baseline=\"-2000\"><a:uFillTx/></a:rPr>";
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let mut buf = Vec::new();
+        let e = match reader.read_event_into(&mut buf).unwrap() {
+            Event::Start(e) => e.into_owned(),
+            _ => panic!("expected run properties"),
+        };
+        let mut p = RunProperties::default();
+        p.set_attributes(&mut reader, &e, false);
+        assert_eq!(p.underline(), Some(TextUnderline::WavyDouble));
+        assert_eq!(p.kerning(), Some(1200));
+        assert_eq!(p.baseline(), Some(-2000));
+        assert!(p.underline_uses_text_fill());
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        p.write_to_rpr(&mut writer);
+        let out = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+        for part in [
+            "u=\"wavyDbl\"",
+            "kern=\"1200\"",
+            "baseline=\"-2000\"",
+            "<a:uFillTx/>",
+        ] {
+            assert!(out.contains(part));
+        }
+    }
+    #[test]
+    fn conflicting_fill_choices_are_diagnosed() {
+        let mut value = RunProperties::default();
+        value.set_solid_fill(SolidFill::default());
+        value.set_no_fill(NoFill::default());
+        assert!(!value.supplemental_attributes_valid());
     }
 }

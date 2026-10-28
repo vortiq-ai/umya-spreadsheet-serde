@@ -87,6 +87,8 @@ pub struct Trendline {
     display_r_squared:  Option<XmlBoolean>,
     display_equation:   Option<XmlBoolean>,
     label:              Option<Box<TrendlineLabel>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:         Option<Box<super::ExtensionList>>,
 }
 impl Default for Trendline {
     fn default() -> Self {
@@ -104,10 +106,39 @@ impl Default for Trendline {
             display_r_squared:  None,
             display_equation:   None,
             label:              None,
+            extensions:None,
         }
     }
 }
 impl Trendline {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.label {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.shape_properties {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.extensions {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
@@ -337,6 +368,7 @@ impl Trendline {
         empty: bool,
         session: &SourceCacheSession,
     ) -> Self {
+        let _scope_guard = session.enter_child_scope(e);
         let mut result = Self {
             type_element: false,
             ..Self::default()
@@ -369,7 +401,7 @@ impl Trendline {
                 {
                     result.duplicate_children = true;
                 }
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
                     b"name" => {
                         result.name = Some(if empty {
                             String::new()
@@ -378,10 +410,11 @@ impl Trendline {
                         });
                         consumed = true;
                     }
+                    b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)));consumed=true;},
                     b"spPr" => {
                         let mut v = ShapeProperties::default();
                         if !empty {
-                            v.set_attributes(reader, e);
+                            v.set_attributes_with_session(reader, e, session);
                         }
                         result.shape_properties = Some(v);
                         consumed = true;
@@ -469,6 +502,9 @@ impl Trendline {
         }
         if let Some(v) = &self.label {
             v.write_to(writer, wb);
+        }
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "trendline", None);
         }
         write_end_tag(writer, "c:trendline");
     }

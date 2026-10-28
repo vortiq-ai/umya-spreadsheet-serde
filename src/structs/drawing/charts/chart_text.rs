@@ -34,6 +34,14 @@ pub struct ChartText {
 }
 
 impl ChartText {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(value) = &mut self.string_reference {
+            result.extend(value.formulas_mut());
+        }
+        result
+    }
+
     #[must_use]
     pub fn rich_text(&self) -> Option<&RichText> {
         self.rich_text.as_ref()
@@ -115,12 +123,13 @@ impl ChartText {
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard = session.enter_child_scope(e);
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
                     b"rich" => {
                         let mut v = RichText::default();
                         if !empty {
@@ -159,8 +168,16 @@ impl ChartText {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        // c:tx
-        write_start_tag(writer, "c:tx", vec![], false);
+        self.write_to_as(writer, wb, "c:tx");
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        name: &str,
+    ) {
+        write_start_tag(writer, name, vec![], false);
 
         // c:rich
         if let Some(v) = &self.rich_text {
@@ -177,6 +194,6 @@ impl ChartText {
             v.write_to(writer);
         }
 
-        write_end_tag(writer, "c:tx");
+        write_end_tag(writer, name);
     }
 }

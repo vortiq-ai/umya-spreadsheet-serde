@@ -86,6 +86,10 @@ impl Chart {
     pub const LANG_EN_GB: &'static str = "en_GB";
     pub const LANG_JA_JP: &'static str = "ja-JP";
 
+    pub(crate) fn legend_for_roles_mut(&mut self) -> &mut Legend {
+        &mut self.legend
+    }
+
     #[must_use]
     pub fn title(&self) -> Option<&Title> {
         self.title.as_ref()
@@ -385,7 +389,21 @@ impl Chart {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        self.plot_area_mut().formula_mut()
+        let mut result = self.plot_area.formula_mut();
+        if let Some(v) = &mut self.title {
+            result.extend(v.formulas_mut());
+        }
+        result.extend(self.legend.formulas_mut());
+        if let Some(v) = &mut self.floor {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.side_wall {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.back_wall {
+            result.extend(v.formulas_mut());
+        }
+        result
     }
 
     #[deprecated(since = "3.0.0", note = "Use formula_mut()")]
@@ -396,9 +414,10 @@ impl Chart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
         // Reset legend presence so "no legend in source" round-trips through
         // the writer. Default-constructed Charts have `legend_present == true`
         // for backwards compatibility; on a real read we start over and let
@@ -406,7 +425,7 @@ impl Chart {
         self.legend_present = false;
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
                 b"title" => {
                     let mut obj = Title::default();
                     obj.set_attributes(reader, e, session);
@@ -419,29 +438,29 @@ impl Chart {
                 }
                 b"floor" => {
                     let mut obj = Floor::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_floor(obj);
                 }
                 b"sideWall" => {
                     let mut obj = SideWall::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_side_wall(obj);
                 }
                 b"backWall" => {
                     let mut obj = BackWall::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session);
                     self.set_back_wall(obj);
                 }
                 b"plotArea" => {
                     self.plot_area.set_attributes(reader, e, session);
                 }
                 b"legend" => {
-                    self.legend.set_attributes(reader, e);
+                    self.legend.set_attributes(reader, e, session);
                     self.legend_present = true;
                 }
                 _ => skip_element(reader, e),
             },
-            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
                 b"autoTitleDeleted" => {
                     self.auto_title_deleted.set_attributes(reader, e);
                 }

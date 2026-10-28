@@ -52,6 +52,17 @@ pub struct SeriesAxis {
 }
 
 impl SeriesAxis {
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
+        let mut result = Vec::new();
+        if let Some(v) = &mut self.title {
+            result.extend(v.formulas_mut());
+        }
+        if let Some(v) = &mut self.major_gridlines {
+            result.extend(v.formulas_mut());
+        }
+        result
+    }
+
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
         &self.axis_id
@@ -330,13 +341,14 @@ impl SeriesAxis {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
+        let _scope_guard=session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
                     b"scaling" => {
                         self.scaling.set_attributes(reader, e);
                     }
@@ -347,14 +359,14 @@ impl SeriesAxis {
                     }
                     b"majorGridlines" => {
                         let mut obj = MajorGridlines::default();
-                        obj.set_attributes(reader, e, false);
+                        obj.set_attributes_with_session(reader, e, false, session);
                         self.set_major_gridlines(obj);
                     }
                     _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
                     b"axId" => {
                         self.axis_id.set_attributes(reader, e);
                     }
@@ -366,7 +378,7 @@ impl SeriesAxis {
                     }
                     b"majorGridlines" => {
                         let mut obj = MajorGridlines::default();
-                        obj.set_attributes(reader, e, true);
+                        obj.set_attributes_with_session(reader, e, true, session);
                         self.set_major_gridlines(obj);
                     }
                     b"majorTickMark" => {
