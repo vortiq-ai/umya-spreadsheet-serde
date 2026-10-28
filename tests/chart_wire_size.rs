@@ -32,8 +32,10 @@ const RANGE_ROWS: u32 = 100_000;
 // reference/group extension None tags (+3/+54), two Layout parts None tags
 // (+2/+26), and the imported legacy group's six-present-flag owner supplement
 // (+24/+310). No marker, shape, point or run owner is present in this fixture.
-const CHART_BINCODE_BYTES: usize = 712;
-const CHART_JSON_BYTES: usize = 5757;
+// Stage8 adds one absent DrawingChart.parts and one absent ValueAxis.parts:
+// two option bytes and two literal `,"parts":null` fields (13 bytes each).
+const CHART_BINCODE_BYTES: usize = 714;
+const CHART_JSON_BYTES: usize = 5783;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

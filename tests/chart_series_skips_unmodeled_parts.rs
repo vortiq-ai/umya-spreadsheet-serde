@@ -401,9 +401,14 @@ fn display_units_label_does_not_replace_the_axis_own_formatting() {
     });
     let rewritten = chart_part(&write(&book));
     let axis = between(&rewritten, "<c:valAx>", "</c:valAx>").to_lowercase();
-    assert!(axis.contains("4472c4"), "{axis}");
-    assert!(!axis.contains("ff0000"), "{axis}");
-    assert!(!axis.contains("sz=\"900\""), "{axis}");
+    let (direct, units) = axis.split_once("<c:dispunits>").unwrap();
+    assert!(direct.contains("4472c4"), "{axis}");
+    assert!(!direct.contains("ff0000"), "{axis}");
+    assert!(!direct.contains("sz=\"900\""), "{axis}");
+    let label = between(units, "<c:dispunitslbl>", "</c:dispunitslbl>");
+    assert!(label.contains("ff0000"), "{axis}");
+    assert!(label.contains("sz=\"900\""), "{axis}");
+    assert!(!label.contains("4472c4"), "{axis}");
 }
 
 #[test]

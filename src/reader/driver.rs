@@ -277,6 +277,24 @@ pub(crate) fn try_attribute_u32(
     Ok(std::str::from_utf8(&raw)?.parse().ok())
 }
 
+/// Decode one XML character event using the same one-pass entity semantics for
+/// simple-text and element-only owners.
+pub(crate) fn decode_xml_character_event(event: &quick_xml::events::Event<'_>) -> Option<String> {
+    use quick_xml::events::Event;
+    match event {
+        Event::Text(text) => {
+            let decoded = text.decode().ok()?;
+            Some(quick_xml::escape::unescape(&decoded).ok()?.into_owned())
+        }
+        Event::CData(text) => Some(text.decode().ok()?.into_owned()),
+        Event::GeneralRef(reference) => {
+            let escaped = format!("&{};", reference.decode().ok()?);
+            Some(quick_xml::escape::unescape(&escaped).ok()?.into_owned())
+        }
+        _ => None,
+    }
+}
+
 /// Decode one simple XML text owner for numeric literals and formulas. Preserve
 /// significant text, decode entities exactly once, and restore caller settings.
 pub(crate) fn read_simple_text<R: io::BufRead>(
@@ -298,14 +316,8 @@ pub(crate) fn read_simple_text<R: io::BufRead>(
         let mut invalid = false;
         loop {
             match reader.read_event_into(&mut buffer).ok()? {
-                Event::Text(text) => {
-                    let decoded = text.decode().ok()?;
-                    value.push_str(&quick_xml::escape::unescape(&decoded).ok()?);
-                }
-                Event::CData(text) => value.push_str(&text.decode().ok()?),
-                Event::GeneralRef(reference) => {
-                    let escaped = format!("&{};", reference.decode().ok()?);
-                    value.push_str(&quick_xml::escape::unescape(&escaped).ok()?);
+                ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+                    value.push_str(&decode_xml_character_event(event)?);
                 }
                 Event::Start(child) => {
                     invalid = true;

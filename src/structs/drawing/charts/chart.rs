@@ -1,88 +1,141 @@
 use std::io::Cursor;
 
 use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::{BytesStart, Event},
+    Reader, Writer,
 };
 
 use super::{
-    AutoTitleDeleted,
-    BackWall,
-    DisplayBlanksAs,
-    Floor,
-    Formula,
-    Legend,
-    PlotArea,
-    PlotVisibleOnly,
-    ShowDataLabelsOverMaximum,
-    SideWall,
-    Title,
-    View3D,
+    AutoTitleDeleted, BackWall, DisplayBlanksAs, DrawingChartParts, Floor, Formula, Legend,
+    PlotArea, PlotVisibleOnly, ShowDataLabelsOverMaximum, SideWall, Title, View3D,
 };
 use crate::{
-    reader::driver::{
-        local_name,
-        skip_element,
-    },
+    reader::driver::{local_name, skip_element},
     structs::Workbook,
     traits::AdjustmentCoordinateWithSheet,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+    writer::driver::{write_end_tag, write_start_tag},
     xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Chart {
-    title:                         Option<Title>,
-    auto_title_deleted:            AutoTitleDeleted,
-    view_3d:                       Option<View3D>,
-    floor:                         Option<Floor>,
-    side_wall:                     Option<SideWall>,
-    back_wall:                     Option<BackWall>,
-    plot_area:                     PlotArea,
-    legend:                        Legend,
+    title: Option<Title>,
+    auto_title_deleted: AutoTitleDeleted,
+    view_3d: Option<View3D>,
+    floor: Option<Floor>,
+    side_wall: Option<SideWall>,
+    back_wall: Option<BackWall>,
+    plot_area: PlotArea,
+    legend: Legend,
     /// Tracks whether the source xlsx had a `<c:legend>` element (or the
     /// caller explicitly opted in via `set_legend` / `set_legend_present`).
     /// When `false`, `write_to` omits the legend block entirely, matching how
     /// Excel and `rust_xlsxwriter` signal "no legend on this chart". Without
     /// this guard a read/write round-trip silently re-emits a default legend
     /// block on any chart whose source xlsx had none.
-    legend_present:                bool,
-    plot_visible_only:             PlotVisibleOnly,
-    display_blanks_as:             DisplayBlanksAs,
+    legend_present: bool,
+    plot_visible_only: PlotVisibleOnly,
+    display_blanks_as: DisplayBlanksAs,
     show_data_labels_over_maximum: ShowDataLabelsOverMaximum,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts: Option<Box<DrawingChartParts>>,
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod phase8_chart_wire_tests {
+    use super::*;
+    #[test]
+    fn chart_prefix_and_pivot_owner_tail_are_exact() {
+        let mut chart = Chart::default();
+        chart.legend_present = false;
+        let prefix = bincode::serialize(&(
+            &chart.title, &chart.auto_title_deleted, &chart.view_3d, &chart.floor,
+            &chart.side_wall, &chart.back_wall, &chart.plot_area, &chart.legend,
+            &chart.legend_present, &chart.plot_visible_only, &chart.display_blanks_as,
+            &chart.show_data_labels_over_maximum,
+        )).unwrap();
+        let absent = bincode::serialize(&chart).unwrap();
+        assert_eq!(&absent[..prefix.len()], prefix.as_slice());
+        assert_eq!(absent.len(), prefix.len() + 1);
+        chart.set_pivot_formats(Vec::new());
+        let empty = bincode::serialize(&chart).unwrap();
+        assert_eq!(&empty[..prefix.len()], prefix.as_slice());
+        // Parent option (1), pivot option (1), empty pivot Vec (8), invalid
+        // boolean (1), duplicate-container Vec (8) = 19 bytes.
+        assert_eq!(empty.len(), prefix.len() + 19);
+        assert_eq!(empty[prefix.len()], 1);
+        let restored: Chart = bincode::deserialize(&empty).unwrap();
+        assert_eq!(restored.pivot_formats().unwrap().len(), 0);
+    }
 }
 
 impl Default for Chart {
     fn default() -> Self {
         Self {
-            title:                         None,
-            auto_title_deleted:            AutoTitleDeleted::default(),
-            view_3d:                       None,
-            floor:                         None,
-            side_wall:                     None,
-            back_wall:                     None,
-            plot_area:                     PlotArea::default(),
-            legend:                        Legend::default(),
+            title: None,
+            auto_title_deleted: AutoTitleDeleted::default(),
+            view_3d: None,
+            floor: None,
+            side_wall: None,
+            back_wall: None,
+            plot_area: PlotArea::default(),
+            legend: Legend::default(),
             // Backwards-compat: a default-constructed Chart historically wrote
             // the legend on save. Preserve that for code that builds a Chart
             // and then mutates it via `legend_mut()`.
-            legend_present:                true,
-            plot_visible_only:             PlotVisibleOnly::default(),
-            display_blanks_as:             DisplayBlanksAs::default(),
+            legend_present: true,
+            plot_visible_only: PlotVisibleOnly::default(),
+            display_blanks_as: DisplayBlanksAs::default(),
             show_data_labels_over_maximum: ShowDataLabelsOverMaximum::default(),
+            parts: None,
         }
     }
 }
 
 impl Chart {
+    pub(crate) fn duplicate_containers_for_roles(&self) -> &[DrawingChartParts] { self.duplicate_pivot_containers() }
+    pub(crate) fn duplicate_containers_for_roles_mut(&mut self) -> &mut [DrawingChartParts] { self.duplicate_pivot_containers_mut().unwrap_or_default() }
+    pub fn pivot_container_has_conflict(&self) -> bool {
+        self.parts.as_deref().is_some_and(DrawingChartParts::container_has_conflict)
+    }
+    /// Invalid imported phase-8 owner states must be rejected by the shared
+    /// export preflight before any XML for this chart is emitted.
+    pub fn phase8_conflicts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.parts.as_deref().is_some_and(DrawingChartParts::has_conflict) {
+            out.push("chart/pivotFmts".to_owned());
+        }
+        for (index, axis) in self.plot_area.value_axis().iter().enumerate() {
+            if axis.display_units_has_conflict() {
+                out.push(format!("chart/plotArea/valAx[{index}]/dispUnits"));
+            }
+        }
+        out
+    }
+    pub fn pivot_formats(&self) -> Option<&[super::PivotFormat]> {
+        self.parts
+            .as_deref()
+            .and_then(DrawingChartParts::pivot_formats)
+    }
+    pub fn pivot_formats_mut(&mut self) -> Option<&mut [super::PivotFormat]> {
+        self.parts
+            .as_deref_mut()
+            .and_then(DrawingChartParts::pivot_formats_mut)
+    }
+    pub fn duplicate_pivot_containers(&self) -> &[DrawingChartParts] {
+        self.parts.as_deref().map(DrawingChartParts::duplicate_containers).unwrap_or_default()
+    }
+    pub fn duplicate_pivot_containers_mut(&mut self) -> Option<&mut [DrawingChartParts]> {
+        self.parts.as_deref_mut().map(DrawingChartParts::duplicate_containers_mut)
+    }
+
+    pub fn set_pivot_formats(&mut self, values: Vec<super::PivotFormat>) -> &mut Self {
+        self.parts
+            .get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+            .set_pivot_formats(values);
+        self
+    }
     pub const LANG_EN_GB: &'static str = "en_GB";
     pub const LANG_JA_JP: &'static str = "ja-JP";
 
@@ -403,6 +456,7 @@ impl Chart {
         if let Some(v) = &mut self.back_wall {
             result.extend(v.formulas_mut());
         }
+        if let Some(parts) = &mut self.parts { result.extend(parts.formulas_mut()); }
         result
     }
 
@@ -436,6 +490,14 @@ impl Chart {
                     obj.set_attributes(reader, e);
                     self.set_view_3d(obj);
                 }
+                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
+                    if let Some(parts) = &mut self.parts {
+                        let duplicate = DrawingChartParts::read(reader, e, false, session);
+                        parts.push_duplicate(duplicate);
+                    } else {
+                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, false, session)));
+                    }
+                }
                 b"floor" => {
                     let mut obj = Floor::default();
                     obj.set_attributes_with_session(reader, e, session);
@@ -461,6 +523,13 @@ impl Chart {
                 _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
+                    if let Some(parts) = &mut self.parts {
+                        parts.push_duplicate(DrawingChartParts::read(reader, e, true, session));
+                    } else {
+                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, true, session)));
+                    }
+                }
                 b"autoTitleDeleted" => {
                     self.auto_title_deleted.set_attributes(reader, e);
                 }
@@ -495,6 +564,11 @@ impl Chart {
 
         // c:autoTitleDeleted
         self.auto_title_deleted.write_to(writer);
+
+        // c:pivotFmts (schema position immediately after autoTitleDeleted).
+        if let Some(parts) = &self.parts {
+            parts.write_to(writer, wb);
+        }
 
         // c:view3D
         if let Some(v) = &self.view_3d {

@@ -45,11 +45,27 @@ pub(crate) mod workbook_rels;
 pub(crate) mod worksheet;
 pub(crate) mod worksheet_rels;
 
+fn validate_chart_exports(wb: &Workbook) -> Result<(), XlsxError> {
+    // Validate before creating the ZIP writer or emitting any chart payload.
+    // The original typed state is left untouched and remains available to the caller.
+    for (sheet_index, sheet) in wb.sheet_collection_no_check().iter().enumerate() {
+        for (chart_index, chart) in sheet.worksheet_drawing().chart_collection().iter().enumerate() {
+            let conflicts = chart.chart_space().chart().phase8_conflicts();
+            if !conflicts.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                    format!("chart export rejected at sheet[{sheet_index}] chart[{chart_index}]: {}", conflicts.join(", "))).into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_zip_to_writer<W: io::Write + io::Seek>(
     wb: &Workbook,
     writer: W,
     is_light: bool,
 ) -> Result<(), XlsxError> {
+    validate_chart_exports(wb)?;
     let arv = zip::ZipWriter::new(writer);
     let mut writer_manager = WriterManager::new(arv);
     {
@@ -241,6 +257,7 @@ pub fn write_writer_light<W: io::Write>(wb: &Workbook, mut writer: W) -> Result<
 /// let _unused = umya_spreadsheet::writer::xlsx::write(&book, path);
 /// ```
 pub fn write<P: AsRef<Path>>(wb: &Workbook, path: P) -> Result<(), XlsxError> {
+    validate_chart_exports(wb)?;
     // Fix #328, add default extension
     let extension = match path.as_ref().extension() {
         Some(ext) => ext.to_str().unwrap_or("xlsx"),
@@ -270,6 +287,7 @@ pub fn write<P: AsRef<Path>>(wb: &Workbook, path: P) -> Result<(), XlsxError> {
 /// let _unused = umya_spreadsheet::writer::xlsx::write_light(&book, path);
 /// ```
 pub fn write_light<P: AsRef<Path>>(wb: &Workbook, path: P) -> Result<(), XlsxError> {
+    validate_chart_exports(wb)?;
     let extension = path.as_ref().extension().unwrap().to_str().unwrap();
     let path_tmp = path
         .as_ref()
@@ -304,13 +322,7 @@ pub fn write_with_password<P: AsRef<Path>>(
     let path_tmp = path
         .as_ref()
         .with_extension(format!("{}{}", extension, "tmp"));
-    let buffer = match make_buffer(wb, false) {
-        Ok(v) => v,
-        Err(v) => {
-            fs::remove_file(path_tmp)?;
-            return Err(v);
-        }
-    };
+    let buffer = make_buffer(wb, false)?;
 
     // set password
     encrypt(&path_tmp, &buffer, password);
@@ -342,13 +354,7 @@ pub fn write_with_password_light<P: AsRef<Path>>(
     let path_tmp = path
         .as_ref()
         .with_extension(format!("{}{}", extension, "tmp"));
-    let buffer = match make_buffer(wb, true) {
-        Ok(v) => v,
-        Err(v) => {
-            fs::remove_file(path_tmp)?;
-            return Err(v);
-        }
-    };
+    let buffer = make_buffer(wb, true)?;
 
     // set password
     encrypt(&path_tmp, &buffer, password);

@@ -57,7 +57,7 @@ macro_rules! extension_roles {
                 if let Some(v)=axis.$title(){title(id,v,visit);}
             })*
         }
-        fn list$(<$b>)?(base:Option<String>,list:& $($b)? $($m)* ExtensionList,
+        pub(crate) fn list$(<$b>)?(base:Option<String>,list:& $($b)? $($m)* ExtensionList,
             visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference)){
             for entry in & $($m)* list.entries {
                 let uri=entry.uri.as_deref().unwrap_or("").to_ascii_lowercase();
@@ -83,7 +83,7 @@ macro_rules! extension_roles {
             visit(base.clone(),reference);
             if let Some(v)=reference.$ext(){list(key(base.as_deref(),"referenceExtensions"),v,visit);}
         }
-        fn text$(<$b>)?(base:Option<String>,text:& $($b)? $($m)* ChartText,
+        pub(crate) fn text$(<$b>)?(base:Option<String>,text:& $($b)? $($m)* ChartText,
             visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference),main:bool){
             if let Some(v)=text.$reference(){
                 if main{reference(key(base.as_deref(),"text"),v,visit);}
@@ -108,6 +108,15 @@ macro_rules! extension_roles {
             let base=owner.index().explicit_value().and_then(|id|key(base.as_deref(),
                 &format!("pointLabel:{id}")));
             if let Some(v)=owner.$labeltext(){text(base.clone(),v,visit,true);}
+            if let Some(v)=owner.$layout(){layout(base.clone(),v,visit);}
+            if let Some(v)=owner.$shape(){shape(base.clone(),v,visit);}
+            if let Some(v)=owner.$ext(){list(base,v,visit);}
+        }
+        pub(crate) fn label_nested$(<$b>)?(base:Option<String>,owner:& $($b)? $($m)* DataLabel,
+            visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference)){
+            let base=owner.index().explicit_value().and_then(|id|key(base.as_deref(),
+                &format!("pointLabel:{id}")));
+            if let Some(v)=owner.$labeltext(){text(base.clone(),v,visit,false);}
             if let Some(v)=owner.$layout(){layout(base.clone(),v,visit);}
             if let Some(v)=owner.$shape(){shape(base.clone(),v,visit);}
             if let Some(v)=owner.$ext(){list(base,v,visit);}
@@ -176,10 +185,10 @@ macro_rules! extension_roles {
                 v,visit);},NumericDataSource::Literal(v)=>if let Some(v)=v.$ext(){list(base,
                 v,visit);}}
         }
-        fn shape$(<$b>)?(base:Option<String>,shape:& $($b)? $($m)* ShapeProperties,
+        pub(crate) fn shape$(<$b>)?(base:Option<String>,shape:& $($b)? $($m)* ShapeProperties,
             visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference)){
             if let Some(v)=shape.$ext(){list(base,v,visit);}}
-        fn marker$(<$b>)?(base:Option<String>,marker:& $($b)? $($m)* Marker,
+        pub(crate) fn marker$(<$b>)?(base:Option<String>,marker:& $($b)? $($m)* Marker,
             visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference)){
             if let Some(v)=marker.$shape(){shape(base.clone(),v,visit);}
                 if let Some(v)=marker.$ext(){list(base,v,visit);}
@@ -187,7 +196,7 @@ macro_rules! extension_roles {
         fn lines$(<$b>)?(base:Option<String>,lines:& $($b)? $($m)* ChartLines,
             visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference)){
             if let Some(v)=lines.$shape(){shape(base,v,visit);}}
-        fn layout$(<$b>)?(base:Option<String>,layout:& $($b)? $($m)* Layout,
+        pub(crate) fn layout$(<$b>)?(base:Option<String>,layout:& $($b)? $($m)* Layout,
             visit:&mut dyn FnMut(Option<String>,& $($b)? $($m)* StringReference)){
             if let Some(v)=layout.$manual(){if let Some(v)=v.$ext(){list(base.clone(),v,
                 visit);}}if let Some(v)=layout.$ext(){list(base,v,visit);}
@@ -238,7 +247,7 @@ macro_rules! extension_roles {
         }
     };
 }
-mod borrowed {
+pub(crate) mod borrowed {
     use super::{
         AreaChartSeries,
         AxisDataSourceChoice,
@@ -274,7 +283,7 @@ mod borrowed {
         [LineChart,Line3DChart,PieChart,Pie3DChart,DoughnutChart,ScatterChart,BarChart,
             Bar3DChart,RadarChart,BubbleChart,AreaChart,Area3DChart,OfPieChart]);
 }
-mod mutable {
+pub(crate) mod mutable {
     use super::{
         AreaChartSeries,
         AxisDataSourceChoice,

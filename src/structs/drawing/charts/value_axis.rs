@@ -2,79 +2,124 @@
 use std::io::Cursor;
 
 use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::{BytesStart, Event},
+    Reader, Writer,
 };
 
 use super::{
-    AxisId,
-    AxisPosition,
-    CrossBetween,
-    Crosses,
-    CrossingAxis,
-    Delete,
-    MajorGridlines,
-    MajorTickMark,
-    MinorTickMark,
-    NumberingFormat,
-    Scaling,
-    ShapeProperties,
-    TextProperties,
-    TickLabelPosition,
-    Title,
+    AxisId, AxisPosition, CrossBetween, Crosses, CrossingAxis, Delete, DisplayUnits, Formula,
+    MajorGridlines, MajorTickMark, MinorTickMark, NumberingFormat, Scaling, ShapeProperties,
+    TextProperties, TickLabelPosition, Title, ValueAxisParts,
 };
 use crate::{
+    reader::driver::{local_name, skip_element, xml_read_loop},
+    writer::driver::{write_end_tag, write_start_tag},
     Workbook,
-    reader::driver::{
-        local_name,
-        skip_element,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ValueAxis {
-    axis_id:             AxisId,
-    scaling:             Scaling,
-    delete:              Delete,
-    axis_position:       AxisPosition,
-    major_gridlines:     Option<MajorGridlines>,
-    title:               Option<Title>,
-    numbering_format:    NumberingFormat,
-    major_tick_mark:     MajorTickMark,
-    minor_tick_mark:     MinorTickMark,
+    axis_id: AxisId,
+    scaling: Scaling,
+    delete: Delete,
+    axis_position: AxisPosition,
+    major_gridlines: Option<MajorGridlines>,
+    title: Option<Title>,
+    numbering_format: NumberingFormat,
+    major_tick_mark: MajorTickMark,
+    minor_tick_mark: MinorTickMark,
     tick_label_position: TickLabelPosition,
-    crossing_axis:       CrossingAxis,
-    crosses:             Crosses,
-    cross_between:       CrossBetween,
-    shape_properties:    Option<ShapeProperties>,
-    text_properties:     Option<TextProperties>,
+    crossing_axis: CrossingAxis,
+    crosses: Crosses,
+    cross_between: CrossBetween,
+    shape_properties: Option<ShapeProperties>,
+    text_properties: Option<TextProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts: Option<Box<ValueAxisParts>>,
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod phase8_wire_ledger_tests {
+    use super::*;
+    use crate::drawing::charts::DisplayUnit;
+
+    #[test]
+    fn axis_original_field_prefix_and_optional_tail_cost_are_exact() {
+        let mut axis = ValueAxis::default();
+        axis.axis_id_mut().set_val(42);
+        axis.tick_crossing_axis_mut().set_val(7);
+        let prefix = bincode::serialize(&(
+            &axis.axis_id, &axis.scaling, &axis.delete, &axis.axis_position,
+            &axis.major_gridlines, &axis.title, &axis.numbering_format,
+            &axis.major_tick_mark, &axis.minor_tick_mark, &axis.tick_label_position,
+            &axis.crossing_axis, &axis.crosses, &axis.cross_between,
+            &axis.shape_properties, &axis.text_properties,
+        )).unwrap();
+        let absent = bincode::serialize(&axis).unwrap();
+        assert_eq!(&absent[..prefix.len()], prefix.as_slice());
+        assert_eq!(absent.len(), prefix.len() + 1);
+        assert_eq!(absent[prefix.len()], 0);
+        let mut units = DisplayUnits::default();
+        units.set_unit(DisplayUnit::BuiltIn(Default::default()));
+        axis.set_display_units(units);
+        let present = bincode::serialize(&axis).unwrap();
+        assert_eq!(&present[..prefix.len()], prefix.as_slice());
+        // Parent option (1), unit option (1), enum discriminant (4), scalar
+        // option (1), label/ext options (2), four empty vectors (32), body
+        // validity bool (1), and axis duplicate vector (8) = 50 bytes.
+        assert_eq!(present.len(), prefix.len() + 50);
+        assert_eq!(present[prefix.len()], 1);
+        let restored: ValueAxis = bincode::deserialize(&present).unwrap();
+        assert_eq!(restored.axis_id().val(), 42);
+        assert!(restored.display_units().is_some());
+        // Deliberately no claim that a bincode stream without the new tail decodes.
+    }
 }
 
 impl ValueAxis {
-    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut super::Formula> {
-        let mut result = Vec::new();
-        if let Some(v) = &mut self.title {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.major_gridlines {
-            result.extend(v.formulas_mut());
-        }
-        if let Some(v) = &mut self.shape_properties {
-            result.extend(v.formulas_mut());
-        }
-        result
+    pub(crate) fn extra_display_units_for_roles_mut(&mut self) -> &mut [DisplayUnits] { self.extra_display_units_mut().unwrap_or_default() }
+    pub fn display_units_has_conflict(&self) -> bool {
+        self.parts.as_deref().is_some_and(ValueAxisParts::has_conflict)
     }
-
+    pub fn extra_display_units(&self) -> &[DisplayUnits] {
+        self.parts.as_deref().map(ValueAxisParts::extra_display_units).unwrap_or_default()
+    }
+    pub fn extra_display_units_mut(&mut self) -> Option<&mut [DisplayUnits]> {
+        self.parts.as_deref_mut().map(ValueAxisParts::extra_display_units_mut)
+    }
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut Formula> {
+        let mut out = Vec::new();
+        if let Some(title) = &mut self.title {
+            out.extend(title.formulas_mut());
+        }
+        if let Some(grid) = &mut self.major_gridlines {
+            out.extend(grid.formulas_mut());
+        }
+        if let Some(shape) = &mut self.shape_properties {
+            out.extend(shape.formulas_mut());
+        }
+        if let Some(parts) = &mut self.parts {
+            out.extend(parts.formulas_mut());
+        }
+        out
+    }
+    pub fn display_units(&self) -> Option<&DisplayUnits> {
+        self.parts
+            .as_deref()
+            .and_then(ValueAxisParts::display_units)
+    }
+    pub fn display_units_mut(&mut self) -> Option<&mut DisplayUnits> {
+        self.parts
+            .as_deref_mut()
+            .and_then(ValueAxisParts::display_units_mut)
+    }
+    pub fn set_display_units(&mut self, v: DisplayUnits) -> &mut Self {
+        self.parts
+            .get_or_insert_with(|| Box::new(ValueAxisParts::default()))
+            .set_display_units(v);
+        self
+    }
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
         &self.axis_id
@@ -468,6 +513,11 @@ impl ValueAxis {
                     obj.set_attributes(reader, e, session);
                     self.set_title(obj);
                 }
+                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
+                    let mut v=DisplayUnits::default();
+                    v.set_attributes(reader,e,false,session);
+                    self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default())).add_imported_display_units(v);
+                }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes_with_session(reader, e, session);
@@ -486,6 +536,7 @@ impl ValueAxis {
                 _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => { self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default())).add_imported_display_units(DisplayUnits::default()); },
                 b"axId" => {
                     self.axis_id.set_attributes(reader, e);
                 }
@@ -588,6 +639,9 @@ impl ValueAxis {
 
         // c:crossBetween
         self.cross_between.write_to(writer);
+        if let Some(v) = self.display_units() {
+            v.write_to(writer, wb);
+        }
 
         write_end_tag(writer, "c:valAx");
     }

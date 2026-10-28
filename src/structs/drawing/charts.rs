@@ -60,6 +60,12 @@ pub use self::width_mode::*;
 
 mod chart_space;
 pub use self::chart_space::*;
+mod display_units;
+pub use self::display_units::*;
+mod pivot_format;
+pub use self::pivot_format::*;
+mod phase8_cache_roles;
+mod phase8_extension_roles;
 
 mod date1904;
 pub use self::date1904::*;

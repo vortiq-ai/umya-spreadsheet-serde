@@ -436,13 +436,15 @@ pub(crate) enum ReferenceIdentity {
     AxisTitle(u32),
     TrendlineLabel(u32, String),
     Extension(String),
+    PivotFormatLabel(u32),
+    DisplayUnitsLabel(u32),
 }
 
 // Define the traversal once for borrowed and mutable references. Each visit
 // carries its identity, so capture and boundary operations cannot disagree
 // about reference locations or maintain a parallel list of roles.
 macro_rules! string_reference_traversal {
-    ($name:ident, $extension_walk:ident, ($($mutable:tt)*), ($($borrow:lifetime)?),
+    ($name:ident, $extension_walk:ident, $phase8_walk:ident, $phase8_nested_walk:ident, ($($mutable:tt)*), ($($borrow:lifetime)?),
      $chart:ident, $title:ident, $text:ident,
      $reference:ident, $plot:ident, $groups:ident, $series:ident, $items:ident,
      $category:ident, $trends:ident, $label:ident, $label_text:ident, [$($axes:ident),*]) => {
@@ -516,6 +518,16 @@ macro_rules! string_reference_traversal {
                 let identity=identity.map(ReferenceIdentity::Extension);
                 visit(identity,reference);
             });
+            super::phase8_cache_roles::$phase8_walk(space.$chart(), &mut |identity, reference| {
+                let identity = identity.map(|id| match id {
+                    super::phase8_cache_roles::Phase8ReferenceIdentity::PivotFormatLabel(v) => ReferenceIdentity::PivotFormatLabel(v),
+                    super::phase8_cache_roles::Phase8ReferenceIdentity::DisplayUnitsLabel(v) => ReferenceIdentity::DisplayUnitsLabel(v),
+                });
+                visit(identity, reference);
+            });
+            super::phase8_extension_roles::$phase8_nested_walk(space.$chart(), &mut |identity, reference| {
+                visit(identity.map(ReferenceIdentity::Extension), reference);
+            });
         }
     };
 }
@@ -523,6 +535,8 @@ macro_rules! string_reference_traversal {
 string_reference_traversal!(
     visit_string_references,
     visit_extension_references,
+    visit_phase8_references_mut,
+    visit_phase8_nested_mut,
     (mut),
     (),
     chart_mut,
@@ -540,6 +554,8 @@ string_reference_traversal!(
 string_reference_traversal!(
     visit_string_references_ref,
     visit_extension_references_ref,
+    visit_phase8_references,
+    visit_phase8_nested,
     (),
     ('a),
     chart,
