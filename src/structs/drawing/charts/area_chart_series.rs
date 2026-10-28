@@ -173,9 +173,7 @@ impl AreaChartSeries {
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
-        self.parts
-            .as_deref()
-            .and_then(SeriesParts::extensions)
+        self.parts.as_deref().and_then(SeriesParts::extensions)
     }
 
     pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
@@ -657,7 +655,8 @@ impl AreaChartSeries {
                     }
                     b"dPt" => {
                         self.data_points_mut()
-                            .push(DataPoint::read_with_session(reader, e, is_empty_element, session));
+                            .push(DataPoint::read_with_session(reader, e, is_empty_element,
+                                session));
                     }
                     b"tx" => {
                         let mut obj = ChartText::default();
@@ -798,15 +797,19 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size = None,
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
-            SeriesPartKind::DataPoints | SeriesPartKind::DataLabels | SeriesPartKind::Extensions => (),
+            SeriesPartKind::DataPoints
+            | SeriesPartKind::DataLabels
+            | SeriesPartKind::Extensions => (),
             SeriesPartKind::ErrorBars => {
-                if let Some(parts)=self.parts.as_mut(){parts.error_bars_mut().clear();}
-            },
+                if let Some(parts) = self.parts.as_mut() {
+                    parts.error_bars_mut().clear();
+                }
+            }
             SeriesPartKind::Trendlines => {
-                if let Some(parts)=self.parts.as_mut(){
+                if let Some(parts) = self.parts.as_mut() {
                     parts.trendlines_mut().clear();
                 }
-            },
+            }
         }
     }
 
@@ -821,7 +824,12 @@ impl AreaChartSeries {
             .filter(|part| self.has_part(*part) && !family.allows(*part))
             .map(|part| (part, 0, SeriesPartConflictReason::NotAllowed))
             .collect();
-        if let Some(reason)=self.extensions().and_then(|ext|ext.conflict_for_owner("ser",Some(family))){conflicts.push((SeriesPartKind::Extensions,0,reason));}
+        if let Some(reason) = self
+            .extensions()
+            .and_then(|ext| ext.conflict_for_owner("ser", Some(family)))
+        {
+            conflicts.push((SeriesPartKind::Extensions, 0, reason));
+        }
         if family.allows(SeriesPartKind::Marker)
             && self.marker.as_ref().is_some_and(|v| !v.is_valid())
         {
@@ -903,14 +911,22 @@ impl AreaChartSeries {
         let mut removed: Vec<_> = self
             .part_conflicts(family)
             .into_iter()
-            .filter(|(part, _, reason)| *part!=SeriesPartKind::Extensions && *reason == SeriesPartConflictReason::NotAllowed)
+            .filter(|(part, _, reason)| {
+                *part != SeriesPartKind::Extensions
+                    && *reason == SeriesPartConflictReason::NotAllowed
+            })
             .map(|(part, occurrence, _)| (part, occurrence))
             .collect();
         for (part, _) in &removed {
             self.clear_part(*part);
         }
-        if let Some(extensions)=self.extensions_mut(){
-            removed.extend(extensions.remove_not_allowed_for_owner("ser",Some(family)).into_iter().map(|occurrence|(SeriesPartKind::Extensions,occurrence)));
+        if let Some(extensions) = self.extensions_mut() {
+            removed.extend(
+                extensions
+                    .remove_not_allowed_for_owner("ser", Some(family))
+                    .into_iter()
+                    .map(|occurrence| (SeriesPartKind::Extensions, occurrence)),
+            );
         }
         let limit = super::error_bars::error_bar_limit(family);
         if limit > 0 {

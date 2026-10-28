@@ -53,7 +53,6 @@ pub struct ManualLayoutParts {
 }
 
 impl ManualLayout {
-
     #[must_use]
     pub fn extensions(&self) -> Option<&ExtensionList> {
         self.parts.as_ref().and_then(|p| p.extensions.as_ref())

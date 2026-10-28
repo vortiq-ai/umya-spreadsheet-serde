@@ -67,18 +67,25 @@ pub struct CategoryAxis {
 impl CategoryAxis {
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
         super::chart_reference_roles::AxisParts {
-            id: self.axis_id.explicit_value(), title: self.title.as_ref(),
-            shape: self.shape_properties.as_ref(), gridlines: self.major_gridlines.as_ref(), display_parts: None,
+            id:            self.axis_id.explicit_value(),
+            title:         self.title.as_ref(),
+            shape:         self.shape_properties.as_ref(),
+            gridlines:     self.major_gridlines.as_ref(),
+            display_parts: None,
         }
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::AxisPartsMut<'_> {
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::AxisPartsMut<'_> {
         super::chart_reference_roles::AxisPartsMut {
-            id: self.axis_id.explicit_value(), title: self.title.as_mut(),
-            shape: self.shape_properties.as_mut(), gridlines: self.major_gridlines.as_mut(), display_parts: None,
+            id:            self.axis_id.explicit_value(),
+            title:         self.title.as_mut(),
+            shape:         self.shape_properties.as_mut(),
+            gridlines:     self.major_gridlines.as_mut(),
+            display_parts: None,
         }
     }
-
 
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
@@ -511,7 +518,7 @@ impl CategoryAxis {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {

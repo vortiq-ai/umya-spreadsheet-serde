@@ -72,7 +72,6 @@ impl CategoryAxisData {
         )
     }
 
-
     #[must_use]
     pub fn multi_level_string_reference(&self) -> Option<&MultiLevelStringReference> {
         self.multi_level_string_reference.as_ref()

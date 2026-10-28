@@ -46,7 +46,8 @@ impl From<&ChartType> for SeriesFamily {
 /// `c:dLbls`) are not listed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum SeriesPartKind {    Explosion,
+pub enum SeriesPartKind {
+    Explosion,
     InvertIfNegative,
     Marker,
     Categories,

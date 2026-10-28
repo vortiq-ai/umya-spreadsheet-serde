@@ -106,13 +106,15 @@ impl Default for Trendline {
             display_r_squared:  None,
             display_equation:   None,
             label:              None,
-            extensions:None,
+            extensions:         None,
         }
     }
 }
 impl Trendline {
     // Projection only: retain diagnostics and absent children exactly.
-    pub(crate) fn reference_role_parts(&self) -> (
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
         Option<&TrendlineLabel>,
         Option<&ShapeProperties>,
         Option<&super::ExtensionList>,
@@ -124,7 +126,9 @@ impl Trendline {
         )
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
         Option<&mut TrendlineLabel>,
         Option<&mut ShapeProperties>,
         Option<&mut super::ExtensionList>,
@@ -135,7 +139,6 @@ impl Trendline {
             self.extensions.as_deref_mut(),
         )
     }
-
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

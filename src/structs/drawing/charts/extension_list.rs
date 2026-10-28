@@ -210,7 +210,6 @@ impl Extension {
     }
 }
 impl ExtensionList {
-
     #[must_use]
     pub fn source_part_sha256(&self) -> &str {
         &self.source_part_sha256

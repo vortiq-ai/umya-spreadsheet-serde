@@ -1,17 +1,14 @@
 use std::collections::HashMap;
+
 use quick_xml::{
-    escape,
     Reader,
-    events::BytesStart,
-    events::Event,
-};
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
+    escape,
+    events::{
+        BytesStart,
+        Event,
     },
-    xml_read_loop,
 };
+
 use crate::{
     StringValue,
     helper::{
@@ -27,7 +24,13 @@ use crate::{
             get_start_and_end_point,
         },
     },
-    reader::xlsx::worksheet::read_lite,
+    reader::{
+        driver::{
+            get_attribute,
+            set_string_from_xml,
+        },
+        xlsx::worksheet::read_lite,
+    },
     structs::{
         AutoFilter,
         Cell,
@@ -75,6 +78,7 @@ use crate::{
         AdjustmentCoordinateWithSheet,
         AdjustmentValue,
     },
+    xml_read_loop,
 };
 
 /// A Worksheet Object.
@@ -118,69 +122,143 @@ pub struct Worksheet {
 
 impl Worksheet {
     /// Walk stored chart carriers in ordinary drawing serialization order.
-    pub(crate) fn visit_chart_spaces<'a>(&'a self, visit: &mut dyn FnMut(&'a crate::drawing::charts::ChartSpace)) {
+    pub(crate) fn visit_chart_spaces<'a>(
+        &'a self,
+        visit: &mut dyn FnMut(&'a crate::drawing::charts::ChartSpace),
+    ) {
         let drawing = self.worksheet_drawing();
         for chart in drawing.chart_collection() {
-            if let Some(frame) = chart.two_cell_anchor().graphic_frame() { visit(frame.graphic().graphic_data().chart_space()); }
+            if let Some(frame) = chart.two_cell_anchor().graphic_frame() {
+                visit(frame.graphic().graphic_data().chart_space());
+            }
         }
         for image in drawing.image_collection() {
-            if let Some(frame) = image.two_cell_anchor().and_then(|anchor| anchor.graphic_frame()) { visit(frame.graphic().graphic_data().chart_space()); }
-            if let Some(frame) = image.one_cell_anchor().and_then(|anchor| anchor.graphic_frame()) { visit(frame.graphic().graphic_data().chart_space()); }
+            if let Some(frame) = image
+                .two_cell_anchor()
+                .and_then(|anchor| anchor.graphic_frame())
+            {
+                visit(frame.graphic().graphic_data().chart_space());
+            }
+            if let Some(frame) = image
+                .one_cell_anchor()
+                .and_then(|anchor| anchor.graphic_frame())
+            {
+                visit(frame.graphic().graphic_data().chart_space());
+            }
         }
-        for frame in drawing.graphic_frame_collection() { visit(frame.graphic().graphic_data().chart_space()); }
+        for frame in drawing.graphic_frame_collection() {
+            visit(frame.graphic().graphic_data().chart_space());
+        }
         for anchor in drawing.one_cell_anchor_collection() {
-            if let Some(frame) = anchor.graphic_frame() { visit(frame.graphic().graphic_data().chart_space()); }
+            if let Some(frame) = anchor.graphic_frame() {
+                visit(frame.graphic().graphic_data().chart_space());
+            }
         }
         for ole in self.ole_objects().ole_object() {
-            if let Some(frame) = ole.two_cell_anchor().graphic_frame() { visit(frame.graphic().graphic_data().chart_space()); }
+            if let Some(frame) = ole.two_cell_anchor().graphic_frame() {
+                visit(frame.graphic().graphic_data().chart_space());
+            }
         }
     }
 
-    pub(crate) fn visit_chart_spaces_mut(&mut self, visit: &mut dyn FnMut(&mut crate::drawing::charts::ChartSpace)) {
+    pub(crate) fn visit_chart_spaces_mut(
+        &mut self,
+        visit: &mut dyn FnMut(&mut crate::drawing::charts::ChartSpace),
+    ) {
         let drawing = self.worksheet_drawing_mut();
         for chart in drawing.chart_collection_mut() {
-            if let Some(frame) = chart.two_cell_anchor_mut().graphic_frame_mut() { visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()); }
+            if let Some(frame) = chart.two_cell_anchor_mut().graphic_frame_mut() {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            }
         }
         for image in drawing.image_collection_mut() {
-            if let Some(frame) = image.two_cell_anchor_mut().and_then(|anchor| anchor.graphic_frame_mut()) { visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()); }
-            if let Some(frame) = image.one_cell_anchor_mut().and_then(|anchor| anchor.graphic_frame_mut()) { visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()); }
+            if let Some(frame) = image
+                .two_cell_anchor_mut()
+                .and_then(|anchor| anchor.graphic_frame_mut())
+            {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            }
+            if let Some(frame) = image
+                .one_cell_anchor_mut()
+                .and_then(|anchor| anchor.graphic_frame_mut())
+            {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            }
         }
-        for frame in drawing.graphic_frame_collection_mut() { visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()); }
+        for frame in drawing.graphic_frame_collection_mut() {
+            visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+        }
         for anchor in drawing.one_cell_anchor_collection_mut() {
-            if let Some(frame) = anchor.graphic_frame_mut() { visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()); }
+            if let Some(frame) = anchor.graphic_frame_mut() {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            }
         }
         for ole in self.ole_objects_mut().ole_object_mut() {
-            if let Some(frame) = ole.two_cell_anchor_mut().graphic_frame_mut() { visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()); }
+            if let Some(frame) = ole.two_cell_anchor_mut().graphic_frame_mut() {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            }
         }
     }
 
-    pub(crate) fn prepare_chart_space_edits(&self, host: &str, prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>) -> Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>> {
-        use crate::drawing::charts::{chart_reference_roles::{visit_ref, ReferenceGrammar}, reference_edit_engine::edit_prepared_formula_text};
+    pub(crate) fn prepare_chart_space_edits(
+        &self,
+        host: &str,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+    ) -> Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>> {
+        use crate::drawing::charts::{
+            chart_reference_roles::{
+                ReferenceGrammar,
+                visit_ref,
+            },
+            reference_edit_engine::edit_prepared_formula_text,
+        };
         let mut spaces = Vec::new();
         self.visit_chart_spaces(&mut |space| {
             let mut leaves = Vec::new();
-            visit_ref(space, &mut |metadata, target| leaves.push(edit_prepared_formula_text(&target.formula().address_str(), host, prepared, metadata.grammar == ReferenceGrammar::LabelRangeFormula)));
+            visit_ref(space, &mut |metadata, target| {
+                leaves.push(edit_prepared_formula_text(
+                    &target.formula().address_str(),
+                    host,
+                    prepared,
+                    metadata.grammar == ReferenceGrammar::LabelRangeFormula,
+                ));
+            });
             spaces.push(leaves);
         });
         spaces
     }
 
-    pub(crate) fn apply_chart_space_edits(&mut self, spaces: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>) {
+    pub(crate) fn apply_chart_space_edits(
+        &mut self,
+        spaces: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
+    ) {
         use crate::drawing::charts::chart_reference_roles::visit_mut;
         let mut spaces = spaces.into_iter();
         self.visit_chart_spaces_mut(&mut |space| {
-            let mut leaves = spaces.next().expect("chart carrier changed after reference preflight").into_iter();
+            let mut leaves = spaces
+                .next()
+                .expect("chart carrier changed after reference preflight")
+                .into_iter();
             visit_mut(space, &mut |_metadata, mut target| {
-                let decision = leaves.next().expect("chart references changed after preflight");
+                let decision = leaves
+                    .next()
+                    .expect("chart references changed after preflight");
                 target.replace_decided_text(&decision.text);
             });
-            assert!(leaves.next().is_none(), "chart references changed after preflight");
+            assert!(
+                leaves.next().is_none(),
+                "chart references changed after preflight"
+            );
         });
-        assert!(spaces.next().is_none(), "chart carrier changed after reference preflight");
+        assert!(
+            spaces.next().is_none(),
+            "chart carrier changed after reference preflight"
+        );
     }
 
     fn adjust_cell_references_for_edits(
-        &mut self, change: &crate::drawing::charts::CoordinateChange<'_>,
+        &mut self,
+        change: &crate::drawing::charts::CoordinateChange<'_>,
         prepared: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
     ) {
         let host = self.name().to_owned();
@@ -188,9 +266,18 @@ impl Worksheet {
         for cell in self.cells_mut() {
             if let Some(original) = cell.cell_value().formula_obj() {
                 let mut formula = original.clone();
-                formula.adjust_array_geometry(same_sheet, change.root_col, change.col_count, change.root_row, change.row_count, change.remove);
+                formula.adjust_array_geometry(
+                    same_sheet,
+                    change.root_col,
+                    change.col_count,
+                    change.root_row,
+                    change.row_count,
+                    change.remove,
+                );
                 let mut changed = false;
-                for item in prepared { changed |= formula.adjust_reference_texts_prepared(&host, item, false); }
+                for item in prepared {
+                    changed |= formula.adjust_reference_texts_prepared(&host, item, false);
+                }
                 cell.cell_value_mut().set_formula_obj(formula);
                 // Preserve typed error results, including native array #NAME?
                 // sentinels; a non-error result may no longer be current.
@@ -201,7 +288,11 @@ impl Worksheet {
         }
     }
 
-    pub(crate) fn adjust_reference_semantics(&mut self, change: &crate::drawing::charts::CoordinateChange<'_>, prepared: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>]) {
+    pub(crate) fn adjust_reference_semantics(
+        &mut self,
+        change: &crate::drawing::charts::CoordinateChange<'_>,
+        prepared: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+    ) {
         self.adjust_cell_references_for_edits(change, prepared);
         let host = self.name().to_owned();
         for edit in prepared {
@@ -211,13 +302,18 @@ impl Worksheet {
         }
     }
 
-    fn adjust_defined_names_for_prepared(&mut self, prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>) {
+    fn adjust_defined_names_for_prepared(
+        &mut self,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+    ) {
         use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
         let host = self.name().to_owned();
         for name in &mut self.defined_names {
             let before = name.address();
             let decision = edit_prepared_formula_text(&before, &host, prepared, false);
-            if decision.text != before { name.set_string_value(decision.text); }
+            if decision.text != before {
+                name.set_string_value(decision.text);
+            }
         }
     }
 
@@ -2842,8 +2938,8 @@ impl Worksheet {
         column: i32,
         is_move: bool,
     ) -> &mut Self {
-        // Check to ensure coordinates to move are within range (eg: moving A1 cells to
-        // the left is impossible)
+        // Check to ensure coordinates to move are within range (eg: moving A1
+        // cells to the left is impossible)
         let (row_start, row_end, col_start, col_end) = get_start_and_end_point(range);
         if (num_traits::cast::<_, i32>(col_start).unwrap() + column) < 1
             || (num_traits::cast::<_, i32>(row_start).unwrap() + row) < 1
@@ -3012,7 +3108,6 @@ impl Worksheet {
             Event::Eof => panic!("Error: Could not find {} end element", "sheet")
         );
     }
-
 }
 fn valid_structural_origin(col: u32, col_count: u32, row: u32, row_count: u32) -> bool {
     (col_count == 0 || ((1..=16_384).contains(&col) && col_count <= 16_384))
@@ -3020,13 +3115,16 @@ fn valid_structural_origin(col: u32, col_count: u32, row: u32, row_count: u32) -
 }
 
 impl Worksheet {
-    pub(crate) fn adjustment_insert_geometry(&mut self,
+    pub(crate) fn adjustment_insert_geometry(
+        &mut self,
         root_col_num: u32,
         offset_col_num: u32,
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) { return; }
+        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) {
+            return;
+        }
         if offset_col_num != 0 {
             // column dimensions
             self.columns
@@ -3096,15 +3194,18 @@ impl Worksheet {
                 offset_row_num,
             );
         }
-        }
+    }
 
-    pub(crate) fn adjustment_remove_geometry(&mut self,
+    pub(crate) fn adjustment_remove_geometry(
+        &mut self,
         root_col_num: u32,
         offset_col_num: u32,
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) { return; }
+        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) {
+            return;
+        }
         if offset_col_num != 0 {
             // column dimensions
             self.columns
@@ -3195,7 +3296,7 @@ impl Worksheet {
                 offset_row_num,
             );
         }
-        }
+    }
 }
 impl AdjustmentCoordinate for Worksheet {
     fn adjustment_insert_coordinate(
@@ -3207,7 +3308,13 @@ impl AdjustmentCoordinate for Worksheet {
     ) {
         let host = self.name().to_owned();
         self.adjustment_insert_geometry(root_col_num, offset_col_num, root_row_num, offset_row_num);
-        self.adjustment_insert_coordinate_with_sheet(&host, root_col_num, offset_col_num, root_row_num, offset_row_num);
+        self.adjustment_insert_coordinate_with_sheet(
+            &host,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+        );
     }
 
     fn adjustment_remove_coordinate(
@@ -3219,7 +3326,13 @@ impl AdjustmentCoordinate for Worksheet {
     ) {
         let host = self.name().to_owned();
         self.adjustment_remove_geometry(root_col_num, offset_col_num, root_row_num, offset_row_num);
-        self.adjustment_remove_coordinate_with_sheet(&host, root_col_num, offset_col_num, root_row_num, offset_row_num);
+        self.adjustment_remove_coordinate_with_sheet(
+            &host,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+        );
     }
 }
 impl AdjustmentCoordinateWithSheet for Worksheet {
@@ -3231,14 +3344,40 @@ impl AdjustmentCoordinateWithSheet for Worksheet {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) { return; }
+        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) {
+            return;
+        }
         if offset_col_num == 0 && offset_row_num == 0 {
             return;
         }
 
-        let edits = crate::drawing::charts::coordinate_edits(sheet_name, root_col_num, offset_col_num, root_row_num, offset_row_num, false).expect("validated structural edit");
-        let prepared: Vec<_> = edits.iter().map(|edit| crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit).expect("validated structural edit")).collect();
-        self.adjust_reference_semantics(&crate::drawing::charts::CoordinateChange { sheet: sheet_name, root_col: root_col_num, col_count: offset_col_num, root_row: root_row_num, row_count: offset_row_num, remove: false }, &prepared);
+        let edits = crate::drawing::charts::coordinate_edits(
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            false,
+        )
+        .expect("validated structural edit");
+        let prepared: Vec<_> = edits
+            .iter()
+            .map(|edit| {
+                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
+                    .expect("validated structural edit")
+            })
+            .collect();
+        self.adjust_reference_semantics(
+            &crate::drawing::charts::CoordinateChange {
+                sheet:     sheet_name,
+                root_col:  root_col_num,
+                col_count: offset_col_num,
+                root_row:  root_row_num,
+                row_count: offset_row_num,
+                remove:    false,
+            },
+            &prepared,
+        );
     }
 
     fn adjustment_remove_coordinate_with_sheet(
@@ -3249,51 +3388,125 @@ impl AdjustmentCoordinateWithSheet for Worksheet {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) { return; }
+        if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) {
+            return;
+        }
         if offset_col_num == 0 && offset_row_num == 0 {
             return;
         }
 
-        let edits = crate::drawing::charts::coordinate_edits(sheet_name, root_col_num, offset_col_num, root_row_num, offset_row_num, true).expect("validated structural edit");
-        let prepared: Vec<_> = edits.iter().map(|edit| crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit).expect("validated structural edit")).collect();
-        self.adjust_reference_semantics(&crate::drawing::charts::CoordinateChange { sheet: sheet_name, root_col: root_col_num, col_count: offset_col_num, root_row: root_row_num, row_count: offset_row_num, remove: true }, &prepared);
+        let edits = crate::drawing::charts::coordinate_edits(
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            true,
+        )
+        .expect("validated structural edit");
+        let prepared: Vec<_> = edits
+            .iter()
+            .map(|edit| {
+                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
+                    .expect("validated structural edit")
+            })
+            .collect();
+        self.adjust_reference_semantics(
+            &crate::drawing::charts::CoordinateChange {
+                sheet:     sheet_name,
+                root_col:  root_col_num,
+                col_count: offset_col_num,
+                root_row:  root_row_num,
+                row_count: offset_row_num,
+                remove:    true,
+            },
+            &prepared,
+        );
     }
 }
 
 #[cfg(test)]
 mod stage9_coordinate_trait_regression {
-    use crate::{Chart, drawing::charts::{ChartText, StringReference, Title}};
-#[test]
-fn direct_worksheet_coordinate_trait_adjusts_local_chart_once() {
-    use crate::traits::AdjustmentCoordinate;
-    let mut book = crate::new_file();
-    let mut reference = StringReference::default(); reference.formula_mut().set_string_value("$B$2:$B$5");
-    let mut text = ChartText::default(); text.set_string_reference(reference);
-    let mut title = Title::default(); title.set_chart_text(text);
-    let mut chart = Chart::default();
-    chart.new_chart(&crate::ChartType::LineChart, Default::default(), Default::default(), vec!["Sheet1!$A$1"]);
-    chart.chart_space_mut().chart_mut().set_title(title);
-    book.sheet_mut(0).unwrap().add_chart(chart);
-    book.sheet_mut(0).unwrap().adjustment_insert_coordinate(0, 0, 4, 1);
-    let value = book.sheet(0).unwrap().chart_collection()[0].chart_space().chart().title().unwrap().chart_text().unwrap().string_reference().unwrap().formula().address_str();
-    assert_eq!(value, "$B$2:$B$6");
-}
+    use crate::{
+        Chart,
+        drawing::charts::{
+            ChartText,
+            StringReference,
+            Title,
+        },
+    };
+    #[test]
+    fn direct_worksheet_coordinate_trait_adjusts_local_chart_once() {
+        use crate::traits::AdjustmentCoordinate;
+        let mut book = crate::new_file();
+        let mut reference = StringReference::default();
+        reference.formula_mut().set_string_value("$B$2:$B$5");
+        let mut text = ChartText::default();
+        text.set_string_reference(reference);
+        let mut title = Title::default();
+        title.set_chart_text(text);
+        let mut chart = Chart::default();
+        chart.new_chart(
+            &crate::ChartType::LineChart,
+            Default::default(),
+            Default::default(),
+            vec!["Sheet1!$A$1"],
+        );
+        chart.chart_space_mut().chart_mut().set_title(title);
+        book.sheet_mut(0).unwrap().add_chart(chart);
+        book.sheet_mut(0)
+            .unwrap()
+            .adjustment_insert_coordinate(0, 0, 4, 1);
+        let value = book.sheet(0).unwrap().chart_collection()[0]
+            .chart_space()
+            .chart()
+            .title()
+            .unwrap()
+            .chart_text()
+            .unwrap()
+            .string_reference()
+            .unwrap()
+            .formula()
+            .address_str();
+        assert_eq!(value, "$B$2:$B$6");
+    }
 }
 
 #[cfg(test)]
 mod stage9_carrier_regression {
-    use crate::{Chart, ChartType, structs::{Image, OleObject}, drawing::spreadsheet::{OneCellAnchor, TwoCellAnchor}};
+    use crate::{
+        Chart,
+        ChartType,
+        drawing::spreadsheet::{
+            OneCellAnchor,
+            TwoCellAnchor,
+        },
+        structs::{
+            Image,
+            OleObject,
+        },
+    };
 
     #[test]
     fn workbook_and_worksheet_edits_visit_all_modeled_chart_carriers() {
         let mut book = crate::new_file();
         let mut chart = Chart::default();
-        chart.new_chart(&ChartType::LineChart, Default::default(), Default::default(), vec!["Sheet1!$A$1"]);
+        chart.new_chart(
+            &ChartType::LineChart,
+            Default::default(),
+            Default::default(),
+            vec!["Sheet1!$A$1"],
+        );
         let frame = chart.two_cell_anchor().graphic_frame().unwrap().clone();
-        let mut one = OneCellAnchor::default(); one.set_graphic_frame(frame.clone());
-        let mut two = TwoCellAnchor::default(); two.set_graphic_frame(frame.clone());
-        let mut image = Image::default(); image.set_one_cell_anchor(one.clone()); image.set_two_cell_anchor(two.clone());
-        let mut ole = OleObject::default(); ole.set_two_cell_anchor(two.clone());
+        let mut one = OneCellAnchor::default();
+        one.set_graphic_frame(frame.clone());
+        let mut two = TwoCellAnchor::default();
+        two.set_graphic_frame(frame.clone());
+        let mut image = Image::default();
+        image.set_one_cell_anchor(one.clone());
+        image.set_two_cell_anchor(two.clone());
+        let mut ole = OleObject::default();
+        ole.set_two_cell_anchor(two.clone());
         {
             let sheet = book.sheet_mut(0).unwrap();
             let drawing = sheet.worksheet_drawing_mut();
@@ -3307,7 +3520,10 @@ mod stage9_carrier_regression {
         book.sheet_mut(0).unwrap().insert_new_row(1, 1);
         let mut seen = Vec::new();
         book.sheet(0).unwrap().visit_chart_spaces(&mut |space| {
-            crate::drawing::charts::chart_reference_roles::visit_ref(space, &mut |_metadata, target| seen.push(target.formula().address_str()));
+            crate::drawing::charts::chart_reference_roles::visit_ref(
+                space,
+                &mut |_metadata, target| seen.push(target.formula().address_str()),
+            );
         });
         assert_eq!(seen.len(), 6);
         assert!(seen.iter().all(|value| value == "Data!$A$2"), "{seen:?}");

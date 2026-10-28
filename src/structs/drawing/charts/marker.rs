@@ -67,7 +67,6 @@ impl Marker {
         )
     }
 
-
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.parts.as_deref().and_then(|p| p.extensions.as_ref())

@@ -47,20 +47,30 @@ pub(crate) mod worksheet_rels;
 
 fn validate_chart_exports(wb: &Workbook) -> Result<(), XlsxError> {
     // Validate before creating the ZIP writer or emitting any chart payload.
-    // The original typed state is left untouched and remains available to the caller.
+    // The original typed state is left untouched and remains available to the
+    // caller.
     for (sheet_index, sheet) in wb.sheet_collection_no_check().iter().enumerate() {
-        if !sheet.has_drawing_object() { continue; }
+        if !sheet.has_drawing_object() {
+            continue;
+        }
         let mut chart_index = 0;
         let mut failure = None;
         sheet.visit_chart_spaces(&mut |space| {
             let conflicts = space.chart().phase8_conflicts();
             if !conflicts.is_empty() && failure.is_none() {
-                failure = Some(io::Error::new(io::ErrorKind::InvalidData,
-                    format!("chart export rejected at sheet[{sheet_index}] chart[{chart_index}]: {}", conflicts.join(", "))));
+                failure = Some(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "chart export rejected at sheet[{sheet_index}] chart[{chart_index}]: {}",
+                        conflicts.join(", ")
+                    ),
+                ));
             }
             chart_index += 1;
         });
-        if let Some(error) = failure { return Err(error.into()); }
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
     }
     Ok(())
 }

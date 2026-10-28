@@ -101,7 +101,6 @@ impl DataLabel {
         )
     }
 
-
     #[must_use]
     pub fn extensions(&self) -> Option<&ExtensionList> {
         self.extensions.as_ref()

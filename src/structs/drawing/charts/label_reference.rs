@@ -59,7 +59,6 @@ impl SeriesDataLabelsRange {
         &mut self.reference
     }
 
-
     #[must_use]
     pub fn reference(&self) -> &StringReference {
         &self.reference
@@ -163,7 +162,6 @@ impl DataLabelFieldEntry {
     pub(crate) fn reference_for_roles_mut(&mut self) -> &mut StringReference {
         &mut self.reference
     }
-
 
     #[must_use]
     pub fn field_guid(&self) -> &str {
@@ -286,7 +284,6 @@ pub struct DataLabelFieldTable {
     invalid: bool,
 }
 impl DataLabelFieldTable {
-
     #[must_use]
     pub fn entries(&self) -> &[DataLabelFieldEntry] {
         &self.entries

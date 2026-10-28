@@ -142,7 +142,6 @@ pub struct NumericData {
     extensions:  Option<Box<super::ExtensionList>>,
 }
 impl NumericData {
-
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.extensions.as_deref()
@@ -304,7 +303,6 @@ pub enum NumericDataSource {
     Literal(Box<NumericData>),
 }
 impl NumericDataSource {
-
     #[must_use]
     pub fn literal(&self) -> Option<&NumericData> {
         match self {

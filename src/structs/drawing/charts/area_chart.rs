@@ -45,20 +45,32 @@ pub struct AreaChart {
 }
 
 impl AreaChart {
-    pub(crate) fn reference_group_parts(&self) -> (
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
         &AreaChartSeriesList,
         Option<&DataLabels>,
         Option<&super::ExtensionList>,
     ) {
-        (&self.area_chart_series_list, Some(&self.data_labels), self.extensions.as_deref())
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
     }
 
-    pub(crate) fn reference_group_parts_mut(&mut self) -> (
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
     ) {
-        (&mut self.area_chart_series_list, Some(&mut self.data_labels), self.extensions.as_deref_mut())
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+        )
     }
 
     pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
@@ -68,7 +80,6 @@ impl AreaChart {
     pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
         std::iter::once(&mut self.data_labels)
     }
-
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
@@ -222,7 +233,7 @@ impl AreaChart {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         self.data_labels.mark_group_absent();
         xml_read_loop!(
             reader,
@@ -294,12 +305,7 @@ impl AreaChart {
         }
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(
-                writer,
-                Some(wb),
-                "areaChart",
-                Some(SeriesFamily::Area),
-            );
+            ext.write_for_owner(writer, Some(wb), "areaChart", Some(SeriesFamily::Area));
         }
         write_end_tag(writer, "c:areaChart");
     }

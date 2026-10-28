@@ -24,7 +24,6 @@ pub struct XValues {
 }
 
 impl XValues {
-
     #[must_use]
     pub fn number_reference(&self) -> &NumberReference {
         &self.number_reference

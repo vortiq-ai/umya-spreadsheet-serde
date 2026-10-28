@@ -1,45 +1,66 @@
 use std::io::Cursor;
 
 use quick_xml::{
-    events::{BytesStart, Event},
-    Reader, Writer,
+    Reader,
+    Writer,
+    events::{
+        BytesStart,
+        Event,
+    },
 };
 
 use super::{
-    AutoTitleDeleted, BackWall, DisplayBlanksAs, DrawingChartParts, Floor, Formula, Legend,
-    PlotArea, PlotVisibleOnly, ShowDataLabelsOverMaximum, SideWall, Title, View3D,
+    AutoTitleDeleted,
+    BackWall,
+    DisplayBlanksAs,
+    DrawingChartParts,
+    Floor,
+    Formula,
+    Legend,
+    PlotArea,
+    PlotVisibleOnly,
+    ShowDataLabelsOverMaximum,
+    SideWall,
+    Title,
+    View3D,
 };
 use crate::{
-    reader::driver::{local_name, skip_element},
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     structs::Workbook,
     traits::AdjustmentCoordinateWithSheet,
-    writer::driver::{write_end_tag, write_start_tag},
+    writer::driver::{
+        write_end_tag,
+        write_start_tag,
+    },
     xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Chart {
-    title: Option<Title>,
-    auto_title_deleted: AutoTitleDeleted,
-    view_3d: Option<View3D>,
-    floor: Option<Floor>,
-    side_wall: Option<SideWall>,
-    back_wall: Option<BackWall>,
-    plot_area: PlotArea,
-    legend: Legend,
+    title:                         Option<Title>,
+    auto_title_deleted:            AutoTitleDeleted,
+    view_3d:                       Option<View3D>,
+    floor:                         Option<Floor>,
+    side_wall:                     Option<SideWall>,
+    back_wall:                     Option<BackWall>,
+    plot_area:                     PlotArea,
+    legend:                        Legend,
     /// Tracks whether the source xlsx had a `<c:legend>` element (or the
     /// caller explicitly opted in via `set_legend` / `set_legend_present`).
     /// When `false`, `write_to` omits the legend block entirely, matching how
     /// Excel and `rust_xlsxwriter` signal "no legend on this chart". Without
     /// this guard a read/write round-trip silently re-emits a default legend
     /// block on any chart whose source xlsx had none.
-    legend_present: bool,
-    plot_visible_only: PlotVisibleOnly,
-    display_blanks_as: DisplayBlanksAs,
+    legend_present:                bool,
+    plot_visible_only:             PlotVisibleOnly,
+    display_blanks_as:             DisplayBlanksAs,
     show_data_labels_over_maximum: ShowDataLabelsOverMaximum,
     #[cfg_attr(feature = "serde", serde(default))]
-    parts: Option<Box<DrawingChartParts>>,
+    parts:                         Option<Box<DrawingChartParts>>,
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -50,11 +71,20 @@ mod phase8_chart_wire_tests {
         let mut chart = Chart::default();
         chart.legend_present = false;
         let prefix = bincode::serialize(&(
-            &chart.title, &chart.auto_title_deleted, &chart.view_3d, &chart.floor,
-            &chart.side_wall, &chart.back_wall, &chart.plot_area, &chart.legend,
-            &chart.legend_present, &chart.plot_visible_only, &chart.display_blanks_as,
+            &chart.title,
+            &chart.auto_title_deleted,
+            &chart.view_3d,
+            &chart.floor,
+            &chart.side_wall,
+            &chart.back_wall,
+            &chart.plot_area,
+            &chart.legend,
+            &chart.legend_present,
+            &chart.plot_visible_only,
+            &chart.display_blanks_as,
             &chart.show_data_labels_over_maximum,
-        )).unwrap();
+        ))
+        .unwrap();
         let absent = bincode::serialize(&chart).unwrap();
         assert_eq!(&absent[..prefix.len()], prefix.as_slice());
         assert_eq!(absent.len(), prefix.len() + 1);
@@ -73,53 +103,79 @@ mod phase8_chart_wire_tests {
 impl Default for Chart {
     fn default() -> Self {
         Self {
-            title: None,
-            auto_title_deleted: AutoTitleDeleted::default(),
-            view_3d: None,
-            floor: None,
-            side_wall: None,
-            back_wall: None,
-            plot_area: PlotArea::default(),
-            legend: Legend::default(),
+            title:                         None,
+            auto_title_deleted:            AutoTitleDeleted::default(),
+            view_3d:                       None,
+            floor:                         None,
+            side_wall:                     None,
+            back_wall:                     None,
+            plot_area:                     PlotArea::default(),
+            legend:                        Legend::default(),
             // Backwards-compat: a default-constructed Chart historically wrote
             // the legend on save. Preserve that for code that builds a Chart
             // and then mutates it via `legend_mut()`.
-            legend_present: true,
-            plot_visible_only: PlotVisibleOnly::default(),
-            display_blanks_as: DisplayBlanksAs::default(),
+            legend_present:                true,
+            plot_visible_only:             PlotVisibleOnly::default(),
+            display_blanks_as:             DisplayBlanksAs::default(),
             show_data_labels_over_maximum: ShowDataLabelsOverMaximum::default(),
-            parts: None,
+            parts:                         None,
         }
     }
 }
 
 impl Chart {
+    pub const LANG_EN_GB: &'static str = "en_GB";
+    pub const LANG_JA_JP: &'static str = "ja-JP";
+
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::ChartParts<'_> {
         super::chart_reference_roles::ChartParts {
-            title: self.title.as_ref(), plot: &self.plot_area, legend: &self.legend,
-            floor: self.floor.as_ref(), side_wall: self.side_wall.as_ref(), back_wall: self.back_wall.as_ref(),
+            title:       self.title.as_ref(),
+            plot:        &self.plot_area,
+            legend:      &self.legend,
+            floor:       self.floor.as_ref(),
+            side_wall:   self.side_wall.as_ref(),
+            back_wall:   self.back_wall.as_ref(),
             pivot_parts: self.parts.as_deref(),
         }
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::ChartPartsMut<'_> {
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::ChartPartsMut<'_> {
         super::chart_reference_roles::ChartPartsMut {
-            title: self.title.as_mut(), plot: &mut self.plot_area, legend: &mut self.legend,
-            floor: self.floor.as_mut(), side_wall: self.side_wall.as_mut(), back_wall: self.back_wall.as_mut(),
+            title:       self.title.as_mut(),
+            plot:        &mut self.plot_area,
+            legend:      &mut self.legend,
+            floor:       self.floor.as_mut(),
+            side_wall:   self.side_wall.as_mut(),
+            back_wall:   self.back_wall.as_mut(),
             pivot_parts: self.parts.as_deref_mut(),
         }
     }
 
-    pub(crate) fn duplicate_containers_for_roles(&self) -> &[DrawingChartParts] { self.duplicate_pivot_containers() }
-    pub(crate) fn duplicate_containers_for_roles_mut(&mut self) -> &mut [DrawingChartParts] { self.duplicate_pivot_containers_mut().unwrap_or_default() }
-    pub fn pivot_container_has_conflict(&self) -> bool {
-        self.parts.as_deref().is_some_and(DrawingChartParts::container_has_conflict)
+    pub(crate) fn duplicate_containers_for_roles(&self) -> &[DrawingChartParts] {
+        self.duplicate_pivot_containers()
     }
+
+    pub(crate) fn duplicate_containers_for_roles_mut(&mut self) -> &mut [DrawingChartParts] {
+        self.duplicate_pivot_containers_mut().unwrap_or_default()
+    }
+
+    pub fn pivot_container_has_conflict(&self) -> bool {
+        self.parts
+            .as_deref()
+            .is_some_and(DrawingChartParts::container_has_conflict)
+    }
+
     /// Invalid imported phase-8 owner states must be rejected by the shared
     /// export preflight before any XML for this chart is emitted.
     pub fn phase8_conflicts(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.parts.as_deref().is_some_and(DrawingChartParts::has_conflict) {
+        if self
+            .parts
+            .as_deref()
+            .is_some_and(DrawingChartParts::has_conflict)
+        {
             out.push("chart/pivotFmts".to_owned());
         }
         for (index, axis) in self.plot_area.value_axis().iter().enumerate() {
@@ -129,21 +185,30 @@ impl Chart {
         }
         out
     }
+
     pub fn pivot_formats(&self) -> Option<&[super::PivotFormat]> {
         self.parts
             .as_deref()
             .and_then(DrawingChartParts::pivot_formats)
     }
+
     pub fn pivot_formats_mut(&mut self) -> Option<&mut [super::PivotFormat]> {
         self.parts
             .as_deref_mut()
             .and_then(DrawingChartParts::pivot_formats_mut)
     }
+
     pub fn duplicate_pivot_containers(&self) -> &[DrawingChartParts] {
-        self.parts.as_deref().map(DrawingChartParts::duplicate_containers).unwrap_or_default()
+        self.parts
+            .as_deref()
+            .map(DrawingChartParts::duplicate_containers)
+            .unwrap_or_default()
     }
+
     pub fn duplicate_pivot_containers_mut(&mut self) -> Option<&mut [DrawingChartParts]> {
-        self.parts.as_deref_mut().map(DrawingChartParts::duplicate_containers_mut)
+        self.parts
+            .as_deref_mut()
+            .map(DrawingChartParts::duplicate_containers_mut)
     }
 
     pub fn set_pivot_formats(&mut self, values: Vec<super::PivotFormat>) -> &mut Self {
@@ -152,8 +217,6 @@ impl Chart {
             .set_pivot_formats(values);
         self
     }
-    pub const LANG_EN_GB: &'static str = "en_GB";
-    pub const LANG_JA_JP: &'static str = "ja-JP";
 
     pub(crate) fn legend_for_roles_mut(&mut self) -> &mut Legend {
         &mut self.legend
@@ -472,7 +535,7 @@ impl Chart {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         // Reset legend presence so "no legend in source" round-trips through
         // the writer. Default-constructed Charts have `legend_present == true`
         // for backwards compatibility; on a real read we start over and let
@@ -496,7 +559,8 @@ impl Chart {
                         let duplicate = DrawingChartParts::read(reader, e, false, session);
                         parts.push_duplicate(duplicate);
                     } else {
-                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, false, session)));
+                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, false,
+                            session)));
                     }
                 }
                 b"floor" => {
@@ -528,7 +592,8 @@ impl Chart {
                     if let Some(parts) = &mut self.parts {
                         parts.push_duplicate(DrawingChartParts::read(reader, e, true, session));
                     } else {
-                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, true, session)));
+                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, true,
+                            session)));
                     }
                 }
                 b"autoTitleDeleted" => {
@@ -623,8 +688,13 @@ impl AdjustmentCoordinateWithSheet for Chart {
         offset_row_num: u32,
     ) {
         super::chart_reference_roles::adjust_coordinate_scope(
-            super::chart_reference_roles::ReferenceScopeMut::Chart(self), sheet_name,
-            root_col_num, offset_col_num, root_row_num, offset_row_num, false,
+            super::chart_reference_roles::ReferenceScopeMut::Chart(self),
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            false,
         );
     }
 
@@ -637,8 +707,13 @@ impl AdjustmentCoordinateWithSheet for Chart {
         offset_row_num: u32,
     ) {
         super::chart_reference_roles::adjust_coordinate_scope(
-            super::chart_reference_roles::ReferenceScopeMut::Chart(self), sheet_name,
-            root_col_num, offset_col_num, root_row_num, offset_row_num, true,
+            super::chart_reference_roles::ReferenceScopeMut::Chart(self),
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            true,
         );
     }
 }

@@ -65,7 +65,6 @@ impl Title {
         )
     }
 
-
     #[must_use]
     pub fn chart_text(&self) -> Option<&ChartText> {
         self.chart_text.as_ref()
@@ -172,7 +171,7 @@ impl Title {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {

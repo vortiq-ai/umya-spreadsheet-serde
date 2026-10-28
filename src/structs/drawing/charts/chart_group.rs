@@ -135,79 +135,105 @@ impl<'a> ChartGroupRef<'a> {
             Self::LineChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Line3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::PieChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Pie3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::DoughnutChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::ScatterChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::BarChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Bar3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::RadarChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::BubbleChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::AreaChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Area3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
             Self::OfPieChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts();
                 super::chart_reference_roles::GroupParts {
-                    series: series.area_chart_series(), labels, extensions,
+                    series: series.area_chart_series(),
+                    labels,
+                    extensions,
                 }
             }
         }
@@ -296,89 +322,116 @@ impl<'a> ChartGroupRef<'a> {
 }
 
 impl<'a> ChartGroupMut<'a> {
-    pub(crate) fn into_reference_role_parts(self) -> super::chart_reference_roles::GroupPartsMut<'a> {
+    pub(crate) fn into_reference_role_parts(
+        self,
+    ) -> super::chart_reference_roles::GroupPartsMut<'a> {
         match self {
             Self::LineChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Line3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::PieChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Pie3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::DoughnutChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::ScatterChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::BarChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Bar3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::RadarChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::BubbleChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::AreaChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::Area3DChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
             Self::OfPieChart(owner) => {
                 let (series, labels, extensions) = owner.reference_group_parts_mut();
                 super::chart_reference_roles::GroupPartsMut {
-                    series: series.area_chart_series_mut(), labels, extensions,
+                    series: series.area_chart_series_mut(),
+                    labels,
+                    extensions,
                 }
             }
         }
     }
-
 
     #[must_use]
     pub fn kind(&self) -> ChartType {

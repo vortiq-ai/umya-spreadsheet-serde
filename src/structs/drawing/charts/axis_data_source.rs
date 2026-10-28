@@ -44,7 +44,6 @@ pub struct AxisDataSource {
     invalid: bool,
 }
 impl AxisDataSource {
-
     #[must_use]
     pub fn choices(&self) -> &[AxisDataSourceChoice] {
         &self.choices
@@ -105,9 +104,9 @@ impl AxisDataSource {
                         );
                         AxisDataSourceChoice::NumberReference(Box::new(v))
                     }
-                    b"numLit" => AxisDataSourceChoice::NumericLiteral(Box::new(NumericData::read_with_session(
-                        reader, child, empty, session,
-                    ))),
+                    b"numLit" => AxisDataSourceChoice::NumericLiteral(Box::new(
+                        NumericData::read_with_session(reader, child, empty, session),
+                    )),
                     b"strRef" => {
                         let mut v = StringReference::default();
                         if !empty {

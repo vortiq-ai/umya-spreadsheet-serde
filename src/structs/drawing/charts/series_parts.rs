@@ -48,7 +48,6 @@ impl SeriesParts {
         )
     }
 
-
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.extensions.as_deref()

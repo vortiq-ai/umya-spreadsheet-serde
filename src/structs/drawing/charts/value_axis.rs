@@ -2,40 +2,66 @@
 use std::io::Cursor;
 
 use quick_xml::{
-    events::{BytesStart, Event},
-    Reader, Writer,
+    Reader,
+    Writer,
+    events::{
+        BytesStart,
+        Event,
+    },
 };
 
 use super::{
-    AxisId, AxisPosition, CrossBetween, Crosses, CrossingAxis, Delete, DisplayUnits, MajorGridlines, MajorTickMark, MinorTickMark, NumberingFormat, Scaling, ShapeProperties,
-    TextProperties, TickLabelPosition, Title, ValueAxisParts,
+    AxisId,
+    AxisPosition,
+    CrossBetween,
+    Crosses,
+    CrossingAxis,
+    Delete,
+    DisplayUnits,
+    MajorGridlines,
+    MajorTickMark,
+    MinorTickMark,
+    NumberingFormat,
+    Scaling,
+    ShapeProperties,
+    TextProperties,
+    TickLabelPosition,
+    Title,
+    ValueAxisParts,
 };
 use crate::{
-    reader::driver::{local_name, skip_element, xml_read_loop},
-    writer::driver::{write_end_tag, write_start_tag},
     Workbook,
+    reader::driver::{
+        local_name,
+        skip_element,
+        xml_read_loop,
+    },
+    writer::driver::{
+        write_end_tag,
+        write_start_tag,
+    },
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ValueAxis {
-    axis_id: AxisId,
-    scaling: Scaling,
-    delete: Delete,
-    axis_position: AxisPosition,
-    major_gridlines: Option<MajorGridlines>,
-    title: Option<Title>,
-    numbering_format: NumberingFormat,
-    major_tick_mark: MajorTickMark,
-    minor_tick_mark: MinorTickMark,
+    axis_id:             AxisId,
+    scaling:             Scaling,
+    delete:              Delete,
+    axis_position:       AxisPosition,
+    major_gridlines:     Option<MajorGridlines>,
+    title:               Option<Title>,
+    numbering_format:    NumberingFormat,
+    major_tick_mark:     MajorTickMark,
+    minor_tick_mark:     MinorTickMark,
     tick_label_position: TickLabelPosition,
-    crossing_axis: CrossingAxis,
-    crosses: Crosses,
-    cross_between: CrossBetween,
-    shape_properties: Option<ShapeProperties>,
-    text_properties: Option<TextProperties>,
+    crossing_axis:       CrossingAxis,
+    crosses:             Crosses,
+    cross_between:       CrossBetween,
+    shape_properties:    Option<ShapeProperties>,
+    text_properties:     Option<TextProperties>,
     #[cfg_attr(feature = "serde", serde(default))]
-    parts: Option<Box<ValueAxisParts>>,
+    parts:               Option<Box<ValueAxisParts>>,
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -49,12 +75,23 @@ mod phase8_wire_ledger_tests {
         axis.axis_id_mut().set_val(42);
         axis.tick_crossing_axis_mut().set_val(7);
         let prefix = bincode::serialize(&(
-            &axis.axis_id, &axis.scaling, &axis.delete, &axis.axis_position,
-            &axis.major_gridlines, &axis.title, &axis.numbering_format,
-            &axis.major_tick_mark, &axis.minor_tick_mark, &axis.tick_label_position,
-            &axis.crossing_axis, &axis.crosses, &axis.cross_between,
-            &axis.shape_properties, &axis.text_properties,
-        )).unwrap();
+            &axis.axis_id,
+            &axis.scaling,
+            &axis.delete,
+            &axis.axis_position,
+            &axis.major_gridlines,
+            &axis.title,
+            &axis.numbering_format,
+            &axis.major_tick_mark,
+            &axis.minor_tick_mark,
+            &axis.tick_label_position,
+            &axis.crossing_axis,
+            &axis.crosses,
+            &axis.cross_between,
+            &axis.shape_properties,
+            &axis.text_properties,
+        ))
+        .unwrap();
         let absent = bincode::serialize(&axis).unwrap();
         assert_eq!(&absent[..prefix.len()], prefix.as_slice());
         assert_eq!(absent.len(), prefix.len() + 1);
@@ -72,34 +109,55 @@ mod phase8_wire_ledger_tests {
         let restored: ValueAxis = bincode::deserialize(&present).unwrap();
         assert_eq!(restored.axis_id().val(), 42);
         assert!(restored.display_units().is_some());
-        // Deliberately no claim that a bincode stream without the new tail decodes.
+        // Deliberately no claim that a bincode stream without the new tail
+        // decodes.
     }
 }
 
 impl ValueAxis {
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
         super::chart_reference_roles::AxisParts {
-            id: self.axis_id.explicit_value(), title: self.title.as_ref(),
-            shape: self.shape_properties.as_ref(), gridlines: self.major_gridlines.as_ref(), display_parts: self.parts.as_deref(),
+            id:            self.axis_id.explicit_value(),
+            title:         self.title.as_ref(),
+            shape:         self.shape_properties.as_ref(),
+            gridlines:     self.major_gridlines.as_ref(),
+            display_parts: self.parts.as_deref(),
         }
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::AxisPartsMut<'_> {
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::AxisPartsMut<'_> {
         super::chart_reference_roles::AxisPartsMut {
-            id: self.axis_id.explicit_value(), title: self.title.as_mut(),
-            shape: self.shape_properties.as_mut(), gridlines: self.major_gridlines.as_mut(), display_parts: self.parts.as_deref_mut(),
+            id:            self.axis_id.explicit_value(),
+            title:         self.title.as_mut(),
+            shape:         self.shape_properties.as_mut(),
+            gridlines:     self.major_gridlines.as_mut(),
+            display_parts: self.parts.as_deref_mut(),
         }
     }
 
-    pub(crate) fn extra_display_units_for_roles_mut(&mut self) -> &mut [DisplayUnits] { self.extra_display_units_mut().unwrap_or_default() }
+    pub(crate) fn extra_display_units_for_roles_mut(&mut self) -> &mut [DisplayUnits] {
+        self.extra_display_units_mut().unwrap_or_default()
+    }
+
     pub fn display_units_has_conflict(&self) -> bool {
-        self.parts.as_deref().is_some_and(ValueAxisParts::has_conflict)
+        self.parts
+            .as_deref()
+            .is_some_and(ValueAxisParts::has_conflict)
     }
+
     pub fn extra_display_units(&self) -> &[DisplayUnits] {
-        self.parts.as_deref().map(ValueAxisParts::extra_display_units).unwrap_or_default()
+        self.parts
+            .as_deref()
+            .map(ValueAxisParts::extra_display_units)
+            .unwrap_or_default()
     }
+
     pub fn extra_display_units_mut(&mut self) -> Option<&mut [DisplayUnits]> {
-        self.parts.as_deref_mut().map(ValueAxisParts::extra_display_units_mut)
+        self.parts
+            .as_deref_mut()
+            .map(ValueAxisParts::extra_display_units_mut)
     }
 
     pub fn display_units(&self) -> Option<&DisplayUnits> {
@@ -107,17 +165,20 @@ impl ValueAxis {
             .as_deref()
             .and_then(ValueAxisParts::display_units)
     }
+
     pub fn display_units_mut(&mut self) -> Option<&mut DisplayUnits> {
         self.parts
             .as_deref_mut()
             .and_then(ValueAxisParts::display_units_mut)
     }
+
     pub fn set_display_units(&mut self, v: DisplayUnits) -> &mut Self {
         self.parts
             .get_or_insert_with(|| Box::new(ValueAxisParts::default()))
             .set_display_units(v);
         self
     }
+
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
         &self.axis_id
@@ -499,7 +560,7 @@ impl ValueAxis {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
@@ -514,7 +575,8 @@ impl ValueAxis {
                 b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
                     let mut v=DisplayUnits::default();
                     v.set_attributes(reader,e,false,session);
-                    self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default())).add_imported_display_units(v);
+                    self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default()))
+                        .add_imported_display_units(v);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();

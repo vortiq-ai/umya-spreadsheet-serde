@@ -46,7 +46,9 @@ pub struct TrendlineLabel {
 }
 impl TrendlineLabel {
     // Projection only: retain diagnostics and absent children exactly.
-    pub(crate) fn reference_role_parts(&self) -> (
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
         Option<&ChartText>,
         Option<&Layout>,
         Option<&ShapeProperties>,
@@ -60,7 +62,9 @@ impl TrendlineLabel {
         )
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
         Option<&mut ChartText>,
         Option<&mut Layout>,
         Option<&mut ShapeProperties>,
@@ -73,7 +77,6 @@ impl TrendlineLabel {
             self.extensions.as_deref_mut(),
         )
     }
-
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

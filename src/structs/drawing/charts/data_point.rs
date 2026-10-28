@@ -40,7 +40,9 @@ pub struct DataPoint {
 }
 impl DataPoint {
     // Projection only: retain diagnostics and absent children exactly.
-    pub(crate) fn reference_role_parts(&self) -> (
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
         Option<&Marker>,
         Option<&ShapeProperties>,
         Option<&super::ExtensionList>,
@@ -52,7 +54,9 @@ impl DataPoint {
         )
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> (
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
         Option<&mut Marker>,
         Option<&mut ShapeProperties>,
         Option<&mut super::ExtensionList>,
@@ -63,7 +67,6 @@ impl DataPoint {
             self.extensions.as_deref_mut(),
         )
     }
-
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {

@@ -37,7 +37,6 @@ impl MultiLevelStringReference {
         (&mut self.formula, self.extensions.as_deref_mut())
     }
 
-
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.extensions.as_deref()

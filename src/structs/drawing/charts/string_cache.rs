@@ -425,8 +425,13 @@ impl StringCache {
                     b"strCache" => proof.broken = true,
                     _ => (),
                 },
-                Event::End(e) if if exact { e.name().into_inner() == end } else {
-                    local_name(e.name().into_inner()) == end } => {
+                Event::End(e)
+                    if if exact {
+                        e.name().into_inner() == end
+                    } else {
+                        local_name(e.name().into_inner()) == end
+                    } =>
+                {
                     return (cached_value, Self::empty_source(formula), proof.finish());
                 }
                 Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
@@ -870,8 +875,13 @@ pub(crate) fn materialize_deferred_cache(data: &[u8], formula: String) -> Source
         buffer.clear();
         match reader.read_event_into(&mut buffer).unwrap() {
             Event::Start(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
-                return StringCache::read_source_named(&mut reader, formula,
-                    e.name().into_inner(), true).1;
+                return StringCache::read_source_named(
+                    &mut reader,
+                    formula,
+                    e.name().into_inner(),
+                    true,
+                )
+                .1;
             }
             Event::Empty(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
                 return SourceCache::as_read(formula, None, Vec::new());

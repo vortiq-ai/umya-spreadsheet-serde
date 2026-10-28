@@ -56,7 +56,6 @@ impl Layout {
         )
     }
 
-
     #[must_use]
     pub fn extensions(&self) -> Option<&ExtensionList> {
         self.parts.as_ref().and_then(|p| p.extensions.as_ref())
@@ -151,7 +150,9 @@ impl Layout {
                 v.write_to(writer);
             }
 
-            if let Some(v)=self.extensions() { v.write_for_owner(writer, None, "layout", None); }
+            if let Some(v) = self.extensions() {
+                v.write_for_owner(writer, None, "layout", None);
+            }
             write_end_tag(writer, "c:layout");
         }
     }

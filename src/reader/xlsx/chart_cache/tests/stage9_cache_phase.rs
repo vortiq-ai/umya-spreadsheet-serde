@@ -206,8 +206,8 @@ fn chart_summary(xml: &[u8]) -> ExportSummary {
                                 quick_xml::XmlVersion::Implicit1_0,
                                 reader.decoder(),
                             )
-                                .unwrap()
-                                .into_owned()
+                            .unwrap()
+                            .into_owned()
                         })
                 };
                 if namespace == C

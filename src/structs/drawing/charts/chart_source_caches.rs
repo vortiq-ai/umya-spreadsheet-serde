@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use super::{
     ChartSpace,
-    chart_reference_roles::ReferenceCachePhase,
     StringReference,
+    chart_reference_roles::ReferenceCachePhase,
 };
 use crate::structs::CacheDisplay;
 

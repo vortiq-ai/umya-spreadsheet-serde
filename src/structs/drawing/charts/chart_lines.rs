@@ -30,7 +30,6 @@ pub struct ChartLines {
     duplicate_shape:  bool,
 }
 impl ChartLines {
-
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {
         self.shape_properties.as_ref()

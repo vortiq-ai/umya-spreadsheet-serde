@@ -119,11 +119,25 @@ impl StringPoint {
         e: &BytesStart,
         empty: bool,
     ) -> Self {
-        Self::read_common(reader,e,empty,None)
+        Self::read_common(reader, e, empty, None)
     }
-    pub(crate) fn read_with_session<R:std::io::BufRead>(reader:&mut Reader<R>,e:&BytesStart,empty:bool,session:&crate::reader::xlsx::SourceCacheSession)->Self{Self::read_common(reader,e,empty,Some(session))}
-    fn read_common<R:std::io::BufRead>(reader:&mut Reader<R>,e:&BytesStart,empty:bool,session:Option<&crate::reader::xlsx::SourceCacheSession>)->Self{
-        let _scope_guard=session.and_then(|session|session.enter_child_scope(e));
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Self {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
 
         let mut result = Self::default();
         let mut parts = StringPointParts::default();
@@ -132,7 +146,10 @@ impl StringPoint {
             .set_lexical_attribute(crate::drawing::get_unescaped_attribute(e, b"idx"));
         let mut values = 0;
         parts.invalid = !children(reader, e, empty, |reader, child, empty| {
-            if !session.is_none_or(|session|session.accepts_child_namespace(child,super::extension_registry::NS_C))||local_name(child.name().into_inner()) != b"v" {
+            if !session.is_none_or(|session| {
+                session.accepts_child_namespace(child, super::extension_registry::NS_C)
+            }) || local_name(child.name().into_inner()) != b"v"
+            {
                 return false;
             }
             values += 1;

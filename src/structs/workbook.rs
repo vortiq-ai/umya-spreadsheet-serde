@@ -45,35 +45,36 @@ use crate::{
 /// The starting point of all struct.
 #[derive(Clone, Default, Debug)]
 pub struct Workbook {
-    properties:            Properties,
-    work_sheet_collection: Vec<Worksheet>,
-    chart_cache_report:    ChartSourceCacheReport,
-    macros_code:           Option<Vec<u8>>,
-    jsa_macros_code:       Option<Vec<u8>>,
-    code_name:             StringValue,
-    ribbon_xml_data:       StringValue,
-    theme:                 Theme,
-    stylesheet:            Stylesheet,
-    shared_string_table:   Arc<RwLock<SharedStringTable>>,
-    workbook_view:         WorkbookView,
-    backup_context_types:  Vec<(Box<str>, Box<str>)>,
-    pivot_caches:          Vec<(Box<str>, Box<str>, Box<str>)>,
-    workbook_protection:   Option<Box<WorkbookProtection>>,
-    defined_names:         Vec<DefinedName>,
-    /// `<calcPr iterate=.. iterateCount=.. iterateDelta=..>` — Excel's iterative
-    /// calculation settings. A model with a DELIBERATE circular reference (an LBO
-    /// where debt drives interest drives cash flow drives debt) sets these, and
-    /// Excel converges it. The writer previously hardcoded a bare
-    /// `<calcPr calcId="122211"/>`, so a workbook read WITH these settings was
-    /// written back WITHOUT them and Excel then refused to converge a file it had
-    /// computed fine before the round trip.
-    iterative_calc:        Option<(u32, f64)>,
-    iterate_enabled:       bool,
+    properties:               Properties,
+    work_sheet_collection:    Vec<Worksheet>,
+    chart_cache_report:       ChartSourceCacheReport,
+    macros_code:              Option<Vec<u8>>,
+    jsa_macros_code:          Option<Vec<u8>>,
+    code_name:                StringValue,
+    ribbon_xml_data:          StringValue,
+    theme:                    Theme,
+    stylesheet:               Stylesheet,
+    shared_string_table:      Arc<RwLock<SharedStringTable>>,
+    workbook_view:            WorkbookView,
+    backup_context_types:     Vec<(Box<str>, Box<str>)>,
+    pivot_caches:             Vec<(Box<str>, Box<str>, Box<str>)>,
+    workbook_protection:      Option<Box<WorkbookProtection>>,
+    defined_names:            Vec<DefinedName>,
+    /// `<calcPr iterate=.. iterateCount=.. iterateDelta=..>` — Excel's
+    /// iterative calculation settings. A model with a DELIBERATE circular
+    /// reference (an LBO where debt drives interest drives cash flow drives
+    /// debt) sets these, and Excel converges it. The writer previously
+    /// hardcoded a bare `<calcPr calcId="122211"/>`, so a workbook read
+    /// WITH these settings was written back WITHOUT them and Excel then
+    /// refused to converge a file it had computed fine before the round
+    /// trip.
+    iterative_calc:           Option<(u32, f64)>,
+    iterate_enabled:          bool,
     /// `<calcPr fullCalcOnLoad="1">` — tells Excel to recompute every formula
     /// when the file opens. Use it when a formula cache is missing, stale, or
     /// produced by a different calculation engine. Cached values still serve
     /// readers that do not recalculate.
-    full_calc_on_load:     bool,
+    full_calc_on_load:        bool,
     pub(crate) cell_metadata: Option<super::cell_metadata::CellMetadata>,
 }
 
@@ -81,61 +82,117 @@ pub struct Workbook {
 // reference must not leave half a workbook adjusted.
 struct WorkbookReferencePlan {
     global_names: Vec<Option<String>>,
-    sheets: Vec<SheetReferencePlan>,
+    sheets:       Vec<SheetReferencePlan>,
 }
 struct SheetReferencePlan {
-    index: usize,
-    names: Vec<Option<String>>,
-    cells: Vec<((u32, u32), crate::structs::CellFormula)>,
+    index:  usize,
+    names:  Vec<Option<String>>,
+    cells:  Vec<((u32, u32), crate::structs::CellFormula)>,
     charts: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
 }
 
 #[cfg(test)]
 mod stage9_move_geometry_tests {
-    use crate::drawing::charts::{ReferenceCell, ReferenceRect};
+    use crate::drawing::charts::{
+        ReferenceCell,
+        ReferenceRect,
+    };
 
-    fn cell(column: u32, row: u32) -> ReferenceCell { ReferenceCell { column, row } }
-    fn rect(first: (u32,u32), last: (u32,u32)) -> ReferenceRect {
-        ReferenceRect { first: cell(first.0,first.1), last: cell(last.0,last.1) }
+    fn cell(column: u32, row: u32) -> ReferenceCell {
+        ReferenceCell { column, row }
+    }
+    fn rect(first: (u32, u32), last: (u32, u32)) -> ReferenceRect {
+        ReferenceRect {
+            first: cell(first.0, first.1),
+            last:  cell(last.0, last.1),
+        }
     }
 
     #[test]
     fn reference_plan_is_read_only_until_applied_and_preserves_cell_formula_metadata() {
         use crate::drawing::charts::ChartReferenceEdit;
         let mut book = crate::new_file();
-        book.sheet_mut(0).unwrap().cell_mut((1,1)).set_formula("Sheet1!B2").set_formula_result_number(12);
-        book.sheet_mut(0).unwrap().add_defined_name("TestName", "Sheet1!$B$2").unwrap();
-        let edit = ChartReferenceEdit::InsertRows { sheet: "Sheet1".into(), at: 2, count: 1 };
-        let plan = book.prepare_workbook_reference_adjustment(&[0], &edit).unwrap();
-        assert_eq!(book.sheet(0).unwrap().cell((1,1)).unwrap().formula(), "Sheet1!B2");
-        assert_eq!(book.sheet(0).unwrap().defined_names()[0].address(), "Sheet1!$B$2");
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((1, 1))
+            .set_formula("Sheet1!B2")
+            .set_formula_result_number(12);
+        book.sheet_mut(0)
+            .unwrap()
+            .add_defined_name("TestName", "Sheet1!$B$2")
+            .unwrap();
+        let edit = ChartReferenceEdit::InsertRows {
+            sheet: "Sheet1".into(),
+            at:    2,
+            count: 1,
+        };
+        let plan = book
+            .prepare_workbook_reference_adjustment(&[0], &edit)
+            .unwrap();
+        assert_eq!(
+            book.sheet(0).unwrap().cell((1, 1)).unwrap().formula(),
+            "Sheet1!B2"
+        );
+        assert_eq!(
+            book.sheet(0).unwrap().defined_names()[0].address(),
+            "Sheet1!$B$2"
+        );
         book.apply_workbook_reference_adjustment(plan);
-        assert_eq!(book.sheet(0).unwrap().cell((1,1)).unwrap().formula(), "Sheet1!B3");
-        assert_eq!(book.sheet(0).unwrap().defined_names()[0].address(), "Sheet1!$B$3");
+        assert_eq!(
+            book.sheet(0).unwrap().cell((1, 1)).unwrap().formula(),
+            "Sheet1!B3"
+        );
+        assert_eq!(
+            book.sheet(0).unwrap().defined_names()[0].address(),
+            "Sheet1!$B$3"
+        );
     }
 
     #[test]
     fn geometry_moves_cross_sheet_and_clears_old_destination_even_for_empty_source_cells() {
-        let mut book = crate::new_file(); book.new_sheet("Other").unwrap();
-        book.sheet_mut(0).unwrap().cell_mut((2,2)).set_value("source");
-        book.sheet_mut(1).unwrap().cell_mut((5,8)).set_value("overwritten");
-        book.sheet_mut(1).unwrap().cell_mut((5,9)).set_value("clear blank");
-        book.relocate_cells_only("Sheet1", &rect((2,2),(2,3)), "Other", cell(5,8)).unwrap();
-        assert!(book.sheet(0).unwrap().cell((2,2)).is_none());
-        assert_eq!(book.sheet(1).unwrap().cell((5,8)).unwrap().value(), "source");
-        assert!(book.sheet(1).unwrap().cell((5,9)).is_none());
+        let mut book = crate::new_file();
+        book.new_sheet("Other").unwrap();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((2, 2))
+            .set_value("source");
+        book.sheet_mut(1)
+            .unwrap()
+            .cell_mut((5, 8))
+            .set_value("overwritten");
+        book.sheet_mut(1)
+            .unwrap()
+            .cell_mut((5, 9))
+            .set_value("clear blank");
+        book.relocate_cells_only("Sheet1", &rect((2, 2), (2, 3)), "Other", cell(5, 8))
+            .unwrap();
+        assert!(book.sheet(0).unwrap().cell((2, 2)).is_none());
+        assert_eq!(
+            book.sheet(1).unwrap().cell((5, 8)).unwrap().value(),
+            "source"
+        );
+        assert!(book.sheet(1).unwrap().cell((5, 9)).is_none());
     }
 
     #[test]
     fn geometry_handles_overlapping_left_up_move_and_rejects_invalid_destination_before_changes() {
         let mut book = crate::new_file();
-        for (row,value) in [(2,"a"),(3,"b"),(4,"c")] { book.sheet_mut(0).unwrap().cell_mut((3,row)).set_value(value); }
-        book.relocate_cells_only("Sheet1", &rect((3,3),(3,4)), "Sheet1", cell(3,2)).unwrap();
-        assert_eq!(book.sheet(0).unwrap().cell((3,2)).unwrap().value(), "b");
-        assert_eq!(book.sheet(0).unwrap().cell((3,3)).unwrap().value(), "c");
-        assert!(book.sheet(0).unwrap().cell((3,4)).is_none());
-        assert!(book.relocate_cells_only("Sheet1", &rect((3,2),(3,3)), "Sheet1", cell(0,1)).is_err());
-        assert_eq!(book.sheet(0).unwrap().cell((3,2)).unwrap().value(), "b");
+        for (row, value) in [(2, "a"), (3, "b"), (4, "c")] {
+            book.sheet_mut(0)
+                .unwrap()
+                .cell_mut((3, row))
+                .set_value(value);
+        }
+        book.relocate_cells_only("Sheet1", &rect((3, 3), (3, 4)), "Sheet1", cell(3, 2))
+            .unwrap();
+        assert_eq!(book.sheet(0).unwrap().cell((3, 2)).unwrap().value(), "b");
+        assert_eq!(book.sheet(0).unwrap().cell((3, 3)).unwrap().value(), "c");
+        assert!(book.sheet(0).unwrap().cell((3, 4)).is_none());
+        assert!(
+            book.relocate_cells_only("Sheet1", &rect((3, 2), (3, 3)), "Sheet1", cell(0, 1))
+                .is_err()
+        );
+        assert_eq!(book.sheet(0).unwrap().cell((3, 2)).unwrap().value(), "b");
     }
 }
 
@@ -151,6 +208,7 @@ impl Workbook {
         reference_hosts::materialize(self, &hosts);
         Ok(hosts)
     }
+
     /// Preflight every materialized formula owner before any reference or cell
     /// geometry is changed. Hosts must have been discovered and materialized.
     fn prepare_workbook_reference_adjustment(
@@ -158,8 +216,12 @@ impl Workbook {
         hosts: &[usize],
         edit: &crate::drawing::charts::ChartReferenceEdit,
     ) -> Result<WorkbookReferencePlan, XlsxError> {
-        use crate::drawing::charts::reference_edit_engine::{PreparedReferenceEdit, edit_prepared_formula_text};
-        let prepared = PreparedReferenceEdit::new(edit).map_err(|e| XlsxError::CellError(format!("reference edit: {e:?}")))?;
+        use crate::drawing::charts::reference_edit_engine::{
+            PreparedReferenceEdit,
+            edit_prepared_formula_text,
+        };
+        let prepared = PreparedReferenceEdit::new(edit)
+            .map_err(|e| XlsxError::CellError(format!("reference edit: {e:?}")))?;
         let decide = |text: &str, host: &str| -> Option<String> {
             let result = edit_prepared_formula_text(text, host, &prepared, false);
             (result.text != text).then_some(result.text)
@@ -167,8 +229,12 @@ impl Workbook {
         let mut global_names = Vec::with_capacity(self.defined_names.len());
         for name in &self.defined_names {
             let host = if name.has_local_sheet_id() {
-                self.work_sheet_collection.get(name.local_sheet_id() as usize).map_or("", Worksheet::name)
-            } else { "" };
+                self.work_sheet_collection
+                    .get(name.local_sheet_id() as usize)
+                    .map_or("", Worksheet::name)
+            } else {
+                ""
+            };
             global_names.push(decide(&name.address(), host));
         }
         let mut sheets = Vec::with_capacity(hosts.len());
@@ -176,16 +242,23 @@ impl Workbook {
             let sheet = &self.work_sheet_collection[index];
             let host = sheet.name();
             let mut names = Vec::new();
-            for name in sheet.defined_names() { names.push(decide(&name.address(), host)); }
+            for name in sheet.defined_names() {
+                names.push(decide(&name.address(), host));
+            }
             let mut cells = Vec::new();
             for cell in sheet.cells() {
                 if cell.is_formula() {
                     let c = cell.coordinate();
                     let moving = match edit {
-                        crate::drawing::charts::ChartReferenceEdit::MoveRange { source_sheet, source, .. } =>
+                        crate::drawing::charts::ChartReferenceEdit::MoveRange {
+                            source_sheet,
+                            source,
+                            ..
+                        } => {
                             host.eq_ignore_ascii_case(source_sheet)
                                 && (source.first.column..=source.last.column).contains(&c.col_num())
-                                && (source.first.row..=source.last.row).contains(&c.row_num()),
+                                && (source.first.row..=source.last.row).contains(&c.row_num())
+                        }
                         crate::drawing::charts::ChartReferenceEdit::RenameSheet { .. }
                         | crate::drawing::charts::ChartReferenceEdit::DeleteSheet { .. }
                         | crate::drawing::charts::ChartReferenceEdit::InsertRows { .. }
@@ -202,27 +275,42 @@ impl Workbook {
                 }
             }
             let charts = sheet.prepare_chart_space_edits(host, &prepared);
-            sheets.push(SheetReferencePlan { index, names, cells, charts });
+            sheets.push(SheetReferencePlan {
+                index,
+                names,
+                cells,
+                charts,
+            });
         }
-        Ok(WorkbookReferencePlan { global_names, sheets })
+        Ok(WorkbookReferencePlan {
+            global_names,
+            sheets,
+        })
     }
 
     fn apply_workbook_reference_adjustment(&mut self, plan: WorkbookReferencePlan) {
         for (name, decision) in self.defined_names.iter_mut().zip(plan.global_names) {
-            if let Some(text) = decision { name.set_string_value(text); }
+            if let Some(text) = decision {
+                name.set_string_value(text);
+            }
         }
         for sheet_plan in plan.sheets {
             let sheet = &mut self.work_sheet_collection[sheet_plan.index];
             for (name, decision) in sheet.defined_names_mut().iter_mut().zip(sheet_plan.names) {
-                if let Some(text) = decision { name.set_string_value(text); }
+                if let Some(text) = decision {
+                    name.set_string_value(text);
+                }
             }
             for (coordinate, formula) in sheet_plan.cells {
                 let cell = sheet.cell_mut(coordinate);
                 // The preflight clone preserves formula metadata and adjusts
                 // both serialized text and any authoritative shared view.
-                let preserve_error = matches!(cell.raw_value(), crate::structs::CellRawValue::Error(_));
+                let preserve_error =
+                    matches!(cell.raw_value(), crate::structs::CellRawValue::Error(_));
                 cell.cell_value_mut().set_formula_obj(formula);
-                if !preserve_error { cell.cell_value_mut().set_formula_result_blank(); }
+                if !preserve_error {
+                    cell.cell_value_mut().set_formula_result_blank();
+                }
             }
             sheet.apply_chart_space_edits(sheet_plan.charts);
         }
@@ -237,12 +325,18 @@ impl Workbook {
         destination_sheet: &str,
         destination: crate::drawing::charts::ReferenceCell,
     ) -> Result<(), XlsxError> {
-        use crate::drawing::charts::{ChartReferenceEdit, reference_edit_engine::PreparedReferenceEdit};
-        let edit = ChartReferenceEdit::MoveRange {
-            source_sheet: source_sheet.into(), source,
-            destination_sheet: destination_sheet.into(), destination,
+        use crate::drawing::charts::{
+            ChartReferenceEdit,
+            reference_edit_engine::PreparedReferenceEdit,
         };
-        PreparedReferenceEdit::new(&edit).map_err(|e| XlsxError::CellError(format!("reference edit: {e:?}")))?;
+        let edit = ChartReferenceEdit::MoveRange {
+            source_sheet: source_sheet.into(),
+            source,
+            destination_sheet: destination_sheet.into(),
+            destination,
+        };
+        PreparedReferenceEdit::new(&edit)
+            .map_err(|e| XlsxError::CellError(format!("reference edit: {e:?}")))?;
         self.find_sheet_index_by_name(source_sheet)?;
         self.find_sheet_index_by_name(destination_sheet)?;
         let hosts = self.prepare_reference_hosts(&[source_sheet, destination_sheet], &edit)?;
@@ -254,17 +348,26 @@ impl Workbook {
     // Legacy row/column entrypoints have no Result channel. Complete every
     // metadata scan before materialization, and retain their existing reader
     // panic-on-I/O boundary rather than silently dropping dependent hosts.
-    fn structural_reference_hosts(&mut self, sheet: &str, edits: &[crate::drawing::charts::ChartReferenceEdit]) -> Vec<usize> {
+    fn structural_reference_hosts(
+        &mut self,
+        sheet: &str,
+        edits: &[crate::drawing::charts::ChartReferenceEdit],
+    ) -> Vec<usize> {
         // Invalid structural edit coordinates or a missing sheet are outside
         // this legacy void API's accepted domain; leave the workbook unchanged.
         if self.find_sheet_index_by_name(sheet).is_err()
-            || edits.iter().any(|edit| crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit).is_err()) {
+            || edits.iter().any(|edit| {
+                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
+                    .is_err()
+            })
+        {
             return Vec::new();
         }
         let mut hosts = Vec::new();
         for edit in edits {
-            let found = reference_hosts::discover(self, &[sheet], edit)
-                .unwrap_or_else(|error| panic!("cannot discover workbook reference hosts: {error}"));
+            let found = reference_hosts::discover(self, &[sheet], edit).unwrap_or_else(|error| {
+                panic!("cannot discover workbook reference hosts: {error}")
+            });
             hosts.extend(found);
         }
         hosts.sort_unstable();
@@ -273,17 +376,30 @@ impl Workbook {
         hosts
     }
 
-    fn adjust_global_defined_names(&mut self, edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>]) {
+    fn adjust_global_defined_names(
+        &mut self,
+        edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+    ) {
         use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
-        let sheet_names: Vec<_> = self.work_sheet_collection.iter().map(|sheet| sheet.name().to_owned()).collect();
+        let sheet_names: Vec<_> = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| sheet.name().to_owned())
+            .collect();
         for prepared in edits {
             for name in &mut self.defined_names {
                 let host = if name.has_local_sheet_id() {
-                    sheet_names.get(name.local_sheet_id() as usize).map_or("", String::as_str)
-                } else { "" };
+                    sheet_names
+                        .get(name.local_sheet_id() as usize)
+                        .map_or("", String::as_str)
+                } else {
+                    ""
+                };
                 let before = name.address();
                 let decision = edit_prepared_formula_text(&before, host, prepared, false);
-                if decision.text != before { name.set_string_value(decision.text); }
+                if decision.text != before {
+                    name.set_string_value(decision.text);
+                }
             }
         }
     }
@@ -300,38 +416,72 @@ impl Workbook {
     ) -> Result<(), XlsxError> {
         let first = &source.first;
         let last = &source.last;
-        if first.column == 0 || first.row == 0 || first.column > last.column || first.row > last.row
-            || last.column > 16_384 || last.row > 1_048_576 || destination.column == 0 || destination.row == 0 {
+        if first.column == 0
+            || first.row == 0
+            || first.column > last.column
+            || first.row > last.row
+            || last.column > 16_384
+            || last.row > 1_048_576
+            || destination.column == 0
+            || destination.row == 0
+        {
             return Err(XlsxError::CellError("invalid move coordinates".into()));
         }
-        let last_column = destination.column.checked_add(last.column - first.column)
-            .filter(|v| *v <= 16_384).ok_or_else(|| XlsxError::CellError("move exceeds column bounds".into()))?;
-        let last_row = destination.row.checked_add(last.row - first.row)
-            .filter(|v| *v <= 1_048_576).ok_or_else(|| XlsxError::CellError("move exceeds row bounds".into()))?;
+        let last_column = destination
+            .column
+            .checked_add(last.column - first.column)
+            .filter(|v| *v <= 16_384)
+            .ok_or_else(|| XlsxError::CellError("move exceeds column bounds".into()))?;
+        let last_row = destination
+            .row
+            .checked_add(last.row - first.row)
+            .filter(|v| *v <= 1_048_576)
+            .ok_or_else(|| XlsxError::CellError("move exceeds row bounds".into()))?;
         let source_index = self.find_sheet_index_by_name(source_sheet)?;
         let destination_index = self.find_sheet_index_by_name(destination_sheet)?;
-        let source_cells: Vec<_> = self.sheet_mut(source_index)?.cells().into_iter()
+        let source_cells: Vec<_> = self
+            .sheet_mut(source_index)?
+            .cells()
+            .into_iter()
             .filter(|cell| {
                 let coordinate = cell.coordinate();
-                (first.column..=last.column).contains(&coordinate.col_num()) && (first.row..=last.row).contains(&coordinate.row_num())
-            }).cloned().collect();
-        let source_coordinates: Vec<_> = source_cells.iter().map(|cell| (cell.coordinate().col_num(),cell.coordinate().row_num())).collect();
-        let target_coordinates: Vec<_> = self.sheet_mut(destination_index)?.cells().into_iter()
+                (first.column..=last.column).contains(&coordinate.col_num())
+                    && (first.row..=last.row).contains(&coordinate.row_num())
+            })
+            .cloned()
+            .collect();
+        let source_coordinates: Vec<_> = source_cells
+            .iter()
+            .map(|cell| (cell.coordinate().col_num(), cell.coordinate().row_num()))
+            .collect();
+        let target_coordinates: Vec<_> = self
+            .sheet_mut(destination_index)?
+            .cells()
+            .into_iter()
             .filter_map(|cell| {
                 let coordinate = cell.coordinate();
-                ((destination.column..=last_column).contains(&coordinate.col_num()) && (destination.row..=last_row).contains(&coordinate.row_num()))
-                    .then_some((coordinate.col_num(),coordinate.row_num()))
-            }).collect();
-        for coordinate in source_coordinates { self.sheet_mut(source_index)?.remove_cell(coordinate); }
-        for coordinate in target_coordinates { self.sheet_mut(destination_index)?.remove_cell(coordinate); }
+                ((destination.column..=last_column).contains(&coordinate.col_num())
+                    && (destination.row..=last_row).contains(&coordinate.row_num()))
+                .then_some((coordinate.col_num(), coordinate.row_num()))
+            })
+            .collect();
+        for coordinate in source_coordinates {
+            self.sheet_mut(source_index)?.remove_cell(coordinate);
+        }
+        for coordinate in target_coordinates {
+            self.sheet_mut(destination_index)?.remove_cell(coordinate);
+        }
         for mut cell in source_cells {
             let new_col = destination.column + cell.coordinate().col_num() - first.column;
             let new_row = destination.row + cell.coordinate().row_num() - first.row;
-            cell.coordinate_mut().set_col_num(new_col).set_row_num(new_row);
+            cell.coordinate_mut()
+                .set_col_num(new_col)
+                .set_row_num(new_row);
             self.sheet_mut(destination_index)?.set_cell(cell);
         }
         Ok(())
     }
+
     /// Import outcomes, accumulated as sheets materialize. Eager reads finish
     /// the report before returning; lazy reads finish after all original
     /// sheets materialize. Repeated access never charges a cache again.
@@ -350,30 +500,50 @@ impl Workbook {
         &mut self.chart_cache_report
     }
 
-    /// Returns whether a one-based cell `cm` index identifies a native dynamic array.
-    /// Unrelated cell metadata must not be treated as dynamic-array identity.
+    /// Returns whether a one-based cell `cm` index identifies a native dynamic
+    /// array. Unrelated cell metadata must not be treated as dynamic-array
+    /// identity.
     #[must_use]
     pub fn is_dynamic_array_metadata(&self, cell_meta_index: u32) -> bool {
-        self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_dynamic(cell_meta_index))
+        self.cell_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_dynamic(cell_meta_index))
     }
 
     /// Ensure a standard XLDAPR dynamic-array record exists and return its
     /// one-based cell metadata index. Assign this to the array anchor's `cm`.
     /// Existing records and their indices are retained.
     pub fn ensure_dynamic_array_metadata(&mut self) -> u32 {
-        self.cell_metadata.get_or_insert_with(Default::default).ensure_dynamic()
+        self.cell_metadata
+            .get_or_insert_with(Default::default)
+            .ensure_dynamic()
     }
 
     /// Ensure a namespaced cell-metadata extension exists without replacing
     /// existing types or records. Properties must be a single XML element.
-    pub fn ensure_cell_metadata_extension(&mut self, type_name: &str, extension_uri: &str, properties_xml: &str) -> Result<u32, XlsxError> {
-        self.cell_metadata.get_or_insert_with(Default::default).ensure_extension(type_name, extension_uri, properties_xml)
+    pub fn ensure_cell_metadata_extension(
+        &mut self,
+        type_name: &str,
+        extension_uri: &str,
+        properties_xml: &str,
+    ) -> Result<u32, XlsxError> {
+        self.cell_metadata
+            .get_or_insert_with(Default::default)
+            .ensure_extension(type_name, extension_uri, properties_xml)
     }
 
     /// Resolve a cell cm index to a property of a named metadata extension.
     #[must_use]
-    pub fn is_cell_metadata_extension(&self, cm: u32, type_name: &str, namespace: &str, local_name: &str) -> bool {
-        self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_extension(cm, type_name, namespace, local_name))
+    pub fn is_cell_metadata_extension(
+        &self,
+        cm: u32,
+        type_name: &str,
+        namespace: &str,
+        local_name: &str,
+    ) -> bool {
+        self.cell_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_extension(cm, type_name, namespace, local_name))
     }
 
     // ************************
@@ -888,7 +1058,11 @@ impl Workbook {
     /// deserialize a worksheet.
     #[inline]
     pub fn read_sheet(&mut self, index: usize) -> &mut Self {
-        let is_deserialized = self.work_sheet_collection.get(index).unwrap().is_deserialized();
+        let is_deserialized = self
+            .work_sheet_collection
+            .get(index)
+            .unwrap()
+            .is_deserialized();
         if is_deserialized {
             return self;
         }
@@ -1096,23 +1270,38 @@ impl Workbook {
     /// * `Result<(), XlsxError>` - OK:removed worksheet. Err:Error.
     #[inline]
     pub fn remove_sheet(&mut self, index: usize) -> Result<(), XlsxError> {
-        let name = self.work_sheet_collection.get(index).ok_or(XlsxError::NotFound())?.name().to_owned();
-        let sheet_order = self.work_sheet_collection.iter().map(|sheet| sheet.name().to_owned()).collect();
-        let edit = crate::drawing::charts::ChartReferenceEdit::DeleteSheet { sheet: name.clone(), sheet_order };
+        let name = self
+            .work_sheet_collection
+            .get(index)
+            .ok_or(XlsxError::NotFound())?
+            .name()
+            .to_owned();
+        let sheet_order = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| sheet.name().to_owned())
+            .collect();
+        let edit = crate::drawing::charts::ChartReferenceEdit::DeleteSheet {
+            sheet: name.clone(),
+            sheet_order,
+        };
         let hosts = self.prepare_reference_hosts(&[&name], &edit)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
         self.apply_workbook_reference_adjustment(plan);
         self.work_sheet_collection.remove(index);
         // localSheetId is a zero-based workbook index, not a stable sheet ID.
         // Deleted scopes disappear; later scopes shift with their owners.
-        self.defined_names.retain(|name| !name.has_local_sheet_id() || name.local_sheet_id() as usize != index);
+        self.defined_names
+            .retain(|name| !name.has_local_sheet_id() || name.local_sheet_id() as usize != index);
         for name in &mut self.defined_names {
             if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
                 name.set_local_sheet_id(name.local_sheet_id() - 1);
             }
         }
         for sheet in &mut self.work_sheet_collection {
-            sheet.defined_names_mut().retain(|name| !name.has_local_sheet_id() || name.local_sheet_id() as usize != index);
+            sheet.defined_names_mut().retain(|name| {
+                !name.has_local_sheet_id() || name.local_sheet_id() as usize != index
+            });
             for name in sheet.defined_names_mut() {
                 if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
                     name.set_local_sheet_id(name.local_sheet_id() - 1);
@@ -1181,8 +1370,16 @@ impl Workbook {
     ) -> Result<(), XlsxError> {
         let sheet_name_str = sheet_name.into();
         Workbook::check_sheet_name(self, sheet_name_str.as_ref())?;
-        let old = self.work_sheet_collection.get(index).ok_or(XlsxError::NotFound())?.name().to_owned();
-        let edit = crate::drawing::charts::ChartReferenceEdit::RenameSheet { old: old.clone(), new: sheet_name_str.clone() };
+        let old = self
+            .work_sheet_collection
+            .get(index)
+            .ok_or(XlsxError::NotFound())?
+            .name()
+            .to_owned();
+        let edit = crate::drawing::charts::ChartReferenceEdit::RenameSheet {
+            old: old.clone(),
+            new: sheet_name_str.clone(),
+        };
         let hosts = self.prepare_reference_hosts(&[&old], &edit)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
         self.apply_workbook_reference_adjustment(plan);
@@ -1288,8 +1485,8 @@ impl Workbook {
         for (val1, val2, val3) in &self.pivot_caches {
             let val3_up = format!("xl/{val3}");
 
-            // Check if this cache is referenced by any worksheet's pivot cache definitions
-            // (for existing files)
+            // Check if this cache is referenced by any worksheet's pivot cache
+            // definitions (for existing files)
             let mut found_in_raw_data = false;
             for worksheet in self.sheet_collection_no_check() {
                 for pivot_cache_definition in worksheet.pivot_cache_definition_collection() {
@@ -1306,8 +1503,8 @@ impl Workbook {
                 }
             }
 
-            // If not found in raw data, check if any worksheet has pivot tables (for newly
-            // created pivot tables)
+            // If not found in raw data, check if any worksheet has pivot tables
+            // (for newly created pivot tables)
             if !found_in_raw_data {
                 for worksheet in self.sheet_collection_no_check() {
                     if !worksheet.pivot_tables().is_empty()
@@ -1447,8 +1644,9 @@ impl Workbook {
         self.full_calc_on_load
     }
 
-    /// Ask Excel to recalculate everything on open. This can fill missing caches
-    /// and replace stale or engine-specific cached results with Excel's values.
+    /// Ask Excel to recalculate everything on open. This can fill missing
+    /// caches and replace stale or engine-specific cached results with
+    /// Excel's values.
     #[inline]
     pub fn set_full_calc_on_load(&mut self, enabled: bool) {
         self.full_calc_on_load = enabled;
@@ -1485,15 +1683,42 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         offset_row_num: u32,
     ) {
         use crate::drawing::charts::ChartReferenceEdit;
-        if (offset_col_num != 0 && (!(1..=16_384).contains(&root_col_num) || offset_col_num > 16_384))
-            || (offset_row_num != 0 && (!(1..=1_048_576).contains(&root_row_num) || offset_row_num > 1_048_576)) { return; }
+        if (offset_col_num != 0
+            && (!(1..=16_384).contains(&root_col_num) || offset_col_num > 16_384))
+            || (offset_row_num != 0
+                && (!(1..=1_048_576).contains(&root_row_num) || offset_row_num > 1_048_576))
+        {
+            return;
+        }
         let mut edits = Vec::new();
-        if offset_col_num != 0 { edits.push(ChartReferenceEdit::InsertColumns { sheet: sheet_name.into(), at: root_col_num, count: offset_col_num }); }
-        if offset_row_num != 0 { edits.push(ChartReferenceEdit::InsertRows { sheet: sheet_name.into(), at: root_row_num, count: offset_row_num }); }
-        if edits.is_empty() { return; }
+        if offset_col_num != 0 {
+            edits.push(ChartReferenceEdit::InsertColumns {
+                sheet: sheet_name.into(),
+                at:    root_col_num,
+                count: offset_col_num,
+            });
+        }
+        if offset_row_num != 0 {
+            edits.push(ChartReferenceEdit::InsertRows {
+                sheet: sheet_name.into(),
+                at:    root_row_num,
+                count: offset_row_num,
+            });
+        }
+        if edits.is_empty() {
+            return;
+        }
         let hosts = self.structural_reference_hosts(sheet_name, &edits);
-        if hosts.is_empty() { return; }
-        let prepared: Vec<_> = edits.iter().map(|edit| crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit).expect("validated structural edit")).collect();
+        if hosts.is_empty() {
+            return;
+        }
+        let prepared: Vec<_> = edits
+            .iter()
+            .map(|edit| {
+                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
+                    .expect("validated structural edit")
+            })
+            .collect();
         self.adjust_global_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
@@ -1505,7 +1730,17 @@ impl AdjustmentCoordinateWithSheet for Workbook {
                     offset_row_num,
                 );
             }
-            worksheet.adjust_reference_semantics(&crate::drawing::charts::CoordinateChange { sheet: sheet_name, root_col: root_col_num, col_count: offset_col_num, root_row: root_row_num, row_count: offset_row_num, remove: false }, &prepared);
+            worksheet.adjust_reference_semantics(
+                &crate::drawing::charts::CoordinateChange {
+                    sheet:     sheet_name,
+                    root_col:  root_col_num,
+                    col_count: offset_col_num,
+                    root_row:  root_row_num,
+                    row_count: offset_row_num,
+                    remove:    false,
+                },
+                &prepared,
+            );
         }
     }
 
@@ -1518,19 +1753,42 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         offset_row_num: u32,
     ) {
         use crate::drawing::charts::ChartReferenceEdit;
-        if (offset_col_num != 0 && (!(1..=16_384).contains(&root_col_num) || offset_col_num > 16_384))
-            || (offset_row_num != 0 && (!(1..=1_048_576).contains(&root_row_num) || offset_row_num > 1_048_576)) { return; }
+        if (offset_col_num != 0
+            && (!(1..=16_384).contains(&root_col_num) || offset_col_num > 16_384))
+            || (offset_row_num != 0
+                && (!(1..=1_048_576).contains(&root_row_num) || offset_row_num > 1_048_576))
+        {
+            return;
+        }
         let mut edits = Vec::new();
-        if offset_col_num != 0 { edits.push(ChartReferenceEdit::DeleteColumns {
-            sheet: sheet_name.into(), columns: (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385)).collect(),
-        }); }
-        if offset_row_num != 0 { edits.push(ChartReferenceEdit::DeleteRows {
-            sheet: sheet_name.into(), rows: (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577)).collect(),
-        }); }
-        if edits.is_empty() { return; }
+        if offset_col_num != 0 {
+            edits.push(ChartReferenceEdit::DeleteColumns {
+                sheet:   sheet_name.into(),
+                columns: (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385))
+                    .collect(),
+            });
+        }
+        if offset_row_num != 0 {
+            edits.push(ChartReferenceEdit::DeleteRows {
+                sheet: sheet_name.into(),
+                rows:  (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577))
+                    .collect(),
+            });
+        }
+        if edits.is_empty() {
+            return;
+        }
         let hosts = self.structural_reference_hosts(sheet_name, &edits);
-        if hosts.is_empty() { return; }
-        let prepared: Vec<_> = edits.iter().map(|edit| crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit).expect("validated structural edit")).collect();
+        if hosts.is_empty() {
+            return;
+        }
+        let prepared: Vec<_> = edits
+            .iter()
+            .map(|edit| {
+                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
+                    .expect("validated structural edit")
+            })
+            .collect();
         self.adjust_global_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
@@ -1542,7 +1800,17 @@ impl AdjustmentCoordinateWithSheet for Workbook {
                     offset_row_num,
                 );
             }
-            worksheet.adjust_reference_semantics(&crate::drawing::charts::CoordinateChange { sheet: sheet_name, root_col: root_col_num, col_count: offset_col_num, root_row: root_row_num, row_count: offset_row_num, remove: true }, &prepared);
+            worksheet.adjust_reference_semantics(
+                &crate::drawing::charts::CoordinateChange {
+                    sheet:     sheet_name,
+                    root_col:  root_col_num,
+                    col_count: offset_col_num,
+                    root_row:  root_row_num,
+                    row_count: offset_row_num,
+                    remove:    true,
+                },
+                &prepared,
+            );
         }
     }
 }
@@ -1578,9 +1846,15 @@ mod full_calc_on_load_tests {
             }
             let has = xml.contains(r#"fullCalcOnLoad="1""#);
             assert_eq!(
-                has, enabled,
+                has,
+                enabled,
                 "fullCalcOnLoad present={has} but expected {enabled}; calcPr was: {}",
-                xml.split("<calcPr").nth(1).unwrap_or("<none>").split('>').next().unwrap_or("")
+                xml.split("<calcPr")
+                    .nth(1)
+                    .unwrap_or("<none>")
+                    .split('>')
+                    .next()
+                    .unwrap_or("")
             );
         }
     }

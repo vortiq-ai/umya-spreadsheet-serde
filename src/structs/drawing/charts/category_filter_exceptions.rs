@@ -78,7 +78,6 @@ impl CategoryFilterException {
         )
     }
 
-
     #[must_use]
     pub fn references(&self) -> &ReferenceSequence {
         &self.references
@@ -318,7 +317,6 @@ pub struct CategoryFilterExceptions {
     invalid: bool,
 }
 impl CategoryFilterExceptions {
-
     #[must_use]
     pub fn entries(&self) -> &[CategoryFilterException] {
         &self.entries

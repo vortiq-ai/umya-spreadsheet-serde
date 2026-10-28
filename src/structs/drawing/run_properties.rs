@@ -822,7 +822,8 @@ impl RunProperties {
         if let Some(v) = &baseline {
             attributes.push(("baseline", v.as_str()).into());
         }
-        if self.underline_uses_text_fill() || self.solid_fill.is_some()
+        if self.underline_uses_text_fill()
+            || self.solid_fill.is_some()
             || self.outline.is_some()
             || self.latin_font.is_some()
             || self.east_asian_font.is_some()
@@ -833,16 +834,33 @@ impl RunProperties {
         {
             write_start_tag(writer, tag_name, attributes, false);
 
-            // Native character-property sequence: line, fill choice, effects, fonts.
-            if let Some(v)=&self.outline {v.write_to(writer);}
-            if let Some(v)=&self.solid_fill {v.write_to(writer);}
-            else if let Some(v)=&self.gradient_fill {v.write_to(writer);}
-            else if self.no_fill.is_some(){NoFill::write_to(writer);}
-            if let Some(v)=&self.effect_list {v.write_to(writer);}
-            if self.underline_uses_text_fill() { write_start_tag(writer,"a:uFillTx",vec![],true); }
-            if let Some(v)=&self.latin_font {v.write_to_latin(writer);}
-            if let Some(v)=&self.east_asian_font {v.write_to_ea(writer);}
-            if let Some(v)=&self.complex_script_font {v.write_to_cs(writer);}
+            // Native character-property sequence: line, fill choice, effects,
+            // fonts.
+            if let Some(v) = &self.outline {
+                v.write_to(writer);
+            }
+            if let Some(v) = &self.solid_fill {
+                v.write_to(writer);
+            } else if let Some(v) = &self.gradient_fill {
+                v.write_to(writer);
+            } else if self.no_fill.is_some() {
+                NoFill::write_to(writer);
+            }
+            if let Some(v) = &self.effect_list {
+                v.write_to(writer);
+            }
+            if self.underline_uses_text_fill() {
+                write_start_tag(writer, "a:uFillTx", vec![], true);
+            }
+            if let Some(v) = &self.latin_font {
+                v.write_to_latin(writer);
+            }
+            if let Some(v) = &self.east_asian_font {
+                v.write_to_ea(writer);
+            }
+            if let Some(v) = &self.complex_script_font {
+                v.write_to_cs(writer);
+            }
 
             write_end_tag(writer, tag_name);
         } else {

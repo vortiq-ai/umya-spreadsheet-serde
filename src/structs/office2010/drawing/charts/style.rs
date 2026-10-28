@@ -101,7 +101,8 @@ impl Style {
                 Event::Empty(ref e) => {
                     if fallback_depth == Some(scopes.len())
                         && local_name(e.name().into_inner()) == b"style"
-                        && session.accepts_child_namespace(e, crate::helper::const_str::DRAWINGML_CHART_NS) {
+                        && session.accepts_child_namespace(e,
+                            crate::helper::const_str::DRAWINGML_CHART_NS) {
                         self.val.set_value_string(get_attribute(e, b"val").unwrap());
                     }
                 },

@@ -92,6 +92,9 @@ type ErrorBarReferencePartsMut<'a> = (
 );
 
 impl ErrorBars {
+    const EMPTY_MINUS: u8 = 2;
+    const EMPTY_PLUS: u8 = 1;
+
     // Projection only: retain diagnostics and absent children exactly.
     pub(crate) fn reference_role_parts(&self) -> ErrorBarReferenceParts<'_> {
         (
@@ -115,9 +118,6 @@ impl ErrorBars {
         )
     }
 
-    const EMPTY_MINUS: u8 = 2;
-    const EMPTY_PLUS: u8 = 1;
-
     pub fn shape_properties_mut(&mut self) -> Option<&mut ShapeProperties> {
         self.shape_properties.as_mut()
     }
@@ -135,7 +135,6 @@ impl ErrorBars {
         self.extensions = value.map(Box::new);
         self
     }
-
 
     #[must_use]
     pub fn direction(&self) -> Option<&ScalarElement<ErrorBarDirection>> {

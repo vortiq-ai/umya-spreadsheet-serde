@@ -34,7 +34,6 @@ pub struct ChartText {
 }
 
 impl ChartText {
-
     #[must_use]
     pub fn rich_text(&self) -> Option<&RichText> {
         self.rich_text.as_ref()

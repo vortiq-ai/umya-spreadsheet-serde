@@ -37,7 +37,14 @@ struct StringLiteralParts {
     extensions:  Option<Box<super::ExtensionList>>,
 }
 impl StringLiteral {
-    pub(crate) fn set_attributes_with_session<R:std::io::BufRead>(&mut self,reader:&mut Reader<R>,e:&BytesStart,session:&crate::reader::xlsx::SourceCacheSession){*self=Self::read_with_session(reader,e,false,session);}
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        *self = Self::read_with_session(reader, e, false, session);
+    }
 
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
@@ -54,7 +61,6 @@ impl StringLiteral {
         self.parts.get_or_insert_with(Default::default).extensions = value.map(Box::new);
         self
     }
-
 
     #[must_use]
     pub fn point_count(&self) -> Option<&XmlUnsignedInt> {
@@ -119,21 +125,49 @@ impl StringLiteral {
         e: &BytesStart,
         empty: bool,
     ) -> Self {
-        Self::read_common(reader,e,empty,None)
+        Self::read_common(reader, e, empty, None)
     }
-    pub(crate) fn read_with_session<R:std::io::BufRead>(reader:&mut Reader<R>,e:&BytesStart,empty:bool,session:&crate::reader::xlsx::SourceCacheSession)->Self{Self::read_common(reader,e,empty,Some(session))}
-    fn read_common<R:std::io::BufRead>(reader:&mut Reader<R>,e:&BytesStart,empty:bool,session:Option<&crate::reader::xlsx::SourceCacheSession>)->Self{
-        let _scope_guard=session.and_then(|session|session.enter_child_scope(e));
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Self {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
 
         let mut result = Self::default();
         let mut parts = StringLiteralParts::default();
         let mut counts = 0;
         parts.invalid = !children(reader, e, empty, |reader, child, empty| {
-            match if session.is_none_or(|session|session.accepts_child_namespace(child,super::extension_registry::NS_C)){local_name(child.name().into_inner())}else{b""} {
-                b"extLst" if session.is_some()=>{parts.extensions=Some(Box::new(super::ExtensionList::read(reader,child,empty,session.expect("checked session"))));},
-                b"pt" => result
-                    .string_point_list
-                    .push(match session{Some(session)=>StringPoint::read_with_session(reader,child,empty,session),None=>StringPoint::read(reader,child,empty)}),
+            match if session.is_none_or(|session| {
+                session.accepts_child_namespace(child, super::extension_registry::NS_C)
+            }) {
+                local_name(child.name().into_inner())
+            } else {
+                b""
+            } {
+                b"extLst" if session.is_some() => {
+                    parts.extensions = Some(Box::new(super::ExtensionList::read(
+                        reader,
+                        child,
+                        empty,
+                        session.expect("checked session"),
+                    )));
+                }
+                b"pt" => result.string_point_list.push(match session {
+                    Some(session) => StringPoint::read_with_session(reader, child, empty, session),
+                    None => StringPoint::read(reader, child, empty),
+                }),
                 b"ptCount" => {
                     counts += 1;
                     parts.point_count = Some(XmlUnsignedInt::read(child));
@@ -172,7 +206,9 @@ impl StringLiteral {
             obj.write_to(writer, index.try_into().unwrap());
         }
 
-        if let Some(ext)=self.extensions(){ext.write_for_owner(writer,None,"strLit",None);}
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, None, "strLit", None);
+        }
         write_end_tag(writer, "c:strLit");
     }
 }

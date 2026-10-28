@@ -106,7 +106,11 @@ impl Glow {
         write_start_tag(
             writer,
             "a:glow",
-            if self.radius.has_value() { vec![("rad",self.radius.value_string()).into()] } else { vec![] },
+            if self.radius.has_value() {
+                vec![("rad", self.radius.value_string()).into()]
+            } else {
+                vec![]
+            },
             false,
         );
 

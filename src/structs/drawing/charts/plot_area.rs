@@ -114,47 +114,70 @@ fn order_chart_groups<T>(
 // remains shared; borrowing unrelated layout/axis owners stays field-disjoint.
 macro_rules! ordered_group_views_mut {
     ($owner:ident) => {{
-    let first = [
-                $owner.line_chart.as_mut().map(ChartGroupMut::LineChart),
-                $owner.line_3d_chart.as_mut().map(ChartGroupMut::Line3DChart),
-                $owner.pie_chart.as_mut().map(ChartGroupMut::PieChart),
-                $owner.pie_3d_chart.as_mut().map(ChartGroupMut::Pie3DChart),
-                $owner.doughnut_chart
-                    .as_mut()
-                    .map(ChartGroupMut::DoughnutChart),
-                $owner.scatter_chart.as_mut().map(ChartGroupMut::ScatterChart),
-                $owner.bar_chart.as_mut().map(ChartGroupMut::BarChart),
-                $owner.bar_3d_chart.as_mut().map(ChartGroupMut::Bar3DChart),
-                $owner.radar_chart.as_mut().map(ChartGroupMut::RadarChart),
-                $owner.bubble_chart.as_mut().map(ChartGroupMut::BubbleChart),
-                $owner.area_chart.as_mut().map(ChartGroupMut::AreaChart),
-                $owner.area_3d_chart.as_mut().map(ChartGroupMut::Area3DChart),
-                $owner.of_pie_chart.as_mut().map(ChartGroupMut::OfPieChart),
-            ];
-            let entries = $owner.chart_group_order.iter_mut().map(|entry| match entry {
+        let first = [
+            $owner.line_chart.as_mut().map(ChartGroupMut::LineChart),
+            $owner
+                .line_3d_chart
+                .as_mut()
+                .map(ChartGroupMut::Line3DChart),
+            $owner.pie_chart.as_mut().map(ChartGroupMut::PieChart),
+            $owner.pie_3d_chart.as_mut().map(ChartGroupMut::Pie3DChart),
+            $owner
+                .doughnut_chart
+                .as_mut()
+                .map(ChartGroupMut::DoughnutChart),
+            $owner
+                .scatter_chart
+                .as_mut()
+                .map(ChartGroupMut::ScatterChart),
+            $owner.bar_chart.as_mut().map(ChartGroupMut::BarChart),
+            $owner.bar_3d_chart.as_mut().map(ChartGroupMut::Bar3DChart),
+            $owner.radar_chart.as_mut().map(ChartGroupMut::RadarChart),
+            $owner.bubble_chart.as_mut().map(ChartGroupMut::BubbleChart),
+            $owner.area_chart.as_mut().map(ChartGroupMut::AreaChart),
+            $owner
+                .area_3d_chart
+                .as_mut()
+                .map(ChartGroupMut::Area3DChart),
+            $owner.of_pie_chart.as_mut().map(ChartGroupMut::OfPieChart),
+        ];
+        let entries = $owner
+            .chart_group_order
+            .iter_mut()
+            .map(|entry| match entry {
                 ChartGroupEntry::First(kind) => (*kind, None),
                 ChartGroupEntry::Additional(group) => (group.kind(), Some(group.as_group_mut())),
             });
-            order_chart_groups(first, entries).into_iter()
-        }};
+        order_chart_groups(first, entries).into_iter()
+    }};
 }
 
 impl PlotArea {
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::PlotParts<'_> {
         let groups = self.chart_groups().collect();
         super::chart_reference_roles::PlotParts {
-            layout: &self.layout, shape: self.shape_properties.as_ref(), groups,
-            category_axes: &self.category_axis, date_axes: &self.date_axis,
-            value_axes: &self.value_axis, series_axes: &self.series_axis,
+            layout: &self.layout,
+            shape: self.shape_properties.as_ref(),
+            groups,
+            category_axes: &self.category_axis,
+            date_axes: &self.date_axis,
+            value_axes: &self.value_axis,
+            series_axes: &self.series_axis,
         }
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> super::chart_reference_roles::PlotPartsMut<'_> {
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::PlotPartsMut<'_> {
         let groups = ordered_group_views_mut!(self).collect();
         super::chart_reference_roles::PlotPartsMut {
-            layout: &mut self.layout, shape: self.shape_properties.as_mut(), groups,
-            category_axes: &mut self.category_axis, date_axes: &mut self.date_axis,
-            value_axes: &mut self.value_axis, series_axes: &mut self.series_axis,
+            layout: &mut self.layout,
+            shape: self.shape_properties.as_mut(),
+            groups,
+            category_axes: &mut self.category_axis,
+            date_axes: &mut self.date_axis,
+            value_axes: &mut self.value_axis,
+            series_axes: &mut self.series_axis,
         }
     }
 
@@ -936,7 +959,7 @@ impl PlotArea {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
@@ -1094,8 +1117,13 @@ impl AdjustmentCoordinateWithSheet for PlotArea {
         offset_row_num: u32,
     ) {
         super::chart_reference_roles::adjust_coordinate_scope(
-            super::chart_reference_roles::ReferenceScopeMut::Plot(self), sheet_name,
-            root_col_num, offset_col_num, root_row_num, offset_row_num, false,
+            super::chart_reference_roles::ReferenceScopeMut::Plot(self),
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            false,
         );
     }
 
@@ -1108,8 +1136,13 @@ impl AdjustmentCoordinateWithSheet for PlotArea {
         offset_row_num: u32,
     ) {
         super::chart_reference_roles::adjust_coordinate_scope(
-            super::chart_reference_roles::ReferenceScopeMut::Plot(self), sheet_name,
-            root_col_num, offset_col_num, root_row_num, offset_row_num, true,
+            super::chart_reference_roles::ReferenceScopeMut::Plot(self),
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            true,
         );
     }
 }

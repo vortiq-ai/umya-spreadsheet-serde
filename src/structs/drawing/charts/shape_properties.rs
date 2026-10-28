@@ -54,7 +54,6 @@ pub struct ShapePropertiesParts {
     extensions: Option<super::ExtensionList>,
 }
 impl ShapeProperties {
-
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.parts.as_ref().and_then(|p| p.extensions.as_ref())
@@ -441,7 +440,7 @@ impl ShapeProperties {
         }
 
         if let Some(extensions) = self.extensions() {
-            extensions.write_for_owner(writer,None,"spPr",None);
+            extensions.write_for_owner(writer, None, "spPr", None);
         }
         write_end_tag(writer, name);
     }

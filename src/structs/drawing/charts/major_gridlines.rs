@@ -29,7 +29,6 @@ pub struct MajorGridlines {
 }
 
 impl MajorGridlines {
-
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {
         self.shape_properties.as_ref()
@@ -68,7 +67,7 @@ impl MajorGridlines {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-        empty_flg:bool,
+        empty_flg: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         self.read_with_session(reader, e, empty_flg, Some(session));
@@ -78,7 +77,7 @@ impl MajorGridlines {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-        empty_flg:bool,
+        empty_flg: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
         let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
@@ -92,7 +91,8 @@ impl MajorGridlines {
             Event::Start(ref e) => {
                 if local_name(e.name().into_inner()) == b"spPr" {
                     let mut obj = ShapeProperties::default();
-                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,session),None=>obj.set_attributes(reader,e)}
+                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,
+                        session),None=>obj.set_attributes(reader,e)}
                     self.set_shape_properties(obj);
                 }
             },

@@ -36,18 +36,18 @@ pub struct Legend {
 }
 
 impl Legend {
-    pub(crate) fn reference_role_parts(&self) -> (
-        Option<&Layout>, Option<&ShapeProperties>,
-    ) {
+    pub(crate) fn reference_role_parts(&self) -> (Option<&Layout>, Option<&ShapeProperties>) {
         (self.layout.as_deref(), self.shape_properties.as_deref())
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> (
-        Option<&mut Layout>, Option<&mut ShapeProperties>,
-    ) {
-        (self.layout.as_deref_mut(), self.shape_properties.as_deref_mut())
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut Layout>, Option<&mut ShapeProperties>) {
+        (
+            self.layout.as_deref_mut(),
+            self.shape_properties.as_deref_mut(),
+        )
     }
-
 
     #[must_use]
     pub fn legend_position(&self) -> &LegendPosition {
@@ -180,7 +180,7 @@ impl Legend {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_child_scope(owner);
+        let _scope_guard = session.enter_child_scope(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {

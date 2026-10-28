@@ -1,12 +1,18 @@
 //! Non-materializing owner traversal fragment. The joint cache owner must call
 //! these functions only after all pre-existing and phase6/7 roles.
-use super::{Chart, PivotFormat, StringReference, ValueAxis};
-use super::chart_source_caches::ReferenceIdentity;
 use std::collections::HashMap;
 
+use super::{
+    Chart,
+    PivotFormat,
+    StringReference,
+    ValueAxis,
+    chart_source_caches::ReferenceIdentity,
+};
+
 pub(crate) struct OwnerCounts {
-    pivots: HashMap<u32, usize>,
-    axes: HashMap<u32, usize>,
+    pivots:                HashMap<u32, usize>,
+    axes:                  HashMap<u32, usize>,
     pivot_container_valid: bool,
 }
 impl OwnerCounts {
@@ -17,25 +23,49 @@ impl OwnerCounts {
                 *axes.entry(id).or_insert(0) += 1;
             }
         }
-        Self { pivots: HashMap::new(), axes, pivot_container_valid: false }
+        Self {
+            pivots: HashMap::new(),
+            axes,
+            pivot_container_valid: false,
+        }
     }
 
     pub(crate) fn new(chart: &Chart) -> Self {
         let mut pivots = HashMap::new();
         if let Some(owners) = chart.pivot_formats() {
-            for owner in owners { if let Some(id) = owner.index().explicit_value() { *pivots.entry(id).or_insert(0) += 1; } }
+            for owner in owners {
+                if let Some(id) = owner.index().explicit_value() {
+                    *pivots.entry(id).or_insert(0) += 1;
+                }
+            }
         }
         let mut axes = HashMap::new();
         for owner in chart.plot_area().value_axis() {
-            if let Some(id) = owner.axis_id().explicit_value() { *axes.entry(id).or_insert(0) += 1; }
+            if let Some(id) = owner.axis_id().explicit_value() {
+                *axes.entry(id).or_insert(0) += 1;
+            }
         }
-        Self { pivots, axes, pivot_container_valid: !chart.pivot_container_has_conflict() }
+        Self {
+            pivots,
+            axes,
+            pivot_container_valid: !chart.pivot_container_has_conflict(),
+        }
     }
+
     pub(crate) fn pivot(&self, owner: &PivotFormat) -> Option<u32> {
-        owner.index().explicit_value().filter(|id| self.pivot_container_valid && owner.index_is_present() && !owner.has_conflict() && self.pivots.get(id) == Some(&1))
+        owner.index().explicit_value().filter(|id| {
+            self.pivot_container_valid
+                && owner.index_is_present()
+                && !owner.has_conflict()
+                && self.pivots.get(id) == Some(&1)
+        })
     }
+
     pub(crate) fn axis(&self, owner: &ValueAxis) -> Option<u32> {
-        owner.axis_id().explicit_value().filter(|id| !owner.display_units_has_conflict() && self.axes.get(id) == Some(&1))
+        owner
+            .axis_id()
+            .explicit_value()
+            .filter(|id| !owner.display_units_has_conflict() && self.axes.get(id) == Some(&1))
     }
 }
 
@@ -117,7 +147,13 @@ pub(crate) fn visit_phase8_references<'a>(
 mod tests {
     use super::*;
     use crate::structs::drawing::charts::{
-        ChartText, DataLabel, DisplayUnit, DisplayUnits, DisplayUnitsLabel, Formula, Index,
+        ChartText,
+        DataLabel,
+        DisplayUnit,
+        DisplayUnits,
+        DisplayUnitsLabel,
+        Formula,
+        Index,
     };
 
     fn reference(address: &str) -> ChartText {
@@ -134,7 +170,9 @@ mod tests {
     fn phase8_roles_are_exactly_once_pivot_then_axis_and_nonmaterializing() {
         let mut chart = Chart::default();
         let mut data_label = DataLabel::default();
-        let mut label_index = Index::default(); label_index.set_val(3); data_label.set_index(label_index);
+        let mut label_index = Index::default();
+        label_index.set_val(3);
+        data_label.set_index(label_index);
         data_label.set_text(Some(reference("Sheet1!$A$1")));
         let mut index = Index::default();
         index.set_val(8);
@@ -205,58 +243,103 @@ mod tests {
     #[test]
     fn invalid_index_remains_traversable_but_never_supplies_cache_identity() {
         let mut label = DataLabel::default();
-        let mut label_index = Index::default(); label_index.set_val(3); label.set_index(label_index);
+        let mut label_index = Index::default();
+        label_index.set_val(3);
+        label.set_index(label_index);
         label.set_text(Some(reference("Sheet1!$A$1")));
-        let mut index = Index::default(); index.set_val(7);
-        let mut pivot = PivotFormat::default(); pivot.set_index(index).set_label(label);
+        let mut index = Index::default();
+        index.set_val(7);
+        let mut pivot = PivotFormat::default();
+        pivot.set_index(index).set_label(label);
         let mut json = serde_json::to_value(&pivot).unwrap();
         json["index_present"] = false.into();
         json["invalid_index"] = true.into();
         json["duplicate_indices"] = serde_json::json!(["8"]);
         let pivot: PivotFormat = serde_json::from_value(json).unwrap();
-        let mut chart = Chart::default(); chart.set_pivot_formats(vec![pivot]);
+        let mut chart = Chart::default();
+        chart.set_pivot_formats(vec![pivot]);
         let mut borrowed = Vec::new();
-        visit_phase8_references(&chart, &mut |id, reference| borrowed.push((id, reference.formula().address_str().to_owned())));
+        visit_phase8_references(&chart, &mut |id, reference| {
+            borrowed.push((id, reference.formula().address_str().to_owned()))
+        });
         assert_eq!(borrowed, vec![(None, "Sheet1!$A$1".into())]);
         let mut mutable = Vec::new();
-        visit_phase8_references_mut(&mut chart, &mut |id, reference| { mutable.push(id); reference.formula_mut().set_address_str("Sheet1!$A$2"); });
+        visit_phase8_references_mut(&mut chart, &mut |id, reference| {
+            mutable.push(id);
+            reference.formula_mut().set_address_str("Sheet1!$A$2");
+        });
         assert_eq!(mutable, vec![None]);
-        assert_eq!(chart.pivot_formats().unwrap()[0].label().unwrap().text().unwrap().string_reference().unwrap().formula().address_str(), "Sheet1!$A$2");
+        assert_eq!(
+            chart.pivot_formats().unwrap()[0]
+                .label()
+                .unwrap()
+                .text()
+                .unwrap()
+                .string_reference()
+                .unwrap()
+                .formula()
+                .address_str(),
+            "Sheet1!$A$2"
+        );
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn duplicate_container_disqualifies_primary_and_duplicate_in_both_traversals() {
-        let mut label = DataLabel::default(); let mut label_index = Index::default(); label_index.set_val(3); label.set_index(label_index); label.set_text(Some(reference("Missing!$A$1")));
-        let mut index = Index::default(); index.set_val(7);
-        let mut pivot = PivotFormat::default(); pivot.set_index(index).set_label(label);
-        let mut chart = Chart::default(); chart.set_pivot_formats(vec![pivot]);
+        let mut label = DataLabel::default();
+        let mut label_index = Index::default();
+        label_index.set_val(3);
+        label.set_index(label_index);
+        label.set_text(Some(reference("Missing!$A$1")));
+        let mut index = Index::default();
+        index.set_val(7);
+        let mut pivot = PivotFormat::default();
+        pivot.set_index(index).set_label(label);
+        let mut chart = Chart::default();
+        chart.set_pivot_formats(vec![pivot]);
         let mut value = serde_json::to_value(&chart).unwrap();
         let duplicate = value["parts"].clone();
         value["parts"]["duplicate_containers"] = serde_json::json!([duplicate]);
         value["parts"]["invalid"] = false.into();
         let mut chart: Chart = serde_json::from_value(value).unwrap();
         let mut borrowed = Vec::new();
-        visit_phase8_references(&chart, &mut |id, reference| borrowed.push((id, reference.formula().address_str().to_owned())));
+        visit_phase8_references(&chart, &mut |id, reference| {
+            borrowed.push((id, reference.formula().address_str().to_owned()))
+        });
         let mut mutable = Vec::new();
-        visit_phase8_references_mut(&mut chart, &mut |id, reference| mutable.push((id, reference.formula().address_str().to_owned())));
-        assert_eq!(borrowed, vec![(None, "Missing!$A$1".into()), (None, "Missing!$A$1".into())]);
+        visit_phase8_references_mut(&mut chart, &mut |id, reference| {
+            mutable.push((id, reference.formula().address_str().to_owned()))
+        });
+        assert_eq!(
+            borrowed,
+            vec![(None, "Missing!$A$1".into()), (None, "Missing!$A$1".into())]
+        );
         assert_eq!(mutable, borrowed);
     }
 
     #[test]
     fn absent_and_explicit_zero_index_have_identical_borrowed_mutable_roles() {
-        let mut label = DataLabel::default(); let mut label_index = Index::default(); label_index.set_val(3); label.set_index(label_index); label.set_text(Some(reference("Missing!$A$1")));
-        let mut pivot = PivotFormat::default(); pivot.set_index(Index::default()).set_label(label);
-        let mut chart = Chart::default(); chart.set_pivot_formats(vec![pivot]);
+        let mut label = DataLabel::default();
+        let mut label_index = Index::default();
+        label_index.set_val(3);
+        label.set_index(label_index);
+        label.set_text(Some(reference("Missing!$A$1")));
+        let mut pivot = PivotFormat::default();
+        pivot.set_index(Index::default()).set_label(label);
+        let mut chart = Chart::default();
+        chart.set_pivot_formats(vec![pivot]);
         for expected in [None, Some(Phase8ReferenceIdentity::PivotFormatLabel(0))] {
             if expected.is_some() {
-                let mut index = Index::default(); index.set_val(0);
+                let mut index = Index::default();
+                index.set_val(0);
                 chart.pivot_formats_mut().unwrap()[0].set_index(index);
             }
-            let mut borrowed = Vec::new(); visit_phase8_references(&chart, &mut |id, _| borrowed.push(id));
-            let mut mutable = Vec::new(); visit_phase8_references_mut(&mut chart, &mut |id, _| mutable.push(id));
-            assert_eq!(borrowed, vec![expected]); assert_eq!(mutable, borrowed);
+            let mut borrowed = Vec::new();
+            visit_phase8_references(&chart, &mut |id, _| borrowed.push(id));
+            let mut mutable = Vec::new();
+            visit_phase8_references_mut(&mut chart, &mut |id, _| mutable.push(id));
+            assert_eq!(borrowed, vec![expected]);
+            assert_eq!(mutable, borrowed);
         }
     }
 }

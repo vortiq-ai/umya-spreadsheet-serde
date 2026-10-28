@@ -383,17 +383,23 @@ impl BodyProperties {
                     self.set_anchor(unescape_attribute(value));
                 }
                 b"vert" => {
-                    let parsed=TextVertical::read(&unescape_attribute(value));
-                    let p=self.parts.get_or_insert_with(Default::default);
-                    p.vertical=parsed;
-                    p.invalid_vertical=parsed.is_none();
+                    let parsed = TextVertical::read(&unescape_attribute(value));
+                    let p = self.parts.get_or_insert_with(Default::default);
+                    p.vertical = parsed;
+                    p.invalid_vertical = parsed.is_none();
                 }
                 b"anchorCtr" => {
-                    let v=unescape_attribute(value);
-                    let parsed=match v.as_str() { "0"=>Some(super::charts::BooleanLexeme::Zero), "1"=>Some(super::charts::BooleanLexeme::One), "false"=>Some(super::charts::BooleanLexeme::False), "true"=>Some(super::charts::BooleanLexeme::True), _=>None };
-                    let p=self.parts.get_or_insert_with(Default::default);
-                    p.anchor_center=parsed;
-                    p.invalid_anchor_center=parsed.is_none();
+                    let v = unescape_attribute(value);
+                    let parsed = match v.as_str() {
+                        "0" => Some(super::charts::BooleanLexeme::Zero),
+                        "1" => Some(super::charts::BooleanLexeme::One),
+                        "false" => Some(super::charts::BooleanLexeme::False),
+                        "true" => Some(super::charts::BooleanLexeme::True),
+                        _ => None,
+                    };
+                    let p = self.parts.get_or_insert_with(Default::default);
+                    p.anchor_center = parsed;
+                    p.invalid_anchor_center = parsed.is_none();
                 }
                 b"wrap" => {
                     self.wrap.set_value_string(value);

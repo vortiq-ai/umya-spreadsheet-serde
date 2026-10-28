@@ -209,7 +209,6 @@ impl ExtensionPayload {
         }
     }
 
-
     /// The caller has already checked the registration or the defined nested
     /// reference grammar. Namespace resolution never guesses from prefix text.
     pub(crate) fn read<R: std::io::BufRead>(

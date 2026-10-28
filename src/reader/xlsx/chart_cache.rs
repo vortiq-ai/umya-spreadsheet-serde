@@ -47,13 +47,13 @@ use crate::{
             SourceCache,
             SourceException,
             StringReference,
+            chart_reference_roles::ReferenceCachePhase,
             literal_text,
             parse_point_count,
             read_point_borrowed,
             visit_deferred_indices,
             visit_string_references,
             visit_string_references_in_phase,
-            chart_reference_roles::ReferenceCachePhase,
         },
     },
 };
@@ -813,7 +813,14 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
                 b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache" => break,
                 _ => (),
             },
-            Event::End(e) if matches!(local_name(e.name().into_inner()), b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache") => break,
+            Event::End(e)
+                if matches!(
+                    local_name(e.name().into_inner()),
+                    b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache"
+                ) =>
+            {
+                break;
+            }
             Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
             _ => (),
         }
@@ -937,8 +944,22 @@ fn reduce_cache<'a>(
                 Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
                     attribute_u32(&e, b"idx").map(|index| (index, None))
                 }
-                Event::Empty(e) if matches!(local_name(e.name().into_inner()), b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache") => break,
-                Event::End(e) if matches!(local_name(e.name().into_inner()), b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache") => break,
+                Event::Empty(e)
+                    if matches!(
+                        local_name(e.name().into_inner()),
+                        b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache"
+                    ) =>
+                {
+                    break;
+                }
+                Event::End(e)
+                    if matches!(
+                        local_name(e.name().into_inner()),
+                        b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache"
+                    ) =>
+                {
+                    break;
+                }
                 Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
                 _ => None,
             };
@@ -1103,10 +1124,21 @@ impl Drop for ExtensionScopeGuard {
 impl SourceCacheSession {
     /// The original chart part root supplies the genuine inherited bindings.
     /// Descendant owners push their own declarations on this same session.
-    pub(crate) fn enter_chart_root(&self,e:&quick_xml::events::BytesStart)->ExtensionScopeGuard{
-        let scope=crate::drawing::charts::NamespaceScope::default().child(e).expect("valid chart root namespace declarations");
-        let name=scope.resolve(e.name().into_inner(),false).expect("bound chart root QName");
-        assert!(name.namespace_uri=="http://schemas.openxmlformats.org/drawingml/2006/chart"&&name.local_name=="chartSpace","invalid chart root expanded name");
+    pub(crate) fn enter_chart_root(
+        &self,
+        e: &quick_xml::events::BytesStart,
+    ) -> ExtensionScopeGuard {
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(e)
+            .expect("valid chart root namespace declarations");
+        let name = scope
+            .resolve(e.name().into_inner(), false)
+            .expect("bound chart root QName");
+        assert!(
+            name.namespace_uri == "http://schemas.openxmlformats.org/drawingml/2006/chart"
+                && name.local_name == "chartSpace",
+            "invalid chart root expanded name"
+        );
         self.push_extension_scope(scope)
     }
 
@@ -1149,7 +1181,7 @@ impl SourceCacheSession {
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
             chart_namespaces:                          Rc::new(RefCell::new(None)),
-            extension_scopes: Rc::new(RefCell::new(Vec::new())),
+            extension_scopes:                          Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
             registered_keys:                           Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
@@ -1173,7 +1205,7 @@ impl SourceCacheSession {
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
             chart_namespaces:                          Rc::new(RefCell::new(None)),
-            extension_scopes: Rc::new(RefCell::new(Vec::new())),
+            extension_scopes:                          Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
             registered_keys:                           Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
@@ -1196,7 +1228,7 @@ impl SourceCacheSession {
             parts:                                     Rc::clone(&self.parts),
             current_part:                              Rc::clone(&self.current_part),
             chart_namespaces:                          Rc::clone(&self.chart_namespaces),
-            extension_scopes: Rc::clone(&self.extension_scopes),
+            extension_scopes:                          Rc::clone(&self.extension_scopes),
             #[cfg(test)]
             registered_keys:                           Rc::clone(&self.registered_keys),
             #[cfg(test)]
@@ -1997,10 +2029,10 @@ impl<'a> DisplayResolver<'a> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "serde")]
-    mod stage9_cache_phase;
     mod prepared_formats;
     mod repeats;
+    #[cfg(feature = "serde")]
+    mod stage9_cache_phase;
     mod strict_scan;
 
     use std::io::{
@@ -2033,7 +2065,11 @@ mod tests {
         deferred_reference_at(session, "deferred.xml", xml)
     }
 
-    fn deferred_reference_at(session: &SourceCacheSession, target: &str, xml: &str) -> StringReference {
+    fn deferred_reference_at(
+        session: &SourceCacheSession,
+        target: &str,
+        xml: &str,
+    ) -> StringReference {
         session.begin_chart_part(target);
         session.store_part(session.part_for(target), xml.as_bytes().into());
         let mut reader = Reader::from_reader(xml.as_bytes());

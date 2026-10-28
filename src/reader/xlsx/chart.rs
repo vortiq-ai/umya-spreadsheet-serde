@@ -4,14 +4,15 @@ use quick_xml::{
 };
 
 use crate::{
-    reader::{
-        xlsx::{
-            ChartPartProvider,
-            SourceCacheSession,
-        },
+    reader::xlsx::{
+        ChartPartProvider,
+        SourceCacheSession,
     },
     structs::{
-        drawing::charts::{ChartSpace, NamespaceScope},
+        drawing::charts::{
+            ChartSpace,
+            NamespaceScope,
+        },
         raw::RawFile,
     },
     xml_read_loop,
@@ -37,7 +38,8 @@ pub(crate) fn read(
         };
         session.begin_chart_part(raw_file.file_target());
         let _part_guard = ChartPartReadGuard(session);
-        session.prepare_chart_namespaces(data,raw_file.file_target())
+        session
+            .prepare_chart_namespaces(data, raw_file.file_target())
             .expect("Could not index chart namespace scope");
         let data = std::io::Cursor::new(data);
         let mut reader = Reader::from_reader(data);

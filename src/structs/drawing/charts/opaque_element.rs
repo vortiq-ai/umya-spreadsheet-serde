@@ -578,10 +578,6 @@ impl OpaqueElement {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-
-
 }
 
-impl ExtensionNode {
-
-}
+impl ExtensionNode {}

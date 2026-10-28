@@ -245,7 +245,7 @@ impl ChartSpace {
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
-        let _scope_guard=session.enter_chart_root(owner);
+        let _scope_guard = session.enter_chart_root(owner);
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if local_name(e.name().into_inner()) == b"AlternateContent" {
@@ -366,8 +366,13 @@ impl AdjustmentCoordinateWithSheet for ChartSpace {
         offset_row_num: u32,
     ) {
         super::chart_reference_roles::adjust_coordinate_scope(
-            super::chart_reference_roles::ReferenceScopeMut::Space(self), sheet_name,
-            root_col_num, offset_col_num, root_row_num, offset_row_num, false,
+            super::chart_reference_roles::ReferenceScopeMut::Space(self),
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            false,
         );
     }
 
@@ -380,8 +385,13 @@ impl AdjustmentCoordinateWithSheet for ChartSpace {
         offset_row_num: u32,
     ) {
         super::chart_reference_roles::adjust_coordinate_scope(
-            super::chart_reference_roles::ReferenceScopeMut::Space(self), sheet_name,
-            root_col_num, offset_col_num, root_row_num, offset_row_num, true,
+            super::chart_reference_roles::ReferenceScopeMut::Space(self),
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            true,
         );
     }
 }

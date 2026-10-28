@@ -20,7 +20,8 @@ use crate::writer::driver::{
 pub const NS_C14: &str = "http://schemas.microsoft.com/office/drawing/2007/8/2/chart";
 pub const NS_C16: &str = "http://schemas.microsoft.com/office/drawing/2014/chart";
 
-/// `CT_ChartUniqueID` is a required `xsd:string` attribute, NOT a GUID restriction.
+/// `CT_ChartUniqueID` is a required `xsd:string` attribute, NOT a GUID
+/// restriction.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ChartUniqueId {
@@ -70,15 +71,13 @@ pub struct InvertSolidFill {
     invalid:          bool,
 }
 impl InvertSolidFill {
-    pub(crate) fn reference_role_parts(&self) -> (
-        Option<&ShapeProperties>, &[ShapeProperties],
-    ) {
+    pub(crate) fn reference_role_parts(&self) -> (Option<&ShapeProperties>, &[ShapeProperties]) {
         (self.shape_properties.as_ref(), &self.extra_shapes)
     }
 
-    pub(crate) fn reference_role_parts_mut(&mut self) -> (
-        Option<&mut ShapeProperties>, &mut [ShapeProperties],
-    ) {
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut ShapeProperties>, &mut [ShapeProperties]) {
         (self.shape_properties.as_mut(), &mut self.extra_shapes)
     }
 

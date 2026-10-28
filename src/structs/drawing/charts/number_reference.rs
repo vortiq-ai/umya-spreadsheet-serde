@@ -42,7 +42,6 @@ impl NumberReference {
         (&mut self.formula, self.extensions.as_deref_mut())
     }
 
-
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.extensions.as_deref()
@@ -172,8 +171,22 @@ impl NumberReference {
         let mut formulas = 0usize;
         let mut valid = true;
         let complete = children(reader, e, empty, |reader, child, empty| {
-            match if session.is_none_or(|session|session.accepts_child_namespace(child,super::extension_registry::NS_C)) {local_name(child.name().into_inner())} else {b""} {
-                b"extLst" if session.is_some()=>{self.set_extensions(Some(super::ExtensionList::read(reader,child,empty,session.expect("checked session"))));true},
+            match if session.is_none_or(|session| {
+                session.accepts_child_namespace(child, super::extension_registry::NS_C)
+            }) {
+                local_name(child.name().into_inner())
+            } else {
+                b""
+            } {
+                b"extLst" if session.is_some() => {
+                    self.set_extensions(Some(super::ExtensionList::read(
+                        reader,
+                        child,
+                        empty,
+                        session.expect("checked session"),
+                    )));
+                    true
+                }
                 b"f" => {
                     formulas += 1;
                     if empty {

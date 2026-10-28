@@ -150,7 +150,6 @@ impl DataLabels {
         self.parts.as_mut().and_then(|p| p.leader_lines.as_mut())
     }
 
-
     #[must_use]
     pub fn show_legend_key(&self) -> &ShowLegendKey {
         &self.show_legend_key

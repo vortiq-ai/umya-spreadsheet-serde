@@ -33,7 +33,6 @@ pub struct BackWall {
 }
 
 impl BackWall {
-
     #[must_use]
     pub fn thickness(&self) -> Option<&Thickness> {
         self.thickness.as_ref()
@@ -120,7 +119,8 @@ impl BackWall {
                 }
                 if local_name(e.name().into_inner()) == b"spPr" {
                     let mut obj = ShapeProperties::default();
-                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,session),None=>obj.set_attributes(reader,e)}
+                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,
+                        session),None=>obj.set_attributes(reader,e)}
                     self.set_shape_properties(obj);
                 }
             },

@@ -518,7 +518,6 @@ pub use self::extension_list::*;
 
 mod extension_registry;
 
-
 #[cfg(test)]
-#[path="charts/extension_leaves_tests.rs"]
+#[path = "charts/extension_leaves_tests.rs"]
 mod extension_leaves_tests;
