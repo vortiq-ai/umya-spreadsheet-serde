@@ -53,6 +53,10 @@ fn line_document(series_children: &str, chart_owners: &str, axis_owners: &str) -
 }
 
 fn read_xml(xml: &str) -> Workbook {
+    read_xml_mode(xml, true)
+}
+
+fn read_xml_mode(xml: &str, eager: bool) -> Workbook {
     let mut source = zip::ZipArchive::new(Cursor::new(PINNED)).unwrap();
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..source.len() {
@@ -69,7 +73,7 @@ fn read_xml(xml: &str) -> Workbook {
         output.write_all(&data).unwrap();
     }
     let bytes = output.finish().unwrap().into_inner();
-    umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap()
+    umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), eager).unwrap()
 }
 
 fn chart(book: &Workbook) -> &Chart {
@@ -462,5 +466,175 @@ fn native_owner_namespace_aliases_and_defaults_remain_supported() {
                 .no_fill()
                 .is_some()
         );
+    }
+}
+
+fn numeric_document(owner: &str, references: &str) -> String {
+    let native_x = "<c:xVal><c:numRef><c:f>Input!$A$1:$A$3</c:f></c:numRef></c:xVal>";
+    let native_y = "<c:yVal><c:numRef><c:f>Input!$C$1:$C$3</c:f></c:numRef></c:yVal>";
+    let (family, children) = match owner {
+        "val" => ("lineChart", format!("<c:val>{references}</c:val>")),
+        "xVal" => (
+            "scatterChart",
+            format!("<c:xVal>{references}</c:xVal>{native_y}"),
+        ),
+        "yVal" => (
+            "scatterChart",
+            format!("{native_x}<c:yVal>{references}</c:yVal>"),
+        ),
+        "bubbleSize" => (
+            "bubbleChart",
+            format!("{native_x}{native_y}<c:bubbleSize>{references}</c:bubbleSize>"),
+        ),
+        _ => unreachable!(),
+    };
+    document(
+        &format!(
+            "<c:{family}><c:ser>{SERIES}{children}</c:ser><c:axId val=\"1\"/><c:axId \
+             val=\"2\"/></c:{family}>"
+        ),
+        "",
+        "",
+    )
+}
+
+fn numeric_chart(book: &Workbook) -> &Chart {
+    let charts = book.sheet_by_name("Chart A").unwrap().chart_collection();
+    assert_eq!(charts.len(), 1);
+    &charts[0]
+}
+
+fn numeric_formula(book: &Workbook, owner: &str) -> String {
+    let model = numeric_chart(book).chart_space().chart();
+    let groups: Vec<_> = model.plot_area().chart_groups().collect();
+    assert_eq!(groups.len(), 1);
+    let series = groups[0].series().area_chart_series();
+    assert_eq!(series.len(), 1);
+    let reference = match owner {
+        "val" => series[0].values().map(|value| value.number_reference()),
+        "xVal" => series[0].x_values().map(|value| value.number_reference()),
+        "yVal" => series[0].y_values().map(|value| value.number_reference()),
+        "bubbleSize" => series[0]
+            .bubble_size()
+            .map(|value| value.number_reference()),
+        _ => unreachable!(),
+    };
+    reference
+        .map(|reference| reference.formula().address_str())
+        .unwrap_or_default()
+}
+
+fn numeric_bytes(book: &Workbook) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    umya_spreadsheet::writer::xlsx::write_writer(book, &mut bytes).unwrap();
+    bytes
+}
+
+fn assert_numeric_sources_stay_raw(book: &Workbook, eager: bool) {
+    if !eager {
+        for name in ["Input", "Chart B"] {
+            assert!(book.sheet_by_name(name).is_err(), "{name} was materialized");
+        }
+    }
+}
+
+#[test]
+fn numeric_reference_owners_ignore_foreign_namespaces_without_promoting_descendants() {
+    let native = "<c:numRef><c:f>Input!$B$1:$B$3</c:f></c:numRef>";
+    let foreign = "<x:numRef><c:f>Injected!$A$1:$A$3</c:f></x:numRef>";
+    let nested = "<x:future><c:numRef><c:f>Injected!$A$1:$A$3</c:f></c:numRef></x:future>";
+    let alias = format!("<q:numRef xmlns:q=\"{NS_C}\"><q:f>Input!$B$1:$B$3</q:f></q:numRef>");
+    let default = format!("<numRef xmlns=\"{NS_C}\"><f>Input!$B$1:$B$3</f></numRef>");
+    for owner in ["val", "xVal", "yVal", "bubbleSize"] {
+        for (case, references, expected) in [
+            ("foreign only", foreign.to_owned(), ""),
+            (
+                "native then foreign",
+                format!("{native}{foreign}"),
+                "Input!$B$1:$B$3",
+            ),
+            (
+                "foreign then native",
+                format!("{foreign}{native}"),
+                "Input!$B$1:$B$3",
+            ),
+            ("foreign wrapper only", nested.to_owned(), ""),
+            (
+                "native then foreign wrapper",
+                format!("{native}{nested}"),
+                "Input!$B$1:$B$3",
+            ),
+            (
+                "foreign wrapper then native",
+                format!("{nested}{native}"),
+                "Input!$B$1:$B$3",
+            ),
+            ("native aliased prefix", alias.clone(), "Input!$B$1:$B$3"),
+            (
+                "native default namespace",
+                default.clone(),
+                "Input!$B$1:$B$3",
+            ),
+        ] {
+            let xml = numeric_document(owner, &references);
+            for eager in [true, false] {
+                for codec in ["native", "json", "bincode"] {
+                    let mut book = read_xml_mode(&xml, eager);
+                    book.try_read_sheet_by_name("Chart A").unwrap();
+                    assert_eq!(
+                        numeric_formula(&book, owner),
+                        expected,
+                        "{owner}: {case}, eager={eager}, {codec}"
+                    );
+                    assert_numeric_sources_stay_raw(&book, eager);
+                    let chart: Chart = match codec {
+                        "native" => numeric_chart(&book).clone(),
+                        "json" => serde_json::from_slice(
+                            &serde_json::to_vec(numeric_chart(&book)).unwrap(),
+                        )
+                        .unwrap(),
+                        "bincode" => {
+                            bincode::deserialize(&bincode::serialize(numeric_chart(&book)).unwrap())
+                                .unwrap()
+                        }
+                        _ => unreachable!(),
+                    };
+                    book.sheet_by_name_mut("Chart A")
+                        .unwrap()
+                        .chart_collection_mut()[0] = chart;
+                    assert_eq!(numeric_formula(&book, owner), expected);
+                    let exported = numeric_bytes(&book);
+                    let mut archive = zip::ZipArchive::new(Cursor::new(&exported)).unwrap();
+                    let mut xml = String::new();
+                    archive
+                        .by_name("xl/charts/chart1.xml")
+                        .unwrap()
+                        .read_to_string(&mut xml)
+                        .unwrap();
+                    assert!(!xml.contains("Injected!"), "{owner}: {case}, {codec}");
+                    assert!(
+                        !xml.contains("<x:numRef"),
+                        "foreign numeric owner must not export"
+                    );
+                    let reread =
+                        umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(exported), true)
+                            .unwrap();
+                    assert_eq!(numeric_formula(&reread, owner), expected);
+                    let injected = book.sheet_collection_no_check().len();
+                    book.new_sheet("Injected").unwrap();
+                    book.set_sheet_name(injected, "RenamedInjected").unwrap();
+                    assert_eq!(numeric_formula(&book, owner), expected);
+                    assert_numeric_sources_stay_raw(&book, eager);
+                    let renamed = numeric_bytes(&book);
+                    let reread =
+                        umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(renamed), true)
+                            .unwrap();
+                    assert_eq!(numeric_formula(&reread, owner), expected);
+                    let xml = serde_json::to_string(numeric_chart(&reread)).unwrap();
+                    assert!(!xml.contains("Injected!"));
+                    assert!(!xml.contains("RenamedInjected!"));
+                }
+            }
+        }
     }
 }

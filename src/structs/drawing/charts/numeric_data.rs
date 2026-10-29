@@ -353,6 +353,15 @@ impl NumericDataSource {
     }
 }
 
+pub(crate) fn is_native_numeric_reference(
+    child: &BytesStart<'_>,
+    session: Option<&crate::reader::xlsx::SourceCacheSession>,
+) -> bool {
+    session.is_none_or(|session| {
+        session.accepts_child_namespace(child, super::extension_registry::NS_C)
+    }) && local_name(child.name().into_inner()) == b"numRef"
+}
+
 /// Visit only direct children and stop at the exact owning `QName`. Unknown
 /// start elements are consumed as whole subtrees, never exposing grandchildren.
 /// A callback returns true when it consumed the child's end itself.

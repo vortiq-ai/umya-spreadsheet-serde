@@ -996,3 +996,193 @@ fn area_to_line_removes_only_what_area_stored_illegally() {
     assert_eq!(kept.index().val(), 1);
     assert!(kept.data_labels().unwrap().show_value().val());
 }
+
+fn assert_selected_pattern_shape(
+    shape: &umya_spreadsheet::drawing::charts::ShapeProperties,
+    geometry: bool,
+) {
+    let transform = shape.transform2d().expect("selected shape transform");
+    assert_eq!((transform.offset().x(), transform.offset().y()), (0, 0));
+    assert_eq!((transform.extents().cx(), transform.extents().cy()), (1, 1));
+    let fill = shape.pattern_fill().expect("selected shape pattern fill");
+    assert_eq!(fill.preset(), "pct5");
+    assert!(matches!(
+        fill.foreground_color().scheme_color().val(),
+        umya_spreadsheet::drawing::SchemeColorValues::Accent1
+    ));
+    assert!(matches!(
+        fill.background_color().scheme_color().val(),
+        umya_spreadsheet::drawing::SchemeColorValues::Accent2
+    ));
+    assert_eq!(
+        shape.geometry().map(|value| value.geometry()),
+        geometry.then_some("rect")
+    );
+}
+
+fn assert_selected_pattern_shape_xml(shape: &Element, geometry: bool) {
+    // ECMA-376 CT_ShapeProperties: xfrm?, EG_Geometry?, EG_FillProperties?.
+    let expected = if geometry {
+        vec!["a:xfrm", "a:prstGeom", "a:pattFill"]
+    } else {
+        vec!["a:xfrm", "a:pattFill"]
+    };
+    assert_eq!(shape.names(), expected, "selected shape order");
+    let transform = shape.child("a:xfrm");
+    assert_eq!(transform.names(), ["a:off", "a:ext"]);
+    assert_eq!(transform.child("a:off").attr("x"), "0");
+    assert_eq!(transform.child("a:off").attr("y"), "0");
+    assert_eq!(transform.child("a:ext").attr("cx"), "1");
+    assert_eq!(transform.child("a:ext").attr("cy"), "1");
+    if geometry {
+        assert_eq!(shape.child("a:prstGeom").attr("prst"), "rect");
+        assert_eq!(shape.child("a:prstGeom").names(), ["a:avLst"]);
+    }
+    let fill = shape.child("a:pattFill");
+    assert_eq!(fill.attr("prst"), "pct5");
+    assert_eq!(fill.names(), ["a:fgClr", "a:bgClr"]);
+    assert_eq!(
+        fill.child("a:fgClr").child("a:schemeClr").attr("val"),
+        "accent1"
+    );
+    assert_eq!(
+        fill.child("a:bgClr").child("a:schemeClr").attr("val"),
+        "accent2"
+    );
+}
+
+#[test]
+fn selected_point_and_label_shapes_write_transform_geometry_then_pattern_fill() {
+    let base = write(&base_book(&ChartType::LineChart, 1));
+    for geometry in [false, true] {
+        let preset = if geometry {
+            "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>"
+        } else {
+            ""
+        };
+        let shape = format!(
+            "<c:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"1\" \
+             cy=\"1\"/></a:xfrm>{preset}<a:pattFill prst=\"pct5\"><a:fgClr><a:schemeClr \
+             val=\"accent1\"/></a:fgClr><a:bgClr><a:schemeClr \
+             val=\"accent2\"/></a:bgClr></a:pattFill></c:spPr>"
+        );
+        let series = format!(
+            "<c:idx val=\"7\"/><c:order val=\"0\"/><c:dPt><c:idx \
+             val=\"1\"/>{shape}</c:dPt><c:dLbls><c:dLbl><c:idx val=\"2\"/>{shape}<c:showVal \
+             val=\"1\"/></c:dLbl></c:dLbls>{CAT}{VAL}"
+        );
+        let bytes = with_chart_part(&base, |xml| replace_first_series(xml, &series));
+        let input_xml = chart_part(&bytes);
+        let input_tree = tree(&input_xml);
+        let input_series = input_tree
+            .child("c:chart")
+            .child("c:plotArea")
+            .child("c:lineChart")
+            .child("c:ser");
+        assert_selected_pattern_shape_xml(input_series.child("c:dPt").child("c:spPr"), geometry);
+        assert_selected_pattern_shape_xml(
+            input_series
+                .child("c:dLbls")
+                .child("c:dLbl")
+                .child("c:spPr"),
+            geometry,
+        );
+        for eager in [true, false] {
+            let mut book =
+                umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(&bytes), eager).unwrap();
+            book.try_read_sheet(0).unwrap();
+            let before = bincode::serialize(chart_of(&book)).unwrap();
+            for (codec, chart) in [
+                ("native", chart_of(&book).clone()),
+                ("json", through_json(chart_of(&book))),
+                ("bincode", through_bincode(chart_of(&book))),
+            ] {
+                let owner = &chart
+                    .chart_space()
+                    .chart()
+                    .plot_area()
+                    .chart_groups()
+                    .next()
+                    .unwrap()
+                    .series()
+                    .area_chart_series()[0];
+                assert_eq!(owner.data_points().len(), 1);
+                assert_eq!(owner.data_points()[0].index().val(), Some(1));
+                assert_selected_pattern_shape(
+                    owner.data_points()[0].shape_properties().unwrap(),
+                    geometry,
+                );
+                let labels = owner.data_labels().unwrap().labels();
+                assert_eq!(labels.len(), 1);
+                assert_eq!(labels[0].index().val(), 2);
+                assert_selected_pattern_shape(labels[0].shape_properties().unwrap(), geometry);
+                let mut exported = book.clone();
+                exported.sheet_mut(0).unwrap().chart_collection_mut()[0] = chart;
+                let output_bytes = write(&exported);
+                let output_xml = chart_part(&output_bytes);
+                // Optional exact chart-part witnesses for independent schema
+                // validation; normal test runs have no filesystem side effects.
+                if let Some(directory) = std::env::var_os("UMYA_CHART_SHAPE_ORDER_CAPTURE_DIR") {
+                    let directory = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    std::fs::write(
+                        directory.join(format!("input-geometry-{geometry}.xml")),
+                        &input_xml,
+                    )
+                    .unwrap();
+                    std::fs::write(
+                        directory.join(format!(
+                            "output-geometry-{geometry}-eager-{eager}-{codec}.xml"
+                        )),
+                        &output_xml,
+                    )
+                    .unwrap();
+                }
+                let output_tree = tree(&output_xml);
+                let output_series = output_tree
+                    .child("c:chart")
+                    .child("c:plotArea")
+                    .child("c:lineChart")
+                    .child("c:ser");
+                assert_selected_pattern_shape_xml(
+                    output_series.child("c:dPt").child("c:spPr"),
+                    geometry,
+                );
+                assert_selected_pattern_shape_xml(
+                    output_series
+                        .child("c:dLbls")
+                        .child("c:dLbl")
+                        .child("c:spPr"),
+                    geometry,
+                );
+                let reloaded = read(&output_bytes);
+                let owner = &chart_of(&reloaded)
+                    .chart_space()
+                    .chart()
+                    .plot_area()
+                    .chart_groups()
+                    .next()
+                    .unwrap()
+                    .series()
+                    .area_chart_series()[0];
+                assert_selected_pattern_shape(
+                    owner.data_points()[0].shape_properties().unwrap(),
+                    geometry,
+                );
+                assert_selected_pattern_shape(
+                    owner.data_labels().unwrap().labels()[0]
+                        .shape_properties()
+                        .unwrap(),
+                    geometry,
+                );
+                let second = &written_series(&reloaded)[0];
+                assert_selected_pattern_shape_xml(second.child("c:dPt").child("c:spPr"), geometry);
+                assert_selected_pattern_shape_xml(
+                    second.child("c:dLbls").child("c:dLbl").child("c:spPr"),
+                    geometry,
+                );
+            }
+            assert_eq!(bincode::serialize(chart_of(&book)).unwrap(), before);
+        }
+    }
+}

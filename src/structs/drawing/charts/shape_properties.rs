@@ -451,11 +451,6 @@ impl ShapeProperties {
     pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
         write_start_tag(writer, name, vec![], false);
 
-        // a:pattFill
-        if let Some(v) = &self.pattern_fill {
-            v.write_to(writer);
-        }
-
         // a:xfrm
         if let Some(v) = &self.transform2d {
             v.write_to(writer);
@@ -463,6 +458,11 @@ impl ShapeProperties {
 
         // a:prstGeom
         if let Some(v) = &self.preset_geometry {
+            v.write_to(writer);
+        }
+
+        // a:pattFill
+        if let Some(v) = &self.pattern_fill {
             v.write_to(writer);
         }
 

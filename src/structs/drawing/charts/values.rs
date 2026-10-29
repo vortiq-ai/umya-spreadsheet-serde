@@ -9,7 +9,6 @@ use quick_xml::{
 // c:val
 use super::NumberReference;
 use crate::{
-    reader::driver::local_name,
     structs::Workbook,
     writer::driver::{
         write_end_tag,
@@ -74,7 +73,7 @@ impl Values {
     ) {
         let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let complete = super::numeric_data::children(reader, e, false, |reader, child, empty| {
-            if local_name(child.name().into_inner()) != b"numRef" {
+            if !super::numeric_data::is_native_numeric_reference(child, session) {
                 return false;
             }
             if !empty {
