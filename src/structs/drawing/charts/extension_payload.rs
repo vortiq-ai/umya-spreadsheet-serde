@@ -38,6 +38,7 @@ use super::{
     },
     numeric_data::{
         children,
+        element_children,
         read_text,
     },
 };
@@ -118,29 +119,6 @@ pub struct ExtensionPayload {
     invalid:              bool,
 }
 impl ExtensionPayload {
-    pub(crate) fn into_terminal(self) -> Result<super::TerminalReference, String> {
-        let (kind, sequence) = match self.value {
-            ExtensionPayloadValue::FullReference(value) => {
-                (super::TerminalReferenceKind::Full, value)
-            }
-            ExtensionPayloadValue::LevelReference(value) => {
-                (super::TerminalReferenceKind::Level, value)
-            }
-            ExtensionPayloadValue::FormulaReference(value) => {
-                (super::TerminalReferenceKind::Formula, value)
-            }
-            _ => return Err("nonterminal payload cannot enter opaque reference tape".into()),
-        };
-        Ok(super::TerminalReference {
-            kind,
-            sequence,
-            preferred_prefix: self.preferred_prefix,
-            namespaces: self.namespaces,
-            attributes: self.attributes,
-            invalid: self.invalid,
-        })
-    }
-
     pub(crate) fn from_terminal(value: &super::TerminalReference) -> Self {
         let payload = match value.kind {
             super::TerminalReferenceKind::Full => {
@@ -247,7 +225,7 @@ impl ExtensionPayload {
                 "fullRef" | "levelRef" | "formulaRef" => {
                     let mut v = ReferenceSequence::default();
                     let mut count = 0;
-                    invalid = !children(reader, e, empty, |reader, child, empty| {
+                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
                         let Ok(child_scope) = scope.child(child) else {
                             invalid = true;
                             return false;
@@ -279,7 +257,7 @@ impl ExtensionPayload {
                 "filteredSeriesTitle" => {
                     let mut v = ChartText::default();
                     let mut count = 0;
-                    invalid = !children(reader, e, empty, |reader, child, empty| {
+                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
                         if !session.accepts_child_namespace(child, NS_C15)
                             || local_name(child.name().into_inner()) != b"tx"
                         {
@@ -301,7 +279,7 @@ impl ExtensionPayload {
                 "filteredCategoryTitle" => {
                     let mut v = AxisDataSource::default();
                     let mut count = 0;
-                    invalid = !children(reader, e, empty, |reader, child, empty| {
+                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
                         if !session.accepts_child_namespace(child, NS_C15)
                             || local_name(child.name().into_inner()) != b"cat"
                         {
@@ -335,7 +313,7 @@ impl ExtensionPayload {
                     };
                     let mut series = AreaChartSeries::default();
                     let mut count = 0;
-                    invalid = !children(reader, e, empty, |reader, child, empty| {
+                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
                         if !session.accepts_child_namespace(child, NS_C15)
                             || local_name(child.name().into_inner()) != b"ser"
                         {

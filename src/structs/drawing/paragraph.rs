@@ -146,18 +146,18 @@ impl Paragraph {
         &mut self.paragraph_properties
     }
 
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
-        self.paragraph_properties.strip_browser_parts();
+        self.paragraph_properties.strip_export_parts();
         for run in &mut self.run {
-            run.strip_browser_parts();
+            run.strip_export_parts();
         }
         if let Some(properties) = &mut self.end_para_run_properties {
-            properties.strip_browser_parts();
+            properties.strip_export_parts();
         }
     }
 
-    pub(crate) fn browser_structure_matches(&self, previous: &Self) -> bool {
+    pub(crate) fn projected_structure_matches(&self, previous: &Self) -> bool {
         self.run.len() == previous.run.len()
             && self
                 .run
@@ -166,8 +166,8 @@ impl Paragraph {
                 .all(|(current, previous)| current.text() == previous.text())
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
-        if !self.browser_structure_matches(previous) {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        if !self.projected_structure_matches(previous) {
             return 0;
         }
         let mut restored = 0;
@@ -175,10 +175,10 @@ impl Paragraph {
             if let Some(parts) = &previous.parts {
                 let mut parts = parts.clone();
                 // Omitted imported pPr cannot hide a current formatting edit.
-                if self.paragraph_properties.browser_parts_supplied()
+                if self.paragraph_properties.export_parts_supplied()
                     || !self
                         .paragraph_properties
-                        .browser_values_match(&previous.paragraph_properties)
+                        .projected_values_match(&previous.paragraph_properties)
                 {
                     parts.properties_present = true;
                 }
@@ -186,8 +186,8 @@ impl Paragraph {
                 restored += 1;
             }
         } else if let (Some(current), Some(previous)) = (&mut self.parts, &previous.parts) {
-            // A property-only browser mutation materializes presence metadata,
-            // not a replacement of the server-owned positioned-field list.
+            // A property-only edit materializes presence metadata, not a
+            // replacement of the authoritative positioned-field list.
             // Explicit field removal is already reflected in `previous`.
             if current.fields.is_empty() && !previous.fields.is_empty() {
                 current.fields.clone_from(&previous.fields);
@@ -196,15 +196,15 @@ impl Paragraph {
         }
         restored += self
             .paragraph_properties
-            .restore_browser_parts(&previous.paragraph_properties);
+            .restore_export_parts(&previous.paragraph_properties);
         for (current, previous) in self.run.iter_mut().zip(&previous.run) {
-            restored += current.restore_browser_parts(previous);
+            restored += current.restore_export_parts(previous);
         }
         if let (Some(current), Some(previous)) = (
             &mut self.end_para_run_properties,
             &previous.end_para_run_properties,
         ) {
-            restored += current.restore_browser_parts(previous);
+            restored += current.restore_export_parts(previous);
         }
         restored
     }

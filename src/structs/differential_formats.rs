@@ -65,11 +65,13 @@ impl DifferentialFormats {
     /// `Option::unwrap()` on a `None` value. A missing differential format
     /// means "no differential formatting", which the default already expresses.
     pub(crate) fn style(&self, id: usize) -> Style {
+        self.find_style(id).unwrap_or_default()
+    }
+
+    pub(crate) fn find_style(&self, id: usize) -> Option<Style> {
         self.differential_format
             .get(id)
-            .cloned()
-            .unwrap_or_default()
-            .style()
+            .map(|differential_format| differential_format.clone().style())
     }
 
     #[inline]
@@ -175,13 +177,7 @@ mod tests {
         }
     }
 
-    /// A self-closing `<dxf/>` still occupies a dxfId slot.
-    ///
-    /// Regression: the reader handled only `Event::Start`, so every `<dxf/>`
-    /// was dropped. A real customer workbook had 7 dxfs of which 6 were
-    /// self-closing; only 1 was parsed, and a `dxfId="6"` reference then made
-    /// `style()` index past the end and panic, failing the whole import with
-    /// "Internal server error".
+    /// Empty `<dxf/>` entries must retain their slots so dxfId stays valid.
     #[test]
     fn self_closing_dxf_keeps_its_index() {
         // exactly the shape from that workbook: 6 empty, 1 with a font colour
@@ -206,8 +202,16 @@ mod tests {
             Style::default(),
             "dxf[4] carries the font colour, so it must not be the default"
         );
-        assert_eq!(obj.style(6), Style::default(), "dxf[6] is <dxf/>, so default");
-        assert_eq!(obj.style(0), Style::default(), "dxf[0] is <dxf/>, so default");
+        assert_eq!(
+            obj.style(6),
+            Style::default(),
+            "dxf[6] is <dxf/>, so default"
+        );
+        assert_eq!(
+            obj.style(0),
+            Style::default(),
+            "dxf[0] is <dxf/>, so default"
+        );
     }
 
     /// An out-of-range dxfId degrades to the default style instead of

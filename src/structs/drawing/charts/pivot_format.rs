@@ -45,6 +45,26 @@ pub struct DrawingChartParts {
     duplicate_containers: Vec<DrawingChartParts>,
 }
 impl DrawingChartParts {
+    pub(crate) fn discard_untrusted_pivots(&mut self, report: &mut super::RestoreReport) {
+        let count = self.pivot_formats.as_ref().map_or(0, Vec::len);
+        report.removed_incompatible_parts += count + self.duplicate_containers.len();
+        for occurrence in 0..count {
+            report.diagnostics.push(format!(
+                "removed incoming pivot occurrence:{occurrence} from chart/pivotFmts without an \
+                 authoritative collection"
+            ));
+        }
+        for occurrence in 0..self.duplicate_containers.len() {
+            report.diagnostics.push(format!(
+                "removed incoming duplicate pivot container occurrence:{occurrence} from \
+                 chart/pivotFmts without an authoritative collection"
+            ));
+        }
+        self.pivot_formats = None;
+        self.duplicate_containers.clear();
+        self.invalid = false;
+    }
+
     pub(crate) fn record_pivot_recreation(&self, report: &mut super::RestoreReport) {
         let pivots = self.pivot_formats.as_deref().unwrap_or_default();
         let labels = pivots
@@ -55,7 +75,7 @@ impl DrawingChartParts {
         report.restored_labels += labels;
     }
 
-    pub(crate) fn restore_browser_parts(
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -64,6 +84,12 @@ impl DrawingChartParts {
             HashMap,
             HashSet,
         };
+        if previous.pivot_formats.as_ref().is_none_or(Vec::is_empty) {
+            let missing_before = self.pivot_formats.is_none();
+            self.discard_untrusted_pivots(report);
+            *self = previous.clone();
+            return usize::from(missing_before && previous.pivot_formats.is_some());
+        }
         // With no supplied owners there is no pair to make: restore the
         // whole hidden source collection, including ambiguous/invalid state.
         if self.pivot_formats.as_ref().is_some_and(Vec::is_empty) {
@@ -102,7 +128,7 @@ impl DrawingChartParts {
             .clone_from(&previous.duplicate_containers);
         let ambiguous_container = previous.invalid || !previous.duplicate_containers.is_empty();
         let mut matched_old = HashSet::new();
-        for pivot in current.iter_mut() {
+        for (position, pivot) in current.iter_mut().enumerate() {
             let matched = pivot.index.explicit_value().and_then(|index| {
                 if current_counts.get(&index) != Some(&1)
                     || !pivot.index_is_present()
@@ -117,12 +143,14 @@ impl DrawingChartParts {
             });
             if let Some(old) = matched {
                 matched_old.insert(old.index().val());
-                pivot.restore_browser_parts(old, report);
+                pivot.restore_export_parts(old, report);
             } else {
+                pivot.discard_untrusted_hidden_owners(position, report);
                 report.incompatible_owners += 1;
-                report
-                    .diagnostics
-                    .push("unmatched or ambiguous explicit pivot index".into());
+                report.diagnostics.push(format!(
+                    "unmatched or ambiguous explicit pivot index at \
+                     chart/pivotFmts/pivot:{position}"
+                ));
             }
         }
         // A supplied partial/empty hidden collection is omission, not a
@@ -160,7 +188,7 @@ impl DrawingChartParts {
         (self.pivot_formats.as_deref(), &self.duplicate_containers)
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (Option<&mut [PivotFormat]>, &mut [DrawingChartParts]) {
         self.reference_role_parts_mut()
@@ -299,7 +327,7 @@ pub struct PivotFormat {
 }
 
 #[cfg(all(test, feature = "serde"))]
-mod phase8_pivot_wire_tests {
+mod pivot_serialization_tests {
     use super::*;
     #[test]
     fn native_index_diagnostics_keep_the_exact_bool_and_option_wire() {
@@ -345,7 +373,49 @@ mod phase8_pivot_wire_tests {
     }
 }
 impl PivotFormat {
-    fn restore_browser_parts(&mut self, previous: &Self, report: &mut super::RestoreReport) {
+    fn discard_untrusted_hidden_owners(
+        &mut self,
+        position: usize,
+        report: &mut super::RestoreReport,
+    ) {
+        // Preserve supplied index placeholders and editable text. Hidden
+        // children are not admissible without a unique authoritative owner.
+        for (kind, count) in [
+            (
+                "shape",
+                usize::from(self.shape_properties.take().is_some()) + self.extra_shapes.len(),
+            ),
+            (
+                "marker",
+                usize::from(self.marker.take().is_some()) + self.extra_markers.len(),
+            ),
+            (
+                "label",
+                usize::from(self.label.take().is_some()) + self.extra_labels.len(),
+            ),
+            (
+                "extension",
+                usize::from(self.extensions.take().is_some()) + self.extra_extensions.len(),
+            ),
+        ] {
+            report.removed_incompatible_parts += count;
+            for occurrence in 0..count {
+                report.diagnostics.push(format!(
+                    "removed incoming pivot {kind} occurrence:{occurrence} from \
+                     chart/pivotFmts/pivot:{position} without an authoritative owner"
+                ));
+            }
+        }
+        self.extra_shapes.clear();
+        self.extra_markers.clear();
+        self.extra_labels.clear();
+        self.extra_extensions.clear();
+    }
+
+    fn restore_export_parts(&mut self, previous: &Self, report: &mut super::RestoreReport) {
+        let incoming_shape = self.shape_properties.is_some();
+        let incoming_marker = self.marker.is_some();
+        let incoming_label = self.label.is_some();
         let shape = self.shape_properties.take();
         let text = self.text_properties.take();
         let marker = self.marker.take();
@@ -374,8 +444,8 @@ impl PivotFormat {
         }
         report.restored_owners += 1;
         if let (Some(current), Some(old)) = (&mut self.text_properties, &previous.text_properties) {
-            if current.browser_structure_matches(old) {
-                report.restored_owners += current.restore_browser_parts(old);
+            if current.projected_structure_matches(old) {
+                report.restored_owners += current.restore_export_parts(old);
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -385,14 +455,26 @@ impl PivotFormat {
         }
         let current = self.reference_role_parts_mut();
         let old = previous.reference_role_parts();
-        if let (Some(shape), Some(old)) = (current.shape, old.shape) {
-            super::chart_server_parts::restore_shape(shape, old, report);
+        if let (true, Some(shape)) = (incoming_shape, current.shape) {
+            if let Some(old) = old.shape {
+                super::chart_metadata_restoration::restore_shape(shape, old, report);
+            } else {
+                super::chart_metadata_restoration::discard_shape_extensions(shape, report);
+            }
         }
-        if let (Some(marker), Some(old)) = (current.marker, old.marker) {
-            super::chart_server_parts::restore_marker(marker, old, report);
+        if let (true, Some(marker)) = (incoming_marker, current.marker) {
+            if let Some(old) = old.marker {
+                super::chart_metadata_restoration::restore_marker(marker, old, report);
+            } else {
+                super::chart_metadata_restoration::discard_marker_extensions(marker, report);
+            }
         }
-        if let (Some(label), Some(old)) = (current.label, old.label) {
-            label.restore_browser_parts(old, report);
+        if let (true, Some(label)) = (incoming_label, current.label) {
+            if let Some(old) = old.label {
+                label.restore_export_parts(old, report);
+            } else {
+                label.discard_extensions(report);
+            }
         }
     }
 
@@ -409,7 +491,7 @@ impl PivotFormat {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::PivotPartsMut<'_> {
         self.reference_role_parts_mut()

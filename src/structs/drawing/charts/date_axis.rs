@@ -65,7 +65,7 @@ pub struct DateAxis {
 }
 
 impl DateAxis {
-    pub(crate) fn restore_browser_parts(
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -73,12 +73,12 @@ impl DateAxis {
         let mut restored = 0;
         restored += self
             .numbering_format
-            .restore_browser_parts(&previous.numbering_format);
+            .restore_export_parts(&previous.numbering_format);
         if let (Some(current), Some(previous)) =
             (&mut self.text_properties, &previous.text_properties)
         {
-            if current.browser_structure_matches(previous) {
-                restored += current.restore_browser_parts(previous);
+            if current.projected_structure_matches(previous) {
+                restored += current.restore_export_parts(previous);
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -99,12 +99,12 @@ impl DateAxis {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::AxisPartsMut<'_> {
-        self.numbering_format.strip_browser_parts();
+        self.numbering_format.strip_export_parts();
         if let Some(text) = &mut self.text_properties {
-            text.strip_browser_parts();
+            text.strip_export_parts();
         }
         self.reference_role_parts_mut()
     }

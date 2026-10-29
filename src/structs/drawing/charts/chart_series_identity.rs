@@ -1,4 +1,4 @@
-//! Non-positional correspondence for server-part restoration.
+//! Match chart series by identity, never collection position.
 //!
 //! Positions locate an owner after matching; they are never identity keys.
 use std::{
@@ -106,7 +106,7 @@ fn identities(plot: &PlotArea) -> Vec<SeriesIdentity> {
     let mut result = Vec::new();
     for (group, owner) in plot.chart_groups().enumerate() {
         // Reuse the shared group-owner projection. Hidden filtered-series
-        // collections remain server-owned parts, not replacement series.
+        // collections remain omitted metadata, not replacement series.
         for (series, owner) in owner.into_reference_role_parts().series.iter().enumerate() {
             result.push(SeriesIdentity {
                 position: SeriesPosition { group, series },

@@ -56,12 +56,15 @@ pub fn replace_chart_part(bytes: &[u8], chart_xml: &str) -> Vec<u8> {
         let mut entry = input.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == "xl/charts/chart1.xml" {
+        if entry.name().unwrap() == "xl/charts/chart1.xml" {
             data = chart_xml.as_bytes().to_vec();
             replaced = true;
         }
         output
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                entry.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&data).unwrap();
     }

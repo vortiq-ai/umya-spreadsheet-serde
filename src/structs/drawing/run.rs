@@ -40,12 +40,12 @@ impl Run {
         self.run_properties = value;
     }
 
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
-        self.run_properties.strip_browser_parts();
+        self.run_properties.strip_export_parts();
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         if self.text != previous.text {
             return 0;
         }
@@ -54,10 +54,10 @@ impl Run {
             if let Some(parts) = &previous.parts {
                 let mut parts = parts.clone();
                 // Omitted imported rPr cannot hide a current formatting edit.
-                if self.run_properties.browser_parts_supplied()
+                if self.run_properties.export_parts_supplied()
                     || !self
                         .run_properties
-                        .browser_values_match(&previous.run_properties)
+                        .projected_values_match(&previous.run_properties)
                 {
                     parts.properties_present = true;
                 }
@@ -68,7 +68,7 @@ impl Run {
         restored
             + self
                 .run_properties
-                .restore_browser_parts(&previous.run_properties)
+                .restore_export_parts(&previous.run_properties)
     }
 
     #[inline]

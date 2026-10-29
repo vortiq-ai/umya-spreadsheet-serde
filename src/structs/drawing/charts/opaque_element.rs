@@ -241,24 +241,29 @@ impl OpaqueElement {
                     let scope = &frames.last().expect("root frame exists").0;
                     let child_scope = scope.child(child)?;
                     let name = child_scope.resolve(child.name().into_inner(), false)?;
-                    if let Some(session) = session.filter(|_| {
+                    if session.is_some_and(|_| {
                         name.namespace_uri == super::extension_registry::NS_C15
                             && matches!(
                                 name.local_name.as_str(),
                                 "fullRef" | "levelRef" | "formulaRef"
                             )
                     }) {
-                        let value = super::ExtensionPayload::read(
-                            reader,
-                            child,
-                            child_empty,
-                            scope,
-                            session,
-                        )?
-                        .into_terminal()?;
-                        result
-                            .children
-                            .push(OpaqueToken::Reference(Box::new(value)));
+                        let candidate = Self::read_inner(reader, child, child_empty, scope, None)?;
+                        if let Some(reference) = candidate.terminal_reference() {
+                            result
+                                .children
+                                .push(OpaqueToken::Reference(Box::new(reference)));
+                        } else {
+                            result
+                                .children
+                                .push(OpaqueToken::Start(Box::new(OpaqueStart {
+                                    name:       candidate.name,
+                                    namespaces: candidate.namespaces,
+                                    attributes: candidate.attributes,
+                                })));
+                            result.children.extend(candidate.children);
+                            result.children.push(OpaqueToken::End);
+                        }
                     } else {
                         let (start, child_scope) = read_start(child, scope)?;
                         result.children.push(OpaqueToken::Start(Box::new(start)));
@@ -323,6 +328,44 @@ impl OpaqueElement {
         } else {
             self.children.push(OpaqueToken::Text(text));
         }
+    }
+
+    /// A terminal cannot retain metadata or mixed content on its `sqref` child.
+    /// Leave every other shape on the opaque tape, without a typed shadow.
+    fn terminal_reference(&self) -> Option<TerminalReference> {
+        let [
+            OpaqueToken::Start(start),
+            OpaqueToken::Text(text),
+            OpaqueToken::End,
+        ] = self.children.as_slice()
+        else {
+            return None;
+        };
+        if !start.name.is(super::extension_registry::NS_C15, "sqref")
+            || !start.namespaces.is_empty()
+            || !start.attributes.is_empty()
+        {
+            return None;
+        }
+        let mut sequence = super::ReferenceSequence::default();
+        sequence.set_text(text);
+        if !sequence.is_valid() {
+            return None;
+        }
+        let kind = match self.name.local_name.as_str() {
+            "fullRef" => TerminalReferenceKind::Full,
+            "levelRef" => TerminalReferenceKind::Level,
+            "formulaRef" => TerminalReferenceKind::Formula,
+            _ => return None,
+        };
+        Some(TerminalReference {
+            kind,
+            preferred_prefix: self.name.preferred_prefix.clone(),
+            namespaces: self.namespaces.clone(),
+            attributes: self.attributes.clone(),
+            sequence: Box::new(sequence),
+            invalid: false,
+        })
     }
 
     pub(crate) fn write_to(

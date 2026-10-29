@@ -205,11 +205,14 @@ fn rewrite_part(bytes: &[u8], name: &str, edit: impl FnOnce(String) -> String) -
         let mut entry = source.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == name {
+        if entry.name().unwrap() == name {
             data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
         }
         output
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                entry.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         std::io::Write::write_all(&mut output, &data).unwrap();
     }
@@ -225,11 +228,12 @@ fn rename_part(bytes: &[u8], name: &str, renamed: &str) -> Vec<u8> {
         let mut entry = source.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        let output_name = if entry.name() == name {
+        let entry_name = entry.name().unwrap().into_owned();
+        let output_name = if entry_name == name {
             renamed_part = true;
             renamed
         } else {
-            entry.name()
+            &entry_name
         };
         output
             .start_file(output_name, zip::write::SimpleFileOptions::default())
@@ -2343,7 +2347,7 @@ fn quarter_book() -> (Workbook, String, String) {
     (book, formula, labels)
 }
 
-/// Writes `chart` on a fresh sheet of numbers, as the server would.
+/// Writes `chart` on a fresh sheet of numbers.
 fn export_chart(chart: &Chart) -> String {
     let mut book = number_workbook(1, 12);
     book.sheet_mut(0).unwrap().add_chart(chart.clone());
@@ -2368,12 +2372,12 @@ fn strip_removes_source_caches() {
 }
 
 #[test]
-fn adopt_keeps_server_source_caches() {
+fn adoption_keeps_trusted_source_caches() {
     let (book, formula, labels) = quarter_book();
     let stored = &book.sheet(0).unwrap().chart_collection()[0];
 
     // A client gets the chart without caches and sends it back changed
-    // elsewhere: the server's labels come back.
+    // elsewhere: the trusted labels come back.
     let mut client = stored.clone();
     client.strip_source_caches();
     client.adopt_source_caches(stored);

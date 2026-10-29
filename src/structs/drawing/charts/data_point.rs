@@ -54,7 +54,7 @@ impl DataPoint {
         )
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (
         Option<&mut Marker>,

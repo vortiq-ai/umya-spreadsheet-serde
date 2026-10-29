@@ -37,13 +37,11 @@ pub struct LayoutParts {
 }
 
 impl Layout {
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
-        if self.parts.is_none() && previous.parts.is_some() {
-            self.parts.clone_from(&previous.parts);
-            1
-        } else {
-            0
-        }
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.parts,
+            previous.parts.as_ref(),
+        )
     }
 
     // Structural field partition only: no allocation or presence changes.
@@ -54,7 +52,7 @@ impl Layout {
         )
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (Option<&mut ManualLayout>, Option<&mut ExtensionList>) {
         self.parts = None;

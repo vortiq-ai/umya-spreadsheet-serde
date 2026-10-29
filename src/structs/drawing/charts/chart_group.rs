@@ -236,66 +236,66 @@ impl<'a> ChartGroupRef<'a> {
 }
 
 impl<'a> ChartGroupMut<'a> {
-    pub(crate) fn restore_browser_parts(&mut self, previous: ChartGroupRef<'_>) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: ChartGroupRef<'_>) -> usize {
         match (self, previous) {
             (Self::LineChart(current), ChartGroupRef::LineChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::Line3DChart(current), ChartGroupRef::Line3DChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::PieChart(current), ChartGroupRef::PieChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::Pie3DChart(current), ChartGroupRef::Pie3DChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::DoughnutChart(current), ChartGroupRef::DoughnutChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::ScatterChart(current), ChartGroupRef::ScatterChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::BarChart(current), ChartGroupRef::BarChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::Bar3DChart(current), ChartGroupRef::Bar3DChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::RadarChart(current), ChartGroupRef::RadarChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::BubbleChart(current), ChartGroupRef::BubbleChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::AreaChart(current), ChartGroupRef::AreaChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::Area3DChart(current), ChartGroupRef::Area3DChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             (Self::OfPieChart(current), ChartGroupRef::OfPieChart(previous)) => {
-                current.restore_browser_parts(previous)
+                current.restore_export_parts(previous)
             }
             _ => 0,
         }
     }
 
-    pub(crate) fn into_browser_role_parts(self) -> super::chart_reference_roles::GroupPartsMut<'a> {
+    pub(crate) fn into_projection_parts(self) -> super::chart_reference_roles::GroupPartsMut<'a> {
         let (series, labels, extensions) = match self {
-            Self::LineChart(owner) => owner.browser_group_parts_mut(),
-            Self::Line3DChart(owner) => owner.browser_group_parts_mut(),
-            Self::PieChart(owner) => owner.browser_group_parts_mut(),
-            Self::Pie3DChart(owner) => owner.browser_group_parts_mut(),
-            Self::DoughnutChart(owner) => owner.browser_group_parts_mut(),
-            Self::ScatterChart(owner) => owner.browser_group_parts_mut(),
-            Self::BarChart(owner) => owner.browser_group_parts_mut(),
-            Self::Bar3DChart(owner) => owner.browser_group_parts_mut(),
-            Self::RadarChart(owner) => owner.browser_group_parts_mut(),
-            Self::BubbleChart(owner) => owner.browser_group_parts_mut(),
-            Self::AreaChart(owner) => owner.browser_group_parts_mut(),
-            Self::Area3DChart(owner) => owner.browser_group_parts_mut(),
-            Self::OfPieChart(owner) => owner.browser_group_parts_mut(),
+            Self::LineChart(owner) => owner.projection_group_parts_mut(),
+            Self::Line3DChart(owner) => owner.projection_group_parts_mut(),
+            Self::PieChart(owner) => owner.projection_group_parts_mut(),
+            Self::Pie3DChart(owner) => owner.projection_group_parts_mut(),
+            Self::DoughnutChart(owner) => owner.projection_group_parts_mut(),
+            Self::ScatterChart(owner) => owner.projection_group_parts_mut(),
+            Self::BarChart(owner) => owner.projection_group_parts_mut(),
+            Self::Bar3DChart(owner) => owner.projection_group_parts_mut(),
+            Self::RadarChart(owner) => owner.projection_group_parts_mut(),
+            Self::BubbleChart(owner) => owner.projection_group_parts_mut(),
+            Self::AreaChart(owner) => owner.projection_group_parts_mut(),
+            Self::Area3DChart(owner) => owner.projection_group_parts_mut(),
+            Self::OfPieChart(owner) => owner.projection_group_parts_mut(),
         };
         super::chart_reference_roles::GroupPartsMut {
             series: series.area_chart_series_mut(),

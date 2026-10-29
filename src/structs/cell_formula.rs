@@ -59,6 +59,8 @@ pub struct CellFormula {
     shared_index:   UInt32Value,
     text:           StringValue,
     text_view:      StringValue,
+    #[cfg_attr(feature = "serde", serde(default))]
+    calculate_cell: BooleanValue,
 }
 impl CellFormula {
     #[inline]
@@ -77,6 +79,18 @@ impl CellFormula {
     #[inline]
     pub fn set_bx(&mut self, value: bool) -> &mut Self {
         self.bx.set_value(value);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn calculate_cell(&self) -> bool {
+        self.calculate_cell.value()
+    }
+
+    #[inline]
+    pub fn set_calculate_cell(&mut self, value: bool) -> &mut Self {
+        self.calculate_cell.set_value(value);
         self
     }
 
@@ -355,6 +369,7 @@ impl CellFormula {
         formula_shared_list: &mut HashMap<u32, (String, Vec<FormulaToken>)>,
     ) {
         set_string_from_xml!(self, e, bx, "bx");
+        set_string_from_xml!(self, e, calculate_cell, "ca");
         set_string_from_xml!(self, e, data_table_2d, "dt2D");
         set_string_from_xml!(self, e, data_table_row, "dtr");
         set_string_from_xml!(self, e, formula_type, "t");
@@ -433,6 +448,11 @@ impl CellFormula {
             attributes.push(("bx", bx_str).into());
         }
 
+        let calculate_cell_str = self.calculate_cell.value_string();
+        if self.calculate_cell.has_value() {
+            attributes.push(("ca", calculate_cell_str).into());
+        }
+
         let data_table_2d_str = self.data_table_2d.value_string();
         if self.data_table_2d.has_value() {
             attributes.push(("dt2D", data_table_2d_str).into());
@@ -477,7 +497,14 @@ impl CellFormula {
         #[allow(unused_assignments)]
         let mut reference_str = String::new();
         let mut wrote_ref = false;
-        if let Some((start_col, end_col)) = formula_shared_list.get(&self.shared_index.value()) {
+        if self.formula_type.value() == &CellFormulaValues::DataTable {
+            if self.reference.has_value() {
+                attributes.push(("ref", self.reference.value_str()).into());
+                wrote_ref = true;
+            }
+        } else if let Some((start_col, end_col)) =
+            formula_shared_list.get(&self.shared_index.value())
+        {
             if coordinate == start_col {
                 reference_str = match end_col {
                     Some(v) => {

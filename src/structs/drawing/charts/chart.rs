@@ -64,7 +64,7 @@ pub struct Chart {
 }
 
 #[cfg(all(test, feature = "serde"))]
-mod phase8_chart_wire_tests {
+mod pivot_serialization_tests {
     use super::*;
     #[test]
     fn chart_prefix_and_pivot_owner_tail_are_exact() {
@@ -127,7 +127,7 @@ impl Chart {
     pub const LANG_EN_GB: &'static str = "en_GB";
     pub const LANG_JA_JP: &'static str = "ja-JP";
 
-    pub(crate) fn restore_browser_parts(
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -138,7 +138,12 @@ impl Chart {
                 previous.record_pivot_recreation(report);
                 1
             }
-            (Some(current), Some(previous)) => current.restore_browser_parts(previous, report),
+            (Some(current), Some(previous)) => current.restore_export_parts(previous, report),
+            (Some(current), None) => {
+                current.discard_untrusted_pivots(report);
+                self.parts = None;
+                0
+            }
             _ => 0,
         }
     }
@@ -155,7 +160,7 @@ impl Chart {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::ChartPartsMut<'_> {
         self.parts = None;
@@ -190,9 +195,9 @@ impl Chart {
             .is_some_and(DrawingChartParts::container_has_conflict)
     }
 
-    /// Invalid imported phase-8 owner states must be rejected by the shared
+    /// Invalid pivot and display-unit states must be rejected by the shared
     /// export preflight before any XML for this chart is emitted.
-    pub fn phase8_conflicts(&self) -> Vec<String> {
+    pub fn export_conflicts(&self) -> Vec<String> {
         let mut out = Vec::new();
         if self
             .parts

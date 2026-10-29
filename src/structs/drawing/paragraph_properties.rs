@@ -49,22 +49,22 @@ pub struct ParagraphPropertiesParts {
 }
 
 impl ParagraphProperties {
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
         if let Some(properties) = &mut self.default_run_properties {
-            properties.strip_browser_parts();
+            properties.strip_export_parts();
         }
     }
 
-    pub(crate) fn browser_parts_supplied(&self) -> bool {
+    pub(crate) fn export_parts_supplied(&self) -> bool {
         self.parts.is_some()
             || self
                 .default_run_properties
                 .as_ref()
-                .is_some_and(|properties| properties.browser_parts_supplied())
+                .is_some_and(|properties| properties.export_parts_supplied())
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         let mut restored = 0;
         if self.parts.is_none() && previous.parts.is_some() {
             self.parts.clone_from(&previous.parts);
@@ -74,15 +74,15 @@ impl ParagraphProperties {
             &mut self.default_run_properties,
             &previous.default_run_properties,
         ) {
-            restored += current.restore_browser_parts(previous);
+            restored += current.restore_export_parts(previous);
         }
         restored
     }
 
-    pub(crate) fn browser_values_match(&self, previous: &Self) -> bool {
+    pub(crate) fn projected_values_match(&self, previous: &Self) -> bool {
         let bytes = |value: &Self| {
             let mut value = value.clone();
-            value.strip_browser_parts();
+            value.strip_export_parts();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
             value.write_to(&mut writer);
             writer.into_inner().into_inner()

@@ -346,6 +346,8 @@ impl Cell {
         self
     }
 
+    /// Set the cell's value as a number. NaN and infinity can't be stored in
+    /// xlsx, so they are written as the `#NUM!` error instead.
     #[inline]
     pub fn set_value_number<T>(&mut self, value: T) -> &mut Self
     where
@@ -693,7 +695,9 @@ impl Cell {
                         let text = crate::helper::utils::unescape_xml_text(
                             &reader.read_text_into(e.name(), &mut buf).unwrap(),
                         );
-                        self.set_value_string_crate(text);
+                        self.set_value_string_crate(crate::helper::utils::unescape_xstring_owned(
+                            text,
+                        ));
                         reader.config_mut().trim_text(true);
                     }
                     b"v" => {
@@ -704,7 +708,9 @@ impl Cell {
                         match type_value.as_str() {
                             "d" => crate::reader::xlsx::iso_date::read(self, text),
                             "str" => {
-                                self.set_value_string_crate(text);
+                                self.set_value_string_crate(
+                                    crate::helper::utils::unescape_xstring_owned(text),
+                                );
                             }
                             "s" => {
                                 if let Ok(index) = text.parse::<usize>() {
@@ -832,7 +838,10 @@ impl Cell {
                     write_text_node(writer, val_index.to_string());
                 }
                 "str" => {
-                    write_text_node_conversion(writer, self.value());
+                    write_text_node_conversion(
+                        writer,
+                        crate::helper::utils::escape_xstring(&self.value()),
+                    );
                 }
                 "b" => {
                     let upper_value = self.value().to_uppercase();

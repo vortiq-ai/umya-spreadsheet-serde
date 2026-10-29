@@ -84,7 +84,7 @@ fn with_chart_xml(bytes: &[u8], xml: &str) -> Vec<u8> {
     let mut replaced = 0;
     for i in 0..input.len() {
         let mut part = input.by_index(i).unwrap();
-        let name = part.name().to_owned();
+        let name = part.name().unwrap().into_owned();
         let mut data = Vec::new();
         part.read_to_end(&mut data).unwrap();
         if name == "xl/charts/chart1.xml" {
@@ -283,9 +283,9 @@ fn edit(scenario: Scenario) -> (ChartReferenceEdit, &'static str, &'static str) 
 }
 
 fn record_output(bytes: &[u8], role: &str, edit: &str, route: &str) {
-    if let Some(root) = std::env::var_os("PHASE9_OUTPUT_DIR") {
-        let source = std::env::var("PHASE9_SOURCE_ID").expect("source identity required");
-        let run = std::env::var("PHASE9_RUN_ID").expect("run identity required");
+    if let Some(root) = std::env::var_os("CHART_REFERENCE_OUTPUT_DIR") {
+        let source = std::env::var("CHART_REFERENCE_SOURCE_ID").expect("source identity required");
+        let run = std::env::var("CHART_REFERENCE_RUN_ID").expect("run identity required");
         for identity in [&source, &run] {
             assert_eq!(identity.len(), 64);
             assert!(identity.bytes().all(|v| v.is_ascii_hexdigit()));

@@ -84,7 +84,7 @@ fn source(kind: &ChartType, children: &str, prefix: &str) -> Workbook {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for n in 0..input.len() {
         let mut file = input.by_index(n).unwrap();
-        let name = file.name().to_owned();
+        let name = file.name().unwrap().into_owned();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         if name == "xl/charts/chart1.xml" {

@@ -1,6 +1,6 @@
 #![cfg(feature = "serde")]
 
-#[path = "support/browser_chart_fixture.rs"]
+#[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 
 fn workbook(style: u16) -> umya_spreadsheet::Workbook {

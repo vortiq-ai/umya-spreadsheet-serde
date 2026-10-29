@@ -85,7 +85,8 @@ impl GraphicData {
                     let relationship = drawing_relationships
                         .unwrap()
                         .relationship_by_rid(&chart_id);
-                    chart::read(relationship.raw_file(), &mut self.chart_space, session, provider);
+                    chart::read(relationship.raw_file(), &mut self.chart_space, session, provider)
+                        .expect("Could not read chart XML");
                 }
             },
             Event::End(ref e) => {

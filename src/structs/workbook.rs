@@ -9,9 +9,11 @@ mod reference_hosts;
 use crate::{
     StringValue,
     XlsxError,
+    XlsxErrorKind,
     helper::{
         address::{
-            split_address,
+            name_eq_ignore_case,
+            split_reference_address,
             unescape_sheet_name,
         },
         coordinate::column_index_from_string,
@@ -75,6 +77,7 @@ pub struct Workbook {
     /// produced by a different calculation engine. Cached values still serve
     /// readers that do not recalculate.
     full_calc_on_load:        bool,
+    date1904:                 bool,
     pub(crate) cell_metadata: Option<super::cell_metadata::CellMetadata>,
 }
 
@@ -92,7 +95,7 @@ struct SheetReferencePlan {
 }
 
 #[cfg(test)]
-mod stage9_move_geometry_tests {
+mod reference_adjustment_tests {
     use crate::drawing::charts::{
         ReferenceCell,
         ReferenceRect,
@@ -205,7 +208,7 @@ impl Workbook {
         edit: &crate::drawing::charts::ChartReferenceEdit,
     ) -> Result<Vec<usize>, XlsxError> {
         let hosts = reference_hosts::discover(self, required, edit)?;
-        reference_hosts::materialize(self, &hosts);
+        reference_hosts::materialize(self, &hosts)?;
         Ok(hosts)
     }
 
@@ -221,8 +224,12 @@ impl Workbook {
             PreparedReferenceEdit,
             edit_prepared_formula_text,
         };
-        let prepared = PreparedReferenceEdit::new(edit)
-            .map_err(|e| XlsxError::CellError(format!("reference edit: {e:?}")))?;
+        let prepared = PreparedReferenceEdit::new(edit).map_err(|e| {
+            XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("reference edit: {e:?}"),
+            )
+        })?;
         let decide = |text: &str, host: &str| -> Option<String> {
             let result = edit_prepared_formula_text(text, host, &prepared, false);
             (result.text != text).then_some(result.text)
@@ -263,7 +270,7 @@ impl Workbook {
                             source,
                             ..
                         } => {
-                            host.eq_ignore_ascii_case(source_sheet)
+                            name_eq_ignore_case(host, source_sheet)
                                 && (source.first.column..=source.last.column).contains(&c.col_num())
                                 && (source.first.row..=source.last.row).contains(&c.row_num())
                         }
@@ -345,8 +352,12 @@ impl Workbook {
             destination_sheet: destination_sheet.into(),
             destination,
         };
-        PreparedReferenceEdit::new(&edit)
-            .map_err(|e| XlsxError::CellError(format!("reference edit: {e:?}")))?;
+        PreparedReferenceEdit::new(&edit).map_err(|e| {
+            XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("reference edit: {e:?}"),
+            )
+        })?;
         self.find_sheet_index_by_name(source_sheet)?;
         self.find_sheet_index_by_name(destination_sheet)?;
         let hosts = self.prepare_reference_hosts(&[source_sheet, destination_sheet], &edit)?;
@@ -382,7 +393,8 @@ impl Workbook {
         }
         hosts.sort_unstable();
         hosts.dedup();
-        reference_hosts::materialize(self, &hosts);
+        reference_hosts::materialize(self, &hosts)
+            .unwrap_or_else(|error| panic!("cannot deserialize workbook reference hosts: {error}"));
         hosts
     }
 
@@ -424,7 +436,7 @@ impl Workbook {
 
     /// Geometry-only building block for the coordinated workbook move. This
     /// does not adjust references; callers must preflight and dispatch the
-    /// approved `ChartReferenceEdit` separately before exposing a public move.
+    /// prepared `ChartReferenceEdit` separately before exposing a public move.
     pub(crate) fn relocate_cells_only(
         &mut self,
         source_sheet: &str,
@@ -443,18 +455,28 @@ impl Workbook {
             || destination.column == 0
             || destination.row == 0
         {
-            return Err(XlsxError::CellError("invalid move coordinates".into()));
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                "invalid move coordinates",
+            ));
         }
         let last_column = destination
             .column
             .checked_add(last.column - first.column)
             .filter(|v| *v <= 16_384)
-            .ok_or_else(|| XlsxError::CellError("move exceeds column bounds".into()))?;
+            .ok_or_else(|| {
+                XlsxError::with_message(
+                    XlsxErrorKind::InvalidArgument,
+                    "move exceeds column bounds",
+                )
+            })?;
         let last_row = destination
             .row
             .checked_add(last.row - first.row)
             .filter(|v| *v <= 1_048_576)
-            .ok_or_else(|| XlsxError::CellError("move exceeds row bounds".into()))?;
+            .ok_or_else(|| {
+                XlsxError::with_message(XlsxErrorKind::InvalidArgument, "move exceeds row bounds")
+            })?;
         let source_index = self.find_sheet_index_by_name(source_sheet)?;
         let destination_index = self.find_sheet_index_by_name(destination_sheet)?;
         let source_cells: Vec<_> = self
@@ -680,7 +702,7 @@ impl Workbook {
     #[inline]
     #[must_use]
     pub fn cell_value_by_address(&self, address: &str) -> Vec<&CellValue> {
-        let (sheet_name, range) = split_address(address);
+        let (sheet_name, range) = split_reference_address(address);
         match self.sheet_by_name(&unescape_sheet_name(sheet_name)) {
             Ok(sheet) => sheet.cell_value_by_range(range),
             Err(_) => vec![],
@@ -974,17 +996,30 @@ impl Workbook {
         self
     }
 
-    /// Get Work Sheet List.
+    /// Get all loaded worksheets without materializing raw sheets.
+    ///
+    /// # Panics
+    /// Panics if any worksheet has not been deserialized.
     #[must_use]
     pub fn sheet_collection(&self) -> &[Worksheet] {
-        for worksheet in &self.work_sheet_collection {
-            assert!(
-                worksheet.is_deserialized(),
-                "This Worksheet is Not Deserialized. Please exec to read_sheet(&mut self, index: \
-                 usize);"
-            );
+        self.try_sheet_collection()
+            .unwrap_or_else(|error| panic!("cannot access unloaded worksheets: {error}"))
+    }
+
+    /// Get all worksheets only when every sheet has been deserialized.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotDeserialized`] if a worksheet is still raw.
+    pub fn try_sheet_collection(&self) -> Result<&[Worksheet], XlsxError> {
+        if self
+            .work_sheet_collection
+            .iter()
+            .all(Worksheet::is_deserialized)
+        {
+            Ok(&self.work_sheet_collection)
+        } else {
+            Err(XlsxError::new(XlsxErrorKind::NotDeserialized))
         }
-        &self.work_sheet_collection
     }
 
     #[must_use]
@@ -993,8 +1028,7 @@ impl Workbook {
         self.sheet_collection()
     }
 
-    /// Get Work Sheet List.
-    /// No check deserialized.
+    /// Worksheets without checking whether they have been deserialized.
     #[inline]
     #[must_use]
     pub fn sheet_collection_no_check(&self) -> &[Worksheet] {
@@ -1013,11 +1047,23 @@ impl Workbook {
         &mut self.work_sheet_collection
     }
 
-    /// Get Work Sheet List in mutable.
+    /// Materialize and get all worksheets mutably.
+    ///
+    /// # Panics
+    /// Panics if a worksheet cannot be deserialized.
     #[inline]
     pub fn sheet_collection_mut(&mut self) -> &mut [Worksheet] {
-        self.read_sheet_collection();
-        &mut self.work_sheet_collection
+        self.try_sheet_collection_mut()
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheets: {error}"))
+    }
+
+    /// Materialize and get all worksheets mutably.
+    ///
+    /// # Errors
+    /// Returns an error if a worksheet cannot be deserialized.
+    pub fn try_sheet_collection_mut(&mut self) -> Result<&mut [Worksheet], XlsxError> {
+        self.try_read_sheet_collection()?;
+        Ok(&mut self.work_sheet_collection)
     }
 
     #[inline]
@@ -1026,9 +1072,6 @@ impl Workbook {
         self.sheet_collection_mut()
     }
 
-    /// Get Work Sheet Count.
-    /// # Return value
-    /// * `usize` - Work Sheet Count.
     #[inline]
     #[must_use]
     pub fn sheet_count(&self) -> usize {
@@ -1042,69 +1085,113 @@ impl Workbook {
         self.sheet_count()
     }
 
-    /// deserialize by all worksheet.
+    /// Deserialize all worksheets.
+    ///
+    /// # Panics
+    /// Panics if a worksheet cannot be deserialized.
     #[inline]
     pub fn read_sheet_collection(&mut self) -> &mut Self {
+        self.try_read_sheet_collection()
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheets: {error}"))
+    }
+
+    /// Deserialize all worksheets, retaining successful sheets if a later read
+    /// fails.
+    ///
+    /// # Errors
+    /// Returns the first worksheet read error. Earlier successful sheets retain
+    /// their original import/cache baselines; the failed sheet remains raw.
+    pub fn try_read_sheet_collection(&mut self) -> Result<&mut Self, XlsxError> {
         if self
             .work_sheet_collection
             .iter()
             .all(Worksheet::is_deserialized)
         {
-            return self;
+            return Ok(self);
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
         let mut session = SourceCacheSession::deferred();
         let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
         let mut deserialized = Vec::new();
+        let mut result = Ok(());
         for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
             if !worksheet.is_deserialized() {
-                raw_to_deserialize_by_worksheet(
+                if let Err(error) = raw_to_deserialize_by_worksheet(
                     worksheet,
                     &shared_string_table,
                     &stylesheet,
                     &mut session,
                     &mut provider,
-                );
+                ) {
+                    result = Err(error);
+                    break;
+                }
                 deserialized.push(index);
             }
         }
         capture_chart_source_caches(self, &deserialized, &mut session, &mut provider);
-        self
+        result?;
+        Ok(self)
     }
 
-    /// deserialize a worksheet.
+    /// Deserialize one worksheet.
+    ///
+    /// # Panics
+    /// Panics if the index is missing or the worksheet cannot be deserialized.
     #[inline]
     pub fn read_sheet(&mut self, index: usize) -> &mut Self {
+        self.try_read_sheet(index)
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheet: {error}"))
+    }
+
+    /// Deserialize one worksheet without opening unrelated sheets.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] for an invalid index, or its read
+    /// error.
+    pub fn try_read_sheet(&mut self, index: usize) -> Result<&mut Self, XlsxError> {
         let is_deserialized = self
             .work_sheet_collection
             .get(index)
-            .unwrap()
-            .is_deserialized();
+            .map(Worksheet::is_deserialized)
+            .ok_or_else(|| XlsxError::new(XlsxErrorKind::NotFound))?;
         if is_deserialized {
-            return self;
+            return Ok(self);
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
         let mut session = SourceCacheSession::deferred();
         let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
-        let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
         raw_to_deserialize_by_worksheet(
-            worksheet,
+            &mut self.work_sheet_collection[index],
             &shared_string_table,
             &stylesheet,
             &mut session,
             &mut provider,
-        );
+        )?;
         capture_chart_source_caches(self, &[index], &mut session, &mut provider);
-        self
+        Ok(self)
     }
 
-    /// deserialize a worksheet.
+    /// Deserialize a named worksheet.
+    ///
+    /// # Panics
+    /// Panics if the name is missing or the worksheet cannot be deserialized.
     #[inline]
     pub fn read_sheet_by_name(&mut self, sheet_name: &str) -> &mut Self {
-        let index = self.find_sheet_index_by_name(sheet_name).unwrap();
-        self.read_sheet(index)
+        self.try_read_sheet_by_name(sheet_name)
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheet: {error}"))
+    }
+
+    /// Deserialize a named worksheet without opening unrelated sheets.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] for a missing name, or its read
+    /// error.
+    pub fn try_read_sheet_by_name(&mut self, sheet_name: &str) -> Result<&mut Self, XlsxError> {
+        let index = self.find_sheet_index_by_name(sheet_name)?;
+        self.try_read_sheet(index)
     }
 
     #[inline]
@@ -1112,7 +1199,7 @@ impl Workbook {
         self.work_sheet_collection
             .iter()
             .position(|sheet| sheet.name() == sheet_name)
-            .ok_or(XlsxError::NotFound())
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))
     }
 
     /// Get Work Sheet.
@@ -1127,10 +1214,10 @@ impl Workbook {
                 if v.is_deserialized() {
                     Ok(v)
                 } else {
-                    Err(XlsxError::NotDeserialized())
+                    Err(XlsxError::new(XlsxErrorKind::NotDeserialized))
                 }
             }
-            None => Err(XlsxError::NotFound()),
+            None => Err(XlsxError::new(XlsxErrorKind::NotFound)),
         }
     }
 
@@ -1161,8 +1248,8 @@ impl Workbook {
         let shared_string_table = self.shared_string_table();
         self.work_sheet_collection
             .get(index)
-            .map(|v| v.cells_stream(&shared_string_table.read().unwrap(), self.stylesheet()))
-            .ok_or(XlsxError::NotFound())
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))
+            .and_then(|v| v.cells_stream(&shared_string_table.read().unwrap(), self.stylesheet()))
     }
 
     #[deprecated(since = "3.0.0", note = "Use lazy_read_sheet_cells()")]
@@ -1176,28 +1263,8 @@ impl Workbook {
     /// # Return value
     /// * `Result<&mut Worksheet, XlsxError>`.
     pub fn sheet_mut(&mut self, index: usize) -> Result<&mut Worksheet, XlsxError> {
-        let is_deserialized = self
-            .work_sheet_collection
-            .get(index)
-            .map(Worksheet::is_deserialized)
-            .ok_or(XlsxError::NotFound())?;
-        if is_deserialized {
-            return Ok(self.work_sheet_collection.get_mut(index).unwrap());
-        }
-        let shared_string_table = self.shared_string_table();
-        let stylesheet = self.stylesheet().clone();
-        let mut session = SourceCacheSession::deferred();
-        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
-        let worksheet = self.work_sheet_collection.get_mut(index).unwrap();
-        raw_to_deserialize_by_worksheet(
-            worksheet,
-            &shared_string_table,
-            &stylesheet,
-            &mut session,
-            &mut provider,
-        );
-        capture_chart_source_caches(self, &[index], &mut session, &mut provider);
-        Ok(self.work_sheet_collection.get_mut(index).unwrap())
+        self.try_read_sheet(index)?;
+        Ok(&mut self.work_sheet_collection[index])
     }
 
     #[deprecated(since = "3.0.0", note = "Use sheet_mut()")]
@@ -1228,14 +1295,24 @@ impl Workbook {
         self
     }
 
-    /// Get Active Work Sheet.
-    /// # Return value
-    /// * `&Worksheet` - Work sheet.
+    /// Get the loaded active worksheet.
+    ///
+    /// # Panics
+    /// Panics if the active worksheet is missing or has not been deserialized.
     #[inline]
     #[must_use]
     pub fn active_sheet(&self) -> &Worksheet {
-        let index = self.workbook_view().active_tab();
-        self.sheet(index as usize).unwrap()
+        self.try_active_sheet()
+            .unwrap_or_else(|error| panic!("cannot access active worksheet: {error}"))
+    }
+
+    /// Get the loaded active worksheet.
+    ///
+    /// # Errors
+    /// Same as [`Workbook::sheet`].
+    #[inline]
+    pub fn try_active_sheet(&self) -> Result<&Worksheet, XlsxError> {
+        self.sheet(self.workbook_view().active_tab() as usize)
     }
 
     #[inline]
@@ -1245,13 +1322,23 @@ impl Workbook {
         self.active_sheet()
     }
 
-    /// Get Active Work Sheet in mutable.
-    /// # Return value
-    /// * `&mut Worksheet` - Work sheet.
+    /// Materialize and get the active worksheet mutably.
+    ///
+    /// # Panics
+    /// Panics if the active worksheet is missing or cannot be deserialized.
     #[inline]
     pub fn active_sheet_mut(&mut self) -> &mut Worksheet {
-        let index = self.workbook_view().active_tab();
-        self.sheet_mut(index as usize).unwrap()
+        self.try_active_sheet_mut()
+            .unwrap_or_else(|error| panic!("cannot deserialize active worksheet: {error}"))
+    }
+
+    /// Materialize and get the active worksheet mutably.
+    ///
+    /// # Errors
+    /// Same as [`Workbook::sheet_mut`].
+    #[inline]
+    pub fn try_active_sheet_mut(&mut self) -> Result<&mut Worksheet, XlsxError> {
+        self.sheet_mut(self.workbook_view().active_tab() as usize)
     }
 
     #[inline]
@@ -1268,7 +1355,7 @@ impl Workbook {
     #[inline]
     pub fn add_sheet(&mut self, value: Worksheet) -> Result<&mut Worksheet, XlsxError> {
         let title = value.name();
-        Workbook::check_sheet_name(self, title)?;
+        self.check_sheet_name(title, None)?;
         self.work_sheet_collection.push(value);
         Ok(self.work_sheet_collection.last_mut().unwrap())
     }
@@ -1291,9 +1378,17 @@ impl Workbook {
         let name = self
             .work_sheet_collection
             .get(index)
-            .ok_or(XlsxError::NotFound())?
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?
             .name()
             .to_owned();
+        let mut unique_names = std::collections::HashSet::new();
+        if self
+            .work_sheet_collection
+            .iter()
+            .any(|sheet| !unique_names.insert(sheet.name().to_lowercase()))
+        {
+            return Err(XlsxError::new(XlsxErrorKind::NameDuplicate));
+        }
         let sheet_order = self
             .work_sheet_collection
             .iter()
@@ -1336,7 +1431,7 @@ impl Workbook {
                 )
                 .any(|existing| {
                     !existing.has_local_sheet_id()
-                        && existing.name().eq_ignore_ascii_case(name.name())
+                        && name_eq_ignore_case(existing.name(), name.name())
                 });
             if !collides {
                 // Match Excel's current-workbook fallback: an existing global
@@ -1385,7 +1480,7 @@ impl Workbook {
         sheet_title: S,
     ) -> Result<&mut Worksheet, XlsxError> {
         let v = sheet_title.into();
-        Workbook::check_sheet_name(self, &v)?;
+        self.check_sheet_name(&v, None)?;
         let sheet_id = (self.work_sheet_collection.len() + 1).to_string();
         Ok(Workbook::add_new_sheet_crate(self, sheet_id, v.clone()))
     }
@@ -1422,13 +1517,13 @@ impl Workbook {
         sheet_name: S,
     ) -> Result<(), XlsxError> {
         let sheet_name_str = sheet_name.into();
-        Workbook::check_sheet_name(self, sheet_name_str.as_ref())?;
         let old = self
             .work_sheet_collection
             .get(index)
-            .ok_or(XlsxError::NotFound())?
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?
             .name()
             .to_owned();
+        self.check_sheet_name(&sheet_name_str, Some(index))?;
         let edit = crate::drawing::charts::ChartReferenceEdit::RenameSheet {
             old: old.clone(),
             new: sheet_name_str.clone(),
@@ -1442,13 +1537,18 @@ impl Workbook {
 
     /// (This method is crate only.)
     /// Check for duplicate sheet name.
-    pub(crate) fn check_sheet_name(&self, value: &str) -> Result<(), XlsxError> {
+    pub(crate) fn check_sheet_name(
+        &self,
+        value: &str,
+        except: Option<usize>,
+    ) -> Result<(), XlsxError> {
         if self
             .work_sheet_collection
             .iter()
-            .any(|work_sheet| value == work_sheet.name())
+            .enumerate()
+            .any(|(index, sheet)| Some(index) != except && name_eq_ignore_case(value, sheet.name()))
         {
-            Err(XlsxError::NameDuplicate())
+            Err(XlsxError::new(XlsxErrorKind::NameDuplicate))
         } else {
             Ok(())
         }
@@ -1631,6 +1731,28 @@ impl Workbook {
     #[inline]
     pub fn remove_workbook_protection(&mut self) -> &mut Self {
         self.workbook_protection = None;
+        self
+    }
+
+    /// Whether the workbook uses the 1904 date system (`workbookPr/@date1904`).
+    ///
+    /// In the 1904 system, serial 0 is 1904-01-01 and serial 1 is 1904-01-02;
+    /// in the default 1900 system, serial 1 is 1900-01-01. From 1900-03-01 on
+    /// (past Excel's fictitious 1900-02-29), the same serial is a date 1,462
+    /// days later in the 1904 system than in the 1900 system.
+    #[inline]
+    #[must_use]
+    pub fn date1904(&self) -> bool {
+        self.date1904
+    }
+
+    /// Set whether the workbook uses the 1904 date system.
+    ///
+    /// This only changes how serial numbers are interpreted as dates; the
+    /// stored cell values are not converted.
+    #[inline]
+    pub fn set_date1904(&mut self, value: bool) -> &mut Self {
+        self.date1904 = value;
         self
     }
 
@@ -1875,9 +1997,6 @@ mod full_calc_on_load_tests {
     /// A missing formula cache is invisible to readers that do not recalculate;
     /// a present cache can still be stale or engine-specific. The flag tells
     /// Excel to replace either form with its own calculation on open.
-    ///
-    /// Task 129 (2026-08-28): 30 formulas exported as `<f>..</f><v/>` and the
-    /// football-field chart drew nothing.
     #[test]
     fn emits_full_calc_on_load_only_when_asked() {
         for enabled in [false, true] {

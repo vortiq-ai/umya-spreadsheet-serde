@@ -26,19 +26,19 @@ pub struct NumberingFormat {
 }
 
 #[cfg(all(test, feature = "serde"))]
-mod browser_number_format_tests {
+mod projection_tests {
     use super::*;
 
     #[test]
-    fn browser_number_format_restore_keeps_exact_lexical_and_omitted_states() {
+    fn number_format_restore_keeps_exact_lexical_and_omitted_states() {
         for spelling in [Some("true"), Some("false"), Some("invalid"), None] {
             let mut previous = NumberingFormat::default();
             previous.set_format_code("0.00");
             previous.set_source_linked_attribute(spelling.map(str::to_owned));
             let mut current = previous.clone();
-            current.strip_browser_parts();
+            current.strip_export_parts();
             assert!(current.parts.is_none());
-            assert_eq!(current.restore_browser_parts(&previous), 1);
+            assert_eq!(current.restore_export_parts(&previous), 1);
             assert_eq!(
                 bincode::serialize(&current).unwrap(),
                 bincode::serialize(&previous).unwrap()
@@ -51,29 +51,29 @@ mod browser_number_format_tests {
     }
 
     #[test]
-    fn browser_number_format_explicit_false_wins_over_omitted_link_state() {
+    fn number_format_explicit_false_wins_over_omitted_link_state() {
         let mut previous = NumberingFormat::default();
         previous.set_format_code("0");
         previous.set_source_linked_attribute(None);
         let mut current = previous.clone();
-        current.strip_browser_parts();
+        current.strip_export_parts();
         current.set_source_linked(false);
         current.set_format_code("0.00");
-        assert_eq!(current.restore_browser_parts(&previous), 0);
+        assert_eq!(current.restore_export_parts(&previous), 0);
         assert_eq!(current.source_linked_value(), Some(false));
         assert_eq!(current.format_code(), "0.00");
         assert!(current.parts.is_none());
     }
 
     #[test]
-    fn browser_number_format_keeps_current_format_when_restoring_unchanged_link_spelling() {
+    fn number_format_keeps_current_format_when_restoring_unchanged_link_spelling() {
         let mut previous = NumberingFormat::default();
         previous.set_format_code("0");
         previous.set_source_linked_attribute(Some("true".into()));
         let mut current = previous.clone();
-        current.strip_browser_parts();
+        current.strip_export_parts();
         current.set_format_code("0.00");
-        assert_eq!(current.restore_browser_parts(&previous), 1);
+        assert_eq!(current.restore_export_parts(&previous), 1);
         assert_eq!(current.format_code(), "0.00");
         assert_eq!(current.source_linked_attribute(), Some("true"));
     }
@@ -86,21 +86,21 @@ pub struct NumberingFormatParts {
     source_linked: Option<super::XmlBoolean>,
 }
 impl NumberingFormat {
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         if self.parts.is_some()
             || previous.parts.is_none()
             || self.source_linked_value() != previous.source_linked_value()
         {
             return 0;
         }
-        // The browser's canonical typed value represents the old lexical
+        // The projected typed value represents the old lexical
         // branch. Restore its original representation only while unchanged.
         self.source_linked = previous.source_linked.clone();
         self.parts.clone_from(&previous.parts);
         1
     }
 
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         if self.parts.is_none() {
             return;
         }

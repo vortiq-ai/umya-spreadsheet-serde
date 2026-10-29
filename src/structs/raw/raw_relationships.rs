@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     io,
     io::Read,
     path::Path,
@@ -18,7 +17,7 @@ use crate::{
     helper::const_str::REL_NS,
     reader::driver::{
         join_paths,
-        xml_read_loop,
+        try_xml_read_loop,
         zip_by_name,
     },
     structs::{
@@ -115,26 +114,14 @@ impl RawRelationships {
     }
 
     pub(crate) fn relationship_by_rid(&self, r_id: &str) -> &RawRelationship {
-        self.relationship_list()
-            .iter()
-            .find(|relationship| relationship.id() == r_id)
+        self.find_relationship_by_rid(r_id)
             .unwrap_or_else(|| panic!("Not found relationship with ID: {r_id}."))
     }
 
-    pub(crate) fn take_chart_part_buffers(
-        &mut self,
-    ) -> HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)> {
-        self.relationship_list_mut()
-            .iter_mut()
-            .filter(|relationship| relationship.get_type() == crate::helper::const_str::CHART_NS)
-            .map(|relationship| {
-                let raw_file = relationship.raw_file_mut();
-                (
-                    raw_file.file_target().to_string(),
-                    (raw_file.take_file_data(), raw_file.source_file_owned()),
-                )
-            })
-            .collect()
+    pub(crate) fn find_relationship_by_rid(&self, r_id: &str) -> Option<&RawRelationship> {
+        self.relationship_list()
+            .iter()
+            .find(|relationship| relationship.id() == r_id)
     }
 
     #[deprecated(since = "3.0.0", note = "Use relationship_by_rid()")]
@@ -143,10 +130,14 @@ impl RawRelationships {
     }
 
     pub(crate) fn relationship_by_type(&self, rtype: &str) -> &RawRelationship {
+        self.find_relationship_by_type(rtype)
+            .unwrap_or_else(|| panic!("Not found relationship with Type: {rtype}."))
+    }
+
+    pub(crate) fn find_relationship_by_type(&self, rtype: &str) -> Option<&RawRelationship> {
         self.relationship_list()
             .iter()
             .find(|relationship| relationship.get_type() == rtype)
-            .unwrap_or_else(|| panic!("Not found relationship with Type: {rtype}."))
     }
 
     #[inline]
@@ -162,22 +153,22 @@ impl RawRelationships {
         target: &str,
         source_file: Option<&Path>,
         defer_chart_data: bool,
-    ) -> bool {
+    ) -> Result<bool, XlsxError> {
         let data = {
             let path_str = join_paths(base_path, target);
             let Ok(file_path) = zip_by_name(arv, &path_str) else {
-                return false;
+                return Ok(false);
             };
             self.set_file_target(path_str);
             let mut r = io::BufReader::new(file_path);
             let mut buf = Vec::new();
-            r.read_to_end(&mut buf).unwrap();
+            r.read_to_end(&mut buf)?;
             io::Cursor::new(buf)
         };
         let mut reader = Reader::from_reader(data);
         reader.config_mut().trim_text(true);
 
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
                 if e.name().into_inner() == b"Relationship" {
@@ -196,7 +187,7 @@ impl RawRelationships {
             Event::Eof => break
         );
 
-        true
+        Ok(true)
     }
 
     pub(crate) fn write_to<W: io::Seek + io::Write>(
@@ -251,15 +242,7 @@ impl RawRelationships {
 mod tests {
     use super::*;
 
-    /// `try_relationship_by_rid` must return `None` for an absent id rather
-    /// than panicking like its strict sibling.
-    ///
-    /// Real workbooks ship dangling OPTIONAL relationships: a tool rewrites the
-    /// file, drops `printerSettings*.bin` and its `<Relationship>` entry, and
-    /// leaves `<pageSetup r:id="rId1"/>` pointing at nothing. Excel opens those
-    /// files. Panicking there discarded the entire workbook -- observed
-    /// 2026-09-07 on two customer files whose eight worksheets each referenced
-    /// an rId1 that no .rels defined and no printerSettings part backed.
+    /// Missing optional relationships return None rather than failing import.
     #[test]
     fn try_relationship_by_rid_returns_none_when_absent() {
         let mut rels = RawRelationships::default();

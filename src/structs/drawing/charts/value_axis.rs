@@ -65,7 +65,7 @@ pub struct ValueAxis {
 }
 
 #[cfg(all(test, feature = "serde"))]
-mod phase8_wire_ledger_tests {
+mod serialization_tests {
     use super::*;
     use crate::drawing::charts::DisplayUnit;
 
@@ -115,30 +115,58 @@ mod phase8_wire_ledger_tests {
 }
 
 impl ValueAxis {
-    pub(crate) fn restore_browser_parts(
+    // Display-unit owners are hidden; axis text/number-format presence is not.
+    pub(crate) fn discard_untrusted_display_units(&mut self, report: &mut super::RestoreReport) {
+        if let Some(parts) = self.parts.take() {
+            let id = self.axis_id.val();
+            let count =
+                usize::from(parts.display_units().is_some()) + parts.extra_display_units().len();
+            report.removed_incompatible_parts += count;
+            for occurrence in 0..count {
+                report.diagnostics.push(format!(
+                    "removed incoming display units occurrence:{occurrence} from value axis \
+                     id:{id} without an authoritative owner"
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
     ) -> usize {
         let mut restored = 0;
-        match (&mut self.parts, &previous.parts) {
-            (Some(current), Some(previous)) => {
-                restored += current.restore_browser_parts(previous, report);
+        let units_absent = previous.parts.as_ref().is_none_or(|parts| {
+            parts.display_units().is_none() && parts.extra_display_units().is_empty()
+        });
+        if units_absent {
+            // Empty allocated parts convey no hidden-unit authority, but keep
+            // their native representation and actual owner-recreation count.
+            let missing_before = self.parts.is_none();
+            self.discard_untrusted_display_units(report);
+            self.parts.clone_from(&previous.parts);
+            restored += usize::from(missing_before && previous.parts.is_some());
+        } else {
+            match (&mut self.parts, &previous.parts) {
+                (Some(current), Some(previous)) => {
+                    restored += current.restore_export_parts(previous, report);
+                }
+                (None, Some(previous)) => {
+                    self.parts = Some(previous.clone());
+                    restored += 1;
+                }
+                _ => {}
             }
-            (None, Some(previous)) => {
-                self.parts = Some(previous.clone());
-                restored += 1;
-            }
-            _ => {}
         }
         restored += self
             .numbering_format
-            .restore_browser_parts(&previous.numbering_format);
+            .restore_export_parts(&previous.numbering_format);
         if let (Some(current), Some(previous)) =
             (&mut self.text_properties, &previous.text_properties)
         {
-            if current.browser_structure_matches(previous) {
-                restored += current.restore_browser_parts(previous);
+            if current.projected_structure_matches(previous) {
+                restored += current.restore_export_parts(previous);
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -159,13 +187,13 @@ impl ValueAxis {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::AxisPartsMut<'_> {
         self.parts = None;
-        self.numbering_format.strip_browser_parts();
+        self.numbering_format.strip_export_parts();
         if let Some(text) = &mut self.text_properties {
-            text.strip_browser_parts();
+            text.strip_export_parts();
         }
         self.reference_role_parts_mut()
     }

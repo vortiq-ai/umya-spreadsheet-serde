@@ -45,13 +45,11 @@ pub struct RadarChart {
 }
 
 impl RadarChart {
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
-        if self.extensions.is_none() && previous.extensions.is_some() {
-            self.extensions.clone_from(&previous.extensions);
-            1
-        } else {
-            0
-        }
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        )
     }
 
     pub(crate) fn reference_group_parts(
@@ -68,7 +66,7 @@ impl RadarChart {
         )
     }
 
-    pub(crate) fn browser_group_parts_mut(
+    pub(crate) fn projection_group_parts_mut(
         &mut self,
     ) -> (
         &mut AreaChartSeriesList,

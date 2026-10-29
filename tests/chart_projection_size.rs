@@ -25,7 +25,7 @@ use umya_spreadsheet::{
 /// cache holds, so that the formula text is the same in all of them.
 const RANGE_ROWS: u32 = 100_000;
 
-/// Browser projection size, including empty server-only slots.
+/// Projection size, including empty export-only slots.
 const CHART_BINCODE_BYTES: usize = 683;
 const CHART_JSON_BYTES: usize = 5467;
 
@@ -60,11 +60,14 @@ fn rewrite_part(bytes: &[u8], name: &str, edit: impl FnOnce(String) -> String) -
         let mut entry = source.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == name {
+        if entry.name().unwrap() == name {
             data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
         }
         output
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                entry.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         std::io::Write::write_all(&mut output, &data).unwrap();
     }
@@ -135,9 +138,9 @@ fn assert_sources_removed(value: &serde_json::Value) {
 
 fn wire_lengths(bytes: &[u8]) -> (usize, usize) {
     let book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
-    // Browser transport removes caches and all detachable export supplements.
+    // Projections omit caches and detachable export parts.
     let mut chart = book.sheet(0).unwrap().chart_collection()[0].clone();
-    chart.strip_browser_projection();
+    chart.strip_export_parts();
     let value = serde_json::to_value(&chart).unwrap();
     assert_sources_removed(&value);
     (

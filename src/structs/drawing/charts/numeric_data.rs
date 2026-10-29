@@ -147,7 +147,7 @@ impl NumericData {
         self.extensions.as_deref()
     }
 
-    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions = None;
         None
     }
@@ -384,6 +384,46 @@ pub(crate) fn children<R: std::io::BufRead>(
         buf.clear();
     }
 }
+/// Consume an element-only owner without legalizing declined children or text.
+/// Whitespace, comments and processing instructions do not affect its value.
+pub(crate) fn element_children<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    owner: &BytesStart,
+    empty: bool,
+    mut visit: impl FnMut(&mut Reader<R>, &BytesStart, bool) -> bool,
+) -> bool {
+    if empty {
+        return true;
+    }
+    let end = owner.name().into_inner().to_vec();
+    let mut valid = true;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref child)) => valid &= visit(reader, child, true),
+            Ok(Event::Start(ref child)) => {
+                if !visit(reader, child, false) {
+                    valid = false;
+                    if !skip(reader) {
+                        return false;
+                    }
+                }
+            }
+            Ok(Event::End(ref child)) if child.name().into_inner() == end => return valid,
+            Ok(ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
+                valid &=
+                    crate::reader::driver::decode_xml_character_event(event).is_some_and(|text| {
+                        text.bytes()
+                            .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+                    });
+            }
+            Ok(Event::Comment(_) | Event::PI(_)) => (),
+            _ => return false,
+        }
+        buf.clear();
+    }
+}
+
 fn skip<R: std::io::BufRead>(reader: &mut Reader<R>) -> bool {
     let mut depth = 1usize;
     let mut buf = Vec::new();

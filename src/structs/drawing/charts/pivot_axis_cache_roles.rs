@@ -1,5 +1,4 @@
-//! Non-materializing owner traversal fragment. The joint cache owner must call
-//! these functions only after all pre-existing and phase6/7 roles.
+//! Pivot-label and display-unit cache ownership without materializing owners.
 use std::collections::HashMap;
 
 use super::{
@@ -70,28 +69,26 @@ impl OwnerCounts {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Phase8ReferenceIdentity {
+pub(crate) enum PivotAxisReferenceIdentity {
     PivotFormatLabel(u32),
     DisplayUnitsLabel(u32),
 }
 
-// Compatibility projection for the already-reviewed phase8 direct-role tests.
-// The ownership definition now lives only in chart_reference_roles.
+// Select direct pivot-label and display-unit cache roles.
 fn direct_role(role: &str) -> bool {
-    // Reporting roles outside these four are not Phase8 direct cache owners.
     role == "pivot_label"
         || role == "pivot_label_extra"
         || role == "display_units_label"
         || role == "display_units_text_extra"
 }
 
-fn identity(value: Option<&ReferenceIdentity>) -> Option<Phase8ReferenceIdentity> {
+fn identity(value: Option<&ReferenceIdentity>) -> Option<PivotAxisReferenceIdentity> {
     match value {
         Some(ReferenceIdentity::PivotFormatLabel(pivot_index)) => {
-            Some(Phase8ReferenceIdentity::PivotFormatLabel(*pivot_index))
+            Some(PivotAxisReferenceIdentity::PivotFormatLabel(*pivot_index))
         }
         Some(ReferenceIdentity::DisplayUnitsLabel(axis_id)) => {
-            Some(Phase8ReferenceIdentity::DisplayUnitsLabel(*axis_id))
+            Some(PivotAxisReferenceIdentity::DisplayUnitsLabel(*axis_id))
         }
         Some(
             ReferenceIdentity::ChartTitle
@@ -105,9 +102,9 @@ fn identity(value: Option<&ReferenceIdentity>) -> Option<Phase8ReferenceIdentity
     }
 }
 
-pub(crate) fn visit_phase8_references_mut(
+pub(crate) fn visit_pivot_axis_references_mut(
     chart: &mut Chart,
-    visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &mut StringReference),
+    visit: &mut dyn FnMut(Option<PivotAxisReferenceIdentity>, &mut StringReference),
 ) {
     super::chart_reference_roles::visit_chart_mut(chart, &mut |metadata, target| {
         if !direct_role(metadata.role) {
@@ -124,9 +121,9 @@ pub(crate) fn visit_phase8_references_mut(
     });
 }
 
-pub(crate) fn visit_phase8_references<'a>(
+pub(crate) fn visit_pivot_axis_references<'a>(
     chart: &'a Chart,
-    visit: &mut dyn FnMut(Option<Phase8ReferenceIdentity>, &'a StringReference),
+    visit: &mut dyn FnMut(Option<PivotAxisReferenceIdentity>, &'a StringReference),
 ) {
     super::chart_reference_roles::visit_chart_ref(chart, &mut |metadata, target| {
         if !direct_role(metadata.role) {
@@ -167,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn phase8_roles_are_exactly_once_pivot_then_axis_and_nonmaterializing() {
+    fn pivot_axis_roles_are_visited_once_without_materializing_owners() {
         let mut chart = Chart::default();
         let mut data_label = DataLabel::default();
         let mut label_index = Index::default();
@@ -191,21 +188,21 @@ mod tests {
         chart.plot_area_mut().add_value_axis(axis);
 
         let mut borrowed = Vec::new();
-        visit_phase8_references(&chart, &mut |identity, reference| {
+        visit_pivot_axis_references(&chart, &mut |identity, reference| {
             borrowed.push((identity, reference.formula().address_str().to_owned()));
         });
         assert_eq!(
             borrowed,
             vec![
                 (
-                    Some(Phase8ReferenceIdentity::PivotFormatLabel(8)),
+                    Some(PivotAxisReferenceIdentity::PivotFormatLabel(8)),
                     "Sheet1!$A$1".into()
                 ),
                 (None, "Sheet1!$B$1".into()),
             ]
         );
         let mut mutable = Vec::new();
-        visit_phase8_references_mut(&mut chart, &mut |identity, reference| {
+        visit_pivot_axis_references_mut(&mut chart, &mut |identity, reference| {
             mutable.push(identity);
             if reference.formula().address_str() == "Sheet1!$A$1" {
                 reference.formula_mut().set_address_str("Sheet1!$A$2");
@@ -232,7 +229,7 @@ mod tests {
         );
 
         let mut empty = Chart::default();
-        visit_phase8_references_mut(&mut empty, &mut |_, _| {
+        visit_pivot_axis_references_mut(&mut empty, &mut |_, _| {
             panic!("empty access must not materialize roles")
         });
         assert!(empty.pivot_formats().is_none());
@@ -259,12 +256,12 @@ mod tests {
         let mut chart = Chart::default();
         chart.set_pivot_formats(vec![pivot]);
         let mut borrowed = Vec::new();
-        visit_phase8_references(&chart, &mut |id, reference| {
+        visit_pivot_axis_references(&chart, &mut |id, reference| {
             borrowed.push((id, reference.formula().address_str().to_owned()))
         });
         assert_eq!(borrowed, vec![(None, "Sheet1!$A$1".into())]);
         let mut mutable = Vec::new();
-        visit_phase8_references_mut(&mut chart, &mut |id, reference| {
+        visit_pivot_axis_references_mut(&mut chart, &mut |id, reference| {
             mutable.push(id);
             reference.formula_mut().set_address_str("Sheet1!$A$2");
         });
@@ -303,11 +300,11 @@ mod tests {
         value["parts"]["invalid"] = false.into();
         let mut chart: Chart = serde_json::from_value(value).unwrap();
         let mut borrowed = Vec::new();
-        visit_phase8_references(&chart, &mut |id, reference| {
+        visit_pivot_axis_references(&chart, &mut |id, reference| {
             borrowed.push((id, reference.formula().address_str().to_owned()))
         });
         let mut mutable = Vec::new();
-        visit_phase8_references_mut(&mut chart, &mut |id, reference| {
+        visit_pivot_axis_references_mut(&mut chart, &mut |id, reference| {
             mutable.push((id, reference.formula().address_str().to_owned()))
         });
         assert_eq!(
@@ -328,16 +325,16 @@ mod tests {
         pivot.set_index(Index::default()).set_label(label);
         let mut chart = Chart::default();
         chart.set_pivot_formats(vec![pivot]);
-        for expected in [None, Some(Phase8ReferenceIdentity::PivotFormatLabel(0))] {
+        for expected in [None, Some(PivotAxisReferenceIdentity::PivotFormatLabel(0))] {
             if expected.is_some() {
                 let mut index = Index::default();
                 index.set_val(0);
                 chart.pivot_formats_mut().unwrap()[0].set_index(index);
             }
             let mut borrowed = Vec::new();
-            visit_phase8_references(&chart, &mut |id, _| borrowed.push(id));
+            visit_pivot_axis_references(&chart, &mut |id, _| borrowed.push(id));
             let mut mutable = Vec::new();
-            visit_phase8_references_mut(&mut chart, &mut |id, _| mutable.push(id));
+            visit_pivot_axis_references_mut(&mut chart, &mut |id, _| mutable.push(id));
             assert_eq!(borrowed, vec![expected]);
             assert_eq!(mutable, borrowed);
         }

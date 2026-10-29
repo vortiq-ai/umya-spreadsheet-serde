@@ -1,7 +1,6 @@
 #![cfg(feature = "serde")]
-//! Direct serialization/owner witnesses for the phase8 candidate. The companion
-//! XLSX integration harness loads the raw XML fixtures through reader::xlsx and
-//! writes them back through writer::xlsx before independent XSD validation.
+//! Display-unit and pivot serialization. Companion roundtrip tests exercise
+//! XLSX I/O.
 use serde::{
     Serialize,
     de::DeserializeOwned,
@@ -133,7 +132,7 @@ fn absent_required_display_choice_and_pivot_index_stay_invalid() {
 }
 
 #[test]
-fn legacy_owner_json_without_new_parts_decodes_to_absent() {
+fn owner_json_without_parts_defaults_to_absent() {
     let mut chart_json =
         serde_json::to_value(umya_spreadsheet::drawing::charts::Chart::default()).unwrap();
     chart_json.as_object_mut().unwrap().remove("parts");
@@ -150,42 +149,41 @@ fn legacy_owner_json_without_new_parts_decodes_to_absent() {
 }
 
 #[test]
-fn literal_populated_historical_chart_json_keeps_legacy_fields() {
-    // Extracted from the historical saved_single_family_chart workbook capture;
-    // this literal predates the phase-8 Chart.parts field.
+fn chart_json_without_parts_preserves_existing_fields() {
+    // A populated chart without parts must retain every existing field.
     let old: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/phase8_populated_legacy_chart.json")).unwrap();
+        serde_json::from_str(include_str!("fixtures/chart_without_parts.json")).unwrap();
     assert!(old.get("parts").is_none());
     let chart: umya_spreadsheet::drawing::charts::Chart =
         serde_json::from_value(old.clone()).unwrap();
     assert!(chart.title().is_some());
     assert!(chart.plot_area().bar_chart().is_some());
     assert!(chart.pivot_formats().is_none());
-    fn assert_historical_subset(old: &serde_json::Value, current: &serde_json::Value) {
+    fn assert_existing_subset(old: &serde_json::Value, current: &serde_json::Value) {
         match old {
             serde_json::Value::Object(fields) => {
                 let object = current.as_object().unwrap();
                 for (key, value) in fields {
-                    assert_historical_subset(value, &object[key]);
+                    assert_existing_subset(value, &object[key]);
                 }
             }
             serde_json::Value::Array(values) => {
                 let array = current.as_array().unwrap();
                 assert_eq!(values.len(), array.len());
                 for (left, right) in values.iter().zip(array) {
-                    assert_historical_subset(left, right);
+                    assert_existing_subset(left, right);
                 }
             }
             _ => assert_eq!(old, current),
         }
     }
-    assert_historical_subset(&old, &serde_json::to_value(&chart).unwrap());
+    assert_existing_subset(&old, &serde_json::to_value(&chart).unwrap());
     let restored: umya_spreadsheet::drawing::charts::Chart = bin(&chart);
-    assert_historical_subset(&old, &serde_json::to_value(&restored).unwrap());
+    assert_existing_subset(&old, &serde_json::to_value(&restored).unwrap());
 }
 
 #[test]
-fn literal_populated_legacy_value_axis_json_defaults_only_new_owner() {
+fn value_axis_json_without_parts_defaults_only_missing_owner() {
     let old = r#"{
       "axis_id":{"val":{"value":42}},
       "scaling":{"orientation":{"val":{"value":null,"value_default":"MaxMin"}}},

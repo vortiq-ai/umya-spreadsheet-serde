@@ -1,4 +1,4 @@
-//! Stage 9 reference-owner regression tests; broader edit matrix remains open.
+//! Chart reference-owner edit regressions.
 use umya_spreadsheet::{
     Chart,
     drawing::charts::{
@@ -29,7 +29,7 @@ fn replacing_a_compound_formula_with_an_address_clears_the_old_authoritative_bra
 }
 
 #[test]
-fn approved_move_edit_exposes_one_based_inclusive_geometry() {
+fn move_range_uses_one_based_inclusive_coordinates() {
     let edit = ChartReferenceEdit::MoveRange {
         source_sheet:      "Data".into(),
         source:            ReferenceRect {

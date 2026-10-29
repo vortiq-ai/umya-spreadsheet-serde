@@ -33,7 +33,7 @@ fn package_with_chart_part(replace: impl Fn(&str) -> String) -> Vec<u8> {
     let mut replaced = 0;
     for index in 0..input.len() {
         let mut entry = input.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
         if name == "xl/charts/chart1.xml" {
@@ -104,7 +104,7 @@ fn wrong_root_in_ordinary_chart_namespace_remains_invalid() {
 }
 
 #[test]
-#[should_panic(expected = "Could not index chart namespace scope")]
+#[should_panic(expected = "undeclared chart namespace prefix")]
 fn unbound_chart_root_prefix_remains_invalid() {
     let bytes = package_with_chart_part(|_| {
         r#"<c:chartSpace><c:date1904 val="1"/></c:chartSpace>"#.to_owned()

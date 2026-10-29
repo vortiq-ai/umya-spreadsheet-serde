@@ -139,11 +139,14 @@ fn rewrite_workbook(bytes: Vec<u8>, edit: impl FnOnce(String) -> String) -> Vec<
         let mut part = source.by_index(index).unwrap();
         let mut data = Vec::new();
         part.read_to_end(&mut data).unwrap();
-        if part.name() == "xl/workbook.xml" {
+        if part.name().unwrap() == "xl/workbook.xml" {
             data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
         }
         output
-            .start_file(part.name(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                part.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&data).unwrap();
     }

@@ -6,9 +6,10 @@ use super::{
     UInt32Value,
     coordinate::Coordinate,
 };
-use crate::helper::coordinate::CellCoordinates;
-
-// use reader::driver::*;
+use crate::{
+    AutoFilter,
+    helper::coordinate::CellCoordinates,
+};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -20,6 +21,8 @@ pub struct Table {
     style_info:       Option<Box<TableStyleInfo>>,
     totals_row_shown: BooleanValue,
     totals_row_count: UInt32Value,
+    #[cfg_attr(feature = "serde", serde(default))]
+    auto_filter:      AutoFilter,
 }
 impl Table {
     #[inline]
@@ -30,14 +33,17 @@ impl Table {
         let coord_beg = Self::cell_coord_to_coord(area.0);
         let coord_end = Self::cell_coord_to_coord(area.1);
         let name: Box<str> = name.into();
+        let mut auto_filter = AutoFilter::default();
+        auto_filter.set_range(format!("{coord_beg}:{coord_end}"));
         Self {
-            area:             (coord_beg, coord_end),
-            name:             name.clone(),
-            display_name:     name,
-            columns:          Vec::<TableColumn>::default(),
-            style_info:       None,
+            area: (coord_beg, coord_end),
+            name: name.clone(),
+            display_name: name,
+            columns: Vec::<TableColumn>::default(),
+            style_info: None,
             totals_row_shown: BooleanValue::default(),
             totals_row_count: UInt32Value::default(),
+            auto_filter,
         }
     }
 
@@ -113,6 +119,9 @@ impl Table {
     {
         let coord_beg = Self::cell_coord_to_coord(area.0);
         let coord_end = Self::cell_coord_to_coord(area.1);
+        if self.auto_filter.range().range() == format!("{}:{}", self.area.0, self.area.1) {
+            self.auto_filter.set_range(format!("{coord_beg}:{coord_end}"));
+        }
         self.area = (coord_beg, coord_end);
     }
 
@@ -239,6 +248,29 @@ impl Table {
     #[inline]
     pub(crate) fn set_totals_row_count_str(&mut self, value: &str) {
         self.totals_row_count.set_value_string(value);
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn auto_filter(&self) -> &AutoFilter {
+        &self.auto_filter
+    }
+
+    #[inline]
+    pub fn auto_filter_mut(&mut self) -> &mut AutoFilter {
+        &mut self.auto_filter
+    }
+
+    #[inline]
+    pub fn set_auto_filter<S: Into<String>>(&mut self, range: S) {
+        let mut auto_filter = AutoFilter::default();
+        auto_filter.set_range(range);
+        self.auto_filter = auto_filter;
+    }
+
+    #[inline]
+    pub(crate) fn set_auto_filter_obj(&mut self, value: AutoFilter) {
+        self.auto_filter = value;
     }
 
     #[inline]

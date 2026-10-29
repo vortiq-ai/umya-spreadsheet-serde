@@ -6,7 +6,7 @@ use super::{
     NumberReference,
     StringReference,
     chart_source_caches::ReferenceIdentity,
-    phase8_cache_roles::OwnerCounts,
+    pivot_axis_cache_roles::OwnerCounts,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,7 +225,7 @@ pub(crate) struct DisplayLabelPartsMut<'a> {
 // Structural native-leaf partition. Role selection and extension ordering stay
 // in reference_topology; this layer never discovers or parses references.
 trait ReferenceLeaf {
-    fn strip_browser_reference_parts(&mut self);
+    fn strip_reference_export_parts(&mut self);
     fn reference_extensions(&self) -> Option<&super::ExtensionList>;
     fn reference_extensions_mut(&mut self) -> Option<&mut super::ExtensionList>;
     fn split_reference_formula_mut(&mut self) -> (&mut Formula, Option<&mut super::ExtensionList>);
@@ -233,7 +233,7 @@ trait ReferenceLeaf {
 macro_rules! reference_leaf {
     ($native:ty) => {
         impl ReferenceLeaf for $native {
-            fn strip_browser_reference_parts(&mut self) {
+            fn strip_reference_export_parts(&mut self) {
                 self.set_extensions(None);
             }
 
@@ -275,12 +275,12 @@ fn project_leaf_mut<'a, R: ReferenceLeaf, C>(
     reference.reference_extensions_mut()
 }
 
-fn project_leaf_browser_mut<'a, R: ReferenceLeaf, C>(
+fn project_leaf_for_projection_mut<'a, R: ReferenceLeaf, C>(
     reference: &'a mut R,
     context: &mut C,
     mut emit: impl FnMut(&mut C, &mut R),
 ) -> Option<&'a mut super::ExtensionList> {
-    reference.strip_browser_reference_parts();
+    reference.strip_reference_export_parts();
     emit(context, reference);
     None
 }
@@ -296,7 +296,7 @@ fn project_leaf_formula_mut<'a, R: ReferenceLeaf, C>(
 }
 
 // Ownership branches are defined once. Reference consumers retain their
-// established schedules; browser projection detaches only export metadata.
+// established schedules; projection detaches only export metadata.
 macro_rules! reference_topology {
     (($($m:tt)*),
     ($($b:lifetime)?),
@@ -1277,7 +1277,7 @@ macro_rules! reference_topology {
             for label in fields.extra_labels {
                 extra_labels.push(primary_label(label, Some((None, "pivot_label_extra")), w));
             }
-            PivotRemainder { base:id.map(|id|format!("phase8:pivot:{id}")),
+            PivotRemainder { base:id.map(|id|format!("pivot_format:{id}")),
                 shape:fields.shape, marker:fields.marker, label, extensions:fields.extensions,
                 extra_shapes:fields.extra_shapes, extra_markers:fields.extra_markers,
                 extra_labels, extra_extensions:fields.extra_extensions }
@@ -1429,7 +1429,7 @@ macro_rules! reference_topology {
                 id.map(ReferenceIdentity::DisplayUnitsLabel), w));
             let mut extra_labels=Vec::new();
             for label in fields.extra_labels { extra_labels.push(primary_display(label, None, w)); }
-            UnitsRemainder { base:id.map(|id|format!("phase8:axis:{id}")), label,
+            UnitsRemainder { base:id.map(|id|format!("display_units:{id}")), label,
                 extensions:fields.extensions, extra_labels,
                 extra_extensions:fields.extra_extensions }
         }
@@ -1943,7 +1943,7 @@ mod mutable {
     );
 }
 
-mod browser {
+mod projection {
     use super::{
         super::{
             AreaChartSeries,
@@ -2002,15 +2002,15 @@ mod browser {
         ReferenceMetadata,
         ReferenceOrder,
         ReferenceTargetMut,
-        project_leaf_browser_mut as project_leaf,
+        project_leaf_for_projection_mut as project_leaf,
     };
     reference_topology!((mut),(),ReferenceTargetMut,'_,
         (StringReference,NumberReference,MultiLevelStringReference),
     $;
-    group_parts=>into_browser_role_parts,
-    role_parts=>browser_role_parts_mut,
-    stringref=>browser_string_reference_mut,
-    ext=>browser_extensions_mut,
+    group_parts=>into_projection_parts,
+    role_parts=>projection_parts_mut,
+    stringref=>projection_string_reference_mut,
+    ext=>projection_extensions_mut,
     shape=>shape_properties_mut,
     numberref=>number_reference_mut,
     range_ref=>reference_for_roles_mut,
@@ -2105,11 +2105,11 @@ mod retaining {
 /// Remove export-only owner metadata through the same native ownership graph.
 /// Hidden parents are detached before projection, so their children are not
 /// traversed or materialized solely to discard them.
-pub(crate) fn strip_browser_parts(space: &mut ChartSpace) {
+pub(crate) fn strip_export_parts(space: &mut ChartSpace) {
     fn discard(_metadata: ReferenceMetadata, _target: ReferenceTargetMut<'_>) {}
     let mut visitor = discard;
-    let mut state = browser::State::new(&mut visitor);
-    browser::space(space, &mut state);
+    let mut state = projection::State::new(&mut visitor);
+    projection::space(space, &mut state);
 }
 
 pub(crate) fn visit_ref<'a>(
@@ -2285,7 +2285,7 @@ pub(crate) mod tests {
         let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
-            let name = file.name().to_owned();
+            let name = file.name().unwrap().into_owned();
             let mut data = Vec::new();
             file.read_to_end(&mut data).unwrap();
             if name == "xl/charts/chart1.xml" {
@@ -3019,7 +3019,7 @@ pub(crate) mod tests {
             .set_label(label);
         axis.set_display_units(units);
         plot.add_value_axis(axis);
-        let mut group = plot.chart_groups_mut().next().unwrap();
+        let group = plot.chart_groups_mut().next().unwrap();
         group
             .series_mut()
             .set_area_chart_series(vec![series("B", 7), series("C", 8)]);
@@ -3299,7 +3299,7 @@ pub(crate) mod tests {
         assert_eq!(serde_json::to_vec(&plot).unwrap(), stored);
     }
 
-    fn populated_phase8_space() -> ChartSpace {
+    fn populated_pivot_axis_space() -> ChartSpace {
         use crate::drawing::charts::{
             AxisId,
             ChartText,
@@ -3353,9 +3353,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn complete_phase8_pipeline_preserves_cache_priority_and_duplicate_diagnostics_in_three_modes()
-    {
-        let mut space = populated_phase8_space();
+    fn reference_traversals_preserve_cache_priority_and_duplicate_diagnostics() {
+        let mut space = populated_pivot_axis_space();
         let stored = serde_json::to_vec(&space).unwrap();
         let before = borrowed(&space);
         assert_eq!(before.1.len(), 12);
@@ -3437,7 +3436,7 @@ pub(crate) mod tests {
             Chart,
             Plot,
         }
-        let mut original = populated_phase8_space();
+        let mut original = populated_pivot_axis_space();
         let source = diagnostic_invert_space();
         let group = source.chart().plot_area().chart_groups().next().unwrap();
         let series = &group.series().area_chart_series()[0];
@@ -3622,7 +3621,7 @@ pub(crate) mod tests {
         reference.formula_mut().set_address_str("Missing!$A$1");
         let mut previous = diagnostic_invert_reference_space(reference);
         previous.chart_mut().set_pivot_formats(
-            populated_phase8_space()
+            populated_pivot_axis_space()
                 .chart()
                 .pivot_formats()
                 .unwrap()

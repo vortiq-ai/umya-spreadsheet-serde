@@ -15,8 +15,8 @@ pub use self::chart_group::*;
 
 mod chart_series_identity;
 
-pub(crate) mod chart_server_parts;
-pub use self::chart_server_parts::RestoreReport;
+pub(crate) mod chart_metadata_restoration;
+pub use self::chart_metadata_restoration::RestoreReport;
 
 mod series_family;
 pub use self::series_family::*;
@@ -69,7 +69,7 @@ mod display_units;
 pub use self::display_units::*;
 mod pivot_format;
 pub use self::pivot_format::*;
-mod phase8_cache_roles;
+mod pivot_axis_cache_roles;
 
 mod date1904;
 pub use self::date1904::*;

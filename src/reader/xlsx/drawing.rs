@@ -4,8 +4,9 @@ use quick_xml::{
 };
 
 use crate::{
+    XlsxError,
     reader::{
-        driver::xml_read_loop,
+        driver::try_xml_read_loop,
         xlsx::{
             ChartPartProvider,
             SourceCacheSession,
@@ -27,12 +28,12 @@ pub(crate) fn read(
     drawing_relationships: Option<&RawRelationships>,
     session: &mut SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
-) {
+) -> Result<(), XlsxError> {
     let data = std::io::Cursor::new(drawing_file.file_data());
     let mut reader = Reader::from_reader(data);
     reader.config_mut().trim_text(true);
 
-    xml_read_loop!(
+    try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
             if matches!(e.name().into_inner(), b"xdr:wsDr" | b"wsDr") {
@@ -51,4 +52,6 @@ pub(crate) fn read(
         },
         Event::Eof => break
     );
+
+    Ok(())
 }

@@ -68,7 +68,7 @@ pub struct DataLabel {
     invalid_index:      bool,
 }
 impl DataLabel {
-    pub(crate) fn restore_browser_parts(
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -76,13 +76,14 @@ impl DataLabel {
         if self.index.explicit_value().is_none()
             || self.index.explicit_value() != previous.index.explicit_value()
         {
+            self.discard_extensions(report);
             report.incompatible_owners += 1;
             report
                 .diagnostics
                 .push("unmatched pivot data-label index".into());
             return;
         }
-        // This owner is hidden in the browser projection. Omitted children
+        // This owner is hidden in the projection. Omitted children
         // come from the removal-adjusted native basis; supplied typed values
         // stay current, including compatible text/layout/format branches.
         macro_rules! missing {
@@ -90,6 +91,18 @@ impl DataLabel {
                 if self.$field.is_none() { self.$field = previous.$field.clone(); }
             )+ };
         }
+        let incoming_text = self.text.is_some();
+        let incoming_layout = self.layout.is_some();
+        let incoming_shape = self.shape_properties.is_some();
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "dLbl",
+            report,
+        );
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        );
         let omitted_position = self.position.is_none();
         missing!(
             delete,
@@ -99,8 +112,7 @@ impl DataLabel {
             shape_properties,
             text_properties,
             position,
-            separator,
-            extensions
+            separator
         );
         macro_rules! flag {
             ($($field:ident),+ $(,)?) => { $(
@@ -124,11 +136,11 @@ impl DataLabel {
         }
         if let (Some(format), Some(old)) = (&mut self.numbering_format, &previous.numbering_format)
         {
-            report.restored_owners += format.restore_browser_parts(old);
+            report.restored_owners += format.restore_export_parts(old);
         }
         if let (Some(text), Some(old)) = (&mut self.text_properties, &previous.text_properties) {
-            if text.browser_structure_matches(old) {
-                report.restored_owners += text.restore_browser_parts(old);
+            if text.projected_structure_matches(old) {
+                report.restored_owners += text.restore_export_parts(old);
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -138,14 +150,44 @@ impl DataLabel {
         }
         let (text, layout, shape, _) = self.reference_role_parts_mut();
         let (old_text, old_layout, old_shape, _) = previous.reference_role_parts();
-        if let (Some(text), Some(old)) = (text, old_text) {
-            super::chart_server_parts::restore_text(text, old, report);
+        if let (true, Some(text)) = (incoming_text, text) {
+            if let Some(old) = old_text {
+                super::chart_metadata_restoration::restore_text(text, old, report);
+            } else {
+                super::chart_metadata_restoration::discard_text_extensions(text, report);
+            }
         }
-        if let (Some(layout), Some(old)) = (layout, old_layout) {
-            super::chart_server_parts::restore_layout(layout, old, report);
+        if let (true, Some(layout)) = (incoming_layout, layout) {
+            if let Some(old) = old_layout {
+                super::chart_metadata_restoration::restore_layout(layout, old, report);
+            } else {
+                super::chart_metadata_restoration::discard_layout_extensions(layout, report);
+            }
         }
-        if let (Some(shape), Some(old)) = (shape, old_shape) {
-            super::chart_server_parts::restore_shape(shape, old, report);
+        if let (true, Some(shape)) = (incoming_shape, shape) {
+            if let Some(old) = old_shape {
+                super::chart_metadata_restoration::restore_shape(shape, old, report);
+            } else {
+                super::chart_metadata_restoration::discard_shape_extensions(shape, report);
+            }
+        }
+    }
+
+    pub(crate) fn discard_extensions(&mut self, report: &mut super::RestoreReport) {
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "dLbl",
+            report,
+        );
+        self.extensions = None;
+        if let Some(text) = &mut self.text {
+            super::chart_metadata_restoration::discard_text_extensions(text, report);
+        }
+        if let Some(layout) = &mut self.layout {
+            super::chart_metadata_restoration::discard_layout_extensions(layout, report);
+        }
+        if let Some(shape) = &mut self.shape_properties {
+            super::chart_metadata_restoration::discard_shape_extensions(shape, report);
         }
     }
 
@@ -166,7 +208,7 @@ impl DataLabel {
         )
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (
         Option<&mut ChartText>,

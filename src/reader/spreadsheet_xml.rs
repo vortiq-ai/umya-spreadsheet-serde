@@ -229,3 +229,68 @@ impl<R: BufRead> Read for SpreadsheetXml<R> {
         Ok(amount)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_prefix_rebinding_preserves_foreign_names_and_text() {
+        let xml = format!(
+            r#"<s:worksheet xmlns:s="{SHEET_MAIN_NS}"><s:sheetData><s:row r="1"><s:c r="A1"><s:v>7</s:v></s:c></s:row><s:row xmlns:s="urn:foreign" r="2"><s:c/></s:row><alias:row xmlns:alias="{SHEET_MAIN_NS}" r="3"/></s:sheetData><s:headerFooter><s:oddHeader>&amp;CResearch &amp; Development<![CDATA[<literal>]]></s:oddHeader></s:headerFooter></s:worksheet>"#
+        );
+        let mut reader = SpreadsheetXml::new(xml.as_bytes());
+        let mut normalized = String::new();
+        reader.read_to_string(&mut normalized).unwrap();
+        assert!(normalized.contains("<row r=\"1\""));
+        assert!(normalized.contains("<c r=\"A1\""));
+        assert!(normalized.contains(">7</v></c></row>"));
+        assert!(normalized.contains("<s:row r=\"2\""));
+        assert!(normalized.contains("<s:c"));
+        assert!(!normalized.contains("<row r=\"2\""));
+        assert!(normalized.contains("<row r=\"3\""));
+        assert!(normalized.contains("&amp;CResearch &amp; Development<![CDATA[<literal>]]>"));
+        assert!(normalized.ends_with("</oddHeader></headerFooter></worksheet>"));
+    }
+
+    #[test]
+    fn foreign_default_namespace_does_not_become_a_spreadsheet_row() {
+        let xml = format!(
+            r#"<s:worksheet xmlns:s="{SHEET_MAIN_NS}"><s:sheetData><s:row r="1"/><row xmlns="urn:foreign" r="2"/><s:row r="3"/></s:sheetData></s:worksheet>"#
+        );
+        let mut reader = quick_xml::Reader::from_reader(SpreadsheetXml::new(xml.as_bytes()));
+        let mut buffer = Vec::new();
+        let mut rows = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer).unwrap() {
+                Event::Empty(element) if element.name().as_ref() == b"row" => {
+                    rows.push(
+                        element
+                            .try_get_attribute("r")
+                            .unwrap()
+                            .unwrap()
+                            .value
+                            .into_owned(),
+                    );
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+            buffer.clear();
+        }
+        assert_eq!(rows, vec![b"1".to_vec(), b"3".to_vec()]);
+    }
+
+    #[test]
+    fn first_event_does_not_buffer_the_complete_worksheet() {
+        let xml = format!(
+            "<s:worksheet xmlns:s=\"{SHEET_MAIN_NS}\"><s:sheetData>{}</s:sheetData></s:worksheet>",
+            "<s:row r=\"1\"><s:c r=\"A1\"><s:v>1</s:v></s:c></s:row>".repeat(20_000),
+        );
+        let mut reader = SpreadsheetXml::new(io::Cursor::new(xml.as_bytes()));
+        assert!(reader.fill_buf().unwrap().starts_with(b"<worksheet "));
+        assert!(reader.reader.get_ref().position() < 256);
+        assert!(reader.scratch.len() < 256);
+        assert!(reader.output.len() < 256);
+    }
+}

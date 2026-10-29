@@ -137,12 +137,12 @@ impl RawWorksheet {
         arv: &mut zip::read::ZipArchive<R>,
         target: &str,
         defer_chart_data: bool,
-    ) {
+    ) -> Result<(), XlsxError> {
         self.worksheet_file_mut().set_attributes(arv, "xl", target);
 
         let base_path = self.worksheet_file().path();
         let target = self.worksheet_file().make_rel_name();
-        self.read_rawrelationships(arv, &base_path, &target, None, defer_chart_data);
+        self.read_rawrelationships(arv, &base_path, &target, None, defer_chart_data)
     }
 
     pub(crate) fn read_lazy<R: io::Read + io::Seek, P: AsRef<Path>>(
@@ -150,7 +150,7 @@ impl RawWorksheet {
         arv: &mut zip::read::ZipArchive<R>,
         target: &str,
         source_file: P,
-    ) {
+    ) -> Result<(), XlsxError> {
         self.worksheet_file_mut().set_attributes_from_source(
             arv,
             "xl",
@@ -160,7 +160,7 @@ impl RawWorksheet {
 
         let base_path = self.worksheet_file().path();
         let target = self.worksheet_file().make_rel_name();
-        self.read_rawrelationships(arv, &base_path, &target, Some(source_file.as_ref()), false);
+        self.read_rawrelationships(arv, &base_path, &target, Some(source_file.as_ref()), false)
     }
 
     pub(crate) fn read_rawrelationships<R: io::Read + io::Seek>(
@@ -170,9 +170,9 @@ impl RawWorksheet {
         target: &str,
         source_file: Option<&Path>,
         defer_chart_data: bool,
-    ) {
+    ) -> Result<(), XlsxError> {
         let mut obj = RawRelationships::default();
-        if obj.set_attributes(arv, base_path, target, source_file, defer_chart_data) {
+        if obj.set_attributes(arv, base_path, target, source_file, defer_chart_data)? {
             for relationship in obj.relationship_list() {
                 let rels_base_path = relationship.raw_file().path();
                 let rels_target = relationship.raw_file().make_rel_name();
@@ -182,10 +182,11 @@ impl RawWorksheet {
                     &rels_target,
                     source_file,
                     defer_chart_data,
-                );
+                )?;
             }
             self.set_relationships(obj);
         }
+        Ok(())
     }
 
     pub(crate) fn load_file_data_from_source(&mut self) -> Result<(), XlsxError> {

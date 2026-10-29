@@ -1,7 +1,7 @@
 use super::Range;
 use crate::{
     helper::{
-        address::split_address,
+        address::split_reference_address,
         coordinate::index_from_coordinate,
         utils::compile_regex,
     },
@@ -70,7 +70,7 @@ impl Address {
 
     pub fn set_address<S: Into<String>>(&mut self, value: S) -> &mut Self {
         let org_value = value.into();
-        let (sheet_name, range) = split_address(&org_value);
+        let (sheet_name, range) = split_reference_address(&org_value);
         self.range.set_range(range);
         if !sheet_name.is_empty() {
             self.sheet_name = sheet_name.into();

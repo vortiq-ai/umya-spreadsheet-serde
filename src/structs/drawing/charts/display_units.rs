@@ -1,5 +1,4 @@
-//! c:dispUnits, c:dispUnitsLbl (phase8 candidate; requires phase6+7 dependency
-//! owners).
+//! Chart display units and display-unit labels.
 use std::io::Cursor;
 
 use quick_xml::{
@@ -132,7 +131,7 @@ pub struct ValueAxisParts {
     extra_display_units: Vec<DisplayUnits>,
 }
 impl ValueAxisParts {
-    pub(crate) fn restore_browser_parts(
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -141,8 +140,11 @@ impl ValueAxisParts {
         match (&mut self.display_units, &previous.display_units) {
             (Some(current), Some(previous)) => {
                 let compatible = current.compatible_unit(previous);
-                restored += current.restore_browser_parts(previous, report);
+                restored += current.restore_export_parts(previous, report);
                 if !compatible {
+                    for units in &mut self.extra_display_units {
+                        units.discard_extensions(report);
+                    }
                     return restored;
                 }
             }
@@ -151,7 +153,15 @@ impl ValueAxisParts {
                 restored += 1;
                 report.recreated_owners += 1;
             }
-            _ => return restored,
+            _ => {
+                if let Some(units) = &mut self.display_units {
+                    units.discard_extensions(report);
+                }
+                for units in &mut self.extra_display_units {
+                    units.discard_extensions(report);
+                }
+                return restored;
+            }
         }
         self.extra_display_units
             .clone_from(&previous.extra_display_units);
@@ -162,7 +172,7 @@ impl ValueAxisParts {
         (self.display_units.as_ref(), &self.extra_display_units)
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (Option<&mut DisplayUnits>, &mut [DisplayUnits]) {
         self.reference_role_parts_mut()
@@ -270,12 +280,35 @@ impl DisplayUnits {
         }
     }
 
-    pub(crate) fn restore_browser_parts(
+    fn discard_extensions(&mut self, report: &mut super::RestoreReport) {
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "dispUnits",
+            report,
+        );
+        self.extensions = None;
+        for _ in self.extra_extensions.drain(..) {
+            super::chart_metadata_restoration::record_supplied_extension(
+                true,
+                "dispUnits/extra/extLst",
+                report,
+            );
+        }
+        if let Some(label) = self.label.as_deref_mut() {
+            label.discard_extensions(report);
+        }
+        for label in &mut self.extra_labels {
+            label.discard_extensions(report);
+        }
+    }
+
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
     ) -> usize {
         if !self.compatible_unit(previous) {
+            self.discard_extensions(report);
             report.incompatible_owners += 1;
             report.diagnostics.push(
                 "incompatible explicit display-unit replacement retains its current state".into(),
@@ -285,7 +318,7 @@ impl DisplayUnits {
         let mut restored = 0;
         match (&mut self.label, &previous.label) {
             (Some(current), Some(previous)) => {
-                restored += current.restore_browser_parts(previous, report);
+                restored += current.restore_export_parts(previous, report);
             }
             (None, Some(previous)) => {
                 self.label = Some(previous.clone());
@@ -296,6 +329,18 @@ impl DisplayUnits {
         }
         // The current compatible unit is editable. Remaining occurrences and
         // diagnostics belong to the caller's pre-edited authoritative basis.
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "dispUnits",
+            report,
+        );
+        for _ in &self.extra_extensions {
+            super::chart_metadata_restoration::record_supplied_extension(
+                true,
+                "dispUnits/extra/extLst",
+                report,
+            );
+        }
         self.extensions.clone_from(&previous.extensions);
         self.conflicts.clone_from(&previous.conflicts);
         self.extra_units.clone_from(&previous.extra_units);
@@ -318,7 +363,7 @@ impl DisplayUnits {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::UnitsPartsMut<'_> {
         self.reference_role_parts_mut()
@@ -595,7 +640,7 @@ pub struct DisplayUnitsLabel {
 }
 
 #[cfg(all(test, feature = "serde"))]
-mod phase8_label_wire_tests {
+mod label_serialization_tests {
     use super::*;
     #[test]
     fn empty_label_fields_and_occurrence_tail_have_exact_cost() {
@@ -622,7 +667,33 @@ impl Default for DisplayUnitsLabel {
     }
 }
 impl DisplayUnitsLabel {
-    pub(crate) fn restore_browser_parts(
+    fn discard_extensions(&mut self, report: &mut super::RestoreReport) {
+        if let Some(layout) = &mut self.layout {
+            super::chart_metadata_restoration::discard_layout_extensions(layout, report);
+        }
+        if let Some(text) = &mut self.text {
+            super::chart_metadata_restoration::discard_text_extensions(text, report);
+        }
+        if let Some(shape) = &mut self.shape_properties {
+            super::chart_metadata_restoration::discard_shape_extensions(shape, report);
+        }
+        for child in &mut self.extra_children {
+            match &mut child.child {
+                DisplayLabelChild::Layout(value) => {
+                    super::chart_metadata_restoration::discard_layout_extensions(value, report);
+                }
+                DisplayLabelChild::Text(value) => {
+                    super::chart_metadata_restoration::discard_text_extensions(value, report);
+                }
+                DisplayLabelChild::Shape(value) => {
+                    super::chart_metadata_restoration::discard_shape_extensions(value, report);
+                }
+                DisplayLabelChild::TextProperties(_) => {}
+            }
+        }
+    }
+
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -630,41 +701,50 @@ impl DisplayUnitsLabel {
         let mut restored = 0;
         match (&mut self.layout, &previous.layout) {
             (Some(current), Some(previous)) => {
-                super::chart_server_parts::restore_layout(current, previous, report);
+                super::chart_metadata_restoration::restore_layout(current, previous, report);
             }
             (None, Some(previous)) => {
                 self.layout = Some(previous.clone());
                 restored += 1;
                 report.recreated_owners += 1;
             }
-            _ => {}
+            (Some(current), None) => {
+                super::chart_metadata_restoration::discard_layout_extensions(current, report);
+            }
+            (None, None) => {}
         }
         match (&mut self.text, &previous.text) {
             (Some(current), Some(previous)) => {
-                super::chart_server_parts::restore_text(current, previous, report);
+                super::chart_metadata_restoration::restore_text(current, previous, report);
             }
             (None, Some(previous)) => {
                 self.text = Some(previous.clone());
                 restored += 1;
                 report.recreated_owners += 1;
             }
-            _ => {}
+            (Some(current), None) => {
+                super::chart_metadata_restoration::discard_text_extensions(current, report);
+            }
+            (None, None) => {}
         }
         match (&mut self.shape_properties, &previous.shape_properties) {
             (Some(current), Some(previous)) => {
-                super::chart_server_parts::restore_shape(current, previous, report);
+                super::chart_metadata_restoration::restore_shape(current, previous, report);
             }
             (None, Some(previous)) => {
                 self.shape_properties = Some(previous.clone());
                 restored += 1;
                 report.recreated_owners += 1;
             }
-            _ => {}
+            (Some(current), None) => {
+                super::chart_metadata_restoration::discard_shape_extensions(current, report);
+            }
+            (None, None) => {}
         }
         match (&mut self.text_properties, &previous.text_properties) {
             (Some(current), Some(previous)) => {
-                if current.browser_structure_matches(previous) {
-                    restored += current.restore_browser_parts(previous);
+                if current.projected_structure_matches(previous) {
+                    restored += current.restore_export_parts(previous);
                 } else {
                     report.incompatible_owners += 1;
                     report
@@ -695,7 +775,7 @@ impl DisplayUnitsLabel {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::DisplayLabelPartsMut<'_> {
         self.reference_role_parts_mut()

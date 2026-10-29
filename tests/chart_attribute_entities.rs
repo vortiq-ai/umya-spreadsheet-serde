@@ -59,11 +59,14 @@ fn rewrite_part(bytes: &[u8], name: &str, edit: impl FnOnce(String) -> String) -
         let mut entry = source.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == name {
+        if entry.name().unwrap() == name {
             data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
         }
         output
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                entry.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&data).unwrap();
     }

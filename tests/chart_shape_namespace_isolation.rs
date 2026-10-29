@@ -4,7 +4,7 @@
 
 use umya_spreadsheet::drawing::charts::ShapeProperties;
 
-#[path = "support/browser_chart_fixture.rs"]
+#[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 
 const NS_A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";

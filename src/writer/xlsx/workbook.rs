@@ -83,6 +83,9 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 
     // workbookPr
     let mut attributes: crate::structs::AttrCollection = Vec::new();
+    if wb.date1904() {
+        attributes.push(("date1904", "1").into());
+    }
     attributes.push(("filterPrivacy", "1").into());
     // attributes.push(("defaultThemeVersion", "124226").into());
     if wb.has_macros() {
@@ -141,23 +144,13 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         write_end_tag(&mut writer, "definedNames");
     }
 
-    // calcPr
-    //
-    // `iterate` must be carried through. A workbook with a DELIBERATE circular
-    // reference (LBO: debt -> interest -> cash flow -> debt) sets it, and Excel
-    // converges the model. Writing a bare `calcId` dropped it, so Excel refused
-    // to converge a file it had computed fine before the round trip — we
-    // turned a gap into a broken workbook. Measured 2026-08-27 on a
-    // customer model: source `<calcPr calcId="191028" fullCalcOnLoad="1"
-    // iterate="1"/>`, our output `<calcPr calcId="122211"/>`.
+    // Preserve iterative calculation settings for intentional circular
+    // formulas.
     let iterate_count_str;
     let iterate_delta_str;
     let mut calc_attrs: crate::structs::AttrCollection = vec![("calcId", "122211").into()];
-    // Missing caches are invisible to non-recalculating readers, while present
-    // caches may be stale or produced by a different calculation engine. When
-    // requested, ask Excel to replace them on open. (Our `calcId` is
-    // deliberately low, but that alone is not a contract; `fullCalcOnLoad`
-    // is.)
+    // A low calcId alone does not guarantee recalculation. Set fullCalcOnLoad
+    // only when requested, so Excel replaces missing or stale formula caches.
     if wb.full_calc_on_load() {
         calc_attrs.push(("fullCalcOnLoad", "1").into());
     }

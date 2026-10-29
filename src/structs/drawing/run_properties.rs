@@ -156,15 +156,15 @@ pub struct RunPropertiesParts {
 }
 
 impl RunProperties {
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
     }
 
-    pub(crate) fn browser_parts_supplied(&self) -> bool {
+    pub(crate) fn export_parts_supplied(&self) -> bool {
         self.parts.is_some()
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         let Some(previous) = &previous.parts else {
             return 0;
         };
@@ -204,10 +204,10 @@ impl RunProperties {
         usize::from(restored)
     }
 
-    pub(crate) fn browser_values_match(&self, previous: &Self) -> bool {
+    pub(crate) fn projected_values_match(&self, previous: &Self) -> bool {
         let bytes = |value: &Self| {
             let mut value = value.clone();
-            value.strip_browser_parts();
+            value.strip_export_parts();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
             value.write_to_rpr(&mut writer);
             writer.into_inner().into_inner()

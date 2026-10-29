@@ -103,11 +103,10 @@ pub(crate) struct SeriesReferencePartsMut<'a> {
 }
 
 impl AreaChartSeries {
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
-        // These collections are server-owned in their entirety. An incoming
-        // Some(empty) or populated payload is not an authoritative edit or an
-        // excuse to suppress restoration. Explicit changes already belong to
-        // the caller's pre-edited native basis, including an absent slot.
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        // Restore these collections from the authoritative chart. Supplied
+        // empty or populated collections cannot suppress restoration; explicit
+        // changes, including removals, already belong to the edited basis.
         self.parts.clone_from(&previous.parts);
         usize::from(self.parts.is_some())
     }
@@ -134,7 +133,7 @@ impl AreaChartSeries {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
+    pub(crate) fn projection_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
         self.parts = None;
         self.reference_role_parts_mut()
     }

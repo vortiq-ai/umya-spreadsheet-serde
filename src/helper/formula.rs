@@ -2,7 +2,7 @@ use crate::{
     helper::{
         address::{
             join_address,
-            split_address,
+            split_reference_address,
             unescape_sheet_name,
         },
         coordinate::{
@@ -1116,7 +1116,7 @@ pub fn adjustment_formula_coordinate(
         if token.get_token_type() == &FormulaTokenTypes::Operand
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
-            let (sheet_name, range) = split_address(token.get_value());
+            let (sheet_name, range) = split_reference_address(token.get_value());
             let sheet_name = unescape_sheet_name(sheet_name);
             let mut coordinate_list_new: Vec<String> = Vec::new();
             let coordinate_list = get_split_range(range);
@@ -1191,7 +1191,7 @@ pub fn adjustment_insert_formula_coordinate(
         if token.get_token_type() == &FormulaTokenTypes::Operand
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
-            let (sheet_name, range) = split_address(token.get_value());
+            let (sheet_name, range) = split_reference_address(token.get_value());
             let sheet_name = unescape_sheet_name(sheet_name);
             if ignore_worksheet
                 || (sheet_name.is_empty() && worksheet_name == self_worksheet_name)
@@ -1258,7 +1258,7 @@ pub fn adjustment_remove_formula_coordinate(
         if token.get_token_type() == &FormulaTokenTypes::Operand
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
-            let (sheet_name, range) = split_address(token.get_value());
+            let (sheet_name, range) = split_reference_address(token.get_value());
             let sheet_name = unescape_sheet_name(sheet_name);
             if ignore_worksheet
                 || (sheet_name.is_empty() && worksheet_name == self_worksheet_name)
@@ -1707,5 +1707,62 @@ mod shared_formula_quoted_sheet_tests {
             !out.contains("(1)!$E$38"),
             "sheet name lost its quotes: {out}"
         );
+    }
+}
+
+#[test]
+fn quoted_sheet_coordinate_helpers_preserve_literal_identity() {
+    for (name, qualifier) in [
+        ("\"Data\"", "'\"Data\"'"),
+        ("Data\"", "'Data\"'"),
+        ("\"D'x\"", "'\"D''x\"'"),
+        ("Bob's Data", "'Bob''s Data'"),
+        ("ÄSheet", "'ÄSheet'"),
+        ("[Book.xlsx]Data", "'[Book.xlsx]Data'"),
+    ] {
+        let input = format!("{qualifier}!B2+{qualifier}!$C$3");
+        let expected = format!("{qualifier}!B3+{qualifier}!$C$3");
+        let mut tokens = parse_to_tokens(format!("={input}"));
+        adjustment_formula_coordinate(&mut tokens, 0, 1);
+        assert_eq!(render(&tokens), expected);
+        for target in [name, "NotTarget"] {
+            let input = format!("{qualifier}!B2");
+            let mut inserted = parse_to_tokens(format!("={input}"));
+            assert_eq!(
+                adjustment_insert_formula_coordinate(
+                    &mut inserted,
+                    0,
+                    0,
+                    1,
+                    1,
+                    target,
+                    "Host",
+                    false
+                ),
+                if target == name {
+                    format!("{qualifier}!B3")
+                } else {
+                    input.clone()
+                }
+            );
+            let mut removed = parse_to_tokens(format!("={input}"));
+            assert_eq!(
+                adjustment_remove_formula_coordinate(
+                    &mut removed,
+                    0,
+                    0,
+                    1,
+                    1,
+                    target,
+                    "Host",
+                    false
+                ),
+                if target == name {
+                    format!("{qualifier}!B1")
+                } else {
+                    input.clone()
+                }
+            );
+        }
     }
 }

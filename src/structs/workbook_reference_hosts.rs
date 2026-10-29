@@ -17,6 +17,7 @@ use quick_xml::{
 use super::Workbook;
 use crate::{
     XlsxError,
+    XlsxErrorKind,
     drawing::charts::{
         ChartReferenceEdit,
         NamespaceScope,
@@ -47,15 +48,18 @@ const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const C15_NS: &str = "http://schemas.microsoft.com/office/drawing/2012/chart";
 
 fn error(message: impl Into<String>) -> XlsxError {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
+    XlsxError::with_message(XlsxErrorKind::Xml, message.into())
 }
 fn part_bytes(raw: &RawFile) -> Result<Cow<'_, [u8]>, XlsxError> {
     if raw.has_file_data() {
         return Ok(Cow::Borrowed(raw.file_data()));
     }
-    let path = raw
-        .source_file()
-        .ok_or_else(|| error(format!("missing raw part {}", raw.file_target())))?;
+    let path = raw.source_file().ok_or_else(|| {
+        XlsxError::with_message(
+            XlsxErrorKind::NotFound,
+            format!("missing raw part {}", raw.file_target()),
+        )
+    })?;
     let file = File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     let mut source = zip_by_name(&mut archive, raw.file_target())?;
@@ -184,7 +188,7 @@ fn scan_part(
 }
 
 /// Completes every metadata scan before materializing any sheet. `required`
-/// contains physical source/destination names from the already-approved edit.
+/// contains physical source/destination names from the prepared edit.
 pub(super) fn discover(
     book: &Workbook,
     required: &[&str],
@@ -193,8 +197,12 @@ pub(super) fn discover(
     for name in required {
         book.find_sheet_index_by_name(name)?;
     }
-    let prepared = PreparedReferenceEdit::new(edit)
-        .map_err(|e| error(format!("invalid reference edit: {e:?}")))?;
+    let prepared = PreparedReferenceEdit::new(edit).map_err(|e| {
+        XlsxError::with_message(
+            XlsxErrorKind::InvalidArgument,
+            format!("invalid reference edit: {e:?}"),
+        )
+    })?;
     let mut hosts = Vec::new();
     for (index, sheet) in book.sheet_collection_no_check().iter().enumerate() {
         if sheet.is_deserialized() || required.iter().any(|name| *name == sheet.name()) {
@@ -240,12 +248,13 @@ pub(super) fn discover(
 
 /// Ordinary reader/cache capture happens only after discovery succeeded for all
 /// sheets and before any physical or semantic edit is applied.
-pub(super) fn materialize(book: &mut Workbook, hosts: &[usize]) {
+pub(super) fn materialize(book: &mut Workbook, hosts: &[usize]) -> Result<(), XlsxError> {
     for &index in hosts {
         if !book.sheet_collection_no_check()[index].is_deserialized() {
-            book.read_sheet(index);
+            book.try_read_sheet(index)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

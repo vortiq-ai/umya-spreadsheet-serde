@@ -99,11 +99,11 @@ pub struct BodyPropertiesParts {
 }
 
 impl BodyProperties {
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         let Some(previous) = &previous.parts else {
             return 0;
         };

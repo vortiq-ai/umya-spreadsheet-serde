@@ -57,7 +57,7 @@ fn replace(bytes: &[u8], chart_xml: &str) -> Vec<u8> {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..input.len() {
         let mut entry = input.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
         if name == "xl/charts/chart1.xml" {

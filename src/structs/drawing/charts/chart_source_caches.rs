@@ -31,9 +31,9 @@ pub const MAX_SOURCE_CACHE_TEXT_BYTES: usize = 1_048_576;
 /// guard also protects formula edits made in place. Repeated indices retain
 /// every occurrence as an exception in source order. Runs use wide endpoints.
 ///
-/// Trust only reader-produced caches and trusted server persistence. Plain
+/// Trust only reader-produced caches and trusted persistence. Plain
 /// serde does not validate trust: declared counts and run lengths control
-/// export iteration. Clear client-created caches or adopt from server data.
+/// export iteration. Clear supplied caches or adopt from authoritative data.
 /// The logical import caps exclude formula text, allocation overhead, raw XML,
 /// parsing temporaries and later copies or snapshots.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -69,7 +69,7 @@ pub struct SourceException {
 /// occurrence is charged independently, including repeated formulas.
 /// `dropped_caches = reduced_caches + over_cap_caches`. Point costs count
 /// records (exceptions plus runs), never expanded run lengths. The caps are
-/// logical import budgets, not heap limits. Backend budget warnings should
+/// logical import budgets, not heap limits. Budget warnings should
 /// use `over_cap_caches > 0`, since reproducible elimination loses no labels.
 ///
 /// Eager import finishes this report before returning. Lazy reports accumulate
@@ -504,7 +504,7 @@ pub(crate) fn clear_source_caches(space: &mut ChartSpace) {
 
 /// Count identities before considering formulas, guards or cache presence.
 /// Missing identities and duplicates on either side cannot match. Only the
-/// cache of a unique, unchanged, server-owned reference is cloned.
+/// cache of a unique, unchanged, authoritative reference is cloned.
 pub(crate) fn adopt_source_caches(space: &mut ChartSpace, previous: &ChartSpace) {
     let mut incoming_counts = HashMap::new();
     visit_string_references_ref(space, &mut |identity, _| {

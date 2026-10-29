@@ -898,7 +898,8 @@ fn merged_titles_and_categories_do_not_share_a_part_memo() {
         &stylesheet,
         &mut session,
         &mut provider,
-    );
+    )
+    .unwrap();
     let work = capture(&mut book, &mut session, &mut provider);
     assert_eq!(work.decode_scans, 2);
     assert_eq!(provider.memo.observation.hits, 0);

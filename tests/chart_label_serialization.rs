@@ -1,6 +1,4 @@
-//! Exact source-derived byte hypotheses checked against the real serializers.
-//! These assertions must run in the joint gate; this file itself is not a
-//! receipt.
+//! Exact serialized-size assertions for label and run metadata.
 #![cfg(feature = "serde")]
 use std::io::{
     Cursor,
@@ -72,7 +70,7 @@ fn input(group_present: bool) -> Workbook {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..source.len() {
         let mut member = source.by_index(i).unwrap();
-        let name = member.name().to_owned();
+        let name = member.name().unwrap().into_owned();
         let mut bytes = Vec::new();
         member.read_to_end(&mut bytes).unwrap();
         if name == "xl/charts/chart1.xml" {

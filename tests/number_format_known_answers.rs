@@ -1,3 +1,6 @@
+#[path = "support/number_format_expectations.rs"]
+mod number_format_expectations;
+
 use std::{
     collections::BTreeSet,
     env,
@@ -119,7 +122,7 @@ fn capture_inputs(corpus_codes: &Value) -> Inputs {
         "0;0;0;0;0;[Red]0",
         "0;0;0;0;0;[<0]0",
         r#""literal";0;0;0;0;[Red]0"#,
-        // Escaped controls become quoted only at the rewritten split stage.
+        // Escaped controls become quoted only at the rewritten split.
         r"0;0;0;0;0;\[Red]0",
         r"0;0;0;0;0;\[<0]0",
         "[Red0",
@@ -220,19 +223,12 @@ fn captures_number_format_known_answers() {
     println!("captured {} distinct format/value rows", rows.len());
 }
 
-// This table was captured from the implementation before the prepared-format
-// refactor. It is the external oracle for that refactor: both output bytes and
-// panic messages must remain identical, including malformed-format behavior.
+// Preserve captured outputs and panics except the independently derived
+// quoted-composite expectations validated by the shared test helper.
 // Compare after restoring the hook so a mismatch identifies its fixture row.
 #[test]
 fn number_formats_match_known_answers() {
-    let rows: Vec<Value> =
-        serde_json::from_str(include_str!("fixtures/number_format_known_answers.json"))
-            .expect("parse known-answer fixture");
-    assert!(
-        !rows.is_empty(),
-        "capture the known-answer fixture before running the regression test"
-    );
+    let rows = number_format_expectations::validated_rows();
     let mismatches: Vec<_> = with_silent_panics(|| {
         let mut mismatches = Vec::new();
         for (index, row) in rows.iter().enumerate() {

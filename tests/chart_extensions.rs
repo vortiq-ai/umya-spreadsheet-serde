@@ -486,7 +486,7 @@ fn replace_part(bytes: &[u8], xml: &str) -> Vec<u8> {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..input.len() {
         let mut file = input.by_index(i).unwrap();
-        let name = file.name().to_owned();
+        let name = file.name().unwrap().into_owned();
         let mut data = Vec::new();
         file.read_to_end(&mut data).unwrap();
         if name == "xl/charts/chart1.xml" {

@@ -1,4 +1,4 @@
-//! Production cache capture regressions for the stage9 diagnostic-owner phase.
+//! Cache admission across charts and sheets.
 use super::*;
 use crate::drawing::charts::{
     Formula,
@@ -316,9 +316,9 @@ fn record_diagnostic_output(bytes: &[u8], split_sheets: bool) {
         Digest,
         Sha256,
     };
-    if let Some(root) = std::env::var_os("PHASE9_OUTPUT_DIR") {
-        let source = std::env::var("PHASE9_SOURCE_ID").expect("source identity required");
-        let run = std::env::var("PHASE9_RUN_ID").expect("run identity required");
+    if let Some(root) = std::env::var_os("CHART_CACHE_OUTPUT_DIR") {
+        let source = std::env::var("CHART_CACHE_SOURCE_ID").expect("source identity required");
+        let run = std::env::var("CHART_CACHE_RUN_ID").expect("run identity required");
         for identity in [&source, &run] {
             assert_eq!(identity.len(), 64);
             assert!(identity.bytes().all(|v| v.is_ascii_hexdigit()));
@@ -392,8 +392,9 @@ fn global_legacy_prefix_wins_real_tight_budget_across_charts_and_fresh_sheets() 
         let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
         let mut parts: Vec<_> = archive
             .file_names()
+            .map(|name| name.unwrap())
             .filter(|name| name.starts_with("xl/charts/") && name.ends_with(".xml"))
-            .map(str::to_owned)
+            .map(|name| name.into_owned())
             .collect();
         parts.sort();
         assert_eq!(parts, ["xl/charts/chart1.xml", "xl/charts/chart2.xml"]);

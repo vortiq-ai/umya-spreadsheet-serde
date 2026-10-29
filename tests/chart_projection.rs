@@ -1,6 +1,6 @@
 #![cfg(feature = "serde")]
 
-#[path = "support/browser_chart_fixture.rs"]
+#[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 use fixture::imported_chart;
 use umya_spreadsheet::{
@@ -38,7 +38,7 @@ fn bytes(chart: &Chart) -> (Vec<u8>, Vec<u8>) {
 }
 
 #[test]
-fn browser_projection_removes_hidden_collections_without_changing_editable_series() {
+fn projection_removes_hidden_collections_without_changing_editable_series() {
     let expected = chart();
     let mut actual = expected.clone();
     let series = &mut actual.area_chart_series_list_mut().area_chart_series_mut()[0];
@@ -53,15 +53,15 @@ fn browser_projection_removes_hidden_collections_without_changing_editable_serie
         .area_chart_series_list_mut()
         .area_chart_series_mut()[0]
         .set_data_labels(DataLabels::default());
-    actual.strip_browser_projection();
+    actual.strip_export_parts();
     assert_eq!(bytes(&actual), bytes(&expected));
     let once = bytes(&actual);
-    actual.strip_browser_projection();
+    actual.strip_export_parts();
     assert_eq!(bytes(&actual), once);
 }
 
 #[test]
-fn browser_bytes_do_not_depend_on_hidden_point_and_label_counts() {
+fn projection_bytes_do_not_depend_on_hidden_point_and_label_counts() {
     let mut expected = chart();
     expected
         .area_chart_series_list_mut()
@@ -75,13 +75,13 @@ fn browser_bytes_do_not_depend_on_hidden_point_and_label_counts() {
         let mut labels = DataLabels::default();
         labels.labels_mut().resize(count, Default::default());
         series.set_data_labels(labels);
-        actual.strip_browser_projection();
+        actual.strip_export_parts();
         assert_eq!(bytes(&actual), expected, "hidden count {count}");
     }
 }
 
 #[test]
-fn browser_projection_keeps_inline_sparse_repeated_string_data_and_count_presence() {
+fn projection_keeps_inline_sparse_repeated_string_data_and_count_presence() {
     let mut actual = chart();
     let mut literal = StringLiteral::default();
     let mut count = XmlUnsignedInt::default();
@@ -99,20 +99,20 @@ fn browser_projection_keeps_inline_sparse_repeated_string_data_and_count_presenc
     category.set_string_literal(literal);
     actual.area_chart_series_list_mut().area_chart_series_mut()[0].set_category_axis_data(category);
     let before = bytes(&actual);
-    actual.strip_browser_projection();
+    actual.strip_export_parts();
     assert_eq!(bytes(&actual), before);
 }
 
 #[test]
-fn browser_projection_of_chart_without_physical_frame_is_a_no_op() {
+fn projection_of_chart_without_physical_frame_is_a_no_op() {
     let mut actual = Chart::default();
     let before = bytes(&actual);
-    actual.strip_browser_projection();
+    actual.strip_export_parts();
     assert_eq!(bytes(&actual), before);
 }
 
 #[test]
-fn server_parts_restore_checks_physical_identity_without_positional_fallback() {
+fn restoration_checks_physical_identity_without_positional_fallback() {
     let mut previous = chart();
     previous
         .area_chart_series_list_mut()
@@ -120,7 +120,7 @@ fn server_parts_restore_checks_physical_identity_without_positional_fallback() {
         .data_points_mut()
         .push(DataPoint::default());
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     // The constructor's absent ID is not an explicitly supplied zero.
     current
         .two_cell_anchor_mut()
@@ -129,7 +129,7 @@ fn server_parts_restore_checks_physical_identity_without_positional_fallback() {
         .non_visual_graphic_frame_properties_mut()
         .non_visual_drawing_properties_mut()
         .set_id(0);
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.incompatible_owners, 1);
     assert_eq!(report.matched_series, 0);
     assert!(!report.diagnostics.is_empty());
@@ -141,7 +141,7 @@ fn server_parts_restore_checks_physical_identity_without_positional_fallback() {
 }
 
 #[test]
-fn server_parts_restore_allows_current_anchor_geometry_changes() {
+fn restoration_allows_current_anchor_geometry_changes() {
     let mut previous = chart();
     previous
         .area_chart_series_list_mut()
@@ -149,13 +149,13 @@ fn server_parts_restore_allows_current_anchor_geometry_changes() {
         .data_points_mut()
         .push(DataPoint::default());
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current
         .two_cell_anchor_mut()
         .from_marker_mut()
         .set_coordinate("Z9");
     let marker = bincode::serialize(current.two_cell_anchor().from_marker()).unwrap();
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 1);
     assert_eq!(
@@ -164,7 +164,7 @@ fn server_parts_restore_allows_current_anchor_geometry_changes() {
     );
 }
 
-fn ordered_server_series_chart() -> Chart {
+fn ordered_series_chart() -> Chart {
     imported_chart(concat!(
         "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" \
          xmlns:u=\"urn:future\"><c:chart><c:plotArea><c:lineChart>",
@@ -184,7 +184,7 @@ fn ordered_server_series_chart() -> Chart {
     ))
 }
 
-fn server_series_parts_bytes(chart: &Chart) -> (Vec<u8>, Vec<u8>) {
+fn export_series_parts_bytes(chart: &Chart) -> (Vec<u8>, Vec<u8>) {
     let series = &chart
         .chart_space()
         .chart()
@@ -201,10 +201,10 @@ fn server_series_parts_bytes(chart: &Chart) -> (Vec<u8>, Vec<u8>) {
 
 #[test]
 fn matched_empty_incoming_parts_cannot_suppress_stored_ordered_series_collections() {
-    let previous = ordered_server_series_chart();
-    let expected = server_series_parts_bytes(&previous);
+    let previous = ordered_series_chart();
+    let expected = export_series_parts_bytes(&previous);
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     let series = &mut current.area_chart_series_list_mut().area_chart_series_mut()[0];
     series.parts_mut();
     series
@@ -213,8 +213,8 @@ fn matched_empty_incoming_parts_cannot_suppress_stored_ordered_series_collection
         .number_reference_mut()
         .formula_mut()
         .set_address_str("Changed!$C$4:$C$6");
-    let report = current.restore_server_parts(&previous);
-    assert_eq!(server_series_parts_bytes(&current), expected);
+    let report = current.restore_export_parts(&previous);
+    assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 3);
     assert_eq!(
@@ -230,10 +230,10 @@ fn matched_empty_incoming_parts_cannot_suppress_stored_ordered_series_collection
 
 #[test]
 fn populated_untrusted_incoming_parts_cannot_replace_authoritative_series_collections() {
-    let previous = ordered_server_series_chart();
-    let expected = server_series_parts_bytes(&previous);
+    let previous = ordered_series_chart();
+    let expected = export_series_parts_bytes(&previous);
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     let series = &mut current.area_chart_series_list_mut().area_chart_series_mut()[0];
     series.data_points_mut().resize(7, Default::default());
     series.trendlines_mut().push(Default::default());
@@ -251,15 +251,15 @@ fn populated_untrusted_incoming_parts_cannot_replace_authoritative_series_collec
         .clone();
     extensions.entries[0].uri = Some("urn:untrusted".into());
     series.set_extensions(Some(extensions));
-    let report = current.restore_server_parts(&previous);
-    assert_eq!(server_series_parts_bytes(&current), expected);
+    let report = current.restore_export_parts(&previous);
+    assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 3);
 }
 
 #[test]
 fn supplied_untrusted_parts_cannot_resurrect_collections_removed_from_authoritative_basis() {
-    let history_before = ordered_server_series_chart();
+    let history_before = ordered_series_chart();
     let mut authoritative = history_before.clone();
     let series = &mut authoritative
         .area_chart_series_list_mut()
@@ -268,31 +268,31 @@ fn supplied_untrusted_parts_cannot_resurrect_collections_removed_from_authoritat
     series.trendlines_mut().clear();
     series.error_bars_mut().clear();
     series.set_extensions(None);
-    let expected = server_series_parts_bytes(&authoritative);
+    let expected = export_series_parts_bytes(&authoritative);
     let mut current = history_before.clone();
-    let report = current.restore_server_parts(&authoritative);
-    assert_eq!(server_series_parts_bytes(&current), expected);
+    let report = current.restore_export_parts(&authoritative);
+    assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 0);
-    assert_ne!(server_series_parts_bytes(&history_before), expected);
+    assert_ne!(export_series_parts_bytes(&history_before), expected);
 }
 
 #[test]
 fn absent_authoritative_series_parts_do_not_admit_new_incoming_hidden_content() {
     let previous = chart();
-    let expected = server_series_parts_bytes(&previous);
+    let expected = export_series_parts_bytes(&previous);
     let mut current = previous.clone();
     current.area_chart_series_list_mut().area_chart_series_mut()[0]
         .data_points_mut()
         .resize(3, Default::default());
-    let report = current.restore_server_parts(&previous);
-    assert_eq!(server_series_parts_bytes(&current), expected);
+    let report = current.restore_export_parts(&previous);
+    assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 0);
 }
 
 #[test]
-fn compatible_display_unit_replacement_recovers_the_omitted_server_label_and_extensions() {
+fn compatible_display_unit_replacement_recovers_the_omitted_label_and_extensions() {
     let xml = fixture::all_owner_xml();
     let previous = fixture::imported_chart(&xml);
     let label =
@@ -309,9 +309,9 @@ fn compatible_display_unit_replacement_recovers_the_omitted_server_label_and_ext
     )
     .unwrap();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -335,9 +335,9 @@ fn compatible_display_unit_restore_respects_label_removal_in_the_authoritative_b
         .unwrap()
         .clone();
     let mut current = history_before.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_server_parts(&authoritative);
+    current.restore_export_parts(&authoritative);
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -373,9 +373,9 @@ fn compatible_custom_display_unit_restore_preserves_current_numeric_spelling() {
         .unwrap()
         .clone();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -403,9 +403,9 @@ fn compatible_default_display_unit_restores_label_without_fabricating_unit_attri
         .unwrap()
         .clone();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -439,8 +439,8 @@ fn assert_export_slots_empty(value: &serde_json::Value, path: &str) {
 }
 
 #[test]
-fn browser_projection_reaches_titles_axis_legend_and_all_detachable_owner_slots() {
-    // Hand-authored XML is independent of the candidate's projection. This
+fn projection_reaches_titles_axis_legend_and_all_detachable_owner_slots() {
+    // Hand-authored XML is independent of the projection. This
     // fixture deliberately uses no scalar/literal supplements: every parts
     // slot present here is detachable export metadata.
     let xml = fixture::all_owner_xml();
@@ -450,7 +450,7 @@ fn browser_projection_reaches_titles_axis_legend_and_all_detachable_owner_slots(
     assert!(previous.chart_space().chart().pivot_formats().is_some());
     assert!(plot.value_axis()[0].display_units().is_some());
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     assert_export_slots_empty(&serde_json::to_value(&current).unwrap(), "chart");
     let plot = current.chart_space().chart().plot_area();
     assert_eq!(plot.chart_groups().count(), 2);
@@ -461,12 +461,12 @@ fn browser_projection_reaches_titles_axis_legend_and_all_detachable_owner_slots(
         Some(true)
     );
     let once = bytes(&current);
-    current.strip_browser_projection();
+    current.strip_export_parts();
     assert_eq!(bytes(&current), once);
 }
 
 #[test]
-fn browser_projection_detaches_supplements_for_each_supported_group_kind() {
+fn projection_detaches_supplements_for_each_supported_group_kind() {
     for group in [
         "areaChart",
         "area3DChart",
@@ -501,7 +501,7 @@ fn browser_projection_detaches_supplements_for_each_supported_group_kind() {
             1,
             "{group}"
         );
-        current.strip_browser_projection();
+        current.strip_export_parts();
         assert_export_slots_empty(&serde_json::to_value(&current).unwrap(), group);
         assert_eq!(
             current
@@ -536,12 +536,12 @@ fn null_export_slots(value: &mut serde_json::Value) {
 }
 
 #[test]
-fn browser_projection_preserves_full_content_outside_selected_export_slots() {
+fn projection_preserves_full_content_outside_selected_export_slots() {
     let complete = imported_chart(&fixture::all_owner_xml());
-    let mut browser = complete.clone();
-    browser.strip_browser_projection();
+    let mut projected = complete.clone();
+    projected.strip_export_parts();
     let mut expected = serde_json::to_value(&complete).unwrap();
-    let actual = serde_json::to_value(&browser).unwrap();
+    let actual = serde_json::to_value(&projected).unwrap();
     null_export_slots(&mut expected);
     for path in [
         concat!(
@@ -570,9 +570,9 @@ fn browser_projection_preserves_full_content_outside_selected_export_slots() {
 
 #[test]
 fn full_content_comparison_detects_same_length_unrelated_mutation() {
-    let mut browser = imported_chart(&fixture::all_owner_xml());
-    browser.strip_browser_projection();
-    let expected = serde_json::to_value(&browser).unwrap();
+    let mut projected = imported_chart(&fixture::all_owner_xml());
+    projected.strip_export_parts();
+    let expected = serde_json::to_value(&projected).unwrap();
     let mut changed = expected.clone();
     assert_eq!(
         changed.pointer("/default_language"),

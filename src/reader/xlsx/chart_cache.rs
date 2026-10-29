@@ -241,6 +241,8 @@ pub(crate) trait ChartPartProvider {
     );
 
     fn finish_sheet(&mut self, session: &SourceCacheSession);
+
+    fn recover_part(&mut self, target: &str, session: &SourceCacheSession) -> Option<Vec<u8>>;
 }
 
 pub(crate) struct LazyChartPartProvider {
@@ -331,6 +333,17 @@ impl ChartPartProvider for LazyChartPartProvider {
         #[cfg(test)]
         observe_lazy_sheet_boundary(self, session);
     }
+
+    fn recover_part(&mut self, target: &str, session: &SourceCacheSession) -> Option<Vec<u8>> {
+        let part = session
+            .parts
+            .borrow()
+            .iter()
+            .position(|part| part.target == target);
+        part.and_then(|part| session.take_part(part))
+            .map(Vec::from)
+            .or_else(|| self.pending.remove(target).map(|(data, _)| data))
+    }
 }
 
 pub(crate) struct EagerChartPartProvider<'a, R> {
@@ -402,6 +415,12 @@ impl<R: std::io::Read + std::io::Seek> ChartPartProvider for EagerChartPartProvi
 
     fn finish_sheet(&mut self, _session: &SourceCacheSession) {
         self.release_current();
+    }
+
+    fn recover_part(&mut self, _target: &str, _session: &SourceCacheSession) -> Option<Vec<u8>> {
+        // Eager input remains in the archive; no chart bytes were taken from a
+        // raw sheet.
+        None
     }
 }
 
@@ -1122,6 +1141,35 @@ impl Drop for ExtensionScopeGuard {
     }
 }
 impl SourceCacheSession {
+    pub(crate) fn for_sheet(&self) -> Self {
+        let mut sheet = Self::deferred();
+        sheet.mode = self.mode;
+        sheet
+    }
+
+    pub(crate) fn commit_sheet(&self, sheet: &Self) {
+        let part_indices: Vec<_> = sheet
+            .parts
+            .borrow_mut()
+            .drain(..)
+            .map(|part| {
+                let index = self.part_for(&part.target);
+                if let Some(data) = part.data {
+                    self.store_part(index, data);
+                }
+                index
+            })
+            .collect();
+        for (key, mut source) in sheet.descriptors.borrow_mut().drain() {
+            source.part = part_indices[source.part];
+            self.descriptors.borrow_mut().insert(key, source);
+        }
+        #[cfg(test)]
+        self.registered_keys
+            .borrow_mut()
+            .extend(sheet.registered_keys.borrow_mut().drain(..));
+    }
+
     /// The original chart part root supplies the genuine inherited bindings.
     /// Descendant owners push their own declarations on this same session.
     pub(crate) fn enter_chart_root(
@@ -2029,10 +2077,10 @@ impl<'a> DisplayResolver<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "serde")]
+    mod cache_admission_order;
     mod prepared_formats;
     mod repeats;
-    #[cfg(feature = "serde")]
-    mod stage9_cache_phase;
     mod strict_scan;
 
     use std::io::{
@@ -2060,6 +2108,76 @@ mod tests {
         },
         structs::raw::RawWorksheet,
     };
+
+    #[test]
+    fn committed_sheet_sessions_remap_shared_parts_and_move_their_buffers() {
+        let session = SourceCacheSession::deferred();
+        let shared = session.part_for("shared.xml");
+        session.store_part(shared, b"previous".to_vec().into_boxed_slice());
+        let sheet = session.for_sheet();
+        let new = sheet.part_for("new.xml");
+        let repeated = sheet.part_for("shared.xml");
+        let data = b"new".to_vec().into_boxed_slice();
+        let pointer = data.as_ptr();
+        sheet.store_part(new, data);
+        sheet.store_part(repeated, b"shared".to_vec().into_boxed_slice());
+        for (key, part) in [(1, new), (2, repeated)] {
+            sheet.descriptors.borrow_mut().insert(
+                key,
+                DeferredSource {
+                    part,
+                    start: 0,
+                    end: 1,
+                    formula: "Sheet1!A1".into(),
+                    summary: None,
+                },
+            );
+        }
+        session.commit_sheet(&sheet);
+        assert_eq!(session.parts.borrow().len(), 2);
+        assert_eq!(session.descriptors.borrow()[&1].part, 1);
+        assert_eq!(session.descriptors.borrow()[&2].part, shared);
+        assert_eq!(
+            session.parts.borrow()[1].data.as_ref().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(
+            session.parts.borrow()[shared].data.as_deref(),
+            Some(b"shared".as_slice())
+        );
+        assert!(sheet.parts.borrow().is_empty());
+        assert!(sheet.descriptors.borrow().is_empty());
+    }
+
+    #[test]
+    fn failed_sheet_providers_recover_both_visited_and_pending_chart_parts() {
+        let session = SourceCacheSession::deferred();
+        let mut provider = LazyChartPartProvider::new(HashMap::from([
+            ("visited.xml".into(), (b"visited".to_vec(), None)),
+            ("pending.xml".into(), (b"pending".to_vec(), None)),
+        ]));
+        provider.with_part("visited.xml", &session, &mut |data| {
+            assert_eq!(data, Some(b"visited".as_slice()));
+        });
+        provider.finish_sheet(&session);
+        assert_eq!(
+            provider.recover_part("visited.xml", &session).as_deref(),
+            Some(b"visited".as_slice())
+        );
+        assert_eq!(
+            provider.recover_part("pending.xml", &session).as_deref(),
+            Some(b"pending".as_slice())
+        );
+        assert!(provider.pending.is_empty());
+        assert!(provider.current.is_none());
+        assert!(
+            session
+                .parts
+                .borrow()
+                .iter()
+                .all(|part| part.data.is_none())
+        );
+    }
 
     fn deferred_reference(session: &SourceCacheSession, xml: &str) -> StringReference {
         deferred_reference_at(session, "deferred.xml", xml)
@@ -2364,7 +2482,7 @@ mod tests {
         let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).unwrap();
-            let name = entry.name().to_string();
+            let name = entry.name().unwrap().into_owned();
             let mut data = Vec::new();
             entry.read_to_end(&mut data).unwrap();
             if name == "xl/charts/chart1.xml" {
@@ -2413,7 +2531,8 @@ mod tests {
             &stylesheet,
             &mut session,
             &mut provider,
-        );
+        )
+        .unwrap();
         (book, session)
     }
 
@@ -2427,7 +2546,7 @@ mod tests {
         let mut edit = Some(edit);
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).unwrap();
-            let name = entry.name().to_string();
+            let name = entry.name().unwrap().into_owned();
             let mut data = Vec::new();
             entry.read_to_end(&mut data).unwrap();
             if name == part {
@@ -2499,7 +2618,8 @@ mod tests {
             &stylesheet,
             &mut session,
             &mut provider,
-        );
+        )
+        .unwrap();
         capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
         (book, session)
     }
@@ -2655,7 +2775,8 @@ mod tests {
             &stylesheet,
             &mut session,
             &mut provider,
-        );
+        )
+        .unwrap();
         capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
         let wanted = session.wanted_coordinates().unwrap();
         assert_eq!(wanted.len(), 1);
@@ -2759,7 +2880,8 @@ mod tests {
             &stylesheet,
             &mut session,
             &mut provider,
-        );
+        )
+        .unwrap();
         capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
         assert_eq!(session.capture_formulas(), ["Sheet1!$B$1", "Sheet1!$A$1"]);
         let report = book.chart_source_cache_report();
@@ -3356,7 +3478,8 @@ mod tests {
             &stylesheet,
             &mut session,
             &mut provider,
-        );
+        )
+        .unwrap();
         let parsed = crate::drawing::charts::work_counts();
         book.chart_source_cache_report_mut().kept_points = kept_points_before;
         capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
@@ -3388,7 +3511,7 @@ mod tests {
         let mut replaced = false;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).unwrap();
-            let name = entry.name().to_string();
+            let name = entry.name().unwrap().into_owned();
             let mut data = Vec::new();
             entry.read_to_end(&mut data).unwrap();
             if name == part {

@@ -37,6 +37,17 @@ struct StringLiteralParts {
     extensions:  Option<Box<super::ExtensionList>>,
 }
 impl StringLiteral {
+    pub(crate) fn restore_extensions(&mut self, previous: Option<&Self>) -> usize {
+        let previous = previous
+            .and_then(|value| value.parts.as_ref())
+            .and_then(|parts| parts.extensions.as_ref());
+        if self.parts.is_none() && previous.is_none() {
+            return 0;
+        }
+        let parts = self.parts.get_or_insert_with(Default::default);
+        super::chart_metadata_restoration::replace_hidden_parts(&mut parts.extensions, previous)
+    }
+
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -51,7 +62,7 @@ impl StringLiteral {
         self.parts.as_deref().and_then(|p| p.extensions.as_deref())
     }
 
-    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         if let Some(parts) = &mut self.parts {
             parts.extensions = None;
         }

@@ -18,7 +18,7 @@ use umya_spreadsheet::{
     },
 };
 
-#[path = "support/browser_chart_fixture.rs"]
+#[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 
 fn structural_xml() -> String {
@@ -106,9 +106,9 @@ fn assert_edited_projection(mut book: Workbook, expected: BTreeMap<String, usize
     let basis = book.sheet(0).unwrap().chart_collection()[0].clone();
     let before = bincode::serialize(&basis).unwrap();
     let mut replacement = basis.clone();
-    replacement.strip_browser_projection();
+    replacement.strip_export_parts();
     replacement.set_title("metadata update after source edit");
-    let report = replacement.restore_server_parts(&basis);
+    let report = replacement.restore_export_parts(&basis);
     assert_eq!(report.matched_series, 2, "{report:?}");
     assert_eq!(report.ambiguous_series, 0, "{report:?}");
     for group in replacement.chart_space().chart().plot_area().chart_groups() {
@@ -250,7 +250,7 @@ fn changing_editable_values_keeps_original_custom_errors_and_point_indices() {
     let mut book = structural_book();
     let basis = book.sheet(0).unwrap().chart_collection()[0].clone();
     let mut current = basis.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     for group in current.plot_area_mut().chart_groups_mut() {
         group.series_mut().area_chart_series_mut()[0]
             .values_mut()
@@ -259,7 +259,7 @@ fn changing_editable_values_keeps_original_custom_errors_and_point_indices() {
             .formula_mut()
             .set_address_str("Data!$H$8:$H$11");
     }
-    current.restore_server_parts(&basis);
+    current.restore_export_parts(&basis);
     book.sheet_mut(0).unwrap().chart_collection_mut()[0] = current;
     let mut expected = expected_roles("Data", COLUMNS, Some((2, 5)));
     assert_eq!(expected.remove("Data!$B$2:$B$5"), Some(2));
@@ -314,12 +314,12 @@ fn category_source(chart: &Chart) -> Option<&umya_spreadsheet::drawing::charts::
 }
 
 #[test]
-fn replacement_discards_client_caches_and_only_restores_the_matched_server_cache() {
+fn replacement_discards_supplied_caches_and_only_restores_the_matched_trusted_cache() {
     let basis = cached_chart("trusted server");
     let expected = category_source(&basis).unwrap().clone();
     let mut current = cached_chart("untrusted client");
     assert_ne!(category_source(&current), Some(&expected));
-    let report = current.restore_server_parts(&basis);
+    let report = current.restore_export_parts(&basis);
     assert!(report.restored_caches >= 1, "{report:?}");
     assert_eq!(category_source(&current), Some(&expected));
     assert_eq!(category_source(&basis), Some(&expected));
@@ -330,7 +330,7 @@ fn actual_formula_changes_invalidate_cache_eligibility_without_guard_retagging()
     let basis = cached_chart("trusted server");
     let old_guard = category_source(&basis).unwrap().formula().to_string();
     let mut current = basis.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     for group in current.plot_area_mut().chart_groups_mut() {
         group.series_mut().area_chart_series_mut()[0]
             .category_axis_data_mut()
@@ -340,7 +340,7 @@ fn actual_formula_changes_invalidate_cache_eligibility_without_guard_retagging()
             .formula_mut()
             .set_address_str("Data!$A$3:$A$6");
     }
-    current.restore_server_parts(&basis);
+    current.restore_export_parts(&basis);
     assert!(category_source(&current).is_none());
     assert_eq!(category_source(&basis).unwrap().formula(), old_guard);
 }
@@ -384,7 +384,7 @@ fn with_one_cell_chart(bytes: &[u8]) -> Vec<u8> {
         let mut entry = input.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == "xl/drawings/drawing1.xml" {
+        if entry.name().unwrap() == "xl/drawings/drawing1.xml" {
             let xml = String::from_utf8(data).unwrap();
             let start = xml.find("<xdr:to>").unwrap();
             let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
@@ -397,7 +397,10 @@ fn with_one_cell_chart(bytes: &[u8]) -> Vec<u8> {
             .into_bytes();
         }
         output
-            .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                entry.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&data).unwrap();
     }

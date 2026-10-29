@@ -992,6 +992,129 @@ mod tests {
         Panic(String),
     }
 
+    #[test]
+    fn cdata_point_paths_preserve_literals_and_decode_mixed_text() {
+        for (inner, expected) in [
+            ("<![CDATA[plain]]>", "plain"),
+            ("<![CDATA[&bogus;&amp;]]>", "&bogus;&amp;"),
+            ("x<![CDATA[<y>&amp;]]>z", "x<y>&amp;z"),
+            ("A&amp;<![CDATA[<B>&bogus;]]>&#67;", "A&<B>&bogus;C"),
+            ("<![CDATA[a]]>&lt;<![CDATA[b&c]]>", "a<b&c"),
+            ("&lt;![CDATA[&amp;]]&gt;", "<![CDATA[&]]>"),
+        ] {
+            let xml = format!("<c:pt><c:v>{inner}</c:v></c:pt>");
+            for trim in [false, true] {
+                assert_eq!(
+                    read_point_value(&mut after_start(xml.as_bytes(), trim)),
+                    Some(expected.to_owned())
+                );
+                assert_eq!(
+                    read_point_into(
+                        &mut after_start(xml.as_bytes(), trim),
+                        &mut PointScratch::default(),
+                        true
+                    )
+                    .value,
+                    Some(expected.to_owned())
+                );
+                assert_eq!(
+                    read_point_borrowed(
+                        &mut after_start(xml.as_bytes(), trim),
+                        &mut PointScratch::default()
+                    ),
+                    Some(expected)
+                );
+                assert_eq!(
+                    read_point_into(
+                        &mut after_start(xml.as_bytes(), trim),
+                        &mut PointScratch::default(),
+                        false
+                    )
+                    .value,
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cdata_point_paths_keep_outside_reference_and_encoding_failures() {
+        for xml in [
+            &b"<c:pt><c:v>&bogus;<![CDATA[valid]]></c:v></c:pt>"[..],
+            &b"<c:pt><c:v><![CDATA[&AMP;]]>&bogus;</c:v></c:pt>"[..],
+            &b"<c:pt><c:v><![CDATA[valid]]>&bogus;</c:v><c:v>ok</c:v></c:pt>"[..],
+        ] {
+            let expected = Err(unwrap_message(
+                &quick_xml::escape::unescape("&bogus;").unwrap_err(),
+            ));
+            assert_eq!(
+                catch(|| read_point_value(&mut after_start(xml, false))),
+                expected
+            );
+            assert_eq!(
+                catch(|| read_point_into(
+                    &mut after_start(xml, false),
+                    &mut PointScratch::default(),
+                    true
+                )
+                .value),
+                expected
+            );
+            assert_eq!(
+                catch(|| read_point_borrowed(
+                    &mut after_start(xml, false),
+                    &mut PointScratch::default()
+                )
+                .map(str::to_owned)),
+                expected
+            );
+            assert_eq!(
+                catch(|| read_point_into(
+                    &mut after_start(xml, false),
+                    &mut PointScratch::default(),
+                    false
+                )
+                .value),
+                expected
+            );
+        }
+        let raw = std::hint::black_box(b"<![CDATA[a\xFFb]]>");
+        let expected = Err(unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+            std::str::from_utf8(raw).unwrap_err(),
+        )));
+        let xml = b"<c:pt><c:v><![CDATA[a\xFFb]]></c:v></c:pt>";
+        assert_eq!(
+            catch(|| read_point_value(&mut after_start(xml, false))),
+            expected
+        );
+        assert_eq!(
+            catch(|| read_point_into(
+                &mut after_start(xml, false),
+                &mut PointScratch::default(),
+                true
+            )
+            .value),
+            expected
+        );
+        assert_eq!(
+            catch(|| read_point_borrowed(
+                &mut after_start(xml, false),
+                &mut PointScratch::default()
+            )
+            .map(str::to_owned)),
+            expected
+        );
+        assert_eq!(
+            catch(|| read_point_into(
+                &mut after_start(xml, false),
+                &mut PointScratch::default(),
+                false
+            )
+            .value),
+            expected
+        );
+    }
+
     // The value decoder returns the text `read_point_value` returns, and fails
     // with the payload it fails with, for every shape of point content. The
     // expectations are specified by hand and by the XML escaping and encoding
@@ -1052,9 +1175,9 @@ mod tests {
                 Expect::Value(Some("a<b>c</b>d")),
             ),
             (
-                "cdata inside the value keeps its markers",
+                "cdata inside the value preserves literal text",
                 b"<c:pt idx=\"0\"><c:v>x<![CDATA[<y>&amp;]]>z</c:v></c:pt>".to_vec(),
-                Expect::Value(Some("x<![CDATA[<y>&]]>z")),
+                Expect::Value(Some("x<y>&amp;z")),
             ),
             (
                 "missing value",
@@ -1318,8 +1441,9 @@ mod tests {
         assert_eq!(stepper.coordinate(u32::MAX), Some((1, 2)));
     }
 
-    // The borrowed reader must keep raw XML, CR and whitespace and validate
-    // overwritten values. It shares the production grammar with the old API.
+    // The borrowed reader must keep decoded text, CR and whitespace and
+    // validate overwritten values. It shares the production grammar with
+    // the old API.
     #[test]
     fn borrowed_point_values_preserve_text_replacements_and_failures() {
         let mut scratch = PointScratch::default();
@@ -1329,11 +1453,8 @@ mod tests {
             ("<c:v></c:v>", Some("")),
             ("<c:v>  \r\n>\u{e9}  </c:v>", Some("  \r\n>\u{e9}  ")),
             ("<x:v>A&amp;B&#x42;&lt;&#67;&#13;</x:v>", Some("A&BB<C\r")),
-            ("<c:v><![CDATA[a&AMP;]]><b/></c:v>", None),
-            (
-                "<c:v><![CDATA[raw]]><b/></c:v>",
-                Some("<![CDATA[raw]]><b/>"),
-            ),
+            ("<c:v><![CDATA[a&AMP;]]><b/></c:v>", Some("a&AMP;<b/>")),
+            ("<c:v><![CDATA[raw]]><b/></c:v>", Some("raw<b/>")),
             ("<c:v>long&amp;text</c:v><c:v>s</c:v>", Some("s")),
             ("<c:v>old</c:v><c:v/>", Some("")),
         ] {
@@ -1342,16 +1463,13 @@ mod tests {
                 read_point_borrowed(&mut after_start(xml.as_bytes(), true), &mut scratch)
                     .map(str::to_owned)
             });
-            if inner.contains("&AMP;") {
-                let message = unwrap_message(
-                    &quick_xml::escape::unescape("<![CDATA[a&AMP;]]><b/>").unwrap_err(),
-                );
-                assert_eq!(actual, Err(message));
-            } else {
-                assert_eq!(actual, Ok(expected.map(str::to_owned)), "{inner}");
-            }
+            assert_eq!(actual, Ok(expected.map(str::to_owned)), "{inner}");
         }
         for (xml, message) in [
+            (
+                &b"<c:pt><c:v>&AMP;</c:v></c:pt>"[..],
+                unwrap_message(&quick_xml::escape::unescape("&AMP;").unwrap_err()),
+            ),
             (
                 &b"<c:pt><c:v>a</c:v>"[..],
                 "Error: Could not find c:pt end element".to_string(),

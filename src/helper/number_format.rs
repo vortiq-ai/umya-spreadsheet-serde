@@ -222,7 +222,10 @@ fn prepare_display(converted: String) -> PreparedDisplay {
     };
     let kind = if get_date_time_regex().is_match(&spaced).unwrap_or(false) {
         FormatKind::Date
-    } else if spaced.starts_with('"') && spaced.ends_with('"') {
+    } else if spaced.starts_with('"')
+        && spaced.ends_with('"')
+        && !spaced.trim_matches('"').contains('"')
+    {
         FormatKind::Quoted
     } else if get_percent_dollar_regex()
         .is_match(&spaced)
@@ -541,6 +544,10 @@ pub(crate) fn preparation_count() -> usize {
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/number_format_expectations.rs"]
+mod number_format_expectations;
+
+#[cfg(test)]
 mod prepared_tests {
     use super::*;
 
@@ -559,10 +566,7 @@ mod prepared_tests {
     // the same map; an uncached-only replay misses damaged prepared entries.
     #[test]
     fn shared_formats_preserve_every_known_answer_in_fixture_order() {
-        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
-            "../../tests/fixtures/number_format_known_answers.json"
-        ))
-        .unwrap();
+        let rows = number_format_expectations::validated_rows();
         let mut formats = PreparedFormats::default();
         for (index, row) in rows.iter().enumerate() {
             let code = row["format"].as_str().unwrap();
@@ -757,4 +761,38 @@ mod prepared_tests {
         );
         assert_eq!(to_formatted_string("1", r#""literal";0"#), "literal");
     }
+
+    #[test]
+    fn quoted_composite_formats_share_preparation_without_changing_literal_text() {
+        let cases = [
+            ("5", r#""Qty "0" pcs""#, "Qty 5 pcs"),
+            ("7", r#""Qty "0" pcs""#, "Qty 7 pcs"),
+            (
+                "1234.5",
+                r##""Total: "#,##0.00" EUR""##,
+                "Total: 1,234.50 EUR",
+            ),
+        ];
+        for (value, code, expected) in cases {
+            assert_eq!(to_formatted_string(value, code), expected);
+        }
+        let before = preparation_count();
+        let mut formats = PreparedFormats::default();
+        for (value, code, expected) in cases {
+            assert_eq!(formats.format(value, code), expected);
+        }
+        assert_eq!(formats.formats.len(), 2);
+        assert_eq!(preparation_count() - before, 2);
+    }
+}
+
+#[test]
+fn test_to_formatted_string_quoted_text_around_a_placeholder() {
+    // Starts and ends with a quote but is not a quoted number: this used to
+    // panic on `parse::<f64>().unwrap()`.
+    assert_eq!("Qty 5 pcs", to_formatted_string("5", r#""Qty "0" pcs""#));
+    assert_eq!(
+        "Total: 1,234.50 EUR",
+        to_formatted_string("1234.5", r##""Total: "#,##0.00" EUR""##)
+    );
 }

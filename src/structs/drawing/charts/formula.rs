@@ -14,7 +14,7 @@ use crate::{
         address::{
             is_address,
             quote_sheet_name,
-            split_address,
+            split_reference_address,
             unescape_sheet_name,
         },
         formula::{
@@ -108,7 +108,7 @@ impl Formula {
         }
         let preserve_sheet = !self.string_value.has_value()
             && is_address(text)
-            && split_address(&before).0 == split_address(text).0;
+            && split_reference_address(&before).0 == split_reference_address(text).0;
         let old_sheet = preserve_sheet.then(|| self.address.sheet_name().to_owned());
         let mut replacement = Self::default();
         replacement.set_address_str(text);

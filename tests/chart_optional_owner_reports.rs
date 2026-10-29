@@ -22,7 +22,7 @@ fn adding_a_title_is_not_an_incompatible_owner() {
     let previous = chart();
     let mut current = previous.clone();
     current.set_title("New title");
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.incompatible_owners, 0, "{report:?}");
     assert_eq!(report.added_owners, 1);
     assert_eq!(report.removed_owners, 0);
@@ -37,7 +37,7 @@ fn removing_a_title_is_not_an_incompatible_owner() {
     let mut previous = current.clone();
     previous.set_title("Old title");
     let mut replacement = current;
-    let report = replacement.restore_server_parts(&previous);
+    let report = replacement.restore_export_parts(&previous);
     assert_eq!(report.incompatible_owners, 0, "{report:?}");
     assert_eq!(report.added_owners, 0);
     assert_eq!(report.removed_owners, 1);

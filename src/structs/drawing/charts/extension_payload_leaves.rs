@@ -11,7 +11,7 @@ use super::{
     SeriesPartConflictReason,
     ShapeProperties,
     extension_names::NamespaceScope,
-    numeric_data::children,
+    numeric_data::element_children,
 };
 use crate::writer::driver::{
     write_end_tag,
@@ -75,7 +75,7 @@ impl InvertSolidFill {
         (self.shape_properties.as_ref(), &self.extra_shapes)
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (Option<&mut ShapeProperties>, &mut [ShapeProperties]) {
         self.reference_role_parts_mut()
@@ -149,7 +149,7 @@ impl InvertSolidFill {
         let mut result = Self::default();
         let scope = inherited.child(e).ok();
         result.invalid |= scope.is_none();
-        let complete = children(reader, e, empty, |reader, child, empty| {
+        let complete = element_children(reader, e, empty, |reader, child, empty| {
             let Some(scope) = &scope else {
                 return false;
             };
@@ -189,8 +189,7 @@ impl InvertSolidFill {
         }
         if let Some(shape) = &self.shape_properties {
             write_start_tag(writer, "c14:invertSolidFillFmt", vec![], false);
-            // Owner patch delegates the unchanged real ShapeProperties writer
-            // with the c14 element name required by CT_InvertSolidFillFmt.
+            // CT_InvertSolidFillFmt requires c14:spPr.
             shape.write_to_as(writer, "c14:spPr");
             write_end_tag(writer, "c14:invertSolidFillFmt");
         }

@@ -15,7 +15,7 @@ use super::{
     XmlBoolean,
     XmlUnsignedInt,
     numeric_data::{
-        children,
+        element_children,
         read_text,
     },
 };
@@ -62,7 +62,7 @@ impl CategoryFilterException {
         )
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (
         &mut ReferenceSequence,
@@ -217,7 +217,7 @@ impl CategoryFilterException {
         let _scope_guard = session.enter_child_scope(e);
         let mut result = Self::default();
         let mut names = std::collections::HashSet::new();
-        result.invalid = !children(reader, e, empty, |reader, child, empty| {
+        let complete = element_children(reader, e, empty, |reader, child, empty| {
             let name = if session.accepts_child_namespace(child, super::extension_registry::NS_C15)
             {
                 local_name(child.name().into_inner())
@@ -283,7 +283,8 @@ impl CategoryFilterException {
                 _ => unreachable!(),
             }
             true
-        }) || result.invalid;
+        });
+        result.invalid |= !complete;
         result
     }
 
@@ -358,7 +359,7 @@ impl CategoryFilterExceptions {
     ) -> Self {
         let _scope_guard = session.enter_child_scope(e);
         let mut result = Self::default();
-        result.invalid = !children(reader, e, empty, |reader, child, empty| {
+        let complete = element_children(reader, e, empty, |reader, child, empty| {
             if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)
                 || local_name(child.name().into_inner()) != b"categoryFilterException"
             {
@@ -369,6 +370,7 @@ impl CategoryFilterExceptions {
                 .push(CategoryFilterException::read(reader, child, empty, session));
             true
         });
+        result.invalid |= !complete;
         result
     }
 

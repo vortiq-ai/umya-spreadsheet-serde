@@ -371,23 +371,23 @@ impl Chart {
             .chart_space()
     }
 
-    /// Strip a browser-bound clone of source caches and export-only metadata.
+    /// Remove source caches and export-only metadata from a projection.
     /// Persistence, trusted copies and history keep the complete chart.
-    pub fn strip_browser_projection(&mut self) {
+    pub fn strip_export_parts(&mut self) {
         self.strip_source_caches();
         if let Some(frame) = self.two_cell_anchor.graphic_frame_mut() {
-            crate::drawing::charts::chart_reference_roles::strip_browser_parts(
+            crate::drawing::charts::chart_reference_roles::strip_export_parts(
                 frame.graphic_mut().graphic_data_mut().chart_space_mut(),
             );
         }
     }
 
-    /// Restore server-owned export metadata from the authoritative native
+    /// Restore omitted export metadata from the authoritative native
     /// chart after applying requested editable changes to that basis. Keep
     /// the true before-state separately for history. Explicit removals must
-    /// already be applied to `previous`; browser omission is not removal.
+    /// already be applied to `previous`; projection omission is not removal.
     /// Ambiguous owners are reported, never paired by collection position.
-    pub fn restore_server_parts(
+    pub fn restore_export_parts(
         &mut self,
         previous: &Chart,
     ) -> crate::drawing::charts::RestoreReport {
@@ -421,7 +421,7 @@ impl Chart {
                 ..RestoreReport::default()
             };
         }
-        crate::drawing::charts::chart_server_parts::restore_space(
+        crate::drawing::charts::chart_metadata_restoration::restore_space(
             current.graphic_mut().graphic_data_mut().chart_space_mut(),
             previous.graphic().graphic_data().chart_space(),
         )
@@ -440,14 +440,13 @@ impl Chart {
         }
     }
 
-    /// Removes the source caches of a chart that was not read from a file by
-    /// the server, such as one a client created: only caches the server kept
-    /// are trusted.
+    /// Remove untrusted source caches, for example from a newly supplied chart.
+    /// Only caches retained by a trusted reader or chart are authoritative.
     pub fn clear_source_caches(&mut self) {
         self.strip_source_caches();
     }
 
-    /// Discards incoming source caches, then adopts trusted server caches
+    /// Discards incoming source caches, then adopts trusted caches
     /// from `previous` by exact formula, reference role and existing identity.
     /// Series categories and series text each use their explicitly present
     /// series index (`c:idx`); axis titles use an explicitly present `c:axId`.
@@ -464,10 +463,10 @@ impl Chart {
     /// and formula is indistinguishable from the previous reference: adoption
     /// prevents transfers across different keys, not undetectable ID reuse.
     ///
-    /// Persist full charts with ordinary serde. Strip a clone at every browser
-    /// send, adopt on replacement, and clear at client creation boundaries.
-    /// Serde does not make client data trusted: counts and runs drive export
-    /// iteration. Trusted import, reload, undo and server copies keep caches.
+    /// Persist full charts with ordinary serde. Strip projected copies, adopt
+    /// on replacement, and clear caches on newly supplied charts. Serde does
+    /// not establish trust: counts and runs drive export iteration. Trusted
+    /// import, reload, undo and native copies keep caches.
     /// The import budget does not limit subsequent chart copies or snapshots.
     ///
     /// Renaming a sheet does not rewrite formulas or guards. Without formula

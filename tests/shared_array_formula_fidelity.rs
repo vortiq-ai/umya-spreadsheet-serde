@@ -656,8 +656,8 @@ fn dynamic_array_metadata_survives_local_geometry_and_other_sheet_edits() {
     // an in-memory cm assignment that could conceal a metadata writer failure.
     book = read(&write(&book));
 
-    for stage in 0..4 {
-        let (coordinate, reference, formula, first_member, last_member, source) = match stage {
+    for edit in 0..4 {
+        let (coordinate, reference, formula, first_member, last_member, source) = match edit {
             0 => ("C4", "C4:E7", STRUCTURAL_ARRAY_FORMULA, "D4", "E7", "C3"),
             1 => {
                 book.insert_new_row("Sheet1", 2, 1);
@@ -692,7 +692,7 @@ fn dynamic_array_metadata_survives_local_geometry_and_other_sheet_edits() {
         assert_eq!(
             xml_cell(&bytes, coordinate).metadata_index,
             Some(metadata_index.to_string()),
-            "raw dynamic anchor cm at stage {stage}",
+            "raw dynamic anchor cm after edit {edit}",
         );
         let back = read(&bytes);
         for book in [&book, &back] {

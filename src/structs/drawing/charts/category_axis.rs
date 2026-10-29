@@ -65,7 +65,7 @@ pub struct CategoryAxis {
 }
 
 impl CategoryAxis {
-    pub(crate) fn restore_browser_parts(
+    pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
@@ -74,8 +74,8 @@ impl CategoryAxis {
         if let (Some(current), Some(previous)) =
             (&mut self.text_properties, &previous.text_properties)
         {
-            if current.browser_structure_matches(previous) {
-                restored += current.restore_browser_parts(previous);
+            if current.projected_structure_matches(previous) {
+                restored += current.restore_export_parts(previous);
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -96,11 +96,11 @@ impl CategoryAxis {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::AxisPartsMut<'_> {
         if let Some(text) = &mut self.text_properties {
-            text.strip_browser_parts();
+            text.strip_export_parts();
         }
         self.reference_role_parts_mut()
     }

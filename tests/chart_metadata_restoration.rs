@@ -13,7 +13,7 @@ use umya_spreadsheet::{
     },
 };
 
-#[path = "support/browser_chart_fixture.rs"]
+#[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 
 fn chart(formulas: Vec<&str>) -> Chart {
@@ -52,7 +52,7 @@ fn restored_series_follow_identity_through_reordering_removal_and_creation() {
     install_points(&mut previous, 2, &[3]);
     let before = bincode::serialize(&previous).unwrap();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     let mut series = current
         .area_chart_series_list_mut()
         .area_chart_series()
@@ -71,7 +71,7 @@ fn restored_series_follow_identity_through_reordering_removal_and_creation() {
     current
         .area_chart_series_list_mut()
         .set_area_chart_series(series);
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.matched_series, 2);
     assert_eq!(report.unmatched_series, 1);
     assert_eq!(report.unmatched_previous_series, 1);
@@ -102,7 +102,7 @@ fn agent_rebuilt_all_zero_indices_use_unique_values_formula_without_position() {
     for series in current.area_chart_series_list_mut().area_chart_series_mut() {
         series.index_mut().set_val(0);
     }
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.formula_matched_series, 2);
     assert_eq!(report.index_matched_series, 0);
     assert_eq!(point_indices(&mut current, 0), [2]);
@@ -121,8 +121,8 @@ fn ambiguous_owners_are_reported_without_copying_a_neighbor_parts_collection() {
     install_points(&mut previous, 0, &[9]);
     install_points(&mut previous, 1, &[2]);
     let mut current = previous.clone();
-    current.strip_browser_projection();
-    let report = current.restore_server_parts(&previous);
+    current.strip_export_parts();
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.ambiguous_series, 2);
     assert_eq!(report.matched_series, 0);
     assert!(!report.diagnostics.is_empty());
@@ -149,7 +149,7 @@ fn hidden_label_parent_is_recreated_without_losing_duplicate_point_labels() {
             .data_labels()
             .is_none()
     );
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     let labels = current.area_chart_series_list_mut().area_chart_series_mut()[0]
         .data_labels()
         .unwrap()
@@ -175,8 +175,8 @@ fn explicit_removal_uses_changed_authoritative_basis_not_history_before_state() 
         .data_points_mut()
         .clear();
     let mut current = basis.clone();
-    current.strip_browser_projection();
-    current.restore_server_parts(&basis);
+    current.strip_export_parts();
+    current.restore_export_parts(&basis);
     assert!(point_indices(&mut current, 0).is_empty());
     assert_eq!(bincode::serialize(&history_before).unwrap(), before);
 }
@@ -187,10 +187,10 @@ fn every_imported_owner_roundtrips_projection_and_persistence_without_state_chan
     let before_json = serde_json::to_value(&previous).unwrap();
     let before_binary = bincode::serialize(&previous).unwrap();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     // Cross the real JSON replacement boundary, not just a native clone.
     current = serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap();
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.matched_series, 2);
     assert_eq!(report.ambiguous_series, 0);
     assert!(report.restored_owners > 20, "{report:?}");
@@ -205,9 +205,9 @@ fn every_imported_owner_roundtrips_projection_and_persistence_without_state_chan
 fn changed_title_text_does_not_recreate_fields_from_the_previous_title() {
     let previous = fixture::imported_chart(&fixture::all_owner_xml());
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.set_title("a new title");
-    let report = current.restore_server_parts(&previous);
+    let report = current.restore_export_parts(&previous);
     assert!(report.incompatible_owners >= 1);
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
@@ -232,9 +232,9 @@ fn axis_reordering_restores_only_the_matching_explicit_axis_kind_and_id() {
     let previous =
         fixture::imported_chart(&xml.replace("</c:plotArea>", &format!("{extra}</c:plotArea>")));
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.plot_area_mut().value_axis_mut().swap(0, 1);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let axes = current.chart_space().chart().plot_area().value_axis();
     assert_eq!(axes[0].axis_id().val(), 21);
     assert_eq!(axes[1].axis_id().val(), 20);
@@ -253,8 +253,8 @@ fn current_marker_fill_and_manual_layout_values_win_over_old_supplements() {
         .replace("val=\"circle\"", "val=\"square\"")
         .replace("<c:manualLayout>", "<c:manualLayout><c:x val=\"0.75\"/>");
     let mut current = fixture::imported_chart(&edited);
-    current.strip_browser_projection();
-    current.restore_server_parts(&previous);
+    current.strip_export_parts();
+    current.restore_export_parts(&previous);
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
     let exported = fixture::chart_xml(&book);
@@ -267,8 +267,8 @@ fn current_marker_fill_and_manual_layout_values_win_over_old_supplements() {
         .0;
     assert!(editable_series.contains("val=\"ABCDEF\""));
     assert!(!editable_series.contains("val=\"123456\""));
-    // Point formatting is hidden server-owned content, unlike series/marker
-    // formatting: importing another browser replacement cannot change it.
+    // Point formatting is trusted export content, unlike editable series/marker
+    // formatting: importing another replacement cannot change it.
     let point = exported
         .split_once("<c:dPt>")
         .unwrap()
@@ -298,9 +298,9 @@ fn explicit_display_unit_replacement_does_not_recreate_the_previous_label() {
         .unwrap()
         .clone();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -326,8 +326,8 @@ fn reordered_same_family_groups_restore_extensions_by_membership_not_position() 
     let reordered = format!("{}{beta}{alpha}{}", &xml[..first_start], &xml[second_end..]);
     let previous = fixture::imported_chart(&original);
     let mut current = fixture::imported_chart(&reordered);
-    current.strip_browser_projection();
-    let report = current.restore_server_parts(&previous);
+    current.strip_export_parts();
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.matched_series, 2);
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
@@ -360,8 +360,8 @@ fn unique_empty_group_preserves_its_extension_and_label_owner_without_position_m
     let previous = empty_group_chart(1);
     let before = bincode::serialize(&previous).unwrap();
     let mut current = previous.clone();
-    current.strip_browser_projection();
-    let report = current.restore_server_parts(&previous);
+    current.strip_export_parts();
+    let report = current.restore_export_parts(&previous);
     assert_eq!(report.incompatible_owners, 0, "{report:?}");
     assert_eq!(bincode::serialize(&current).unwrap(), before);
 }
@@ -370,8 +370,8 @@ fn unique_empty_group_preserves_its_extension_and_label_owner_without_position_m
 fn indistinguishable_empty_groups_are_reported_and_never_paired_by_position() {
     let previous = empty_group_chart(2);
     let mut current = previous.clone();
-    current.strip_browser_projection();
-    let report = current.restore_server_parts(&previous);
+    current.strip_export_parts();
+    let report = current.restore_export_parts(&previous);
     assert!(report.incompatible_owners >= 2);
     let json = serde_json::to_string(&current).unwrap();
     assert!(!json.contains("retained empty group"));
@@ -389,8 +389,8 @@ fn replacing_the_title_text_branch_reports_incompatible_owner_without_restoring_
     );
     let previous = fixture::imported_chart(&xml);
     let mut current = fixture::imported_chart(&edited);
-    current.strip_browser_projection();
-    let report = current.restore_server_parts(&previous);
+    current.strip_export_parts();
+    let report = current.restore_export_parts(&previous);
     assert!(report.incompatible_owners >= 1);
     assert!(
         report
@@ -432,12 +432,12 @@ fn two_pivot_chart() -> Chart {
 fn supplied_pivot_collections_restore_hidden_owners_by_unique_explicit_index() {
     let previous = two_pivot_chart();
     let mut current = previous.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current
         .chart_space_mut()
         .chart_mut()
         .set_pivot_formats(vec![indexed_pivot(Some(8)), indexed_pivot(Some(7))]);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let pivots = current.chart_space().chart().pivot_formats().unwrap();
     assert_eq!(
         pivots[0]
@@ -474,12 +474,12 @@ fn duplicate_or_missing_pivot_indices_do_not_receive_another_pivots_label() {
     ] {
         let supplied_count = supplied.len();
         let mut current = previous.clone();
-        current.strip_browser_projection();
+        current.strip_export_parts();
         current
             .chart_space_mut()
             .chart_mut()
             .set_pivot_formats(supplied);
-        let report = current.restore_server_parts(&previous);
+        let report = current.restore_export_parts(&previous);
         assert!(report.incompatible_owners >= 1, "{report:?}");
         let pivots = current.chart_space().chart().pivot_formats().unwrap();
         assert!(
@@ -518,7 +518,7 @@ fn absent_authoritative_point_labels_cannot_admit_hidden_client_labels() {
     label.index_mut().set_val(9);
     labels.labels_mut().push(label);
     current.area_chart_series_list_mut().area_chart_series_mut()[0].set_data_labels(labels);
-    current.restore_server_parts(&previous);
+    current.restore_export_parts(&previous);
     let labels = current.area_chart_series_list_mut().area_chart_series_mut()[0]
         .data_labels()
         .unwrap();
@@ -534,12 +534,12 @@ fn omitted_pivots_in_supplied_empty_or_partial_collections_are_recreated_from_ba
     let previous = two_pivot_chart();
     for supplied in [Vec::new(), vec![indexed_pivot(Some(8))]] {
         let mut current = previous.clone();
-        current.strip_browser_projection();
+        current.strip_export_parts();
         current
             .chart_space_mut()
             .chart_mut()
             .set_pivot_formats(supplied);
-        let report = current.restore_server_parts(&previous);
+        let report = current.restore_export_parts(&previous);
         let pivots = current.chart_space().chart().pivot_formats().unwrap();
         let restored: std::collections::BTreeMap<_, _> = pivots
             .iter()
@@ -580,12 +580,12 @@ fn preedited_pivot_removal_is_not_undone_by_recreating_missing_collection_owners
         .chart_mut()
         .set_pivot_formats(vec![retained]);
     let mut current = basis.clone();
-    current.strip_browser_projection();
+    current.strip_export_parts();
     current
         .chart_space_mut()
         .chart_mut()
         .set_pivot_formats(Vec::new());
-    current.restore_server_parts(&basis);
+    current.restore_export_parts(&basis);
     let pivots = current.chart_space().chart().pivot_formats().unwrap();
     assert_eq!(pivots.len(), 1);
     assert_eq!(pivots[0].index().val(), 8);
@@ -606,12 +606,12 @@ fn empty_supplied_pivot_collection_preserves_ambiguous_and_invalid_stored_owners
         let binary =
             bincode::serialize(previous.chart_space().chart().pivot_formats().unwrap()).unwrap();
         let mut current = previous.clone();
-        current.strip_browser_projection();
+        current.strip_export_parts();
         current
             .chart_space_mut()
             .chart_mut()
             .set_pivot_formats(Vec::new());
-        let report = current.restore_server_parts(&previous);
+        let report = current.restore_export_parts(&previous);
         assert_eq!(
             serde_json::to_value(current.chart_space().chart()).unwrap()["parts"],
             before

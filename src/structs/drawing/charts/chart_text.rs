@@ -34,9 +34,9 @@ pub struct ChartText {
 }
 
 impl ChartText {
-    pub(crate) fn browser_string_reference_mut(&mut self) -> Option<&mut StringReference> {
+    pub(crate) fn projection_string_reference_mut(&mut self) -> Option<&mut StringReference> {
         if let Some(text) = &mut self.rich_text {
-            text.strip_browser_parts();
+            text.strip_export_parts();
         }
         self.string_reference.as_mut()
     }

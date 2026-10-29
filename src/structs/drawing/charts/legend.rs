@@ -36,9 +36,9 @@ pub struct Legend {
 }
 
 impl Legend {
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         match (&mut self.text_properties, &previous.text_properties) {
-            (Some(current), Some(previous)) => current.restore_browser_parts(previous),
+            (Some(current), Some(previous)) => current.restore_export_parts(previous),
             _ => 0,
         }
     }
@@ -47,11 +47,11 @@ impl Legend {
         (self.layout.as_deref(), self.shape_properties.as_deref())
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> (Option<&mut Layout>, Option<&mut ShapeProperties>) {
         if let Some(text) = &mut self.text_properties {
-            text.strip_browser_parts();
+            text.strip_export_parts();
         }
         self.reference_role_parts_mut()
     }

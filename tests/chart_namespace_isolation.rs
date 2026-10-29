@@ -20,7 +20,7 @@ fn input(children: &str) -> Workbook {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..source.len() {
         let mut member = source.by_index(index).unwrap();
-        let name = member.name().to_owned();
+        let name = member.name().unwrap().into_owned();
         let mut data = Vec::new();
         member.read_to_end(&mut data).unwrap();
         if name == "xl/charts/chart1.xml" {

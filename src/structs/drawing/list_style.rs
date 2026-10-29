@@ -34,15 +34,15 @@ pub struct ListStyle {
 }
 
 impl ListStyle {
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         for properties in self.text_paragraph_properties_type.values_mut() {
             if let Some(properties) = properties.default_run_properties_mut() {
-                properties.strip_browser_parts();
+                properties.strip_export_parts();
             }
         }
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         let mut restored = 0;
         for (role, current) in &mut self.text_paragraph_properties_type {
             if let Some(previous) = previous.text_paragraph_properties_type.get(role) {
@@ -50,17 +50,17 @@ impl ListStyle {
                     current.default_run_properties_mut(),
                     previous.default_run_properties(),
                 ) {
-                    restored += current.restore_browser_parts(previous);
+                    restored += current.restore_export_parts(previous);
                 }
             }
         }
         restored
     }
 
-    pub(crate) fn browser_values_match(&self, previous: &Self) -> bool {
+    pub(crate) fn projected_values_match(&self, previous: &Self) -> bool {
         let bytes = |value: &Self| {
             let mut value = value.clone();
-            value.strip_browser_parts();
+            value.strip_export_parts();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
             value.write_to(&mut writer);
             writer.into_inner().into_inner()

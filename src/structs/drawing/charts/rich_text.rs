@@ -40,33 +40,33 @@ pub struct RichText {
 }
 
 impl RichText {
-    pub(crate) fn strip_browser_parts(&mut self) {
+    pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
-        self.body_properties.strip_browser_parts();
-        self.list_style.strip_browser_parts();
+        self.body_properties.strip_export_parts();
+        self.list_style.strip_export_parts();
         for paragraph in &mut self.paragraph {
-            paragraph.strip_browser_parts();
+            paragraph.strip_export_parts();
         }
     }
 
-    pub(crate) fn browser_structure_matches(&self, previous: &Self) -> bool {
+    pub(crate) fn projected_structure_matches(&self, previous: &Self) -> bool {
         self.paragraph.len() == previous.paragraph.len()
             && self
                 .paragraph
                 .iter()
                 .zip(&previous.paragraph)
-                .all(|(current, previous)| current.browser_structure_matches(previous))
+                .all(|(current, previous)| current.projected_structure_matches(previous))
     }
 
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
-        if !self.browser_structure_matches(previous) {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        if !self.projected_structure_matches(previous) {
             return 0;
         }
         let mut restored = 0;
         if self.parts.is_none() {
             if let Some(parts) = &previous.parts {
                 let mut parts = parts.clone();
-                if !self.list_style.browser_values_match(&previous.list_style) {
+                if !self.list_style.projected_values_match(&previous.list_style) {
                     parts.list_style_present = true;
                 }
                 self.parts = Some(parts);
@@ -75,10 +75,10 @@ impl RichText {
         }
         restored += self
             .body_properties
-            .restore_browser_parts(&previous.body_properties);
-        restored += self.list_style.restore_browser_parts(&previous.list_style);
+            .restore_export_parts(&previous.body_properties);
+        restored += self.list_style.restore_export_parts(&previous.list_style);
         for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
-            restored += current.restore_browser_parts(previous);
+            restored += current.restore_export_parts(previous);
         }
         restored
     }

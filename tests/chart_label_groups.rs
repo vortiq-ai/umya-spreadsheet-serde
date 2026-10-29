@@ -136,7 +136,7 @@ fn omit_group_labels(book: &Workbook, tag: &str) -> Workbook {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..source.len() {
         let mut member = source.by_index(i).unwrap();
-        let name = member.name().to_owned();
+        let name = member.name().unwrap().into_owned();
         let mut bytes = Vec::new();
         member.read_to_end(&mut bytes).unwrap();
         if name == "xl/charts/chart1.xml" {

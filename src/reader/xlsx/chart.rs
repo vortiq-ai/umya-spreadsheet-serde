@@ -4,6 +4,8 @@ use quick_xml::{
 };
 
 use crate::{
+    XlsxError,
+    XlsxErrorKind,
     reader::xlsx::{
         ChartPartProvider,
         SourceCacheSession,
@@ -15,7 +17,7 @@ use crate::{
         },
         raw::RawFile,
     },
-    xml_read_loop,
+    try_xml_read_loop,
 };
 
 struct ChartPartReadGuard<'a>(&'a SourceCacheSession);
@@ -31,35 +33,42 @@ pub(crate) fn read(
     chart_space: &mut ChartSpace,
     session: &SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
-) {
+) -> Result<(), XlsxError> {
+    let mut result = Ok(());
     provider.with_part(raw_file.file_target(), session, &mut |data| {
         let Some(data) = data else {
             return;
         };
-        session.begin_chart_part(raw_file.file_target());
-        let _part_guard = ChartPartReadGuard(session);
-        session
-            .prepare_chart_namespaces(data, raw_file.file_target())
-            .expect("Could not index chart namespace scope");
-        let data = std::io::Cursor::new(data);
-        let mut reader = Reader::from_reader(data);
-        reader.config_mut().trim_text(true);
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                let scope = NamespaceScope::default().child(e)
-                    .expect("valid chart root namespace declarations");
-                let name = scope.resolve(e.name().into_inner(), false)
-                    .expect("bound chart root QName");
-                if name.namespace_uri == crate::helper::const_str::DRAWINGML_CHART_NS {
-                    assert!(name.local_name == "chartSpace", "invalid chart root expanded name");
-                    chart_space.set_attributes(&mut reader, e, session);
-                }
-                // Foreign chart vocabularies are not ordinary chart parts.
-                // Do not scan their descendants for a chartSpace lookalike.
-                break;
-            },
-            Event::Eof => break,
-        );
+        result = (|| {
+            session.begin_chart_part(raw_file.file_target());
+            let _part_guard = ChartPartReadGuard(session);
+            session
+                .prepare_chart_namespaces(data, raw_file.file_target())
+                .map_err(|error| XlsxError::with_message(XlsxErrorKind::Xml, error))?;
+            let data = std::io::Cursor::new(data);
+            let mut reader = Reader::from_reader(data);
+            reader.config_mut().trim_text(true);
+            try_xml_read_loop!(
+                reader,
+                Event::Start(ref e) => {
+                    let scope = NamespaceScope::default().child(e)
+                        .map_err(|error| XlsxError::with_message(XlsxErrorKind::Xml, error))?;
+                    let name = scope.resolve(e.name().into_inner(), false)
+                        .map_err(|error| XlsxError::with_message(XlsxErrorKind::Xml, error))?;
+                    if name.namespace_uri == crate::helper::const_str::DRAWINGML_CHART_NS {
+                        if name.local_name != "chartSpace" {
+                            return Err(XlsxError::with_message(
+                                XlsxErrorKind::Xml, "invalid chart root expanded name"));
+                        }
+                        chart_space.set_attributes(&mut reader, e, session);
+                    }
+                    // A foreign chart root does not promote native descendants.
+                    break;
+                },
+                Event::Eof => break,
+            );
+            Ok(())
+        })();
     });
+    result
 }

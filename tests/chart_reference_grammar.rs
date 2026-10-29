@@ -15,7 +15,7 @@ use umya_spreadsheet::{
     structs::DefinedName,
 };
 
-#[path = "support/browser_chart_fixture.rs"]
+#[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 
 #[derive(Clone, Copy, Debug)]
@@ -351,19 +351,19 @@ fn external_named_references_are_not_adopted_as_local_scopes() {
     }
 }
 
-fn assert_named_delete(collision: bool, quoted: bool) {
-    // Authored regression expectations derive from saved Excel 16.0 build 20527
-    // r2/r3 (promotion) and r4 (global-name collision), not a new native
-    // capture.
+fn assert_named_delete(collision: bool, quoted: bool, local_name: &str, global_name: &str) {
+    // Excel promotes deleted local names; an existing global wins collisions.
     for role in ROLES {
-        let bytes = input_bytes("Data!Sales", role, false);
+        let bytes = input_bytes(&format!("Data!{local_name}"), role, false);
         let mut source =
             umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
-        source.sheet_mut(1).unwrap().defined_names_mut()[0].set_hidden(true);
+        source.sheet_mut(1).unwrap().defined_names_mut()[0]
+            .set_name(local_name)
+            .set_hidden(true);
         if quoted {
             source.set_sheet_name(1, "Bob's Data").unwrap();
             source.sheet_mut(0).unwrap().chart_collection_mut()[0] =
-                chart("'Bob''s Data'!Sales", role);
+                chart(&format!("'Bob''s Data'!{local_name}"), role);
         }
         if collision {
             source
@@ -372,9 +372,19 @@ fn assert_named_delete(collision: bool, quoted: bool) {
                 .cell_mut("D1")
                 .set_value_number(999);
             let mut global = DefinedName::default();
-            global.set_name("Sales").set_address("Host!$D$1");
+            global.set_name(global_name).set_address("Host!$D$1");
             source.add_defined_names(global);
         }
+        let cell_reference = if quoted {
+            format!("'Bob''s Data'!{local_name}")
+        } else {
+            format!("Data!{local_name}")
+        };
+        source
+            .sheet_mut(0)
+            .unwrap()
+            .cell_mut("A10")
+            .set_formula(cell_reference);
         let mut later = DefinedName::default();
         later
             .set_name("Later")
@@ -402,7 +412,7 @@ fn assert_named_delete(collision: bool, quoted: bool) {
                 umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(exported), true).unwrap();
             assert_eq!(
                 formula(&reread.sheet(0).unwrap().chart_collection()[0]),
-                "[0]!Sales",
+                format!("[0]!{local_name}"),
                 "{role:?}, collision={collision}, quoted={quoted}, eager={eager}"
             );
             let names: Vec<_> = reread
@@ -415,14 +425,34 @@ fn assert_named_delete(collision: bool, quoted: bool) {
                         .flat_map(|sheet| sheet.defined_names()),
                 )
                 .collect();
+            assert_eq!(names.len(), 2);
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(|name| !name.has_local_sheet_id())
+                    .count(),
+                1
+            );
             let sales: Vec<_> = names
                 .iter()
-                .filter(|name| name.name().eq_ignore_ascii_case("Sales"))
+                .filter(|name| match local_name {
+                    "Sales" => name.name().eq_ignore_ascii_case("Sales"),
+                    "ärger" => matches!(name.name(), "ärger" | "Ärger"),
+                    _ => unreachable!(),
+                })
                 .collect();
             assert_eq!(
                 sales.len(),
                 1,
                 "deleted local must not coexist with its fallback"
+            );
+            assert_eq!(
+                sales[0].name(),
+                if collision { global_name } else { local_name }
+            );
+            assert_eq!(
+                reread.sheet(0).unwrap().cell("A10").unwrap().formula(),
+                format!("[0]!{local_name}")
             );
             assert!(
                 !sales[0].has_local_sheet_id(),
@@ -454,16 +484,22 @@ fn assert_named_delete(collision: bool, quoted: bool) {
 
 #[test]
 fn deleted_local_name_promotes_to_current_workbook_ref_tombstone() {
-    assert_named_delete(false, false);
+    assert_named_delete(false, false, "Sales", "Sales");
 }
 
 #[test]
 fn deleted_local_name_uses_existing_global_name_on_collision() {
-    assert_named_delete(true, false);
+    assert_named_delete(true, false, "Sales", "Sales");
 }
 
 #[test]
 fn deleted_quoted_local_scope_uses_the_same_excel_fallback() {
-    assert_named_delete(false, true);
-    assert_named_delete(true, true);
+    assert_named_delete(false, true, "Sales", "Sales");
+    assert_named_delete(true, true, "Sales", "Sales");
+}
+
+#[test]
+fn deleted_local_name_uses_existing_non_ascii_case_variant_global() {
+    assert_named_delete(true, false, "ärger", "Ärger");
+    assert_named_delete(true, true, "ärger", "Ärger");
 }

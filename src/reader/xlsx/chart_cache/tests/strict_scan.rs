@@ -288,7 +288,7 @@ fn unwrap_message(error: &dyn std::fmt::Debug) -> String {
 }
 
 // Independent outcomes catch a fallback that agrees with itself while losing
-// whitespace handling, empty/last values, raw CDATA markers or exact failures.
+// whitespace handling, empty/last values, CDATA content or exact failures.
 #[test]
 fn rejected_syntax_preserves_literal_values_and_failure_messages() {
     let base = cache("c:", &[("0", "a")], "1");
@@ -301,7 +301,7 @@ fn rejected_syntax_preserves_literal_values_and_failure_messages() {
         ),
         (
             base.replace("<c:v>a</c:v>", "<c:v><![CDATA[a]]></c:v>"),
-            "<![CDATA[a]]>",
+            "a",
         ),
     ] {
         let Snapshot::Candidate {
@@ -314,8 +314,8 @@ fn rejected_syntax_preserves_literal_values_and_failure_messages() {
         else {
             panic!("one kept exception")
         };
-        // One dense point, unavailable display: one exception, no runs;
-        // CDATA's 9-byte opener + a + 3-byte closer is the largest text (13).
+        // One dense point, unavailable display: one exception, no runs.
+        // Text charges count decoded content, not CDATA delimiters.
         assert_eq!((points, text), (1, expected.len()));
         assert_eq!(
             facts_of(&source),

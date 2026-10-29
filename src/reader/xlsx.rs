@@ -8,6 +8,7 @@ use std::{
 use super::driver;
 use crate::{
     XlsxError,
+    XlsxErrorKind,
     helper::const_str::{
         COMMENTS_NS,
         DRAWINGS_NS,
@@ -97,14 +98,16 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
             let part = driver::zip_by_name(&mut arv, &path)?;
             let cap = crate::structs::cell_metadata::MAX_METADATA_BYTES;
             if part.size() > cap {
-                return Err(XlsxError::CellError(
-                    "Spreadsheet metadata exceeds the size limit".into(),
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::Xml,
+                    "Spreadsheet metadata exceeds the size limit",
                 ));
             }
             io::Read::read_to_end(&mut io::Read::take(part, cap + 1), &mut xml)?;
             if xml.len() as u64 > cap {
-                return Err(XlsxError::CellError(
-                    "Spreadsheet metadata exceeds the size limit".into(),
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::Xml,
+                    "Spreadsheet metadata exceeds the size limit",
                 ));
             }
             book.cell_metadata = Some(crate::structs::cell_metadata::CellMetadata::from_xml(
@@ -131,15 +134,15 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
             }
             let mut raw_worksheet = RawWorksheet::default();
             match source_file {
-                Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file),
-                None => raw_worksheet.read(&mut arv, rel_target, with_sheet_read),
+                Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file)?,
+                None => raw_worksheet.read(&mut arv, rel_target, with_sheet_read)?,
             }
             sheet.set_raw_data_of_worksheet(raw_worksheet);
         }
     }
 
     if with_sheet_read {
-        materialize_eager_sheets(&mut book, &mut arv);
+        materialize_eager_sheets(&mut book, &mut arv)?;
     }
 
     Ok(book)
@@ -200,9 +203,10 @@ where
         .iter()
         .find(|worksheet| worksheet.name() == sheet_name)
     else {
-        return Err(XlsxError::CellError(format!(
-            "Worksheet '{sheet_name}' not found."
-        )));
+        return Err(XlsxError::with_message(
+            XlsxErrorKind::NotFound,
+            format!("worksheet '{sheet_name}'"),
+        ));
     };
     let shared_string_table = book.shared_string_table();
     let shared_string_table = &*shared_string_table.read().unwrap();
@@ -220,84 +224,115 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     stylesheet: &Stylesheet,
     session: &mut SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
-) {
+) -> Result<(), XlsxError> {
     if worksheet.is_deserialized() {
-        return;
+        return Ok(());
     }
 
-    let mut raw_data_of_worksheet = worksheet.take_raw_data_of_worksheet();
-    let shared_string_table = &*shared_string_table.read().unwrap();
-    worksheet::read(
-        worksheet,
-        &raw_data_of_worksheet,
-        shared_string_table,
-        stylesheet,
-    )
-    .unwrap();
-    raw_data_of_worksheet
-        .load_relationship_file_data_from_source()
-        .unwrap();
-    let mut chart_parts = std::collections::HashMap::new();
-    for relationships in raw_data_of_worksheet.relationships_list_mut() {
-        chart_parts.extend(relationships.take_chart_part_buffers());
-    }
-    provider.add_pending(chart_parts);
+    let mut parsed = worksheet.materialization_target();
+    let mut raw = worksheet.take_raw_data_of_worksheet();
+    let mut sheet_session = session.for_sheet();
+    let mut chart_parts_added = false;
+    let mut chart_donors = std::collections::HashMap::new();
+    let result = (|| {
+        let shared_string_table = &*shared_string_table.read().unwrap();
+        worksheet::read(&mut parsed, &raw, shared_string_table, stylesheet)?;
+        raw.load_relationship_file_data_from_source()?;
+        let mut chart_parts = std::collections::HashMap::new();
+        for (list_index, relationships) in raw.relationships_list_mut().iter_mut().enumerate() {
+            for (relationship_index, relationship) in
+                relationships.relationship_list_mut().iter_mut().enumerate()
+            {
+                if relationship.get_type() != crate::helper::const_str::CHART_NS {
+                    continue;
+                }
+                let file = relationship.raw_file_mut();
+                let target = file.file_target().to_string();
+                let pending = chart_parts
+                    .entry(target.clone())
+                    .or_insert_with(|| (Vec::new(), file.source_file_owned()));
+                let donor = chart_donors.entry(target).or_insert(None);
+                if pending.0.is_empty() && file.has_file_data() {
+                    pending.0 = file.take_file_data();
+                    *donor = Some((list_index, relationship_index));
+                }
+            }
+        }
+        provider.add_pending(chart_parts);
+        chart_parts_added = true;
 
-    if let Some(v) = raw_data_of_worksheet.worksheet_relationships() {
-        for relationship in v.relationship_list() {
-            match relationship.get_type() {
-                // drawing, chart
-                DRAWINGS_NS => {
-                    drawing::read(
-                        worksheet,
+        if let Some(relationships) = raw.worksheet_relationships() {
+            for relationship in relationships.relationship_list() {
+                match relationship.get_type() {
+                    DRAWINGS_NS => {
+                        drawing::read(
+                            &mut parsed,
+                            relationship.raw_file(),
+                            raw.drawing_relationships(),
+                            &mut sheet_session,
+                            provider,
+                        )?;
+                    }
+                    COMMENTS_NS => comment::read(&mut parsed, relationship.raw_file())?,
+                    THREADED_COMMENT_NS => {
+                        threaded_comment::read(&mut parsed, relationship.raw_file())?;
+                    }
+                    TABLE_NS => table::read(&mut parsed, relationship.raw_file())?,
+                    PIVOT_TABLE_NS => {
+                        pivot_table::read(
+                            &mut parsed,
+                            relationship.raw_file(),
+                            raw.pivot_table_relationships(),
+                            raw.pivot_cache_relationships(),
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+            for relationship in relationships.relationship_list() {
+                if relationship.get_type() == VML_DRAWING_NS {
+                    vml_drawing::read(
+                        &mut parsed,
                         relationship.raw_file(),
-                        raw_data_of_worksheet.drawing_relationships(),
-                        session,
-                        provider,
-                    );
+                        raw.vml_drawing_relationships(),
+                    )?;
                 }
-                // comment
-                COMMENTS_NS => {
-                    comment::read(worksheet, relationship.raw_file());
-                }
-                // threaded_comment
-                THREADED_COMMENT_NS => {
-                    threaded_comment::read(worksheet, relationship.raw_file());
-                }
-                // table
-                TABLE_NS => {
-                    table::read(worksheet, relationship.raw_file()).unwrap();
-                }
-                // pivot table, pivot cache
-                PIVOT_TABLE_NS => {
-                    pivot_table::read(
-                        worksheet,
-                        relationship.raw_file(),
-                        raw_data_of_worksheet.pivot_table_relationships(),
-                        raw_data_of_worksheet.pivot_cache_relationships(),
-                    );
-                }
-                _ => {}
             }
         }
-        for relationship in v.relationship_list() {
-            // vmlDrawing
-            if relationship.get_type() == VML_DRAWING_NS {
-                vml_drawing::read(
-                    worksheet,
-                    relationship.raw_file(),
-                    raw_data_of_worksheet.vml_drawing_relationships(),
-                );
+        Ok(())
+    })();
+    if chart_parts_added {
+        provider.finish_sheet(&sheet_session);
+    }
+    match result {
+        Ok(()) => {
+            session.commit_sheet(&sheet_session);
+            *worksheet = parsed;
+            Ok(())
+        }
+        Err(error) => {
+            if chart_parts_added {
+                for (target, donor) in chart_donors {
+                    let recovered = provider.recover_part(&target, &sheet_session);
+                    if let (Some((list_index, relationship_index)), Some(data)) = (donor, recovered)
+                    {
+                        let file = raw.relationships_list_mut()[list_index].relationship_list_mut()
+                            [relationship_index]
+                            .raw_file_mut();
+                        *file.file_data_mut() = data;
+                    }
+                }
             }
+            worksheet.set_raw_data_of_worksheet(raw);
+            Err(error)
         }
     }
-    provider.finish_sheet(session);
 }
 
 fn materialize_eager_sheets<R: io::Read + io::Seek>(
     book: &mut Workbook,
     archive: &mut zip::read::ZipArchive<R>,
-) {
+) -> Result<(), XlsxError> {
     let shared_string_table = book.shared_string_table();
     let stylesheet = book.stylesheet().clone();
     let mut session = SourceCacheSession::deferred();
@@ -311,9 +346,10 @@ fn materialize_eager_sheets<R: io::Read + io::Seek>(
                 &stylesheet,
                 &mut session,
                 &mut provider,
-            );
+            )?;
             deserialized.push(index);
         }
     }
     capture_chart_source_caches(book, &deserialized, &mut session, &mut provider);
+    Ok(())
 }

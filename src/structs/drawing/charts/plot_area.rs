@@ -166,7 +166,7 @@ impl PlotArea {
         }
     }
 
-    pub(crate) fn browser_role_parts_mut(
+    pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::PlotPartsMut<'_> {
         self.reference_role_parts_mut()

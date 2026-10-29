@@ -56,13 +56,11 @@ pub struct ShapePropertiesParts {
     extensions: Option<super::ExtensionList>,
 }
 impl ShapeProperties {
-    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
-        if self.parts.is_none() && previous.parts.is_some() {
-            self.parts.clone_from(&previous.parts);
-            1
-        } else {
-            0
-        }
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.parts,
+            previous.parts.as_ref(),
+        )
     }
 
     #[must_use]
@@ -70,7 +68,7 @@ impl ShapeProperties {
         self.parts.as_ref().and_then(|p| p.extensions.as_ref())
     }
 
-    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.parts = None;
         None
     }

@@ -8,8 +8,9 @@ use super::{
 use crate::helper::{
     address::{
         is_address,
+        name_eq_ignore_case as sheet_matches,
         quote_sheet_name,
-        split_address,
+        split_reference_address,
         unescape_sheet_name,
     },
     coordinate::{
@@ -30,10 +31,6 @@ pub(crate) struct FormulaEdit {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UnresolvedEdit {
     InvalidCoordinate,
-}
-
-fn sheet_matches(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right) || left.to_lowercase() == right.to_lowercase()
 }
 
 /// A single unlocked A1-looking token outside Excel's grid can be a defined
@@ -279,11 +276,7 @@ fn edit_prepared_formula_text_with_context(
         if value.contains('[') || value.contains(']') {
             continue;
         }
-        let (sheet, range) = if let Some(qualifier) = value.strip_suffix("!#REF!") {
-            (qualifier.trim_matches(&['\'', '"'][..]), "#REF!")
-        } else {
-            split_address(value)
-        };
+        let (sheet, range) = split_reference_address(value);
         if range == "#REF!" {
             let replacement = if sheet.contains(':') {
                 edit_3d_sheet(sheet, range, prepared).0

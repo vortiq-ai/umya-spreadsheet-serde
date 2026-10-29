@@ -28,11 +28,11 @@ fn record_output(bytes: &[u8], case: &str, route: &str) {
         Digest,
         Sha256,
     };
-    if let Some(dir) = std::env::var_os("PHASE8_OUTPUT_DIR") {
-        let source = std::env::var("PHASE8_SOURCE_ID")
+    if let Some(dir) = std::env::var_os("CHART_XML_OUTPUT_DIR") {
+        let source = std::env::var("CHART_XML_SOURCE_ID")
             .expect("source identity required when capturing outputs");
-        let run =
-            std::env::var("PHASE8_RUN_ID").expect("run identity required when capturing outputs");
+        let run = std::env::var("CHART_XML_RUN_ID")
+            .expect("run identity required when capturing outputs");
         assert_eq!(source.len(), 64);
         assert!(source.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_eq!(run.len(), 64);
@@ -74,7 +74,7 @@ fn assert_file_rejected(book: &Workbook) {
     };
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "phase8-refusal-{}-{}",
+        "chart-reference-refusal-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -121,7 +121,7 @@ fn with_chart_xml(bytes: &[u8], new_chart: &str) -> Vec<u8> {
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..input.len() {
         let mut f = input.by_index(i).unwrap();
-        let name = f.name().to_owned();
+        let name = f.name().unwrap().into_owned();
         let opts = SimpleFileOptions::default().compression_method(f.compression());
         let mut body = Vec::new();
         f.read_to_end(&mut body).unwrap();
@@ -252,7 +252,7 @@ fn all_unit_and_pivot_references_round_trip_through_real_xlsx() {
         }
         assert_eq!(
             updated, 2,
-            "phase8 refs must participate in normal formula mutation exactly once"
+            "pivot and display-unit references must participate in formula mutation exactly once"
         );
         let mutated_json = serde_json::to_value(&wire).unwrap();
         let mutated: umya_spreadsheet::drawing::charts::Chart =
@@ -467,7 +467,7 @@ fn invalid_order_and_duplicate_indices_are_retained_and_diagnosed_after_codecs()
     let source = with_chart_xml(&source, &xml);
     let book = load(&source);
     let model = chart(&book).chart_space().chart();
-    assert_eq!(model.phase8_conflicts().len(), 2);
+    assert_eq!(model.export_conflicts().len(), 2);
     assert_eq!(
         model.pivot_formats().unwrap()[0].duplicate_indices(),
         &[Some("8".to_owned())]
@@ -483,7 +483,7 @@ fn invalid_order_and_duplicate_indices_are_retained_and_diagnosed_after_codecs()
         )
         .unwrap(),
     ] {
-        assert_eq!(restored.phase8_conflicts().len(), 2);
+        assert_eq!(restored.export_conflicts().len(), 2);
         assert_eq!(
             restored.pivot_formats().unwrap()[0].duplicate_indices(),
             &[Some("8".to_owned())]
@@ -508,7 +508,7 @@ fn every_workbook_writer_rejects_before_stream_or_existing_file_changes() {
     assert!(err.to_string().contains("chart export rejected"));
     assert!(bytes.is_empty());
     let root = std::env::temp_dir().join(format!(
-        "phase8-invalid-{}-{:?}",
+        "chart-invalid-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -614,7 +614,7 @@ fn scalar_bodies_validate_references_cdata_and_nested_content() {
             let input = fixture_with_unit(&node);
             let book = load(&input);
             let model = chart(&book).chart_space().chart();
-            assert_eq!(!model.phase8_conflicts().is_empty(), !valid, "{node}");
+            assert_eq!(!model.export_conflicts().is_empty(), !valid, "{node}");
             for restored in [
                 serde_json::from_slice::<umya_spreadsheet::drawing::charts::Chart>(
                     &serde_json::to_vec(model).unwrap(),
@@ -644,7 +644,7 @@ fn scalar_bodies_validate_references_cdata_and_nested_content() {
             !chart(&book)
                 .chart_space()
                 .chart()
-                .phase8_conflicts()
+                .export_conflicts()
                 .is_empty(),
             !valid,
             "idx body={body}"
@@ -752,7 +752,7 @@ fn duplicate_label_text_stays_typed_and_adjustable_but_export_refuses() {
     let input = with_chart_xml(&source, &modified);
     let book = load(&input);
     let model = chart(&book).chart_space().chart();
-    assert!(!model.phase8_conflicts().is_empty());
+    assert!(!model.export_conflicts().is_empty());
     for mut restored in [
         serde_json::from_slice::<umya_spreadsheet::drawing::charts::Chart>(
             &serde_json::to_vec(model).unwrap(),
@@ -810,13 +810,13 @@ fn contradictory_stored_branches_cannot_be_hidden_by_clearing_parser_flags() {
     pivot["extra_shapes"] =
         serde_json::json!([umya_spreadsheet::drawing::charts::ShapeProperties::default()]);
     let restored: umya_spreadsheet::drawing::charts::Chart = serde_json::from_value(json).unwrap();
-    assert_eq!(restored.phase8_conflicts().len(), 2);
+    assert_eq!(restored.export_conflicts().len(), 2);
     assert!(!restored.pivot_formats().unwrap()[0].index_is_present());
     for model in [
         restored.clone(),
         bincode::deserialize(&bincode::serialize(&restored).unwrap()).unwrap(),
     ] {
-        assert_eq!(model.phase8_conflicts().len(), 2);
+        assert_eq!(model.export_conflicts().len(), 2);
         let units = model.plot_area().value_axis()[0].display_units().unwrap();
         assert_eq!(units.extra_units().len(), 1);
         assert_eq!(units.extra_labels().len(), 1);
@@ -949,15 +949,15 @@ fn pivot_label_field_table_caches_follow_ordinary_capture_strip_and_adoption() {
                 serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
             let binary: Chart =
                 bincode::deserialize(&bincode::serialize(&original).unwrap()).unwrap();
-            for server in [original, json, binary] {
-                let mut client = server.clone();
+            for trusted in [original, json, binary] {
+                let mut client = trusted.clone();
                 client.strip_source_caches();
                 assert!(
                     pivot_field_references(&client)
                         .iter()
                         .all(|r| r.string_cache().source().is_none())
                 );
-                client.adopt_source_caches(&server);
+                client.adopt_source_caches(&trusted);
                 assert!(
                     pivot_field_references(&client).iter().all(|r| r
                         .string_cache()
@@ -984,8 +984,8 @@ fn pivot_label_field_table_caches_follow_ordinary_capture_strip_and_adoption() {
                     for (source_duplicate, incoming_duplicate) in
                         [(true, false), (false, true), (true, true)]
                     {
-                        let mut source = server.clone();
-                        let mut incoming = server.clone();
+                        let mut source = trusted.clone();
+                        let mut incoming = trusted.clone();
                         for (target, duplicate, swap) in [
                             (&mut source, source_duplicate, false),
                             (&mut incoming, incoming_duplicate, true),
@@ -1015,7 +1015,7 @@ fn pivot_label_field_table_caches_follow_ordinary_capture_strip_and_adoption() {
                             "refless duplicate owner prevents nested field transfer"
                         );
                     }
-                    let mut changed = server.clone();
+                    let mut changed = trusted.clone();
                     let label = changed
                         .chart_space_mut()
                         .chart_mut()
@@ -1036,7 +1036,7 @@ fn pivot_label_field_table_caches_follow_ordinary_capture_strip_and_adoption() {
                         .formula_mut()
                         .set_address_str("Missing!$C$2");
                     changed.strip_source_caches();
-                    changed.adopt_source_caches(&server);
+                    changed.adopt_source_caches(&trusted);
                     assert!(
                         pivot_field_references(&changed)[0]
                             .string_cache()
@@ -1127,7 +1127,7 @@ fn display_units_source(chart: &Chart) -> bool {
 }
 
 #[test]
-fn phase8_cache_roles_follow_existing_title_under_point_and_text_caps() {
+fn pivot_axis_cache_roles_follow_title_under_point_and_text_caps() {
     use umya_spreadsheet::drawing::charts::{
         MAX_SOURCE_CACHE_POINTS,
         MAX_SOURCE_CACHE_TEXT_BYTES,
@@ -1215,7 +1215,7 @@ fn phase8_cache_roles_follow_existing_title_under_point_and_text_caps() {
 }
 
 #[test]
-fn old_series_axis_trendline_and_extension_caches_precede_phase8_under_both_caps() {
+fn series_axis_trendline_and_extension_caches_precede_pivot_axis_under_both_caps() {
     use umya_spreadsheet::drawing::charts::{
         MAX_SOURCE_CACHE_POINTS,
         MAX_SOURCE_CACHE_TEXT_BYTES,
@@ -1316,7 +1316,7 @@ fn old_series_axis_trendline_and_extension_caches_precede_phase8_under_both_caps
 }
 
 #[test]
-fn phase8_cache_adoption_guards_both_roles_against_stale_and_ambiguous_owners() {
+fn pivot_axis_cache_adoption_guards_both_roles_against_stale_and_ambiguous_owners() {
     let base = fixture("millions");
     let mut xml = chart_xml(&base);
     for (cell, value) in [("$B$1", "pivot"), ("$A$1", "axis")] {
@@ -1531,18 +1531,18 @@ fn duplicate_refless_pivot_and_axis_owners_cannot_transfer_caches_by_swap() {
         let original = book.sheet_mut(0).unwrap().chart_collection()[0].clone();
         let json: Chart = serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
         let binary: Chart = bincode::deserialize(&bincode::serialize(&original).unwrap()).unwrap();
-        for server in [original, json, binary] {
+        for trusted in [original, json, binary] {
             for pivot_role in [true, false] {
-                assert!(has_cache(&server, pivot_role));
+                assert!(has_cache(&trusted, pivot_role));
                 for (source_duplicate, incoming_duplicate, swap) in [
                     (false, false, false),
                     (true, false, false),
                     (false, true, false),
                     (true, true, true),
                 ] {
-                    let mut source = server.clone();
+                    let mut source = trusted.clone();
                     arrange(&mut source, pivot_role, source_duplicate, false);
-                    let mut incoming = server.clone();
+                    let mut incoming = trusted.clone();
                     arrange(&mut incoming, pivot_role, incoming_duplicate, swap);
                     incoming.strip_source_caches();
                     incoming.adopt_source_caches(&source);
@@ -1747,7 +1747,7 @@ fn absent_typed_index_setter_and_json_are_rejected_but_explicit_zero_is_valid() 
     let owner = chart_mut(&mut book).chart_space_mut().chart_mut();
     owner.pivot_formats_mut().unwrap()[0].set_index(Default::default());
     assert!(!owner.pivot_formats().unwrap()[0].index_is_present());
-    assert!(!owner.phase8_conflicts().is_empty());
+    assert!(!owner.export_conflicts().is_empty());
     let mut json = serde_json::to_value(&*owner).unwrap();
     json["parts"]["pivot_formats"][0]["index_present"] = true.into();
     let from_json: umya_spreadsheet::drawing::charts::Chart = serde_json::from_value(json).unwrap();
@@ -1765,7 +1765,7 @@ fn absent_typed_index_setter_and_json_are_rejected_but_explicit_zero_is_valid() 
     let owner = chart_mut(&mut book).chart_space_mut().chart_mut();
     owner.pivot_formats_mut().unwrap()[0].set_index(zero);
     assert!(owner.pivot_formats().unwrap()[0].index_is_present());
-    assert!(owner.phase8_conflicts().is_empty());
+    assert!(owner.export_conflicts().is_empty());
     let output = save(&book);
     let reread = load(&output);
     let pivot = &chart(&reread)
@@ -1789,7 +1789,7 @@ fn pivot_label_missing_its_own_required_index_is_rejected() {
         !chart(&book)
             .chart_space()
             .chart()
-            .phase8_conflicts()
+            .export_conflicts()
             .is_empty()
     );
     assert_export_rejected(&book);
@@ -1810,7 +1810,7 @@ fn malformed_native_marker_persists_and_rejects_without_losing_destination() {
         );
         let book = load(&input);
         let owner = chart(&book).chart_space().chart();
-        assert!(!owner.phase8_conflicts().is_empty());
+        assert!(!owner.export_conflicts().is_empty());
         assert!(owner.pivot_formats().unwrap()[0].marker().is_some());
         for model in [
             serde_json::from_slice::<umya_spreadsheet::drawing::charts::Chart>(
@@ -1823,7 +1823,7 @@ fn malformed_native_marker_persists_and_rejects_without_losing_destination() {
             .unwrap(),
         ] {
             assert!(model.pivot_formats().unwrap()[0].marker().is_some());
-            assert!(!model.phase8_conflicts().is_empty());
+            assert!(!model.export_conflicts().is_empty());
             let mut out = load(&input);
             chart_mut(&mut out).chart_space_mut().set_chart(model);
             assert_export_rejected(&out);
@@ -1843,7 +1843,7 @@ fn malformed_native_marker_persists_and_rejects_without_losing_destination() {
             chart(&book)
                 .chart_space()
                 .chart()
-                .phase8_conflicts()
+                .export_conflicts()
                 .is_empty()
         );
         let _ = load(&save(&book));
@@ -1851,7 +1851,7 @@ fn malformed_native_marker_persists_and_rejects_without_losing_destination() {
 }
 
 #[test]
-fn element_only_phase8_owners_reject_significant_text_across_codecs() {
+fn element_only_pivot_axis_owners_reject_significant_text_across_codecs() {
     let base = fixture("millions");
     let xml = chart_xml(&base);
     for owner in ["dispUnits", "dispUnitsLbl", "pivotFmts", "pivotFmt"] {
@@ -1867,13 +1867,13 @@ fn element_only_phase8_owners_reject_significant_text_across_codecs() {
                     .chart_space()
                     .chart()
                     .clone();
-                assert!(!imported.phase8_conflicts().is_empty(), "{owner} {content}");
+                assert!(!imported.export_conflicts().is_empty(), "{owner} {content}");
                 let json: umya_spreadsheet::drawing::charts::Chart =
                     serde_json::from_slice(&serde_json::to_vec(&imported).unwrap()).unwrap();
                 let binary: umya_spreadsheet::drawing::charts::Chart =
                     bincode::deserialize(&bincode::serialize(&imported).unwrap()).unwrap();
                 for model in [imported, json, binary] {
-                    assert!(!model.phase8_conflicts().is_empty(), "{owner} {content}");
+                    assert!(!model.export_conflicts().is_empty(), "{owner} {content}");
                     let mut output = load(&input);
                     chart_mut(&mut output).chart_space_mut().set_chart(model);
                     assert_export_rejected(&output);
@@ -1890,7 +1890,7 @@ fn element_only_phase8_owners_reject_significant_text_across_codecs() {
                 book.sheet_mut(0).unwrap().chart_collection()[0]
                     .chart_space()
                     .chart()
-                    .phase8_conflicts()
+                    .export_conflicts()
                     .is_empty(),
                 "valid whitespace in {owner}"
             );
@@ -1899,7 +1899,7 @@ fn element_only_phase8_owners_reject_significant_text_across_codecs() {
                 chart(&load(&output))
                     .chart_space()
                     .chart()
-                    .phase8_conflicts()
+                    .export_conflicts()
                     .is_empty()
             );
         }

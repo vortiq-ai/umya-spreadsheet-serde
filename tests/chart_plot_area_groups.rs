@@ -490,9 +490,12 @@ fn unsupported_only_containers_are_filtered_during_import() {
     for index in 0..archive.len() {
         let mut part = archive.by_index(index).unwrap();
         output
-            .start_file(part.name(), ::zip::write::SimpleFileOptions::default())
+            .start_file(
+                part.name().unwrap(),
+                ::zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
-        if part.name() == "xl/charts/chart1.xml" {
+        if part.name().unwrap() == "xl/charts/chart1.xml" {
             output.write_all(xml.as_bytes()).unwrap();
         } else {
             std::io::copy(&mut part, &mut output).unwrap();
