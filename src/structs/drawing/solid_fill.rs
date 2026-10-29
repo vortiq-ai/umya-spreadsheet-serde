@@ -190,7 +190,15 @@ impl SolidFill {
             }
             self.set_rgb_color_model_hex(value);
         },
-        b"sysClr" => { let mut value=SystemColor::default(); value.set_attributes(reader,e,empty); self.set_system_color(value); },
+        b"sysClr" => {
+            let mut value = SystemColor::default();
+            if let Some(session) = session {
+                value.set_attributes_with_session(reader, e, empty, session);
+            } else {
+                value.set_attributes(reader, e, empty);
+            }
+            self.set_system_color(value);
+        },
                             _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
                         }
                     },
