@@ -12,6 +12,7 @@ use quick_xml::{
 
 use super::SpacingPercent;
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
@@ -61,16 +62,20 @@ impl LineSpacing {
         self.spacing_percent = None;
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                if crate::reader::driver::local_name(e.name().into_inner()) == b"spcPct" {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = crate::reader::driver::local_name(e.name().into_inner());
+                if native && name == b"spcPct" {
                     let mut obj = SpacingPercent::default();
                     obj.set_attributes(reader, e);
                     self.set_spacing_percent(obj);

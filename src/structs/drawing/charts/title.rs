@@ -18,7 +18,10 @@ use super::{
 use crate::{
     Workbook,
     drawing::charts::ShapeProperties,
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -49,6 +52,16 @@ impl Title {
             self.shape_properties.as_ref(),
             self.layout.as_ref(),
         )
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ChartText>,
+        Option<&mut ShapeProperties>,
+        Option<&mut Layout>,
+    ) {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -172,6 +185,7 @@ impl Title {
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         let _scope_guard = session.enter_child_scope(owner);
+        let end = owner.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
@@ -190,7 +204,7 @@ impl Title {
                     obj.set_attributes_with_session(reader, e, session);
                     self.set_shape_properties(obj);
                 }
-                _ => (),
+                _ => skip_element(reader, e),
             },
             Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
                 b"overlay" => {
@@ -204,7 +218,7 @@ impl Title {
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"title" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },

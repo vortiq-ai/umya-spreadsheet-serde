@@ -47,6 +47,15 @@ pub struct BubbleChart {
 }
 
 impl BubbleChart {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.extensions.is_none() && previous.extensions.is_some() {
+            self.extensions.clone_from(&previous.extensions);
+            1
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn reference_group_parts(
         &self,
     ) -> (
@@ -59,6 +68,17 @@ impl BubbleChart {
             Some(&self.data_labels),
             self.extensions.as_deref(),
         )
+    }
+
+    pub(crate) fn browser_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.reference_group_parts_mut()
     }
 
     pub(crate) fn reference_group_parts_mut(

@@ -126,6 +126,16 @@ impl Trendline {
         )
     }
 
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut TrendlineLabel>,
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> (
@@ -398,7 +408,9 @@ impl Trendline {
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                let child = local_name(e.name().into_inner());
+                let child = if session.accepts_child_namespace(e,super::extension_registry::NS_C) {
+                    local_name(e.name().into_inner())
+                } else { b"" };
                 if matches!(
                     child,
                     b"name"
@@ -416,7 +428,7 @@ impl Trendline {
                 {
                     result.duplicate_children = true;
                 }
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
+                match child {
                     b"name" => {
                         result.name = Some(if empty {
                             String::new()

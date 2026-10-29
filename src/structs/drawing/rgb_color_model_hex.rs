@@ -307,6 +307,27 @@ impl RgbColorModelHex {
         e: &BytesStart,
         empty_flag: bool,
     ) {
+        self.set_attributes_impl(reader, e, empty_flag, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.set_attributes_impl(reader, e, empty_flag, Some(session));
+    }
+
+    fn set_attributes_impl<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         self.val
             .set_value_string(get_unescaped_attribute(e, b"val").unwrap());
 
@@ -319,7 +340,17 @@ impl RgbColorModelHex {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| {
+                    session.accepts_child_namespace(
+                        e,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )
+                });
+                match if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
                     b"lum" => {
                         let mut obj = PercentageType::default();
                         obj.set_attributes(reader, e, is_empty);

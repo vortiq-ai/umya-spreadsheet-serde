@@ -16,6 +16,7 @@ use super::{
     RunProperties,
 };
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
@@ -81,7 +82,13 @@ impl TextField {
                 .is_none_or(ParagraphProperties::supplemental_attributes_valid)
     }
 
-    fn read<R: std::io::BufRead>(reader: &mut Reader<R>, e: &BytesStart, empty: bool) -> Self {
+    fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let mut result = Self {
             id: crate::drawing::get_unescaped_attribute(e, b"id").unwrap_or_default(),
             kind: crate::drawing::get_unescaped_attribute(e, b"type"),
@@ -94,9 +101,13 @@ impl TextField {
         xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty=matches!(event,Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
-                    b"rPr" => { let mut v=RunProperties::default(); v.set_attributes(reader,e,empty); result.run_properties=Some(v); },
-                    b"pPr" => { let mut v=ParagraphProperties::default(); v.set_attributes(reader,e,empty); result.paragraph_properties=Some(v); },
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else { b"" };
+                match name {
+                    b"rPr" => { let mut v=RunProperties::default(); v.read_with_session(reader,e,empty,session); result.run_properties=Some(v); },
+                    b"pPr" => { let mut v=ParagraphProperties::default(); v.read_with_session(reader,e,empty,session); result.paragraph_properties=Some(v); },
                     b"t" => { result.text=Some(crate::reader::driver::read_simple_text(reader,e,empty)
                         .expect("invalid DrawingML field text")); },
                     _ => { if !empty { crate::reader::driver::skip_element(reader,e); } },
@@ -129,6 +140,75 @@ impl TextField {
 }
 
 impl Paragraph {
+    // Fresh chart factories retain their historical serialized prefix; public
+    // mutation paths below separately track explicit property-element edits.
+    pub(crate) fn native_chart_paragraph_properties_mut(&mut self) -> &mut ParagraphProperties {
+        &mut self.paragraph_properties
+    }
+
+    pub(crate) fn strip_browser_parts(&mut self) {
+        self.parts = None;
+        self.paragraph_properties.strip_browser_parts();
+        for run in &mut self.run {
+            run.strip_browser_parts();
+        }
+        if let Some(properties) = &mut self.end_para_run_properties {
+            properties.strip_browser_parts();
+        }
+    }
+
+    pub(crate) fn browser_structure_matches(&self, previous: &Self) -> bool {
+        self.run.len() == previous.run.len()
+            && self
+                .run
+                .iter()
+                .zip(&previous.run)
+                .all(|(current, previous)| current.text() == previous.text())
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if !self.browser_structure_matches(previous) {
+            return 0;
+        }
+        let mut restored = 0;
+        if self.parts.is_none() {
+            if let Some(parts) = &previous.parts {
+                let mut parts = parts.clone();
+                // Omitted imported pPr cannot hide a current formatting edit.
+                if self.paragraph_properties.browser_parts_supplied()
+                    || !self
+                        .paragraph_properties
+                        .browser_values_match(&previous.paragraph_properties)
+                {
+                    parts.properties_present = true;
+                }
+                self.parts = Some(parts);
+                restored += 1;
+            }
+        } else if let (Some(current), Some(previous)) = (&mut self.parts, &previous.parts) {
+            // A property-only browser mutation materializes presence metadata,
+            // not a replacement of the server-owned positioned-field list.
+            // Explicit field removal is already reflected in `previous`.
+            if current.fields.is_empty() && !previous.fields.is_empty() {
+                current.fields.clone_from(&previous.fields);
+                restored += 1;
+            }
+        }
+        restored += self
+            .paragraph_properties
+            .restore_browser_parts(&previous.paragraph_properties);
+        for (current, previous) in self.run.iter_mut().zip(&previous.run) {
+            restored += current.restore_browser_parts(previous);
+        }
+        if let (Some(current), Some(previous)) = (
+            &mut self.end_para_run_properties,
+            &previous.end_para_run_properties,
+        ) {
+            restored += current.restore_browser_parts(previous);
+        }
+        restored
+    }
+
     #[must_use]
     pub fn supplemental_content_valid(&self) -> bool {
         self.paragraph_properties.supplemental_attributes_valid()
@@ -224,9 +304,9 @@ impl Paragraph {
 
     #[inline]
     pub fn paragraph_properties_mut(&mut self) -> &mut ParagraphProperties {
-        if let Some(p) = &mut self.parts {
-            p.properties_present = true;
-        }
+        self.parts
+            .get_or_insert_with(Default::default)
+            .properties_present = true;
         &mut self.paragraph_properties
     }
 
@@ -238,9 +318,9 @@ impl Paragraph {
 
     #[inline]
     pub fn set_paragraph_properties(&mut self, value: ParagraphProperties) -> &mut Self {
-        if let Some(p) = &mut self.parts {
-            p.properties_present = true;
-        }
+        self.parts
+            .get_or_insert_with(Default::default)
+            .properties_present = true;
         self.paragraph_properties = value;
         self
     }
@@ -303,20 +383,34 @@ impl Paragraph {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
+        self.read_with_session(reader, e, None);
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         self.parts = Some(Box::new(ParagraphParts::default()));
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else { b"" };
+                match name {
                     b"pPr" => {
                         self.parts.as_mut().unwrap().properties_present=true;
                         self.paragraph_properties
-                            .set_attributes(reader, e, is_empty);
+                            .read_with_session(reader, e, is_empty, session);
                     }
                     b"fld" => {
-                        let field = TextField::read(reader, e, is_empty);
+                        let field = TextField::read(reader, e, is_empty, session);
                         self.parts.as_mut().unwrap().fields.push(PositionedTextField {
                             before_run: run_position(self.run.len()),
                             field,
@@ -325,13 +419,13 @@ impl Paragraph {
                     b"r" => {
                         let mut run = Run::default();
                         if !is_empty {
-                            run.set_attributes(reader, e);
+                            run.read_with_session(reader, e, session);
                         }
                         self.run.push(run);
                     }
                     b"endParaRPr" => {
                         let mut run_properties = RunProperties::default();
-                        run_properties.set_attributes(reader, e, is_empty);
+                        run_properties.read_with_session(reader, e, is_empty, session);
                         self.set_end_para_run_properties(run_properties);
                     }
                     _ => {

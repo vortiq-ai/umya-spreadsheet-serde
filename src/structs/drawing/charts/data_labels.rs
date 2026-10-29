@@ -78,6 +78,106 @@ pub struct DataLabelsParts {
 }
 
 impl DataLabels {
+    pub(crate) fn discard_untrusted_point_labels(&mut self) -> usize {
+        let Some(parts) = &mut self.parts else {
+            return 0;
+        };
+        let removed = parts.labels.len();
+        parts.labels.clear();
+        removed
+    }
+
+    /// Fresh native chart construction retains its established legacy prefix.
+    /// Public mutations use the presence-aware setters instead.
+    pub(crate) fn constructed_with_show_leader_lines(value: ShowLeaderLines) -> Self {
+        Self {
+            show_leader_lines: Some(value),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if previous.parts.is_none() {
+            self.discard_untrusted_point_labels();
+        }
+        let changed = [
+            (self.show_legend_key.has_val(), self.show_legend_key.val())
+                != (
+                    previous.show_legend_key.has_val(),
+                    previous.show_legend_key.val(),
+                ),
+            (self.show_value.has_val(), self.show_value.val())
+                != (previous.show_value.has_val(), previous.show_value.val()),
+            (
+                self.show_category_name.has_val(),
+                self.show_category_name.val(),
+            ) != (
+                previous.show_category_name.has_val(),
+                previous.show_category_name.val(),
+            ),
+            (self.show_series_name.has_val(), self.show_series_name.val())
+                != (
+                    previous.show_series_name.has_val(),
+                    previous.show_series_name.val(),
+                ),
+            (self.show_percent.has_val(), self.show_percent.val())
+                != (previous.show_percent.has_val(), previous.show_percent.val()),
+            (self.show_bubble_size.has_val(), self.show_bubble_size.val())
+                != (
+                    previous.show_bubble_size.has_val(),
+                    previous.show_bubble_size.val(),
+                ),
+            self.show_leader_lines.as_ref().map(ShowLeaderLines::val)
+                != previous
+                    .show_leader_lines
+                    .as_ref()
+                    .map(ShowLeaderLines::val),
+        ];
+        let mut restored = 0;
+        if let Some(previous) = &previous.parts {
+            let current = self.parts.take();
+            let mut parts = previous.clone();
+            if let Some(current) = current {
+                // Existing flag masks are request presence. Only explicitly
+                // supplied flag metadata replaces the stored spelling; hidden
+                // collections continue to come from the authoritative basis.
+                let mask = current.present_flags;
+                parts.present_flags = (parts.present_flags & !mask) | mask;
+                parts.omitted_value_flags =
+                    (parts.omitted_value_flags & !mask) | (current.omitted_value_flags & mask);
+                parts.word_value_flags =
+                    (parts.word_value_flags & !mask) | (current.word_value_flags & mask);
+                parts.invalid_flags =
+                    (parts.invalid_flags & !mask) | (current.invalid_flags & mask);
+                parts
+                    .lexical_flags
+                    .retain(|(bit, _)| mask & (1 << bit) == 0);
+                parts.lexical_flags.extend(current.lexical_flags);
+                if current.owner_present == Some(true) {
+                    parts.owner_present = Some(true);
+                }
+            }
+            self.parts = Some(parts);
+            restored += 1;
+            for (bit, changed) in (0_u8..).zip(changed) {
+                if changed {
+                    self.canonicalize_flag(bit);
+                }
+            }
+            if self.show_leader_lines.is_none() {
+                if let Some(parts) = &mut self.parts {
+                    parts.present_flags &= !0x40;
+                }
+            }
+        }
+        if let (Some(current), Some(previous)) =
+            (&mut self.text_properties, &previous.text_properties)
+        {
+            restored += current.restore_browser_parts(previous);
+        }
+        restored
+    }
+
     pub(crate) fn reference_role_parts(
         &self,
     ) -> (
@@ -95,6 +195,21 @@ impl DataLabels {
             ),
             None => (&[], None, None, None),
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        &mut [DataLabel],
+        Option<&mut ShapeProperties>,
+        Option<&mut ChartLines>,
+        Option<&mut ExtensionList>,
+    ) {
+        self.parts = None;
+        if let Some(text) = &mut self.text_properties {
+            text.strip_browser_parts();
+        }
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -426,14 +541,18 @@ impl DataLabels {
 
     fn canonicalize_flag(&mut self, bit: u8) {
         self.mark_owner_present();
-        if let Some(parts) = &mut self.parts {
-            let mask = 1 << bit;
-            parts.present_flags |= mask;
-            parts.omitted_value_flags &= !mask;
-            parts.word_value_flags &= !mask;
-            parts.invalid_flags &= !mask;
-            parts.lexical_flags.retain(|(index, _)| *index != bit);
-        }
+        let parts = self.parts.get_or_insert_with(|| {
+            Box::new(DataLabelsParts {
+                owner_present: Some(true),
+                ..DataLabelsParts::default()
+            })
+        });
+        let mask = 1 << bit;
+        parts.present_flags |= mask;
+        parts.omitted_value_flags &= !mask;
+        parts.word_value_flags &= !mask;
+        parts.invalid_flags &= !mask;
+        parts.lexical_flags.retain(|(index, _)| *index != bit);
     }
 
     #[must_use]
@@ -699,7 +818,11 @@ impl DataLabels {
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                let child = local_name(e.name().into_inner());
+                let child = if session.accepts_child_namespace(e, super::extension_registry::NS_C) {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                };
                 if matches!(child,
                     b"delete" | b"numFmt" | b"spPr" | b"txPr" | b"dLblPos" | b"separator"
                     | b"showLegendKey" | b"showVal" | b"showCatName" | b"showSerName"
@@ -732,7 +855,7 @@ impl DataLabels {
                     },
                     b"txPr" => {
                         let mut v=TextProperties::default();
-                        if !empty { v.set_attributes(reader,e); }
+                        if !empty { v.read_with_session(reader, e, Some(session)); }
                         self.text_properties=Some(v);
                         consumed=true;
                     },
@@ -1000,6 +1123,52 @@ mod parity_tests {
         assert!(xml(&labels).contains(
             "<c:showLegendKey val=\"1\"/><c:showVal val=\"0\"/><c:showCatName val=\"true\"/>"
         ));
+    }
+
+    #[test]
+    fn browser_label_restore_retains_untouched_presence_spelling_and_duplicate_labels() {
+        let previous = parse(
+            "<c:dLbls><c:dLbl><c:idx val=\"9\"/></c:dLbl><c:dLbl><c:idx \
+             val=\"9\"/></c:dLbl><c:showVal/><c:showCatName val=\"true\"/></c:dLbls>",
+        );
+        let mut current = previous.clone();
+        let _projection = current.browser_role_parts_mut();
+        assert!(current.parts.is_none());
+        assert_eq!(current.restore_browser_parts(&previous), 1);
+        assert_eq!(xml(&current), xml(&previous));
+        assert_eq!(current.labels().len(), 2);
+        #[cfg(feature = "serde")]
+        assert_eq!(
+            bincode::serialize(&current).unwrap(),
+            bincode::serialize(&previous).unwrap()
+        );
+    }
+
+    #[test]
+    fn browser_flag_getter_preserves_explicit_same_value_intent_on_restore() {
+        let previous = parse("<c:dLbls><c:showVal/><c:showCatName val=\"true\"/></c:dLbls>");
+        let mut current = previous.clone();
+        let _projection = current.browser_role_parts_mut();
+        current.show_value_mut().set_val(true);
+        current.restore_browser_parts(&previous);
+        assert_eq!(
+            xml(&current),
+            "<c:dLbls><c:showVal val=\"1\"/><c:showCatName val=\"true\"/></c:dLbls>"
+        );
+    }
+
+    #[test]
+    fn browser_flag_false_edit_cannot_recover_omitted_true_default() {
+        let previous = parse("<c:dLbls><c:showVal/><c:showCatName val=\"true\"/></c:dLbls>");
+        let mut current = previous.clone();
+        let _projection = current.browser_role_parts_mut();
+        #[allow(deprecated)]
+        current.get_show_value_mut().set_val(false);
+        current.restore_browser_parts(&previous);
+        assert_eq!(
+            xml(&current),
+            "<c:dLbls><c:showVal val=\"0\"/><c:showCatName val=\"true\"/></c:dLbls>"
+        );
     }
     #[test]
     fn setters_mark_absent_flags_present() {

@@ -40,6 +40,18 @@ pub struct StringReference {
 }
 
 impl StringReference {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.extensions.is_none()
+            && previous.extensions.is_some()
+            && self.formula.address_str() == previous.formula.address_str()
+        {
+            self.extensions.clone_from(&previous.extensions);
+            1
+        } else {
+            0
+        }
+    }
+
     // A retaining Formula projection must consume these disjoint fields once.
     pub(crate) fn split_formula_extensions_mut(
         &mut self,
@@ -50,6 +62,11 @@ impl StringReference {
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.extensions.as_deref()
+    }
+
+    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions = None;
+        None
     }
 
     pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {

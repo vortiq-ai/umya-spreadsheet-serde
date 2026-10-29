@@ -82,11 +82,11 @@ pub struct Workbook {
 // reference must not leave half a workbook adjusted.
 struct WorkbookReferencePlan {
     global_names: Vec<Option<String>>,
+    scoped_names: Vec<Vec<Option<String>>>,
     sheets:       Vec<SheetReferencePlan>,
 }
 struct SheetReferencePlan {
     index:  usize,
-    names:  Vec<Option<String>>,
     cells:  Vec<((u32, u32), crate::structs::CellFormula)>,
     charts: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
 }
@@ -209,8 +209,9 @@ impl Workbook {
         Ok(hosts)
     }
 
-    /// Preflight every materialized formula owner before any reference or cell
-    /// geometry is changed. Hosts must have been discovered and materialized.
+    /// Preflight names on every sheet and formula owners on materialized hosts
+    /// before any reference or cell geometry is changed. Defined names are
+    /// already available from workbook.xml even when their sheet remains raw.
     fn prepare_workbook_reference_adjustment(
         &self,
         hosts: &[usize],
@@ -237,14 +238,21 @@ impl Workbook {
             };
             global_names.push(decide(&name.address(), host));
         }
+        let scoped_names = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| {
+                sheet
+                    .defined_names()
+                    .iter()
+                    .map(|name| decide(&name.address(), sheet.name()))
+                    .collect()
+            })
+            .collect();
         let mut sheets = Vec::with_capacity(hosts.len());
         for &index in hosts {
             let sheet = &self.work_sheet_collection[index];
             let host = sheet.name();
-            let mut names = Vec::new();
-            for name in sheet.defined_names() {
-                names.push(decide(&name.address(), host));
-            }
             let mut cells = Vec::new();
             for cell in sheet.cells() {
                 if cell.is_formula() {
@@ -277,13 +285,13 @@ impl Workbook {
             let charts = sheet.prepare_chart_space_edits(host, &prepared);
             sheets.push(SheetReferencePlan {
                 index,
-                names,
                 cells,
                 charts,
             });
         }
         Ok(WorkbookReferencePlan {
             global_names,
+            scoped_names,
             sheets,
         })
     }
@@ -294,13 +302,15 @@ impl Workbook {
                 name.set_string_value(text);
             }
         }
-        for sheet_plan in plan.sheets {
-            let sheet = &mut self.work_sheet_collection[sheet_plan.index];
-            for (name, decision) in sheet.defined_names_mut().iter_mut().zip(sheet_plan.names) {
+        for (sheet, decisions) in self.work_sheet_collection.iter_mut().zip(plan.scoped_names) {
+            for (name, decision) in sheet.defined_names_mut().iter_mut().zip(decisions) {
                 if let Some(text) = decision {
                     name.set_string_value(text);
                 }
             }
+        }
+        for sheet_plan in plan.sheets {
+            let sheet = &mut self.work_sheet_collection[sheet_plan.index];
             for (coordinate, formula) in sheet_plan.cells {
                 let cell = sheet.cell_mut(coordinate);
                 // The preflight clone preserves formula metadata and adjusts
@@ -376,7 +386,7 @@ impl Workbook {
         hosts
     }
 
-    fn adjust_global_defined_names(
+    fn adjust_global_and_raw_defined_names(
         &mut self,
         edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
     ) {
@@ -399,6 +409,14 @@ impl Workbook {
                 let decision = edit_prepared_formula_text(&before, host, prepared, false);
                 if decision.text != before {
                     name.set_string_value(decision.text);
+                }
+            }
+            // Discovered hosts have already been materialized and adjust their
+            // names with their cell/chart semantics. Raw sheets need only this
+            // in-memory metadata edit, never a new reader/cache baseline.
+            for sheet in &mut self.work_sheet_collection {
+                if !sheet.is_deserialized() {
+                    sheet.adjust_defined_names_for_prepared(prepared);
                 }
             }
         }
@@ -1288,20 +1306,55 @@ impl Workbook {
         let hosts = self.prepare_reference_hosts(&[&name], &edit)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
         self.apply_workbook_reference_adjustment(plan);
-        self.work_sheet_collection.remove(index);
-        // localSheetId is a zero-based workbook index, not a stable sheet ID.
-        // Deleted scopes disappear; later scopes shift with their owners.
+        let mut deleted_locals = Vec::new();
+        for names in std::iter::once(&mut self.defined_names).chain(
+            self.work_sheet_collection
+                .iter_mut()
+                .map(Worksheet::defined_names_mut),
+        ) {
+            names.retain(|name| {
+                let deleted = name.has_local_sheet_id() && name.local_sheet_id() as usize == index;
+                if deleted {
+                    deleted_locals.push(name.clone());
+                }
+                !deleted
+            });
+        }
+        let removed = self.work_sheet_collection.remove(index);
+        // Globals may be stored on the sheet containing their first address.
+        // Their semantic scope survives removal of that physical owner.
         self.defined_names
-            .retain(|name| !name.has_local_sheet_id() || name.local_sheet_id() as usize != index);
+            .extend(removed.defined_names().iter().cloned());
+        for mut name in deleted_locals {
+            let collides = self
+                .defined_names
+                .iter()
+                .chain(
+                    self.work_sheet_collection
+                        .iter()
+                        .flat_map(Worksheet::defined_names),
+                )
+                .any(|existing| {
+                    !existing.has_local_sheet_id()
+                        && existing.name().eq_ignore_ascii_case(name.name())
+                });
+            if !collides {
+                // Match Excel's current-workbook fallback: an existing global
+                // wins a collision; otherwise retain a global #REF! tombstone.
+                name.clear_local_sheet_id();
+                name.set_string_value("#REF!");
+                self.defined_names.push(name);
+            }
+        }
+        // localSheetId is a zero-based workbook index, not a stable sheet ID.
+        // Later scopes shift with their owners after deleted locals are
+        // promoted.
         for name in &mut self.defined_names {
             if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
                 name.set_local_sheet_id(name.local_sheet_id() - 1);
             }
         }
         for sheet in &mut self.work_sheet_collection {
-            sheet.defined_names_mut().retain(|name| {
-                !name.has_local_sheet_id() || name.local_sheet_id() as usize != index
-            });
             for name in sheet.defined_names_mut() {
                 if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
                     name.set_local_sheet_id(name.local_sheet_id() - 1);
@@ -1719,7 +1772,7 @@ impl AdjustmentCoordinateWithSheet for Workbook {
                     .expect("validated structural edit")
             })
             .collect();
-        self.adjust_global_defined_names(&prepared);
+        self.adjust_global_and_raw_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {
@@ -1789,7 +1842,7 @@ impl AdjustmentCoordinateWithSheet for Workbook {
                     .expect("validated structural edit")
             })
             .collect();
-        self.adjust_global_defined_names(&prepared);
+        self.adjust_global_and_raw_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {

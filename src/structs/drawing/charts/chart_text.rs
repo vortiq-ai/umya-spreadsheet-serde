@@ -34,6 +34,13 @@ pub struct ChartText {
 }
 
 impl ChartText {
+    pub(crate) fn browser_string_reference_mut(&mut self) -> Option<&mut StringReference> {
+        if let Some(text) = &mut self.rich_text {
+            text.strip_browser_parts();
+        }
+        self.string_reference.as_mut()
+    }
+
     #[must_use]
     pub fn rich_text(&self) -> Option<&RichText> {
         self.rich_text.as_ref()
@@ -125,7 +132,7 @@ impl ChartText {
                     b"rich" => {
                         let mut v = RichText::default();
                         if !empty {
-                            v.set_attributes(reader, e);
+                            v.read_with_session(reader, e, Some(session));
                         }
                         self.rich_text = Some(v);
                     }

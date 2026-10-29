@@ -26,6 +26,7 @@ use super::{
     TextFontType,
 };
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         get_attribute,
         xml_read_loop,
@@ -155,6 +156,65 @@ pub struct RunPropertiesParts {
 }
 
 impl RunProperties {
+    pub(crate) fn strip_browser_parts(&mut self) {
+        self.parts = None;
+    }
+
+    pub(crate) fn browser_parts_supplied(&self) -> bool {
+        self.parts.is_some()
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        let Some(previous) = &previous.parts else {
+            return 0;
+        };
+        let Some(current) = &mut self.parts else {
+            self.parts = Some(previous.clone());
+            return 1;
+        };
+        let mut restored = false;
+        if current.underline.is_none()
+            && current.invalid_attributes & 1 == 0
+            && (previous.underline.is_some() || previous.invalid_attributes & 1 != 0)
+        {
+            current.underline = previous.underline;
+            current.invalid_attributes |= previous.invalid_attributes & 1;
+            restored = true;
+        }
+        if current.kerning.is_none()
+            && current.invalid_attributes & 2 == 0
+            && (previous.kerning.is_some() || previous.invalid_attributes & 2 != 0)
+        {
+            current.kerning = previous.kerning;
+            current.invalid_attributes |= previous.invalid_attributes & 2;
+            restored = true;
+        }
+        if current.baseline.is_none()
+            && current.invalid_attributes & 4 == 0
+            && (previous.baseline.is_some() || previous.invalid_attributes & 4 != 0)
+        {
+            current.baseline = previous.baseline;
+            current.invalid_attributes |= previous.invalid_attributes & 4;
+            restored = true;
+        }
+        if !current.underline_uses_text_fill && previous.underline_uses_text_fill {
+            current.underline_uses_text_fill = true;
+            restored = true;
+        }
+        usize::from(restored)
+    }
+
+    pub(crate) fn browser_values_match(&self, previous: &Self) -> bool {
+        let bytes = |value: &Self| {
+            let mut value = value.clone();
+            value.strip_browser_parts();
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            value.write_to_rpr(&mut writer);
+            writer.into_inner().into_inner()
+        };
+        self.text == previous.text && bytes(self) == bytes(previous)
+    }
+
     #[must_use]
     pub fn underline(&self) -> Option<TextUnderline> {
         self.parts.as_ref().and_then(|p| p.underline)
@@ -642,12 +702,14 @@ impl RunProperties {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         if let Some(v) = get_unescaped_attribute(e, b"u") {
             let parsed = TextUnderline::read(&v);
             let p = self.parts.get_or_insert_with(Default::default);
@@ -703,28 +765,54 @@ impl RunProperties {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else { b"" };
+                match name {
                     b"uFillTx" => { self.parts.get_or_insert_with(Default::default).underline_uses_text_fill=true; if !is_empty { crate::reader::driver::skip_element(reader,e); } }
                     b"solidFill" => {
                         let mut obj = SolidFill::default();
-                        obj.read_attributes(reader, e, is_empty);
+                        match session {
+                            Some(session) => {
+                                obj.read_attributes_with_session(reader, e, is_empty, session);
+                            }
+                            None => obj.read_attributes(reader, e, is_empty),
+                        }
                         self.set_solid_fill(obj);
                     }
                     b"ln" => {
                         let mut obj = Outline::default();
                         if !is_empty {
-                            obj.set_attributes(reader, e);
+                            match session {
+                                Some(session) => {
+                                    obj.set_attributes_with_session(reader, e, session);
+                                }
+                                None => obj.set_attributes(reader, e),
+                            }
                         }
                         self.set_outline(obj);
                     }
                     b"gradFill" => {
                         let mut obj = GradientFill::default();
-                        obj.read_attributes(reader, e, is_empty);
+                        match session {
+                            Some(session) => {
+                                obj.read_attributes_with_session(reader, e, is_empty, session);
+                            }
+                            None => obj.read_attributes(reader, e, is_empty),
+                        }
                         self.set_gradient_fill(obj);
                     }
                     b"effectLst" => {
                         let mut effect_list = EffectList::default();
-                        effect_list.set_attributes(reader, e, is_empty);
+                        match session {
+                            Some(session) => {
+                                effect_list.set_attributes_with_session(
+                                    reader, e, is_empty, session,
+                                );
+                            }
+                            None => effect_list.set_attributes(reader, e, is_empty),
+                        }
                         self.set_effect_list(effect_list);
                     }
                     b"latin" => {
@@ -882,7 +970,7 @@ mod parity_tests {
             _ => panic!("expected run properties"),
         };
         let mut p = RunProperties::default();
-        p.set_attributes(&mut reader, &e, false);
+        p.read_with_session(&mut reader, &e, false, None);
         assert_eq!(p.underline(), Some(TextUnderline::WavyDouble));
         assert_eq!(p.kerning(), Some(1200));
         assert_eq!(p.baseline(), Some(-2000));

@@ -13,6 +13,11 @@ pub use self::plot_area::*;
 mod chart_group;
 pub use self::chart_group::*;
 
+mod chart_series_identity;
+
+pub(crate) mod chart_server_parts;
+pub use self::chart_server_parts::RestoreReport;
+
 mod series_family;
 pub use self::series_family::*;
 

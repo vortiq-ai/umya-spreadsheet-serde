@@ -125,26 +125,85 @@ impl EffectList {
         e: &BytesStart,
         empty_flag: bool,
     ) {
+        self.set_attributes_impl(reader, e, empty_flag, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.set_attributes_impl(reader, e, empty_flag, Some(session));
+    }
+
+    fn set_attributes_impl<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         if empty_flag {
             return;
         }
 
         let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
+        xml_read_loop!(
+            reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
-                let empty=matches!(event,Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
-                    b"glow" => { let mut value=Glow::default(); value.read_attributes(reader,e,empty); self.set_glow(value); },
-                    b"outerShdw" => { let mut value=OuterShadow::default(); value.read_attributes(reader,e,empty); self.set_outer_shadow(value); },
-                    b"softEdge" => { let mut value=SoftEdge::default(); value.set_attributes(reader,e); self.set_soft_edge(value); if !empty { crate::reader::driver::skip_element(reader,e); } },
-                    _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                let empty = matches!(event, Event::Empty(_));
+                let native = session.is_none_or(|session| {
+                    session.accepts_child_namespace(
+                        e,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )
+                });
+                match if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
+                    b"glow" => {
+                        let mut value = Glow::default();
+                        if let Some(session) = session {
+                            value.read_attributes_with_session(reader, e, empty, session);
+                        } else {
+                            value.read_attributes(reader, e, empty);
+                        }
+                        self.set_glow(value);
+                    },
+                    b"outerShdw" => {
+                        let mut value = OuterShadow::default();
+                        if let Some(session) = session {
+                            value.read_attributes_with_session(reader, e, empty, session);
+                        } else {
+                            value.read_attributes(reader, e, empty);
+                        }
+                        self.set_outer_shadow(value);
+                    },
+                    b"softEdge" => {
+                        let mut value = SoftEdge::default();
+                        value.set_attributes(reader, e);
+                        self.set_soft_edge(value);
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    },
+                    _ => {
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    },
                 }
             },
             Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
-                    }
-                },
+                if end.name().as_ref() == end_name.as_slice() {
+                    return;
+                }
+            },
             Event::Eof => panic!("Could not find effects end element"),
         );
     }

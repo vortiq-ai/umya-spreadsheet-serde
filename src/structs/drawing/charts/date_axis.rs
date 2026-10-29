@@ -65,6 +65,30 @@ pub struct DateAxis {
 }
 
 impl DateAxis {
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> usize {
+        let mut restored = 0;
+        restored += self
+            .numbering_format
+            .restore_browser_parts(&previous.numbering_format);
+        if let (Some(current), Some(previous)) =
+            (&mut self.text_properties, &previous.text_properties)
+        {
+            if current.browser_structure_matches(previous) {
+                restored += current.restore_browser_parts(previous);
+            } else {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("replaced date-axis text body retains no old fields".into());
+            }
+        }
+        restored
+    }
+
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
         super::chart_reference_roles::AxisParts {
             id:            self.axis_id.explicit_value(),
@@ -73,6 +97,16 @@ impl DateAxis {
             gridlines:     self.major_gridlines.as_ref(),
             display_parts: None,
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        self.numbering_format.strip_browser_parts();
+        if let Some(text) = &mut self.text_properties {
+            text.strip_browser_parts();
+        }
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -537,7 +571,7 @@ impl DateAxis {
                 }
                 b"txPr" => {
                     let mut obj = TextProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.read_with_session(reader, e, Some(session));
                     self.set_text_properties(obj);
                 }
                 b"majorGridlines" => {

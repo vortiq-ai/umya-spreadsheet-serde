@@ -51,6 +51,13 @@ impl StringLiteral {
         self.parts.as_deref().and_then(|p| p.extensions.as_deref())
     }
 
+    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        if let Some(parts) = &mut self.parts {
+            parts.extensions = None;
+        }
+        None
+    }
+
     pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.parts
             .as_deref_mut()

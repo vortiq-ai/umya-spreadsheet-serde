@@ -772,7 +772,13 @@ fn handle_special_characters(
         }
 
         let Some(obj) = stack.last() else {
-            return false;
+            tokens1.push(token!(
+                ",",
+                FormulaTokenTypes::OperatorInfix,
+                FormulaTokenSubTypes::Union
+            ));
+            *index += 1;
+            return true;
         };
         // Inspect the frame without rewriting it: ARRAYROW/ARRAY identity is
         // needed to reject a later unmatched delimiter without consuming a
@@ -1297,6 +1303,61 @@ pub fn adjustment_remove_formula_coordinate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_level_union_operands_have_clean_exact_source_spans() {
+        for (input, expected) in [
+            (
+                "Data!$A$1,Data!$B$1",
+                vec![("Data!$A$1", 0..9), ("Data!$B$1", 10..19)],
+            ),
+            (
+                "=Data!$A$1,Data!$B$1",
+                vec![("Data!$A$1", 1..10), ("Data!$B$1", 11..20)],
+            ),
+            (
+                "(Data!$A$1,Data!$B$1)",
+                vec![("Data!$A$1", 1..10), ("Data!$B$1", 11..20)],
+            ),
+        ] {
+            let actual: Vec<_> = chart_formula_operands(input)
+                .into_iter()
+                .map(|operand| (operand.text, operand.span))
+                .collect();
+            assert_eq!(actual, expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn top_level_union_is_a_real_operator_and_cell_rendering_stays_lossless() {
+        let input = "=Data!$A$1,Data!$B$1";
+        let tokens = parse_chart_formula_tokens(input);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| {
+                    token.get_token_type() == &FormulaTokenTypes::OperatorInfix
+                        && token.get_token_sub_type() == &FormulaTokenSubTypes::Union
+                        && token.get_value() == ","
+                })
+                .count(),
+            1
+        );
+        for input in [
+            "=Data!$A$1,Data!$B$1",
+            "=(Data!$A$1,Data!$B$1)",
+            "=SUM(Data!$A$1,Data!$B$1)",
+            "=Data!$A$1,\"comma,inside\",'[Book.xlsx]Data'!$B$1",
+        ] {
+            assert_eq!(render(&parse_to_tokens(input)), &input[1..]);
+        }
+        // Existing array tokens render as pseudo-functions, not braces. Keep
+        // that legacy rendering contract separate from lossless union text.
+        assert_eq!(
+            render(&parse_to_tokens("={1,2;3,4}")),
+            "ARRAY(ARRAYROW(1,2),ARRAYROW(3,4))"
+        );
+    }
 
     #[test]
     fn typed_reference_projection_is_complete_ordered_and_source_backed() {

@@ -103,6 +103,15 @@ pub(crate) struct SeriesReferencePartsMut<'a> {
 }
 
 impl AreaChartSeries {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        // These collections are server-owned in their entirety. An incoming
+        // Some(empty) or populated payload is not an authoritative edit or an
+        // excuse to suppress restoration. Explicit changes already belong to
+        // the caller's pre-edited native basis, including an absent slot.
+        self.parts.clone_from(&previous.parts);
+        usize::from(self.parts.is_some())
+    }
+
     pub(crate) fn reference_role_parts(&self) -> SeriesReferenceParts<'_> {
         let (points, trends, errors, extensions) = match self.parts.as_deref() {
             Some(parts) => parts.reference_role_parts(),
@@ -123,6 +132,11 @@ impl AreaChartSeries {
             errors,
             extensions,
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
+        self.parts = None;
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
@@ -829,6 +843,15 @@ impl AreaChartSeries {
             .and_then(|ext| ext.conflict_for_owner("ser", Some(family)))
         {
             conflicts.push((SeriesPartKind::Extensions, 0, reason));
+        }
+        if family.allows(SeriesPartKind::Categories) {
+            if let Some(reason) = self
+                .category_axis_data
+                .as_ref()
+                .and_then(CategoryAxisData::conflict)
+            {
+                conflicts.push((SeriesPartKind::Categories, 0, reason));
+            }
         }
         if family.allows(SeriesPartKind::Marker)
             && self.marker.as_ref().is_some_and(|v| !v.is_valid())

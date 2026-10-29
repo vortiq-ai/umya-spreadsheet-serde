@@ -185,6 +185,27 @@ impl GradientFill {
         e: &BytesStart,
         empty: bool,
     ) {
+        self.read_attributes_impl(reader, e, empty, None);
+    }
+
+    pub(crate) fn read_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.read_attributes_impl(reader, e, empty, Some(session));
+    }
+
+    fn read_attributes_impl<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         set_string_from_xml!(self, e, flip, "flip");
         set_string_from_xml!(self, e, rotate_with_shape, "rotWithShape");
 
@@ -195,10 +216,26 @@ impl GradientFill {
         xml_read_loop!(reader,
                     ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                         let empty=matches!(event,Event::Empty(_));
-                        match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| {
+                    session.accepts_child_namespace(
+                        e,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )
+                });
+                match if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
         b"lin" => { let mut value=LinearGradientFill::default(); value.set_attributes(reader,e,empty); self.set_linear_gradient_fill(value); },
         b"tileRect" => { TileRectangle::set_attributes(reader,e,empty); self.set_tile_rectangle(TileRectangle::default()); },
-        b"gsLst" => { self.gradient_stop_list.read_attributes(reader,e,empty); },
+        b"gsLst" => {
+            if let Some(session) = session {
+                self.gradient_stop_list.read_attributes_with_session(reader, e, empty, session);
+            } else {
+                self.gradient_stop_list.read_attributes(reader, e, empty);
+            }
+        },
                             _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
                         }
                     },

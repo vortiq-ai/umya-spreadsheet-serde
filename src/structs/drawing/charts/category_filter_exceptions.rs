@@ -62,6 +62,17 @@ impl CategoryFilterException {
         )
     }
 
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        &mut ReferenceSequence,
+        Option<&mut ShapeProperties>,
+        Option<&mut Marker>,
+        Option<&mut DataLabel>,
+    ) {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> (

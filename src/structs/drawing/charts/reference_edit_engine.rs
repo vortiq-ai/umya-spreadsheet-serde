@@ -226,6 +226,43 @@ fn is_native_coordinate_operand(range: &str) -> bool {
     })
 }
 
+/// Lexical names, not a lookup of their definitions. MS-XLSX 2.2.2 permits
+/// non-ASCII name characters and excludes native A1/R1C1 reference spellings.
+fn is_named_operand(value: &str) -> bool {
+    let start = |c: char| c.is_ascii_alphabetic() || c == '_' || c == '\\' || !c.is_ascii();
+    let mut chars = value.chars();
+    if !chars.next().is_some_and(start)
+        || value.chars().count() > 255
+        || !chars.all(|c| start(c) || c.is_ascii_digit() || c == '.' || c == '?')
+        || is_native_coordinate_operand(value)
+    {
+        return false;
+    }
+    let upper = value.to_ascii_uppercase();
+    if matches!(upper.as_str(), "TRUE" | "FALSE" | "R" | "C") {
+        return false;
+    }
+    let axis = |text: &str, prefix: char, max: u32| -> Option<usize> {
+        let rest = text.strip_prefix(prefix)?;
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let index = rest[..digits].parse::<u32>().ok()?;
+        (index > 0 && index <= max).then_some(1 + digits)
+    };
+    for (first, first_max, second, second_max) in
+        [('R', 1_048_576, 'C', 16_384), ('C', 16_384, 'R', 1_048_576)]
+    {
+        if let Some(end) = axis(&upper, first, first_max) {
+            if end == upper.len()
+                || axis(&upper[end..], second, second_max)
+                    .is_some_and(|len| end + len == upper.len())
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn edit_prepared_formula_text_with_context(
     input: &str,
     host: &str,
@@ -278,6 +315,28 @@ fn edit_prepared_formula_text_with_context(
             continue;
         }
         if !is_native_coordinate_operand(range) {
+            if !sheet.is_empty() && !sheet.contains(':') && is_named_operand(range) {
+                let effective_sheet = unescape_sheet_name(sheet);
+                let replacement = match edit {
+                    ChartReferenceEdit::RenameSheet { old, new }
+                        if sheet_matches(&effective_sheet, old) =>
+                    {
+                        Some(format!("{}!{range}", quote_sheet_name(new)))
+                    }
+                    ChartReferenceEdit::DeleteSheet { sheet: deleted, .. }
+                        if sheet_matches(&effective_sheet, deleted) =>
+                    {
+                        // Excel's selected fallback addresses the current
+                        // workbook name; Workbook owns scope
+                        // promotion/collision.
+                        Some(format!("[0]!{range}"))
+                    }
+                    _ => None,
+                };
+                if let Some(text) = replacement {
+                    patches.push((span, text));
+                }
+            }
             continue;
         }
         if sheet.contains(':') {
@@ -2634,6 +2693,42 @@ mod tests {
         assert!(!is_out_of_grid_name_operand("XFD1048576"));
         assert!(!is_out_of_grid_name_operand("$XFE$1"));
         assert!(!is_out_of_grid_name_operand("XFE1:A1"));
+    }
+
+    #[test]
+    fn qualified_name_grammar_excludes_coordinates_literals_and_malformed_fragments() {
+        for name in [
+            "Sales", "_Sales", "\\Sales", "Sales.2", "Sales?", "Données", "XFE1", "A1048577", "A0",
+            "R1048577", "R1C16385",
+        ] {
+            assert!(is_named_operand(name), "{name}");
+        }
+        for fragment in [
+            "",
+            "A1",
+            "XFD1048576",
+            "R",
+            "C",
+            "R1",
+            "C1",
+            "C16385",
+            "R1C1",
+            "C1R1",
+            "TRUE",
+            "false",
+            "$A$0",
+            "A1:A2",
+            "1Sales",
+            ".Sales",
+            "?Sales",
+            "Sales!Other",
+            "Sales-Other",
+            "Sales Other",
+            "Sales[Column]",
+        ] {
+            assert!(!is_named_operand(fragment), "{fragment}");
+        }
+        assert!(!is_named_operand(&"A".repeat(256)));
     }
 
     #[test]

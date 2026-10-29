@@ -54,6 +54,16 @@ impl DataPoint {
         )
     }
 
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut Marker>,
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> (
@@ -220,7 +230,7 @@ impl DataPoint {
                     b"explosion" => { let mut value=Explosion::default(); value.set_attributes(reader,e); result.explosion=Some(value); },
                     b"marker" => { let mut value=Marker::default(); match session{Some(session)=>value.set_attributes_with_session(reader,e,empty,session),None=>value.set_attributes(reader,e,empty)} result.marker=Some(value); consumed=true; },
                     b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session{Some(session)=>value.set_attributes_with_session(reader,e,session),None=>value.set_attributes(reader,e)} } result.shape_properties=Some(value); consumed=true; },
-                    b"pictureOptions" => { result.picture_options=Some(PictureOptions::read(reader,empty)); consumed=true; },
+                    b"pictureOptions" => { result.picture_options=Some(PictureOptions::read(reader,e,empty,session)); consumed=true; },
                     _ => (),
                 }
                 if !empty && !consumed { skip_element(reader,e); }

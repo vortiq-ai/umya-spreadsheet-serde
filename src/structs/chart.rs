@@ -371,6 +371,62 @@ impl Chart {
             .chart_space()
     }
 
+    /// Strip a browser-bound clone of source caches and export-only metadata.
+    /// Persistence, trusted copies and history keep the complete chart.
+    pub fn strip_browser_projection(&mut self) {
+        self.strip_source_caches();
+        if let Some(frame) = self.two_cell_anchor.graphic_frame_mut() {
+            crate::drawing::charts::chart_reference_roles::strip_browser_parts(
+                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+            );
+        }
+    }
+
+    /// Restore server-owned export metadata from the authoritative native
+    /// chart after applying requested editable changes to that basis. Keep
+    /// the true before-state separately for history. Explicit removals must
+    /// already be applied to `previous`; browser omission is not removal.
+    /// Ambiguous owners are reported, never paired by collection position.
+    pub fn restore_server_parts(
+        &mut self,
+        previous: &Chart,
+    ) -> crate::drawing::charts::RestoreReport {
+        use crate::drawing::charts::RestoreReport;
+        let Some(previous) = previous.two_cell_anchor.graphic_frame() else {
+            self.clear_source_caches();
+            return RestoreReport {
+                incompatible_owners: 1,
+                diagnostics: vec!["previous chart has no physical graphic frame".into()],
+                ..RestoreReport::default()
+            };
+        };
+        let Some(current) = self.two_cell_anchor.graphic_frame_mut() else {
+            return RestoreReport {
+                incompatible_owners: 1,
+                diagnostics: vec!["current chart has no physical graphic frame".into()],
+                ..RestoreReport::default()
+            };
+        };
+        let identity = current
+            .non_visual_graphic_frame_properties()
+            .non_visual_drawing_properties();
+        let old_identity = previous
+            .non_visual_graphic_frame_properties()
+            .non_visual_drawing_properties();
+        if !identity.same_restore_identity(old_identity) {
+            self.clear_source_caches();
+            return RestoreReport {
+                incompatible_owners: 1,
+                diagnostics: vec!["chart graphic-frame identity does not match".into()],
+                ..RestoreReport::default()
+            };
+        }
+        crate::drawing::charts::chart_server_parts::restore_space(
+            current.graphic_mut().graphic_data_mut().chart_space_mut(),
+            previous.graphic().graphic_data().chart_space(),
+        )
+    }
+
     /// Removes the source caches of every string reference of the chart: the
     /// labels an imported file stored that the cells cannot reproduce. They
     /// only matter when the chart is exported to a file, so strip a copy that
@@ -915,9 +971,11 @@ impl Chart {
         let mut pie_chart = PieChart::default();
         pie_chart.vary_colors_mut().set_val(true);
         pie_chart.set_area_chart_series_list(acsl_obj);
-        pie_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        pie_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let layout = Layout::default();
         let mut style = Style::default();
@@ -927,9 +985,11 @@ impl Chart {
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -1019,9 +1079,11 @@ impl Chart {
         let mut pie_3d_chart = Pie3DChart::default();
         pie_3d_chart.vary_colors_mut().set_val(true);
         pie_3d_chart.set_area_chart_series_list(acsl_obj);
-        pie_3d_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        pie_3d_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let layout = Layout::default();
         let mut style = Style::default();
@@ -1031,9 +1093,11 @@ impl Chart {
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -1155,9 +1219,11 @@ impl Chart {
         let mut doughnut_chart = DoughnutChart::default();
         doughnut_chart.vary_colors_mut().set_val(true);
         doughnut_chart.set_area_chart_series_list(acsl_obj);
-        doughnut_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        doughnut_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
         doughnut_chart.hole_size_mut().set_val(50);
 
         let layout = Layout::default();
@@ -1789,17 +1855,21 @@ impl Chart {
         of_pie_chart.vary_colors_mut().set_val(true);
         of_pie_chart.second_pie_size_mut().set_val(75);
         of_pie_chart.set_area_chart_series_list(acsl_obj);
-        of_pie_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        of_pie_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let default_run_properties = RunProperties::default();
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -1944,9 +2014,11 @@ impl Chart {
         bubble_chart.bubble_scale_mut().set_val(100);
         bubble_chart.add_axis_id(axis_id1);
         bubble_chart.add_axis_id(axis_id2);
-        bubble_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        bubble_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let mut value_axis_1 = ValueAxis::default();
         value_axis_1.axis_id_mut().set_val(213_468_160);
@@ -2008,9 +2080,11 @@ impl Chart {
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -2425,14 +2499,14 @@ impl Chart {
         run_properties.set_alternative_language("en-US");
 
         let mut run = Run::default();
-        run.set_run_properties(run_properties);
+        run.set_native_chart_run_properties(run_properties);
         run.set_text(value);
 
         let default_run_properties = RunProperties::default();
 
         let mut paragraph = Paragraph::default();
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.add_run(run);
 

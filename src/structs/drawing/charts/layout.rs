@@ -37,12 +37,28 @@ pub struct LayoutParts {
 }
 
 impl Layout {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.parts.is_none() && previous.parts.is_some() {
+            self.parts.clone_from(&previous.parts);
+            1
+        } else {
+            0
+        }
+    }
+
     // Structural field partition only: no allocation or presence changes.
     pub(crate) fn reference_role_parts(&self) -> (Option<&ManualLayout>, Option<&ExtensionList>) {
         (
             self.manual_layout.as_ref(),
             self.parts.as_deref().and_then(|p| p.extensions.as_ref()),
         )
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut ManualLayout>, Option<&mut ExtensionList>) {
+        self.parts = None;
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -116,13 +132,18 @@ impl Layout {
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                if local_name(e.name().into_inner()) == b"manualLayout" {
+                let child = if session.accepts_child_namespace(e, super::extension_registry::NS_C) {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                };
+                if child == b"manualLayout" {
                     let mut v = ManualLayout::default();
                     if !empty {
                         v.set_attributes(reader, e, session);
                     }
                     self.set_manual_layout(v);
-                } else if local_name(e.name().into_inner()) == b"extLst" {
+                } else if child == b"extLst" {
                     self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)));
                 } else if !empty {
                     crate::reader::driver::skip_element(reader, e);

@@ -53,9 +53,23 @@ pub struct ManualLayoutParts {
 }
 
 impl ManualLayout {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.parts.is_none() && previous.parts.is_some() {
+            self.parts.clone_from(&previous.parts);
+            1
+        } else {
+            0
+        }
+    }
+
     #[must_use]
     pub fn extensions(&self) -> Option<&ExtensionList> {
         self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts = None;
+        None
     }
 
     pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {

@@ -22,6 +22,7 @@ use super::{
     TextFontAlignmentValues,
 };
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         get_attribute,
         set_string_from_xml,
@@ -191,12 +192,14 @@ impl TextParagraphPropertiesType {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         set_string_from_xml!(self, e, right_to_left, "rtl");
         set_string_from_xml!(self, e, alignment, "algn");
         set_string_from_xml!(self, e, font_alignment, "fontAlgn");
@@ -207,20 +210,25 @@ impl TextParagraphPropertiesType {
         xml_read_loop!(reader,
             ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
                 let empty = matches!(event, Event::Empty(_));
-                match crate::reader::driver::local_name(child.name().into_inner()) {
+                let native = session
+                    .is_none_or(|session| session.accepts_child_namespace(child, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(child.name().into_inner())
+                } else { b"" };
+                match name {
                     b"spcBef" => {
                         let mut value = SpaceBefore::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_space_before(value);
                     }
                     b"spcAft" => {
                         let mut value = SpaceAfter::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_space_after(value);
                     }
                     b"defRPr" => {
                         let mut value = RunProperties::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_default_run_properties(value);
                     }
                     _ => if !empty { crate::reader::driver::skip_element(reader, child); },

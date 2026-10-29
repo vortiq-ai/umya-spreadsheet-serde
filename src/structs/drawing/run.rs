@@ -11,6 +11,7 @@ use quick_xml::{
 
 use super::run_properties::RunProperties;
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
@@ -34,6 +35,42 @@ pub struct RunParts {
 }
 
 impl Run {
+    // Used only while assembling a fresh native chart, before import metadata.
+    pub(crate) fn set_native_chart_run_properties(&mut self, value: RunProperties) {
+        self.run_properties = value;
+    }
+
+    pub(crate) fn strip_browser_parts(&mut self) {
+        self.parts = None;
+        self.run_properties.strip_browser_parts();
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.text != previous.text {
+            return 0;
+        }
+        let mut restored = 0;
+        if self.parts.is_none() {
+            if let Some(parts) = &previous.parts {
+                let mut parts = parts.clone();
+                // Omitted imported rPr cannot hide a current formatting edit.
+                if self.run_properties.browser_parts_supplied()
+                    || !self
+                        .run_properties
+                        .browser_values_match(&previous.run_properties)
+                {
+                    parts.properties_present = true;
+                }
+                self.parts = Some(parts);
+                restored += 1;
+            }
+        }
+        restored
+            + self
+                .run_properties
+                .restore_browser_parts(&previous.run_properties)
+    }
+
     #[inline]
     #[must_use]
     pub fn text(&self) -> &str {
@@ -67,9 +104,9 @@ impl Run {
 
     #[inline]
     pub fn run_properties_mut(&mut self) -> &mut RunProperties {
-        if let Some(parts) = &mut self.parts {
-            parts.properties_present = true;
-        }
+        self.parts
+            .get_or_insert_with(Default::default)
+            .properties_present = true;
         &mut self.run_properties
     }
 
@@ -81,27 +118,33 @@ impl Run {
 
     #[inline]
     pub fn set_run_properties(&mut self, value: RunProperties) {
-        if let Some(parts) = &mut self.parts {
-            parts.properties_present = true;
-        }
+        self.parts
+            .get_or_insert_with(Default::default)
+            .properties_present = true;
         self.run_properties = value;
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         self.parts = Some(Box::new(RunParts::default()));
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else { b"" };
+                match name {
                     b"rPr" => {
                         self.parts.as_mut().unwrap().properties_present = true;
-                        self.run_properties.set_attributes(reader, e, is_empty);
+                        self.run_properties.read_with_session(reader, e, is_empty, session);
                     }
                     b"t" => {
                         self.set_text(crate::reader::driver::read_simple_text(reader,e,is_empty)
@@ -156,7 +199,7 @@ mod parity_tests {
             _ => panic!("expected run"),
         };
         let mut run = Run::default();
-        run.set_attributes(&mut reader, &e);
+        run.read_with_session(&mut reader, &e, None);
         run
     }
     fn xml(run: &Run) -> String {

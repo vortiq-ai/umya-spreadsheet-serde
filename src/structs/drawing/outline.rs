@@ -410,6 +410,25 @@ impl Outline {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
+        self.set_attributes_impl(reader, e, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.set_attributes_impl(reader, e, Some(session));
+    }
+
+    fn set_attributes_impl<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         if let Some(v) = get_attribute(e, b"w") {
             self.set_width(v.parse::<u32>().unwrap());
         }
@@ -429,15 +448,33 @@ impl Outline {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| {
+                    session.accepts_child_namespace(
+                        e,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )
+                });
+                match if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
                     b"solidFill" => {
                         let mut solid_fill = SolidFill::default();
-                        solid_fill.read_attributes(reader, e, is_empty);
+                        if let Some(session) = session {
+                            solid_fill.read_attributes_with_session(reader, e, is_empty, session);
+                        } else {
+                            solid_fill.read_attributes(reader, e, is_empty);
+                        }
                         self.set_solid_fill(solid_fill);
                     }
                     b"gradFill" => {
                         let mut obj = GradientFill::default();
-                        obj.read_attributes(reader, e, is_empty);
+                        if let Some(session) = session {
+                            obj.read_attributes_with_session(reader, e, is_empty, session);
+                        } else {
+                            obj.read_attributes(reader, e, is_empty);
+                        }
                         self.set_gradient_fill(obj);
                     }
                     b"tailEnd" => {

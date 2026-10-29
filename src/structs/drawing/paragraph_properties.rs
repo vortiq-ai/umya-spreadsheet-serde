@@ -19,6 +19,7 @@ use super::{
 use crate::{
     StringValue,
     drawing::get_unescaped_attribute,
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         get_attribute,
         set_string_from_xml,
@@ -48,6 +49,47 @@ pub struct ParagraphPropertiesParts {
 }
 
 impl ParagraphProperties {
+    pub(crate) fn strip_browser_parts(&mut self) {
+        self.parts = None;
+        if let Some(properties) = &mut self.default_run_properties {
+            properties.strip_browser_parts();
+        }
+    }
+
+    pub(crate) fn browser_parts_supplied(&self) -> bool {
+        self.parts.is_some()
+            || self
+                .default_run_properties
+                .as_ref()
+                .is_some_and(|properties| properties.browser_parts_supplied())
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        let mut restored = 0;
+        if self.parts.is_none() && previous.parts.is_some() {
+            self.parts.clone_from(&previous.parts);
+            restored += 1;
+        }
+        if let (Some(current), Some(previous)) = (
+            &mut self.default_run_properties,
+            &previous.default_run_properties,
+        ) {
+            restored += current.restore_browser_parts(previous);
+        }
+        restored
+    }
+
+    pub(crate) fn browser_values_match(&self, previous: &Self) -> bool {
+        let bytes = |value: &Self| {
+            let mut value = value.clone();
+            value.strip_browser_parts();
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            value.write_to(&mut writer);
+            writer.into_inner().into_inner()
+        };
+        bytes(self) == bytes(previous)
+    }
+
     #[must_use]
     pub fn level(&self) -> Option<u8> {
         self.parts.as_ref().and_then(|p| p.level)
@@ -170,12 +212,14 @@ impl ParagraphProperties {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         if let Some(v) = get_unescaped_attribute(e, b"lvl") {
             let value = v.parse::<u8>().ok().filter(|v| *v <= 8);
             let p = self.parts.get_or_insert_with(Default::default);
@@ -196,16 +240,20 @@ impl ParagraphProperties {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match crate::reader::driver::local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else { b"" };
+                match name {
                     b"defRPr" => {
                         let mut obj = RunProperties::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.read_with_session(reader, e, is_empty, session);
                         self.set_default_run_properties(obj);
                     }
                     b"lnSpc" => {
                         let mut obj = LineSpacing::default();
                         if !is_empty {
-                            obj.set_attributes(reader, e);
+                            obj.read_with_session(reader, e, session);
                         }
                         self.set_line_spacing(obj);
                     }

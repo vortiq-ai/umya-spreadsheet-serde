@@ -58,6 +58,10 @@ impl ChartSpace {
         (&self.chart, self.shape_properties.as_ref())
     }
 
+    pub(crate) fn browser_role_parts_mut(&mut self) -> (&mut Chart, Option<&mut ShapeProperties>) {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> (&mut Chart, Option<&mut ShapeProperties>) {

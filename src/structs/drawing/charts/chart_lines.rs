@@ -59,7 +59,9 @@ impl ChartLines {
         let _scope_guard = session.enter_child_scope(e);
         let mut result = Self::default();
         let complete = children(reader, e, empty, |reader, e, empty| {
-            if local_name(e.name().into_inner()) != b"spPr" {
+            if !session.accepts_child_namespace(e, super::extension_registry::NS_C)
+                || local_name(e.name().into_inner()) != b"spPr"
+            {
                 return false;
             }
             result.duplicate_shape |= result.shape_properties.is_some();

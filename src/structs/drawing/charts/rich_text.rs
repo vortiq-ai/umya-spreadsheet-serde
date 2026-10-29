@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{
     drawing::Run,
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::local_name,
     writer::driver::{
         write_end_tag,
@@ -39,6 +40,49 @@ pub struct RichText {
 }
 
 impl RichText {
+    pub(crate) fn strip_browser_parts(&mut self) {
+        self.parts = None;
+        self.body_properties.strip_browser_parts();
+        self.list_style.strip_browser_parts();
+        for paragraph in &mut self.paragraph {
+            paragraph.strip_browser_parts();
+        }
+    }
+
+    pub(crate) fn browser_structure_matches(&self, previous: &Self) -> bool {
+        self.paragraph.len() == previous.paragraph.len()
+            && self
+                .paragraph
+                .iter()
+                .zip(&previous.paragraph)
+                .all(|(current, previous)| current.browser_structure_matches(previous))
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if !self.browser_structure_matches(previous) {
+            return 0;
+        }
+        let mut restored = 0;
+        if self.parts.is_none() {
+            if let Some(parts) = &previous.parts {
+                let mut parts = parts.clone();
+                if !self.list_style.browser_values_match(&previous.list_style) {
+                    parts.list_style_present = true;
+                }
+                self.parts = Some(parts);
+                restored += 1;
+            }
+        }
+        restored += self
+            .body_properties
+            .restore_browser_parts(&previous.body_properties);
+        restored += self.list_style.restore_browser_parts(&previous.list_style);
+        for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
+            restored += current.restore_browser_parts(previous);
+        }
+        restored
+    }
+
     #[inline]
     pub fn set_text<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.paragraph.clear();
@@ -86,9 +130,9 @@ impl RichText {
     }
 
     pub fn list_style_mut(&mut self) -> &mut ListStyle {
-        if let Some(parts) = &mut self.parts {
-            parts.list_style_present = true;
-        }
+        self.parts
+            .get_or_insert_with(Default::default)
+            .list_style_present = true;
         &mut self.list_style
     }
 
@@ -98,9 +142,9 @@ impl RichText {
     }
 
     pub fn set_list_style(&mut self, value: ListStyle) {
-        if let Some(parts) = &mut self.parts {
-            parts.list_style_present = true;
-        }
+        self.parts
+            .get_or_insert_with(Default::default)
+            .list_style_present = true;
         self.list_style = value;
     }
 
@@ -128,34 +172,40 @@ impl RichText {
         self.paragraph.push(value);
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         self.parts = Some(Box::new(TextBodyParts::default()));
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                match local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = if native {
+                    local_name(e.name().into_inner())
+                } else { b"" };
+                match name {
                     b"p" => {
                         let mut v = Paragraph::default();
                         if empty {
                             v.mark_empty_import();
                         } else {
-                            v.set_attributes(reader, e);
+                            v.read_with_session(reader, e, session);
                         }
                         self.add_paragraph(v);
                     }
                     b"lstStyle" => {
                         if let Some(parts) = &mut self.parts { parts.list_style_present = true; }
-                        if !empty { self.list_style.set_attributes(reader, e); }
+                        if !empty { self.list_style.read_with_session(reader, e, session); }
                     }
                     b"bodyPr" => {
                         let mut v = BodyProperties::default();
-                        v.set_attributes(reader, e, empty);
+                        v.read_with_session(reader, e, empty, session);
                         self.set_body_properties(v);
                     }
                     _ => {
@@ -210,7 +260,7 @@ mod parity_tests {
             _ => panic!("expected rich text"),
         };
         let mut value = RichText::default();
-        value.set_attributes(&mut reader, &e);
+        value.read_with_session(&mut reader, &e, None);
         let mut writer = Writer::new(Cursor::new(Vec::new()));
         value.write_to(&mut writer);
         assert!(

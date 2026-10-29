@@ -127,6 +127,22 @@ impl Chart {
     pub const LANG_EN_GB: &'static str = "en_GB";
     pub const LANG_JA_JP: &'static str = "ja-JP";
 
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> usize {
+        match (&mut self.parts, &previous.parts) {
+            (None, Some(previous)) => {
+                self.parts = Some(previous.clone());
+                previous.record_pivot_recreation(report);
+                1
+            }
+            (Some(current), Some(previous)) => current.restore_browser_parts(previous, report),
+            _ => 0,
+        }
+    }
+
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::ChartParts<'_> {
         super::chart_reference_roles::ChartParts {
             title:       self.title.as_ref(),
@@ -137,6 +153,13 @@ impl Chart {
             back_wall:   self.back_wall.as_ref(),
             pivot_parts: self.parts.as_deref(),
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::ChartPartsMut<'_> {
+        self.parts = None;
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(

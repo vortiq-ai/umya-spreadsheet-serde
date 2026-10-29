@@ -25,17 +25,9 @@ use umya_spreadsheet::{
 /// cache holds, so that the formula text is the same in all of them.
 const RANGE_ROWS: u32 = 100_000;
 
-/// What a stripped `Chart` of this fixture serializes to: the bytes it had
-/// before any source cache could be kept in it (672 bincode, 5309 JSON), plus
-/// the string-reference cache Option tag and the one series-parts Option tag.
-// Previous exact floor: 675 bincode / 5348 JSON. This fixture has three
-// reference/group extension None tags (+3/+54), two Layout parts None tags
-// (+2/+26), and the imported legacy group's six-present-flag owner supplement
-// (+24/+310). No marker, shape, point or run owner is present in this fixture.
-// Stage8 adds one absent DrawingChart.parts and one absent ValueAxis.parts:
-// two option bytes and two literal `,"parts":null` fields (13 bytes each).
-const CHART_BINCODE_BYTES: usize = 714;
-const CHART_JSON_BYTES: usize = 5783;
+/// Browser projection size, including empty server-only slots.
+const CHART_BINCODE_BYTES: usize = 683;
+const CHART_JSON_BYTES: usize = 5467;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();
@@ -143,9 +135,9 @@ fn assert_sources_removed(value: &serde_json::Value) {
 
 fn wire_lengths(bytes: &[u8]) -> (usize, usize) {
     let book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
-    // What a browser is sent: the chart without its source caches.
+    // Browser transport removes caches and all detachable export supplements.
     let mut chart = book.sheet(0).unwrap().chart_collection()[0].clone();
-    chart.strip_source_caches();
+    chart.strip_browser_projection();
     let value = serde_json::to_value(&chart).unwrap();
     assert_sources_removed(&value);
     (

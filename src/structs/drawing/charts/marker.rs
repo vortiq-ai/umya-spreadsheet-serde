@@ -43,6 +43,15 @@ struct MarkerParts {
     extensions: Option<super::ExtensionList>,
 }
 impl Marker {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.parts.is_none() && previous.parts.is_some() {
+            self.parts.clone_from(&previous.parts);
+            1
+        } else {
+            0
+        }
+    }
+
     // Structural field partition only: no allocation or presence changes.
     pub(crate) fn reference_role_parts(
         &self,
@@ -51,6 +60,16 @@ impl Marker {
             self.shape_properties.as_ref(),
             self.parts.as_deref().and_then(|p| p.extensions.as_ref()),
         )
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.parts = None;
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(

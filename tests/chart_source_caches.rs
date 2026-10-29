@@ -3095,10 +3095,16 @@ fn every_reference_location_is_reduced_stripped_and_adopted() {
     level.levels_mut().push(vec![point]);
     let mut multi = native::MultiLevelStringReference::default();
     multi.set_cache(level);
-    chart.area_chart_series_list_mut().area_chart_series_mut()[0]
-        .category_axis_data_mut()
-        .unwrap()
-        .set_multi_level_string_reference(multi);
+    let mut hierarchy = native::CategoryAxisData::default();
+    hierarchy.set_multi_level_string_reference(multi);
+    let mut hierarchy_series = native::AreaChartSeries::default();
+    hierarchy_series.index_mut().set_val(14);
+    hierarchy_series.order_mut().set_val(1);
+    hierarchy_series.set_category_axis_data(hierarchy);
+    hierarchy_series.set_values(series.values().unwrap().clone());
+    chart
+        .area_chart_series_list_mut()
+        .add_area_chart_series(hierarchy_series);
     let original = serde_json::to_value(&chart).unwrap();
     let mut sources = Vec::new();
     find_sources(&original, &mut sources);

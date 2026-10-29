@@ -41,6 +41,15 @@ pub struct Pie3DChart {
 }
 
 impl Pie3DChart {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.extensions.is_none() && previous.extensions.is_some() {
+            self.extensions.clone_from(&previous.extensions);
+            1
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn reference_group_parts(
         &self,
     ) -> (
@@ -53,6 +62,17 @@ impl Pie3DChart {
             Some(&self.data_labels),
             self.extensions.as_deref(),
         )
+    }
+
+    pub(crate) fn browser_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.reference_group_parts_mut()
     }
 
     pub(crate) fn reference_group_parts_mut(
@@ -175,6 +195,7 @@ impl Pie3DChart {
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         let _scope_guard = session.enter_child_scope(owner);
+        let end = owner.name().into_inner().to_vec();
         self.data_labels.mark_group_absent();
         xml_read_loop!(
             reader,
@@ -194,16 +215,17 @@ impl Pie3DChart {
                 }
             },
             Event::Empty(ref e) => {
-                if local_name(e.name().into_inner())==b"extLst"{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));}
-
-                if local_name(e.name().0) == b"dLbls" {
-                    self.data_labels.mark_empty_import();
-                } else if local_name(e.name().0) == b"varyColors" {
-                    self.vary_colors.set_attributes(reader, e);
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {
+                    local_name(e.name().into_inner())
+                } else { b"" } {
+                    b"extLst" => { self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session))); },
+                    b"dLbls" => self.data_labels.mark_empty_import(),
+                    b"varyColors" => { self.vary_colors.set_attributes(reader, e); },
+                    _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"pie3DChart" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },

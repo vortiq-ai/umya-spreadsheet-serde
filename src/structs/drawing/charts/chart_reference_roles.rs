@@ -225,6 +225,7 @@ pub(crate) struct DisplayLabelPartsMut<'a> {
 // Structural native-leaf partition. Role selection and extension ordering stay
 // in reference_topology; this layer never discovers or parses references.
 trait ReferenceLeaf {
+    fn strip_browser_reference_parts(&mut self);
     fn reference_extensions(&self) -> Option<&super::ExtensionList>;
     fn reference_extensions_mut(&mut self) -> Option<&mut super::ExtensionList>;
     fn split_reference_formula_mut(&mut self) -> (&mut Formula, Option<&mut super::ExtensionList>);
@@ -232,6 +233,10 @@ trait ReferenceLeaf {
 macro_rules! reference_leaf {
     ($native:ty) => {
         impl ReferenceLeaf for $native {
+            fn strip_browser_reference_parts(&mut self) {
+                self.set_extensions(None);
+            }
+
             fn reference_extensions(&self) -> Option<&super::ExtensionList> {
                 self.extensions()
             }
@@ -270,6 +275,16 @@ fn project_leaf_mut<'a, R: ReferenceLeaf, C>(
     reference.reference_extensions_mut()
 }
 
+fn project_leaf_browser_mut<'a, R: ReferenceLeaf, C>(
+    reference: &'a mut R,
+    context: &mut C,
+    mut emit: impl FnMut(&mut C, &mut R),
+) -> Option<&'a mut super::ExtensionList> {
+    reference.strip_browser_reference_parts();
+    emit(context, reference);
+    None
+}
+
 fn project_leaf_formula_mut<'a, R: ReferenceLeaf, C>(
     reference: &'a mut R,
     context: &mut C,
@@ -280,8 +295,8 @@ fn project_leaf_formula_mut<'a, R: ReferenceLeaf, C>(
     child
 }
 
-// All ownership branches are defined once. The two instantiations change only
-// borrow/access modes, never which stored children exist or their cache order.
+// Ownership branches are defined once. Reference consumers retain their
+// established schedules; browser projection detaches only export metadata.
 macro_rules! reference_topology {
     (($($m:tt)*),
     ($($b:lifetime)?),
@@ -439,7 +454,7 @@ macro_rules! reference_topology {
             for axis in fields.series_axes { native_axis(get!(axis, role_parts), None, w); }
             if let Some(child)=fields.shape { shape(None, child, w); }
             for group in fields.groups {
-                let fields=group.into_reference_role_parts();
+                let fields=get!(group, group_parts);
                 for series in fields.series { native_series(series, false, w); }
                 if let Some(child)=fields.labels { labels(None, child, w); }
                 if let Some(child)=fields.extensions { list(None, child, w); }
@@ -1187,7 +1202,7 @@ macro_rules! reference_topology {
                 "captured native axis metadata must match disjoint axis projections");
             let mut groups=Vec::new();
             for group in fields.groups {
-                groups.push(primary_group(group.into_reference_role_parts(), w));
+                groups.push(primary_group(get!(group, group_parts), w));
             }
             let mut category_axes=Vec::new();
             for axis in fields.category_axes {
@@ -1832,6 +1847,7 @@ mod borrowed {
     reference_topology!((),('a),ReferenceTargetRef,'a,
         (StringReference,NumberReference,MultiLevelStringReference),
     $;
+    group_parts=>into_reference_role_parts,
     role_parts=>reference_role_parts,
     stringref=>string_reference,
     ext=>extensions,
@@ -1911,9 +1927,90 @@ mod mutable {
     reference_topology!((mut),(),ReferenceTargetMut,'_,
         (StringReference,NumberReference,MultiLevelStringReference),
     $;
+    group_parts=>into_reference_role_parts,
     role_parts=>reference_role_parts_mut,
     stringref=>string_reference_mut,
     ext=>extensions_mut,
+    shape=>shape_properties_mut,
+    numberref=>number_reference_mut,
+    range_ref=>reference_for_roles_mut,
+    entries=>entries_mut,
+    choices=>choices_mut,
+    references=>references_mut,
+    sequence=>sequence_mut,
+    exception_refs=>references_for_roles_mut,
+    child=>child_mut,
+    );
+}
+
+mod browser {
+    use super::{
+        super::{
+            AreaChartSeries,
+            AxisDataSourceChoice,
+            BackWall,
+            BubbleSize,
+            CategoryAxisData,
+            Chart,
+            ChartLines,
+            ChartSpace,
+            ChartText,
+            DataLabel,
+            DataLabels,
+            DataPoint,
+            DisplayLabelChild,
+            DisplayUnits,
+            DisplayUnitsLabel,
+            DrawingChartParts,
+            ErrorBars,
+            ExtensionList,
+            ExtensionNode,
+            ExtensionPayload,
+            ExtensionPayloadValue,
+            Floor,
+            Formula,
+            Layout,
+            Legend,
+            MajorGridlines,
+            Marker,
+            MultiLevelStringReference,
+            NumberReference,
+            NumericDataSource,
+            OpaqueToken,
+            PivotFormat,
+            PlotArea,
+            ReferenceIdentity,
+            ReferenceSequence,
+            ShapeProperties,
+            SideWall,
+            StringLiteral,
+            StringReference,
+            TerminalReferenceKind,
+            Title,
+            Trendline,
+            ValueAxisParts,
+            Values,
+            XValues,
+            YValues,
+        },
+        AxisPartsMut as NativeAxisParts,
+        GroupPartsMut as NativeGroupParts,
+        OwnerCounts,
+        PlotPartsMut as NativePlotParts,
+        ReferenceCachePhase,
+        ReferenceGrammar,
+        ReferenceMetadata,
+        ReferenceOrder,
+        ReferenceTargetMut,
+        project_leaf_browser_mut as project_leaf,
+    };
+    reference_topology!((mut),(),ReferenceTargetMut,'_,
+        (StringReference,NumberReference,MultiLevelStringReference),
+    $;
+    group_parts=>into_browser_role_parts,
+    role_parts=>browser_role_parts_mut,
+    stringref=>browser_string_reference_mut,
+    ext=>browser_extensions_mut,
     shape=>shape_properties_mut,
     numberref=>number_reference_mut,
     range_ref=>reference_for_roles_mut,
@@ -1989,6 +2086,7 @@ mod retaining {
     };
     reference_topology!((mut),('a),ReferenceFormulaMut,'a,(Formula,Formula,Formula),
     $;
+    group_parts=>into_reference_role_parts,
     role_parts=>reference_role_parts_mut,
     stringref=>string_reference_mut,
     ext=>extensions_mut,
@@ -2002,6 +2100,16 @@ mod retaining {
     exception_refs=>references_for_roles_mut,
     child=>child_mut,
     );
+}
+
+/// Remove export-only owner metadata through the same native ownership graph.
+/// Hidden parents are detached before projection, so their children are not
+/// traversed or materialized solely to discard them.
+pub(crate) fn strip_browser_parts(space: &mut ChartSpace) {
+    fn discard(_metadata: ReferenceMetadata, _target: ReferenceTargetMut<'_>) {}
+    let mut visitor = discard;
+    let mut state = browser::State::new(&mut visitor);
+    browser::space(space, &mut state);
 }
 
 pub(crate) fn visit_ref<'a>(

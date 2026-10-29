@@ -13,10 +13,12 @@ use quick_xml::{
 use super::{
     ShapeProperties,
     Thickness,
+    extension_registry::NS_C,
 };
 use crate::{
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     writer::driver::{
@@ -107,26 +109,37 @@ impl SideWall {
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
         let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+        let end = owner.name().into_inner().to_vec();
 
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"thickness" {
-                    let mut obj = Thickness::default();
-                    obj.set_attributes(reader, e);
-                    self.set_thickness(obj);
-                }
-            },
-            Event::Start(ref e) => {
-                if  local_name(e.name().0) == b"spPr" {
-                    let mut obj = ShapeProperties::default();
-                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,
-                        session),None=>obj.set_attributes(reader,e)}
-                    self.set_shape_properties(obj);
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_C));
+                match if native { local_name(e.name().into_inner()) } else { b"" } {
+                    b"thickness" => {
+                        let mut obj = Thickness::default();
+                        obj.set_attributes(reader, e);
+                        self.set_thickness(obj);
+                        if !empty { skip_element(reader, e); }
+                    },
+                    b"spPr" => {
+                        let mut obj = ShapeProperties::default();
+                        if !empty {
+                            match session {
+                                Some(session) => {
+                                    obj.set_attributes_with_session(reader, e, session);
+                                }
+                                None => obj.set_attributes(reader, e),
+                            }
+                        }
+                        self.set_shape_properties(obj);
+                    },
+                    _ => { if !empty { skip_element(reader, e); } },
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"sideWall" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },

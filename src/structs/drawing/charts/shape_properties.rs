@@ -22,8 +22,10 @@ use super::super::{
     Transform2D,
 };
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     writer::driver::{
@@ -54,9 +56,23 @@ pub struct ShapePropertiesParts {
     extensions: Option<super::ExtensionList>,
 }
 impl ShapeProperties {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        if self.parts.is_none() && previous.parts.is_some() {
+            self.parts.clone_from(&previous.parts);
+            1
+        } else {
+            0
+        }
+    }
+
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts = None;
+        None
     }
 
     pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
@@ -317,15 +333,34 @@ impl ShapeProperties {
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
         let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+        let end = owner.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.is_none_or(|session|session.accepts_child_namespace(e,"http://schemas.openxmlformats.org/drawingml/2006/main")) {local_name(e.name().0)} else {b""} {
-                    b"extLst"=>{let session=session.expect("Chart extension namespace context is required");self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
-                    b"noFill" => { NoFill::set_attributes(reader,e,false); self.set_no_fill(NoFill::default()); }
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                match if native {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
+                    b"extLst" => {
+                        let session = session
+                            .expect("Chart extension namespace context is required");
+                        self.set_extensions(Some(super::ExtensionList::read(
+                            reader, e, false, session
+                        )));
+                    },
+                    b"noFill" => {
+                        NoFill::set_attributes(reader, e, false);
+                        self.set_no_fill(NoFill::default());
+                    }
                     b"pattFill" => {
                         let mut obj = PatternFill::default();
-                        obj.set_attributes(reader, e);
+                        if let Some(session) = session {
+                            obj.set_attributes_with_session(reader, e, session);
+                        } else {
+                            obj.set_attributes(reader, e);
+                        }
                         self.set_pattern_fill(obj);
                     }
                     b"xfrm" => {
@@ -340,17 +375,29 @@ impl ShapeProperties {
                     }
                     b"ln" => {
                         let mut obj = Outline::default();
-                        obj.set_attributes(reader, e);
+                        if let Some(session) = session {
+                            obj.set_attributes_with_session(reader, e, session);
+                        } else {
+                            obj.set_attributes(reader, e);
+                        }
                         self.set_outline(obj);
                     }
                     b"solidFill" => {
                         let mut obj = SolidFill::default();
-                        obj.set_attributes(reader, e);
+                        if let Some(session) = session {
+                            obj.read_attributes_with_session(reader, e, false, session);
+                        } else {
+                            obj.set_attributes(reader, e);
+                        }
                         self.set_solid_fill(obj);
                     }
                     b"effectLst" => {
                         let mut obj = EffectList::default();
-                        obj.set_attributes(reader, e, false);
+                        if let Some(session) = session {
+                            obj.set_attributes_with_session(reader, e, false, session);
+                        } else {
+                            obj.set_attributes(reader, e, false);
+                        }
                         self.set_effect_list(obj);
                     }
                     b"scene3d" => {
@@ -363,23 +410,35 @@ impl ShapeProperties {
                         obj.set_attributes(reader, e);
                         self.set_shape_3d_type(obj);
                     }
-                    _ => (),
+                    _ => skip_element(reader, e),
                 }
             },
             Event::Empty(ref e) => {
-                if local_name(e.name().0)==b"extLst" {let session=session.expect("Chart extension namespace context is required");self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));}
-                if local_name(e.name().0) == b"effectLst" {
-                    self.set_effect_list(EffectList::default());
-                }
-
-                if local_name(e.name().0) == b"noFill" {
-                    let obj = NoFill::default();
-                    NoFill::set_attributes(reader, e, true);
-                    self.set_no_fill(obj);
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                match if native {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
+                    b"extLst" => {
+                        let session = session
+                            .expect("Chart extension namespace context is required");
+                        self.set_extensions(Some(super::ExtensionList::read(
+                            reader, e, true, session
+                        )));
+                    },
+                    b"effectLst" => {
+                        self.set_effect_list(EffectList::default());
+                    },
+                    b"noFill" => {
+                        NoFill::set_attributes(reader, e, true);
+                        self.set_no_fill(NoFill::default());
+                    },
+                    _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"spPr" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },

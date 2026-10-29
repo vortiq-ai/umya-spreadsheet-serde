@@ -132,8 +132,40 @@ pub struct ValueAxisParts {
     extra_display_units: Vec<DisplayUnits>,
 }
 impl ValueAxisParts {
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> usize {
+        let mut restored = 0;
+        match (&mut self.display_units, &previous.display_units) {
+            (Some(current), Some(previous)) => {
+                let compatible = current.compatible_unit(previous);
+                restored += current.restore_browser_parts(previous, report);
+                if !compatible {
+                    return restored;
+                }
+            }
+            (None, Some(previous)) => {
+                self.display_units = Some(previous.clone());
+                restored += 1;
+                report.recreated_owners += 1;
+            }
+            _ => return restored,
+        }
+        self.extra_display_units
+            .clone_from(&previous.extra_display_units);
+        restored + self.extra_display_units.len()
+    }
+
     pub(crate) fn reference_role_parts(&self) -> (Option<&DisplayUnits>, &[DisplayUnits]) {
         (self.display_units.as_ref(), &self.extra_display_units)
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut DisplayUnits>, &mut [DisplayUnits]) {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -213,6 +245,70 @@ impl Default for DisplayUnits {
     }
 }
 impl DisplayUnits {
+    fn compatible_unit(&self, previous: &Self) -> bool {
+        match (&self.unit, &previous.unit) {
+            (DisplayUnit::BuiltIn(current), DisplayUnit::BuiltIn(previous)) => {
+                current.attribute().copied().unwrap_or_default()
+                    == previous.attribute().copied().unwrap_or_default()
+            }
+            (DisplayUnit::Custom(current), DisplayUnit::Custom(previous)) => {
+                current.attribute() == previous.attribute()
+                    || current
+                        .value()
+                        .zip(previous.value())
+                        .is_some_and(|(current, previous)| {
+                            current.is_finite()
+                                && previous.is_finite()
+                                && current.to_bits() == previous.to_bits()
+                        })
+            }
+            (DisplayUnit::InvalidBuiltIn(current), DisplayUnit::InvalidBuiltIn(previous)) => {
+                current == previous
+            }
+            (DisplayUnit::InvalidChoice, DisplayUnit::InvalidChoice) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> usize {
+        if !self.compatible_unit(previous) {
+            report.incompatible_owners += 1;
+            report.diagnostics.push(
+                "incompatible explicit display-unit replacement retains its current state".into(),
+            );
+            return 0;
+        }
+        let mut restored = 0;
+        match (&mut self.label, &previous.label) {
+            (Some(current), Some(previous)) => {
+                restored += current.restore_browser_parts(previous, report);
+            }
+            (None, Some(previous)) => {
+                self.label = Some(previous.clone());
+                restored += 1;
+                report.recreated_owners += 1;
+            }
+            (_, None) => self.label = None,
+        }
+        // The current compatible unit is editable. Remaining occurrences and
+        // diagnostics belong to the caller's pre-edited authoritative basis.
+        self.extensions.clone_from(&previous.extensions);
+        self.conflicts.clone_from(&previous.conflicts);
+        self.extra_units.clone_from(&previous.extra_units);
+        self.extra_labels.clone_from(&previous.extra_labels);
+        self.extra_extensions.clone_from(&previous.extra_extensions);
+        self.invalid_scalar_body = previous.invalid_scalar_body;
+        restored
+            + usize::from(self.extensions.is_some())
+            + self.extra_labels.len()
+            + self.extra_units.len()
+            + self.extra_extensions.len()
+    }
+
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::UnitsParts<'_> {
         super::chart_reference_roles::UnitsParts {
             label:            self.label.as_deref(),
@@ -220,6 +316,12 @@ impl DisplayUnits {
             extra_labels:     &self.extra_labels,
             extra_extensions: &self.extra_extensions,
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::UnitsPartsMut<'_> {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -520,6 +622,68 @@ impl Default for DisplayUnitsLabel {
     }
 }
 impl DisplayUnitsLabel {
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> usize {
+        let mut restored = 0;
+        match (&mut self.layout, &previous.layout) {
+            (Some(current), Some(previous)) => {
+                super::chart_server_parts::restore_layout(current, previous, report);
+            }
+            (None, Some(previous)) => {
+                self.layout = Some(previous.clone());
+                restored += 1;
+                report.recreated_owners += 1;
+            }
+            _ => {}
+        }
+        match (&mut self.text, &previous.text) {
+            (Some(current), Some(previous)) => {
+                super::chart_server_parts::restore_text(current, previous, report);
+            }
+            (None, Some(previous)) => {
+                self.text = Some(previous.clone());
+                restored += 1;
+                report.recreated_owners += 1;
+            }
+            _ => {}
+        }
+        match (&mut self.shape_properties, &previous.shape_properties) {
+            (Some(current), Some(previous)) => {
+                super::chart_server_parts::restore_shape(current, previous, report);
+            }
+            (None, Some(previous)) => {
+                self.shape_properties = Some(previous.clone());
+                restored += 1;
+                report.recreated_owners += 1;
+            }
+            _ => {}
+        }
+        match (&mut self.text_properties, &previous.text_properties) {
+            (Some(current), Some(previous)) => {
+                if current.browser_structure_matches(previous) {
+                    restored += current.restore_browser_parts(previous);
+                } else {
+                    report.incompatible_owners += 1;
+                    report
+                        .diagnostics
+                        .push("replaced display-unit label text body retains no old fields".into());
+                }
+            }
+            (None, Some(previous)) => {
+                self.text_properties = Some(previous.clone());
+                restored += 1;
+                report.recreated_owners += 1;
+            }
+            _ => {}
+        }
+        self.valid = previous.valid;
+        self.extra_children.clone_from(&previous.extra_children);
+        restored + self.extra_children.len()
+    }
+
     pub(crate) fn reference_role_parts(
         &self,
     ) -> super::chart_reference_roles::DisplayLabelParts<'_> {
@@ -529,6 +693,12 @@ impl DisplayUnitsLabel {
             shape:          self.shape_properties.as_ref(),
             extra_children: &self.extra_children,
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::DisplayLabelPartsMut<'_> {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -676,7 +846,7 @@ impl DisplayUnitsLabel {
                     if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,
                         child:DisplayLabelChild::Shape(Box::new(v))});}else{
                         self.shape_properties=Some(v);}},
-                b"txPr"=>{let mut v=TextProperties::default();if !ce{v.set_attributes(r,c)}
+                b"txPr"=>{let mut v=TextProperties::default();if !ce{v.read_with_session(r, c, Some(s))}
                     if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,
                         child:DisplayLabelChild::TextProperties(v)});}else{
                         self.text_properties=Some(v);}},_=>unreachable!()

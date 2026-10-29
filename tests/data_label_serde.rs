@@ -63,18 +63,21 @@ fn appended_default_does_not_change_the_legacy_field_prefix() {
         show_leader_lines:  Option<&'a ShowLeaderLines>,
         text_properties:    Option<&'a TextProperties>,
     }
-    let mut value = DataLabels::default();
-    value.show_value_mut().set_val(true);
+    let mut explicitly_mutated = DataLabels::default();
+    explicitly_mutated.show_value_mut().set_val(true);
     let legacy = Legacy {
-        show_legend_key:    value.show_legend_key(),
-        show_value:         value.show_value(),
-        show_category_name: value.show_category_name(),
-        show_series_name:   value.show_series_name(),
-        show_percent:       value.show_percent(),
-        show_bubble_size:   value.show_bubble_size(),
-        show_leader_lines:  value.show_leader_lines(),
-        text_properties:    value.text_properties(),
+        show_legend_key:    explicitly_mutated.show_legend_key(),
+        show_value:         explicitly_mutated.show_value(),
+        show_category_name: explicitly_mutated.show_category_name(),
+        show_series_name:   explicitly_mutated.show_series_name(),
+        show_percent:       explicitly_mutated.show_percent(),
+        show_bubble_size:   explicitly_mutated.show_bubble_size(),
+        show_leader_lines:  explicitly_mutated.show_leader_lines(),
+        text_properties:    explicitly_mutated.text_properties(),
     };
+    // Decode an actual old-shaped payload with no appended field. Explicit
+    // current mutations now record request presence; that is not a default.
+    let value: DataLabels = serde_json::from_value(serde_json::to_value(&legacy).unwrap()).unwrap();
     let old = bincode::serialize(&legacy).unwrap();
     let current = bincode::serialize(&value).unwrap();
     assert_eq!(&current[..old.len()], old.as_slice());
@@ -85,6 +88,34 @@ fn appended_default_does_not_change_the_legacy_field_prefix() {
         Some(serde_json::Value::Null)
     );
     assert_eq!(json, serde_json::to_value(&legacy).unwrap());
+}
+
+#[test]
+fn explicit_flag_mutation_appends_only_its_exact_presence_payload() {
+    let mut current = DataLabels::default();
+    current.show_value_mut().set_val(true);
+    let mut old_json = serde_json::to_value(&current).unwrap();
+    let parts = old_json.as_object_mut().unwrap().remove("parts").unwrap();
+    assert_eq!(
+        parts,
+        serde_json::json!({
+            "labels": [], "delete": null, "numbering_format": null,
+            "shape_properties": null, "position": null, "separator": null,
+            "leader_lines": null, "extensions": null, "present_flags": 2,
+            "omitted_value_flags": 0, "word_value_flags": 0, "invalid_flags": 0,
+            "invalid_position": false, "duplicate_children": false,
+            "owner_present": true, "lexical_flags": []
+        })
+    );
+    let legacy: DataLabels = serde_json::from_value(old_json).unwrap();
+    let old = bincode::serialize(&legacy).unwrap();
+    let current = bincode::serialize(&current).unwrap();
+    let prefix = old.len() - 1;
+    assert_eq!(&current[..prefix], &old[..prefix]);
+    // Outer option1 + empty labels8 + seven absent children7 + four masks4
+    // + two diagnostic booleans2 + owner option/value2 + lexical vector8.
+    assert_eq!(current.len() - prefix, 32);
+    assert_eq!(current[prefix], 1);
 }
 
 #[test]

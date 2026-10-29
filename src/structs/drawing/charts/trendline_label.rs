@@ -62,6 +62,17 @@ impl TrendlineLabel {
         )
     }
 
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ChartText>,
+        Option<&mut Layout>,
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> (
@@ -223,13 +234,15 @@ impl TrendlineLabel {
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                let child=local_name(e.name().into_inner());
+                let child = if session.accepts_child_namespace(e,super::extension_registry::NS_C) {
+                    local_name(e.name().into_inner())
+                } else { b"" };
                 if matches!(child,b"layout"|b"tx"|b"numFmt"|b"spPr"|b"txPr")
                     && !seen.insert(child.to_vec())
                 {
                     result.duplicate_children=true;
                 }
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
+                match child {
                     b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)));consumed=true;},
                     b"layout" => {
                         let mut v = Layout::default();
@@ -261,7 +274,7 @@ impl TrendlineLabel {
                     b"txPr" => {
                         let mut v = TextProperties::default();
                         if !empty {
-                            v.set_attributes(reader, e);
+                            v.read_with_session(reader, e, Some(session));
                         }
                         result.text_properties = Some(v);
                         consumed = true;

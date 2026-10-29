@@ -45,8 +45,125 @@ pub struct DrawingChartParts {
     duplicate_containers: Vec<DrawingChartParts>,
 }
 impl DrawingChartParts {
+    pub(crate) fn record_pivot_recreation(&self, report: &mut super::RestoreReport) {
+        let pivots = self.pivot_formats.as_deref().unwrap_or_default();
+        let labels = pivots
+            .iter()
+            .filter(|pivot| pivot.label().is_some())
+            .count();
+        report.recreated_owners += pivots.len() + labels;
+        report.restored_labels += labels;
+    }
+
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> usize {
+        use std::collections::{
+            HashMap,
+            HashSet,
+        };
+        // With no supplied owners there is no pair to make: restore the
+        // whole hidden source collection, including ambiguous/invalid state.
+        if self.pivot_formats.as_ref().is_some_and(Vec::is_empty) {
+            *self = previous.clone();
+            previous.record_pivot_recreation(report);
+            return 1;
+        }
+        let Some(current) = self.pivot_formats.as_mut() else {
+            *self = previous.clone();
+            previous.record_pivot_recreation(report);
+            return 1;
+        };
+        let Some(old) = previous.pivot_formats.as_ref() else {
+            report.incompatible_owners += current.len();
+            report
+                .diagnostics
+                .push("unmatched supplied pivot collection".into());
+            return 0;
+        };
+        let mut current_counts = HashMap::new();
+        for pivot in current.iter() {
+            if let Some(index) = pivot.index.explicit_value() {
+                *current_counts.entry(index).or_insert(0usize) += 1;
+            }
+        }
+        let mut old_indices = HashMap::<u32, Vec<&PivotFormat>>::new();
+        for pivot in old {
+            if let Some(index) = pivot.index.explicit_value() {
+                old_indices.entry(index).or_default().push(pivot);
+            }
+        }
+        // Container diagnostics remain authoritative, not an excuse to pair
+        // malformed duplicate containers by their traversal positions.
+        self.invalid |= previous.invalid;
+        self.duplicate_containers
+            .clone_from(&previous.duplicate_containers);
+        let ambiguous_container = previous.invalid || !previous.duplicate_containers.is_empty();
+        let mut matched_old = HashSet::new();
+        for pivot in current.iter_mut() {
+            let matched = pivot.index.explicit_value().and_then(|index| {
+                if current_counts.get(&index) != Some(&1)
+                    || !pivot.index_is_present()
+                    || ambiguous_container
+                {
+                    return None;
+                }
+                match old_indices.get(&index)?.as_slice() {
+                    [old] if old.index_is_present() => Some(*old),
+                    _ => None,
+                }
+            });
+            if let Some(old) = matched {
+                matched_old.insert(old.index().val());
+                pivot.restore_browser_parts(old, report);
+            } else {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("unmatched or ambiguous explicit pivot index".into());
+            }
+        }
+        // A supplied partial/empty hidden collection is omission, not a
+        // removal request. Recreate unrepresented unique stored owners in
+        // their stored order; explicit removal changes the basis first.
+        for pivot in old {
+            let index = pivot.index.explicit_value();
+            if index.is_some_and(|index| matched_old.contains(&index)) {
+                continue;
+            }
+            let recreatable = index.is_some_and(|index| {
+                !ambiguous_container
+                    && pivot.index_is_present()
+                    && old_indices
+                        .get(&index)
+                        .is_some_and(|owners| owners.len() == 1)
+                    && !current_counts.contains_key(&index)
+            });
+            if recreatable {
+                current.push(pivot.clone());
+                report.recreated_owners += 1;
+                report.restored_owners += 1;
+                report.restored_labels += usize::from(pivot.label().is_some());
+            } else {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("unmatched or ambiguous stored pivot owner".into());
+            }
+        }
+        0
+    }
+
     pub(crate) fn reference_role_parts(&self) -> (Option<&[PivotFormat]>, &[DrawingChartParts]) {
         (self.pivot_formats.as_deref(), &self.duplicate_containers)
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut [PivotFormat]>, &mut [DrawingChartParts]) {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -228,6 +345,57 @@ mod phase8_pivot_wire_tests {
     }
 }
 impl PivotFormat {
+    fn restore_browser_parts(&mut self, previous: &Self, report: &mut super::RestoreReport) {
+        let shape = self.shape_properties.take();
+        let text = self.text_properties.take();
+        let marker = self.marker.take();
+        let label = self.label.take();
+        let index = self.index.clone();
+        let index_present = self.index_present;
+        let index_seen = self.index_seen.clone();
+        *self = previous.clone();
+        self.index = index;
+        self.index_present = index_present;
+        self.index_seen = index_seen;
+        if let Some(value) = shape {
+            self.shape_properties = Some(value);
+        }
+        if let Some(value) = text {
+            self.text_properties = Some(value);
+        }
+        if let Some(value) = marker {
+            self.marker = Some(value);
+        }
+        if let Some(value) = label {
+            self.label = Some(value);
+        } else if previous.label.is_some() {
+            report.recreated_owners += 1;
+            report.restored_labels += 1;
+        }
+        report.restored_owners += 1;
+        if let (Some(current), Some(old)) = (&mut self.text_properties, &previous.text_properties) {
+            if current.browser_structure_matches(old) {
+                report.restored_owners += current.restore_browser_parts(old);
+            } else {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("incompatible pivot text body structure".into());
+            }
+        }
+        let current = self.reference_role_parts_mut();
+        let old = previous.reference_role_parts();
+        if let (Some(shape), Some(old)) = (current.shape, old.shape) {
+            super::chart_server_parts::restore_shape(shape, old, report);
+        }
+        if let (Some(marker), Some(old)) = (current.marker, old.marker) {
+            super::chart_server_parts::restore_marker(marker, old, report);
+        }
+        if let (Some(label), Some(old)) = (current.label, old.label) {
+            label.restore_browser_parts(old, report);
+        }
+    }
+
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::PivotParts<'_> {
         super::chart_reference_roles::PivotParts {
             shape:            self.shape_properties.as_ref(),
@@ -239,6 +407,12 @@ impl PivotFormat {
             extra_labels:     &self.extra_labels,
             extra_extensions: &self.extra_extensions,
         }
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::PivotPartsMut<'_> {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -466,7 +640,7 @@ impl PivotFormat {
                     b"spPr" => { let mut v=ShapeProperties::default(); if !ce { v.set_attributes_with_session(r,c,s); }
                         if self.shape_properties.is_some(){self.extra_shapes.push(v)}else{
                             self.shape_properties=Some(v);} }
-                    b"txPr" => { let mut v=TextProperties::default(); if !ce { v.set_attributes(r,c); }
+                    b"txPr" => { let mut v=TextProperties::default(); if !ce { v.read_with_session(r, c, Some(s)); }
                         if self.text_properties.is_some(){self.extra_texts.push(v)}else{
                             self.text_properties=Some(v);} }
                     b"marker" => { let mut v=Marker::default(); v.set_attributes_with_session(r,c,ce,s); if self.marker.is_some(){self.extra_markers.push(v)}else{self.marker=Some(v)} }

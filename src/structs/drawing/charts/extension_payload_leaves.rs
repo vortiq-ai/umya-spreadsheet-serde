@@ -75,6 +75,12 @@ impl InvertSolidFill {
         (self.shape_properties.as_ref(), &self.extra_shapes)
     }
 
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut ShapeProperties>, &mut [ShapeProperties]) {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> (Option<&mut ShapeProperties>, &mut [ShapeProperties]) {

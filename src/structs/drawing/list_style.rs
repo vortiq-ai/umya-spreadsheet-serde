@@ -18,6 +18,7 @@ use super::{
     TextParagraphPropertiesType,
 };
 use crate::{
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
@@ -33,6 +34,40 @@ pub struct ListStyle {
 }
 
 impl ListStyle {
+    pub(crate) fn strip_browser_parts(&mut self) {
+        for properties in self.text_paragraph_properties_type.values_mut() {
+            if let Some(properties) = properties.default_run_properties_mut() {
+                properties.strip_browser_parts();
+            }
+        }
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        let mut restored = 0;
+        for (role, current) in &mut self.text_paragraph_properties_type {
+            if let Some(previous) = previous.text_paragraph_properties_type.get(role) {
+                if let (Some(current), Some(previous)) = (
+                    current.default_run_properties_mut(),
+                    previous.default_run_properties(),
+                ) {
+                    restored += current.restore_browser_parts(previous);
+                }
+            }
+        }
+        restored
+    }
+
+    pub(crate) fn browser_values_match(&self, previous: &Self) -> bool {
+        let bytes = |value: &Self| {
+            let mut value = value.clone();
+            value.strip_browser_parts();
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            value.write_to(&mut writer);
+            writer.into_inner().into_inner()
+        };
+        bytes(self) == bytes(previous)
+    }
+
     #[inline]
     #[must_use]
     pub fn effect_list(&self) -> Option<&EffectList> {
@@ -458,64 +493,84 @@ impl ListStyle {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
+        self.read_with_session(reader, e, None);
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         let end = e.name().into_inner().to_vec();
         xml_read_loop!(reader,
             ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
                 let empty = matches!(event, Event::Empty(_));
-                match crate::reader::driver::local_name(child.name().into_inner()) {
+                let native = session
+                    .is_none_or(|session| session.accepts_child_namespace(child, NS_A));
+                let name = if native {
+                    crate::reader::driver::local_name(child.name().into_inner())
+                } else { b"" };
+                match name {
                     b"effectLst" => {
                         let mut value = EffectList::default();
-                        value.set_attributes(reader, child, empty);
+                        match session {
+                            Some(session) => {
+                                value.set_attributes_with_session(reader, child, empty, session);
+                            }
+                            None => value.set_attributes(reader, child, empty),
+                        }
                         self.set_effect_list(value);
                     }
                     b"defPPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_default_paragraph_properties(value);
                     }
                     b"lvl1pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level1_paragraph_properties(value);
                     }
                     b"lvl2pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level2_paragraph_properties(value);
                     }
                     b"lvl3pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level3_paragraph_properties(value);
                     }
                     b"lvl4pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level4_paragraph_properties(value);
                     }
                     b"lvl5pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level5_paragraph_properties(value);
                     }
                     b"lvl6pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level6_paragraph_properties(value);
                     }
                     b"lvl7pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level7_paragraph_properties(value);
                     }
                     b"lvl8pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level8_paragraph_properties(value);
                     }
                     b"lvl9pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.set_attributes(reader, child, empty);
+                        value.read_with_session(reader, child, empty, session);
                         self.set_level9_paragraph_properties(value);
                     }
                     _ => if !empty { crate::reader::driver::skip_element(reader, child); },

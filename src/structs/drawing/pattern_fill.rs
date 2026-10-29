@@ -127,6 +127,26 @@ impl PatternFill {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) {
+        self.set_attributes_impl(reader, e, None);
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.set_attributes_impl(reader, e, Some(session));
+    }
+
+    fn set_attributes_impl<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+        let end_name = e.name().as_ref().to_vec();
         if let Some(v) = get_unescaped_attribute(e, b"prst") {
             self.set_preset(v);
         }
@@ -134,18 +154,51 @@ impl PatternFill {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:fgClr" => {
-                        self.foreground_color.set_attributes(reader, e);
+                let child = if let Some(session) = session {
+                    if session.accepts_child_namespace(
+                        e,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    ) {
+                        crate::reader::driver::local_name(e.name().into_inner())
+                    } else {
+                        b""
+                    }
+                } else {
+                    match e.name().into_inner() {
+                        b"a:fgClr" => b"fgClr".as_slice(),
+                        b"a:bgClr" => b"bgClr".as_slice(),
+                        _ => b"".as_slice(),
+                    }
+                };
+                match child {
+                    b"fgClr" => {
+                        if let Some(session) = session {
+                            self.foreground_color.set_attributes_with_session(
+                                reader, e, session,
+                            );
+                        } else {
+                            self.foreground_color.set_attributes(reader, e);
+                        }
                     },
-                    b"a:bgClr" => {
-                        self.background_color.set_attributes(reader, e);
+                    b"bgClr" => {
+                        if let Some(session) = session {
+                            self.background_color.set_attributes_with_session(
+                                reader, e, session,
+                            );
+                        } else {
+                            self.background_color.set_attributes(reader, e);
+                        }
                     },
-                    _ => (),
+                    _ => {
+                        if session.is_some() {
+                            crate::reader::driver::skip_element(reader, e);
+                        }
+                    },
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"a:pattFill" {
+                if (session.is_some() && e.name().as_ref() == end_name.as_slice())
+                    || (session.is_none() && e.name().into_inner() == b"a:pattFill") {
                     return
                 }
             },

@@ -22,6 +22,7 @@ use super::{
 use crate::{
     StringValue,
     drawing::unescape_attribute,
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         get_attribute_value,
         xml_read_loop,
@@ -98,6 +99,38 @@ pub struct BodyPropertiesParts {
 }
 
 impl BodyProperties {
+    pub(crate) fn strip_browser_parts(&mut self) {
+        self.parts = None;
+    }
+
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        let Some(previous) = &previous.parts else {
+            return 0;
+        };
+        let Some(current) = &mut self.parts else {
+            self.parts = Some(previous.clone());
+            return 1;
+        };
+        let mut restored = false;
+        if current.vertical.is_none()
+            && !current.invalid_vertical
+            && (previous.vertical.is_some() || previous.invalid_vertical)
+        {
+            current.vertical = previous.vertical;
+            current.invalid_vertical = previous.invalid_vertical;
+            restored = true;
+        }
+        if current.anchor_center.is_none()
+            && !current.invalid_anchor_center
+            && (previous.anchor_center.is_some() || previous.invalid_anchor_center)
+        {
+            current.anchor_center = previous.anchor_center;
+            current.invalid_anchor_center = previous.invalid_anchor_center;
+            restored = true;
+        }
+        usize::from(restored)
+    }
+
     #[must_use]
     pub fn vertical(&self) -> Option<TextVertical> {
         self.parts.as_ref().and_then(|p| p.vertical)
@@ -363,6 +396,17 @@ impl BodyProperties {
         e: &BytesStart,
         empty_flag: bool,
     ) {
+        self.read_with_session(reader, e, empty_flag, None);
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         for attr in e.attributes().with_checks(false).flatten() {
             let key = attr.key.into_inner();
             let value = get_attribute_value(&attr).unwrap();
@@ -431,7 +475,9 @@ impl BodyProperties {
         xml_read_loop!(
             reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                if crate::reader::driver::local_name(e.name().into_inner()) == b"spAutoFit" {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
+                let name = crate::reader::driver::local_name(e.name().into_inner());
+                if native && name == b"spAutoFit" {
                     let obj = ShapeAutoFit::default();
                     ShapeAutoFit::set_attributes(reader, e);
                     self.set_shape_auto_fit(obj);

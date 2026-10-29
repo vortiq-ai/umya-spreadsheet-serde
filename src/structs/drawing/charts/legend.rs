@@ -36,8 +36,24 @@ pub struct Legend {
 }
 
 impl Legend {
+    pub(crate) fn restore_browser_parts(&mut self, previous: &Self) -> usize {
+        match (&mut self.text_properties, &previous.text_properties) {
+            (Some(current), Some(previous)) => current.restore_browser_parts(previous),
+            _ => 0,
+        }
+    }
+
     pub(crate) fn reference_role_parts(&self) -> (Option<&Layout>, Option<&ShapeProperties>) {
         (self.layout.as_deref(), self.shape_properties.as_deref())
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut Layout>, Option<&mut ShapeProperties>) {
+        if let Some(text) = &mut self.text_properties {
+            text.strip_browser_parts();
+        }
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -196,7 +212,7 @@ impl Legend {
                 }
                 b"txPr" => {
                     let mut obj = TextProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.read_with_session(reader, e, Some(session));
                     self.set_text_properties(obj);
                 }
                 _ => (),

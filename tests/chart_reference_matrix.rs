@@ -33,6 +33,11 @@ use zip::{
 };
 
 const ORIGINAL: &str = "Data!$B$2:$B$5";
+const DISTRACTORS: [&str; 3] = [
+    "'Unrelated & Sheet'!$Z$99",
+    "[Unrelated.xlsx]Data!$Y$98",
+    "UntouchedName,Unrelated!$X$97",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
@@ -166,7 +171,22 @@ fn fixture(xml: &str) -> Workbook {
     let mut chart = Chart::default();
     chart.new_chart(&ChartType::LineChart, from, to, vec![ORIGINAL]);
     book.sheet_mut(0).unwrap().add_chart(chart);
-    load(&with_chart_xml(&save(&book), xml))
+    // The pinned inputs stay byte-identical. Three independently authored,
+    // schema-legal series-name references exercise non-target preservation in
+    // every role/edit/persistence-route cell, including quoting, XML escaping,
+    // external workbook identity, names, and a union operand.
+    let position = xml.find("<c:ser>").expect("pinned native series owner");
+    let mut extras = String::new();
+    for (index, formula) in DISTRACTORS.iter().enumerate() {
+        let identity = 900 + index;
+        extras.push_str(&format!(
+            "<c:ser><c:idx val=\"{identity}\"/><c:order \
+             val=\"{identity}\"/><c:tx><c:strRef><c:f>{}</c:f></c:strRef></c:tx></c:ser>",
+            quick_xml::escape::escape(*formula),
+        ));
+    }
+    let guarded = format!("{}{}{}", &xml[..position], extras, &xml[position..]);
+    load(&with_chart_xml(&save(&book), &guarded))
 }
 
 fn edit(scenario: Scenario) -> (ChartReferenceEdit, &'static str, &'static str) {
@@ -315,14 +335,35 @@ fn exercise_variant(role: &str, xml: &str, operation: Scenario) {
         ordinary_expected
     };
     let original = save(&book);
+    let original_texts = reference_texts(&chart_xml(&original));
     assert_eq!(
-        reference_texts(&chart_xml(&original))
+        original_texts
             .iter()
             .filter(|v| v.as_str() == ORIGINAL)
             .count(),
         1,
         "{role}: target was not imported"
     );
+    for distractor in DISTRACTORS {
+        assert_eq!(
+            original_texts
+                .iter()
+                .filter(|text| text.as_str() == distractor)
+                .count(),
+            1,
+            "{role}: authored non-target reference was not imported: {distractor}",
+        );
+    }
+    let expected_texts: Vec<_> = original_texts
+        .iter()
+        .map(|text| {
+            if text == ORIGINAL {
+                expected.to_owned()
+            } else {
+                text.clone()
+            }
+        })
+        .collect();
     let report = chart_mut(&mut book).adjust_references("Host", &edit);
     assert!(report.visited >= 1, "{role}: native target not visited");
     assert_eq!(report.changed, 1, "{role}/{name}: not exactly once");
@@ -339,6 +380,10 @@ fn exercise_variant(role: &str, xml: &str, operation: Scenario) {
         *chart_mut(&mut output_book) = model;
         let output = save(&output_book);
         let texts = reference_texts(&chart_xml(&output));
+        assert_eq!(
+            texts, expected_texts,
+            "{role}/{name}/{route}: ordered complete reference inventory changed beyond target",
+        );
         assert_eq!(
             texts.iter().filter(|v| v.as_str() == expected).count(),
             1,

@@ -147,6 +147,11 @@ impl NumericData {
         self.extensions.as_deref()
     }
 
+    pub(crate) fn browser_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions = None;
+        None
+    }
+
     pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions.as_deref_mut()
     }

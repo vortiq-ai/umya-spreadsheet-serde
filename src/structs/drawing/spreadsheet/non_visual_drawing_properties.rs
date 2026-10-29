@@ -37,6 +37,12 @@ pub struct NonVisualDrawingProperties {
 }
 
 impl NonVisualDrawingProperties {
+    pub(crate) fn same_restore_identity(&self, previous: &Self) -> bool {
+        self.id.has_value() == previous.id.has_value()
+            && self.id.value() == previous.id.value()
+            && self.name.value() == previous.name.value()
+    }
+
     #[inline]
     #[must_use]
     pub fn id(&self) -> u32 {

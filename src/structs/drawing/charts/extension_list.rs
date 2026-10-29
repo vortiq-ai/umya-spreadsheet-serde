@@ -255,9 +255,33 @@ impl ExtensionList {
         empty: bool,
         session: &SourceCacheSession,
     ) -> Self {
-        let context = session
-            .extension_context(reader.buffer_position(), e)
-            .expect("extension boundary requires original chart namespace context");
+        let Some(context) = session.extension_context(reader.buffer_position(), e) else {
+            // Missing original context is not a license to infer namespaces
+            // from prefixes, promote payloads, or emit a fabricated owner.
+            // Keep an invalid list so ordinary conflict/export diagnostics
+            // fail closed, while consuming only this boundary's subtree.
+            let owner_path = format!("unresolved-extension-boundary@{}", reader.buffer_position());
+            if !empty {
+                crate::reader::driver::skip_element(reader, e);
+            }
+            return Self {
+                entries: Vec::new(),
+                name: QName {
+                    namespace_uri:    String::new(),
+                    local_name:       "extLst".into(),
+                    preferred_prefix: None,
+                },
+                owner: QName {
+                    namespace_uri:    String::new(),
+                    local_name:       String::new(),
+                    preferred_prefix: None,
+                },
+                owner_path,
+                chart_part: String::new(),
+                source_part_sha256: String::new(),
+                invalid: true,
+            };
+        };
         let mut result = Self {
             entries:            Vec::new(),
             name:               context.container,
@@ -370,6 +394,16 @@ impl ExtensionList {
         family: Option<SeriesFamily>,
     ) -> Vec<ExtensionExportDiagnostic> {
         let mut diagnostics = Vec::new();
+        if self.invalid && self.entries.is_empty() {
+            diagnostics.push(ExtensionExportDiagnostic {
+                chart_part:           self.chart_part.clone(),
+                owner_path:           self.owner_path.clone(),
+                extension_occurrence: 0,
+                uri:                  None,
+                reason:               "invalid extension-list content or missing namespace context"
+                    .into(),
+            });
+        }
         for (occurrence, entry) in self.entries.iter().enumerate() {
             if entry.is_empty_known_label_shell(owner) {
                 continue;
@@ -551,7 +585,11 @@ fn read_extension<R: std::io::BufRead>(
                         name.local_name.as_str(),
                         "fullRef" | "levelRef" | "formulaRef"
                     );
-                if registered || reference {
+                // Surface filtering has a normative registration but no typed
+                // Surface series model. Preserve its payload through the
+                // existing opaque route rather than claiming typed support.
+                let unmodeled = name.is(NS_C15, "filteredSurfaceSeries");
+                if (registered || reference) && !unmodeled {
                     entry
                         .nodes
                         .push(ExtensionNode::Known(Box::new(ExtensionPayload::read(
@@ -662,4 +700,142 @@ fn append_element(root: &mut OpaqueElement, child: OpaqueElement) {
     })));
     root.children.extend(child.children);
     root.children.push(OpaqueToken::End);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::extension_registry::URI_FILTER,
+        *,
+    };
+
+    fn authored_extension(owner: &str, uri: &str, payload: &str) -> Extension {
+        let xml = format!(
+            "<c:ext xmlns:c=\"{NS_C}\" xmlns:c15=\"{NS_C15}\" uri=\"{uri}\">{payload}</c:ext>"
+        );
+        let mut reader = Reader::from_str(&xml);
+        let Event::Start(start) = reader.read_event().unwrap() else {
+            panic!("authored extension start");
+        };
+        let entry = read_extension(
+            &mut reader,
+            &start,
+            false,
+            &NamespaceScope::default(),
+            owner,
+            None,
+            &SourceCacheSession::deferred(),
+        )
+        .expect("well-formed registered or opaque extension must not fail typed dispatch");
+        assert!(matches!(reader.read_event().unwrap(), Event::Eof));
+        entry
+    }
+
+    #[test]
+    fn registered_unmodeled_surface_payloads_are_preserved_without_typed_dispatch_failure() {
+        for owner in ["surfaceChart", "surface3DChart"] {
+            for payload in [
+                "<c15:filteredSurfaceSeries/>",
+                "<s:filteredSurfaceSeries xmlns:s=\"http://schemas.microsoft.com/office/drawing/2012/chart\" keep=\"opaque\"><s:ser><c:idx val=\"7\"/></s:ser></s:filteredSurfaceSeries>",
+            ] {
+                let entry = authored_extension(owner, URI_FILTER, payload);
+                assert_eq!(entry.nodes.len(), 1);
+                let ExtensionNode::Unknown(value) = &entry.nodes[0] else {
+                    panic!("unmodeled surface payload must not claim typed support");
+                };
+                assert!(registered(entry.uri.as_deref().unwrap(), owner, None, &value.name));
+                assert!(value.name.is(NS_C15, "filteredSurfaceSeries"));
+                assert_eq!(entry.conflict_for_owner(owner, None), None);
+                let rendered = entry.materialized(None).unwrap();
+                let mut writer = Writer::new(Cursor::new(Vec::new()));
+                rendered.emit(&mut writer).unwrap();
+                let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+                assert!(xml.contains("filteredSurfaceSeries"));
+                if payload.contains("keep=") {
+                    assert!(xml.contains("keep=\"opaque\""));
+                    assert!(xml.contains("val=\"7\""));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unmodeled_surface_payload_still_rejects_a_wrong_registered_owner() {
+        let entry = authored_extension("lineChart", URI_FILTER, "<c15:filteredSurfaceSeries/>");
+        assert!(matches!(entry.nodes[0], ExtensionNode::Unknown(_)));
+        assert_eq!(
+            entry.conflict_for_owner("lineChart", None),
+            Some(SeriesPartConflictReason::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn payload_variants_without_selected_registration_are_not_promoted() {
+        for (owner, uri, payload) in [
+            ("pieChart", URI_FILTER, "<c15:filteredPieSeries/>"),
+            (
+                "dLbls",
+                URI_LABEL,
+                "<c15:numFmt formatCode=\"0\" sourceLinked=\"0\"/>",
+            ),
+            ("dLbls", URI_LABEL, "<c15:autoCat val=\"1\"/>"),
+        ] {
+            let entry = authored_extension(owner, uri, payload);
+            assert!(matches!(entry.nodes[0], ExtensionNode::Unknown(_)));
+            assert_eq!(
+                entry.conflict_for_owner(owner, None),
+                Some(SeriesPartConflictReason::NotAllowed)
+            );
+        }
+    }
+
+    #[test]
+    fn registrations_outside_the_selected_uri_set_remain_opaque() {
+        for (owner, uri, payload) in [
+            (
+                "catAx",
+                "{F40574EE-89B7-4290-83BB-5DA773EAF853}",
+                "<c15:numFmt formatCode=\"0\" sourceLinked=\"0\"/>",
+            ),
+            (
+                "strLit",
+                "{E218EAE0-A670-482B-9A64-EF95B99D9540}",
+                "<c15:autoCat val=\"1\"/>",
+            ),
+        ] {
+            assert!(!known_uri(uri));
+            let entry = authored_extension(owner, uri, payload);
+            assert!(matches!(entry.nodes[0], ExtensionNode::Unknown(_)));
+            assert_eq!(entry.conflict_for_owner(owner, None), None);
+            assert!(entry.materialized(None).is_ok());
+        }
+    }
+
+    #[test]
+    fn missing_namespace_context_is_invalid_and_reported_without_panicking() {
+        for xml in [
+            "<c:extLst xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"/>",
+            "<c:extLst xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:ext \
+             uri=\"urn:future\"/></c:extLst>",
+        ] {
+            let mut reader = Reader::from_str(xml);
+            let event = reader.read_event().unwrap();
+            let empty = matches!(event, Event::Empty(_));
+            let (Event::Start(start) | Event::Empty(start)) = event else {
+                panic!("extension-list start");
+            };
+            let list =
+                ExtensionList::read(&mut reader, &start, empty, &SourceCacheSession::deferred());
+            assert_eq!(
+                list.conflict(),
+                Some(SeriesPartConflictReason::InvalidValue)
+            );
+            assert!(
+                !list
+                    .export_diagnostics_for_owner(None, "dLbls", None)
+                    .is_empty()
+            );
+            assert!(matches!(reader.read_event().unwrap(), Event::Eof));
+        }
+    }
 }

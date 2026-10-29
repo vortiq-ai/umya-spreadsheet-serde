@@ -3,7 +3,10 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::Event,
+    events::{
+        BytesStart,
+        Event,
+    },
 };
 
 use super::{
@@ -11,6 +14,7 @@ use super::{
     ScalarElement,
     XmlBoolean,
     XmlDouble,
+    extension_registry::NS_C,
 };
 use crate::{
     drawing::get_unescaped_attribute,
@@ -104,14 +108,26 @@ impl PictureOptions {
         self
     }
 
-    pub(crate) fn read<R: std::io::BufRead>(reader: &mut Reader<R>, empty: bool) -> Self {
+    pub(crate) fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Self {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+        let end = owner.name().into_inner().to_vec();
         let mut result = Self::default();
         if empty {
             return result;
         }
         xml_read_loop!(reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                match local_name(e.name().into_inner()) {
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_C));
+                match if native {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
                     b"applyToFront" => result.apply_to_front = Some(XmlBoolean::read(e)),
                     b"applyToSides" => result.apply_to_sides = Some(XmlBoolean::read(e)),
                     b"applyToEnd" => result.apply_to_end = Some(XmlBoolean::read(e)),
@@ -121,7 +137,7 @@ impl PictureOptions {
                 }
                 if matches!(event, Event::Start(_)) { skip_element(reader,e); }
             },
-            Event::End(ref e) => { if local_name(e.name().into_inner()) == b"pictureOptions" { return result; } },
+            Event::End(ref e) => { if e.name().into_inner() == end.as_slice() { return result; } },
             Event::Eof => panic!("Could not find pictureOptions end element"),
         );
     }

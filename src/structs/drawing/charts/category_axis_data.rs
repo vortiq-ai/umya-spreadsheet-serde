@@ -12,6 +12,7 @@ use quick_xml::{
 
 use super::{
     MultiLevelStringReference,
+    SeriesPartConflictReason,
     StringLiteral,
     StringReference,
 };
@@ -19,6 +20,7 @@ use crate::{
     drawing::charts::NumberReference,
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     structs::Workbook,
@@ -38,7 +40,58 @@ pub struct CategoryAxisData {
     multi_level_string_reference: Option<MultiLevelStringReference>,
 }
 
+#[cfg(test)]
+mod category_writer_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_category_literals_omit_the_entire_category_wrapper() {
+        for xml in [
+            "<c:strLit><c:ptCount val=\"1\"/><c:pt idx=\"0\"/></c:strLit>",
+            "<c:strLit><c:pt idx=\"x\"><c:v>label</c:v></c:pt></c:strLit>",
+            "<c:strLit><c:ptCount val=\"1\"/><c:ptCount val=\"1\"/></c:strLit>",
+        ] {
+            let mut reader = Reader::from_str(xml);
+            let Event::Start(start) = reader.read_event().unwrap() else {
+                panic!("literal start");
+            };
+            let mut categories = CategoryAxisData::default();
+            categories.set_string_literal(StringLiteral::read(&mut reader, &start, false));
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            categories.write_to(&mut writer, &Workbook::default());
+            assert!(writer.into_inner().into_inner().is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_category_choice_omits_the_entire_category_wrapper() {
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        CategoryAxisData::default().write_to(&mut writer, &Workbook::default());
+        assert!(writer.into_inner().into_inner().is_empty());
+    }
+}
+
 impl CategoryAxisData {
+    pub(crate) fn conflict(&self) -> Option<SeriesPartConflictReason> {
+        let choices = [
+            self.string_reference.is_some(),
+            self.string_literal.is_some(),
+            self.number_reference.is_some(),
+            self.multi_level_string_reference.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        match choices {
+            0 => Some(SeriesPartConflictReason::MissingRequiredChild),
+            1 => self
+                .string_literal
+                .as_ref()
+                .and_then(StringLiteral::conflict),
+            _ => Some(SeriesPartConflictReason::ConflictingChoice),
+        }
+    }
+
     // Disjoint stored children; preserves absent/invalid source states.
     pub(crate) fn reference_role_parts(
         &self,
@@ -54,6 +107,17 @@ impl CategoryAxisData {
             self.multi_level_string_reference.as_ref(),
             self.string_literal.as_ref(),
         )
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut StringReference>,
+        Option<&mut NumberReference>,
+        Option<&mut MultiLevelStringReference>,
+        Option<&mut StringLiteral>,
+    ) {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -191,6 +255,7 @@ impl CategoryAxisData {
         session: &crate::reader::xlsx::SourceCacheSession,
     ) {
         let _scope_guard = session.enter_child_scope(owner);
+        let end = owner.name().into_inner().to_vec();
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
@@ -215,11 +280,19 @@ impl CategoryAxisData {
                         obj.set_attributes_with_session(reader, e, session);
                         self.set_number_reference(obj);
                     }
-                    _ => (),
+                    _ => skip_element(reader, e),
+                }
+            },
+            Event::Empty(ref e) => {
+                if session.accepts_child_namespace(e, super::extension_registry::NS_C)
+                    && local_name(e.name().into_inner()) == b"strLit"
+                {
+                    let literal = StringLiteral::read_with_session(reader, e, true, session);
+                    self.set_string_literal(literal);
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"cat" {
+                if e.name().into_inner() == end.as_slice() {
                     return;
                 }
             },
@@ -228,6 +301,9 @@ impl CategoryAxisData {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+        if self.conflict().is_some() {
+            return;
+        }
         // c:cat
         write_start_tag(writer, "c:cat", vec![], false);
 

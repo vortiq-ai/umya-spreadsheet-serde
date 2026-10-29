@@ -103,7 +103,7 @@ impl Style {
                         && local_name(e.name().into_inner()) == b"style"
                         && session.accepts_child_namespace(e,
                             crate::helper::const_str::DRAWINGML_CHART_NS) {
-                        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+                        set_string_from_xml!(self, e, val, "val");
                     }
                 },
                 Event::End(ref e) => {
@@ -143,7 +143,25 @@ impl Style {
             );
 
             // c14:style
-            write_start_tag(writer, "c14:style", vec![("val", "102").into()], true);
+            // MS-ODRAWXML CT_Style requires the modern value to be the
+            // corresponding legacy value plus 100. Keep invalid legacy input
+            // on its existing diagnostic/validation path, never invent a
+            // different valid fallback value for it.
+            let modern = self
+                .val
+                .value_str()
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|value| (1..=48).contains(value))
+                .map_or(102, |value| value + 100)
+                .to_string();
+            write_start_tag(
+                writer,
+                "c14:style",
+                vec![("val", modern.as_str()).into()],
+                true,
+            );
 
             write_end_tag(writer, "mc:Choice");
 

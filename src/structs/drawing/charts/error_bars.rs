@@ -107,6 +107,10 @@ impl ErrorBars {
         )
     }
 
+    pub(crate) fn browser_role_parts_mut(&mut self) -> ErrorBarReferencePartsMut<'_> {
+        self.reference_role_parts_mut()
+    }
+
     pub(crate) fn reference_role_parts_mut(&mut self) -> ErrorBarReferencePartsMut<'_> {
         (
             self.plus.as_mut(),

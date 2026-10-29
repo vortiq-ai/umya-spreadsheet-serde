@@ -10,10 +10,14 @@ use quick_xml::{
     },
 };
 
-use super::ShapeProperties;
+use super::{
+    ShapeProperties,
+    extension_registry::NS_C,
+};
 use crate::{
     reader::driver::{
         local_name,
+        skip_element,
         xml_read_loop,
     },
     writer::driver::{
@@ -81,6 +85,7 @@ impl MajorGridlines {
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) {
         let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+        let end = owner.name().into_inner().to_vec();
 
         if empty_flg {
             return;
@@ -88,16 +93,24 @@ impl MajorGridlines {
 
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"spPr" {
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_C));
+                if native && local_name(e.name().into_inner()) == b"spPr" {
                     let mut obj = ShapeProperties::default();
-                    match session{Some(session)=>obj.set_attributes_with_session(reader,e,
-                        session),None=>obj.set_attributes(reader,e)}
+                    if !empty {
+                        match session {
+                            Some(session) => obj.set_attributes_with_session(reader, e, session),
+                            None => obj.set_attributes(reader, e),
+                        }
+                    }
                     self.set_shape_properties(obj);
+                } else if !empty {
+                    skip_element(reader, e);
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"majorGridlines" {
+                if e.name().into_inner() == end.as_slice() {
                     return
                 }
             },

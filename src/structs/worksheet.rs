@@ -302,7 +302,7 @@ impl Worksheet {
         }
     }
 
-    fn adjust_defined_names_for_prepared(
+    pub(crate) fn adjust_defined_names_for_prepared(
         &mut self,
         prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
     ) {

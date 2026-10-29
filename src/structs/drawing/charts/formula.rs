@@ -10,11 +10,17 @@ use quick_xml::{
 use super::super::super::Address;
 use super::super::super::StringValue;
 use crate::{
-    helper::address::{
-        is_address,
-        quote_sheet_name,
-        split_address,
-        unescape_sheet_name,
+    helper::{
+        address::{
+            is_address,
+            quote_sheet_name,
+            split_address,
+            unescape_sheet_name,
+        },
+        formula::{
+            FormulaTokenSubTypes,
+            parse_chart_formula_tokens,
+        },
     },
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
@@ -124,7 +130,12 @@ impl Formula {
 
     pub fn set_address_str<S: Into<String>>(&mut self, value: S) -> &mut Self {
         let value = value.into();
-        if is_address(&value) {
+        if is_address(&value)
+            && (!value.contains(',')
+                || !parse_chart_formula_tokens(&value)
+                    .iter()
+                    .any(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Union))
+        {
             self.address.set_address(value);
             self.string_value.remove_value();
         } else {
@@ -218,6 +229,45 @@ impl AdjustmentCoordinateWithSheet for Formula {
 mod reference_identity_regression {
     use super::Formula;
     use crate::structs::Address;
+
+    #[test]
+    fn named_union_import_stays_formula_text_instead_of_a_sheet_qualifier() {
+        for text in [
+            "UntouchedName,Unrelated!$X$97",
+            "UntouchedName,OtherName,Unrelated!$X$97",
+            "Data!A1,Unrelated!$X$97",
+            "'Data, Archive'!A1,Unrelated!$X$97",
+        ] {
+            let mut formula = Formula::default();
+            formula.set_address_str(text);
+            assert_eq!(formula.address_str(), text);
+            assert!(formula.has_string_value(), "{text}");
+        }
+    }
+
+    #[test]
+    fn comma_in_a_quoted_sheet_name_keeps_simple_address_identity() {
+        for (text, expected, sheet) in [
+            (
+                "'Data, Archive'!$X$97",
+                "'Data, Archive'!$X$97",
+                "Data, Archive",
+            ),
+            ("Data Sheet!$X$97", "'Data Sheet'!$X$97", "Data Sheet"),
+            (
+                "'Bob''s, Data'!$X$97",
+                "'Bob''s, Data'!$X$97",
+                "Bob''s, Data",
+            ),
+            ("Data!$X$97", "Data!$X$97", "Data"),
+        ] {
+            let mut formula = Formula::default();
+            formula.set_address_str(text);
+            assert_eq!(formula.address_str(), expected);
+            assert_eq!(formula.address().sheet_name(), sheet);
+            assert!(!formula.has_string_value(), "{text}");
+        }
+    }
 
     #[test]
     fn range_edit_preserves_raw_sheet_identity_but_rename_replaces_it() {

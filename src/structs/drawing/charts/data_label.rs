@@ -68,6 +68,87 @@ pub struct DataLabel {
     invalid_index:      bool,
 }
 impl DataLabel {
+    pub(crate) fn restore_browser_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) {
+        if self.index.explicit_value().is_none()
+            || self.index.explicit_value() != previous.index.explicit_value()
+        {
+            report.incompatible_owners += 1;
+            report
+                .diagnostics
+                .push("unmatched pivot data-label index".into());
+            return;
+        }
+        // This owner is hidden in the browser projection. Omitted children
+        // come from the removal-adjusted native basis; supplied typed values
+        // stay current, including compatible text/layout/format branches.
+        macro_rules! missing {
+            ($($field:ident),+ $(,)?) => { $(
+                if self.$field.is_none() { self.$field = previous.$field.clone(); }
+            )+ };
+        }
+        let omitted_position = self.position.is_none();
+        missing!(
+            delete,
+            layout,
+            text,
+            numbering_format,
+            shape_properties,
+            text_properties,
+            position,
+            separator,
+            extensions
+        );
+        macro_rules! flag {
+            ($($field:ident),+ $(,)?) => { $(
+                if self.flags.$field.is_none() {
+                    self.flags.$field = previous.flags.$field.clone();
+                }
+            )+ };
+        }
+        flag!(
+            show_legend_key,
+            show_value,
+            show_category_name,
+            show_series_name,
+            show_percent,
+            show_bubble_size
+        );
+        self.duplicate_children |= previous.duplicate_children;
+        self.invalid_index |= previous.invalid_index;
+        if omitted_position {
+            self.invalid_position |= previous.invalid_position;
+        }
+        if let (Some(format), Some(old)) = (&mut self.numbering_format, &previous.numbering_format)
+        {
+            report.restored_owners += format.restore_browser_parts(old);
+        }
+        if let (Some(text), Some(old)) = (&mut self.text_properties, &previous.text_properties) {
+            if text.browser_structure_matches(old) {
+                report.restored_owners += text.restore_browser_parts(old);
+            } else {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("incompatible pivot label text body structure".into());
+            }
+        }
+        let (text, layout, shape, _) = self.reference_role_parts_mut();
+        let (old_text, old_layout, old_shape, _) = previous.reference_role_parts();
+        if let (Some(text), Some(old)) = (text, old_text) {
+            super::chart_server_parts::restore_text(text, old, report);
+        }
+        if let (Some(layout), Some(old)) = (layout, old_layout) {
+            super::chart_server_parts::restore_layout(layout, old, report);
+        }
+        if let (Some(shape), Some(old)) = (shape, old_shape) {
+            super::chart_server_parts::restore_shape(shape, old, report);
+        }
+    }
+
     // Disjoint stored children; preserves absent/invalid source states.
     pub(crate) fn reference_role_parts(
         &self,
@@ -83,6 +164,17 @@ impl DataLabel {
             self.shape_properties.as_ref(),
             self.extensions.as_ref(),
         )
+    }
+
+    pub(crate) fn browser_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ChartText>,
+        Option<&mut Layout>,
+        Option<&mut ShapeProperties>,
+        Option<&mut ExtensionList>,
+    ) {
+        self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
@@ -350,7 +442,11 @@ impl DataLabel {
         xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let child = local_name(e.name().into_inner());
+                let child = if session.accepts_child_namespace(e, super::extension_registry::NS_C) {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                };
                 if matches!(child, b"idx" | b"delete" | b"layout" | b"tx" | b"numFmt" | b"spPr" | b"txPr" | b"dLblPos" | b"showLegendKey" | b"showVal" | b"showCatName" | b"showSerName" | b"showPercent" | b"showBubbleSize" | b"separator" | b"extLst") && !seen.insert(child.to_vec()) { result.duplicate_children = true; }
                 let mut consumed = false;
                 match child {
@@ -367,7 +463,7 @@ impl DataLabel {
                     b"tx" => { let mut v=ChartText::default(); if !empty { v.set_attributes(reader,e,session); } result.text=Some(v); consumed=true; },
                     b"numFmt" => { let mut v=NumberingFormat::default(); v.set_attributes(reader,e); result.numbering_format=Some(v); },
                     b"spPr" => { let mut v=ShapeProperties::default(); if !empty { v.set_attributes_with_session(reader,e,session); } result.shape_properties=Some(v); consumed=true; },
-                    b"txPr" => { let mut v=TextProperties::default(); if !empty { v.set_attributes(reader,e); } result.text_properties=Some(v); consumed=true; },
+                    b"txPr" => { let mut v=TextProperties::default(); if !empty { v.read_with_session(reader, e, Some(session)); } result.text_properties=Some(v); consumed=true; },
                     b"dLblPos" => { result.position=crate::drawing::get_unescaped_attribute(e,b"val").and_then(|v| DataLabelPosition::from_xml(&v)); result.invalid_position=result.position.is_none(); },
                     b"showLegendKey" => result.flags.show_legend_key=Some(XmlBoolean::read(e)),
                     b"showVal" => result.flags.show_value=Some(XmlBoolean::read(e)),

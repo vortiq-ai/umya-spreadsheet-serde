@@ -71,6 +71,27 @@ impl GradientStopList {
         e: &BytesStart,
         empty: bool,
     ) {
+        self.read_attributes_impl(reader, e, empty, None);
+    }
+
+    pub(crate) fn read_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) {
+        self.read_attributes_impl(reader, e, empty, Some(session));
+    }
+
+    fn read_attributes_impl<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) {
+        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
         if empty {
             return;
         }
@@ -78,8 +99,26 @@ impl GradientStopList {
         xml_read_loop!(reader,
                     ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                         let empty=matches!(event,Event::Empty(_));
-                        match crate::reader::driver::local_name(e.name().into_inner()) {
-        b"gs" => { let mut value=GradientStop::default(); value.read_attributes(reader,e,empty); self.add_gradient_stop(value); },
+                let native = session.is_none_or(|session| {
+                    session.accepts_child_namespace(
+                        e,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )
+                });
+                match if native {
+                    crate::reader::driver::local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
+        b"gs" => {
+            let mut value = GradientStop::default();
+            if let Some(session) = session {
+                value.read_attributes_with_session(reader, e, empty, session);
+            } else {
+                value.read_attributes(reader, e, empty);
+            }
+            self.add_gradient_stop(value);
+        },
                             _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
                         }
                     },
