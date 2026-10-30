@@ -337,7 +337,7 @@ impl ErrorBars {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, None)
     }
 
@@ -346,7 +346,7 @@ impl ErrorBars {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, Some(session))
     }
 
@@ -355,120 +355,140 @@ impl ErrorBars {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut result = Self::default();
         let mut seen = std::collections::HashSet::new();
-        let complete = children(reader, e, empty, |reader, child, empty| {
-            let name = if session.is_none_or(|session| {
-                session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                local_name(child.name().into_inner())
-            } else {
-                b""
-            };
-            let known = matches!(
-                name,
-                b"errDir"
-                    | b"errBarType"
-                    | b"errValType"
-                    | b"noEndCap"
-                    | b"val"
-                    | b"spPr"
-                    | b"plus"
-                    | b"minus"
-            );
-            if known && !seen.insert(name.to_vec()) {
-                result.invalid = true;
-            }
-            let raw = crate::drawing::get_unescaped_attribute(child, b"val");
-            match name {
-                b"extLst" if session.is_some() => {
-                    result.set_extensions(Some(super::ExtensionList::read(
-                        reader,
-                        child,
-                        empty,
-                        session.expect("checked session"),
-                    )));
-                    return true;
-                }
-                b"errDir" => {
-                    let parsed = raw.as_deref().and_then(ErrorBarDirection::parse);
-                    if let Some(raw) = raw.filter(|_| parsed.is_none()) {
-                        result.invalid_attributes.push(("errDir".into(), raw));
-                    }
-                    let mut v = ScalarElement::default();
-                    v.set_attribute(parsed);
-                    result.direction = Some(v);
-                }
-                b"errBarType" => {
-                    let parsed = raw.as_deref().and_then(ErrorBarType::parse);
-                    if let Some(raw) = raw.filter(|_| parsed.is_none()) {
-                        result.invalid_attributes.push(("errBarType".into(), raw));
-                    }
-                    let mut v = ScalarElement::default();
-                    v.set_attribute(parsed);
-                    result.bar_type = v;
-                    result.bar_type_present = true;
-                }
-                b"errValType" => {
-                    let parsed = raw.as_deref().and_then(ErrorBarValueType::parse);
-                    if let Some(raw) = raw.filter(|_| parsed.is_none()) {
-                        result.invalid_attributes.push(("errValType".into(), raw));
-                    }
-                    let mut v = ScalarElement::default();
-                    v.set_attribute(parsed);
-                    result.value_type = v;
-                    result.value_type_present = true;
-                }
-                b"noEndCap" => result.no_end_cap = Some(XmlBoolean::read(child)),
-                b"val" => result.value = Some(XmlDouble::read(child)),
-                b"spPr" => {
-                    let mut v = ShapeProperties::default();
-                    if !empty {
-                        match session {
-                            Some(session) => v.set_attributes_with_session(reader, child, session),
-                            None => v.set_attributes(reader, child),
-                        }
-                    }
-                    result.shape_properties = Some(v);
-                    return true;
-                }
-                b"plus" | b"minus" => {
-                    let (sources, invalid) = read_source(reader, child, empty, session);
-                    result.invalid |= invalid;
-                    if sources.is_empty() {
-                        result.empty_sources |= if name == b"plus" {
-                            Self::EMPTY_PLUS
-                        } else {
-                            Self::EMPTY_MINUS
-                        };
-                    }
-                    let (primary, extras) = if name == b"plus" {
-                        (&mut result.plus, &mut result.extra_plus)
+        let complete = children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    let name = if match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } {
+                        local_name(child.name().into_inner())
                     } else {
-                        (&mut result.minus, &mut result.extra_minus)
+                        b""
                     };
-                    for source in sources {
-                        if primary.is_none() {
-                            *primary = Some(source);
-                        } else {
-                            extras.push(source);
-                        }
+                    let known = matches!(
+                        name,
+                        b"errDir"
+                            | b"errBarType"
+                            | b"errValType"
+                            | b"noEndCap"
+                            | b"val"
+                            | b"spPr"
+                            | b"plus"
+                            | b"minus"
+                    );
+                    if known && !seen.insert(name.to_vec()) {
+                        result.invalid = true;
                     }
-                    return true;
-                }
-                _ => (),
-            }
-            false
-        });
+                    let raw = crate::reader::driver::read_attribute(child, b"val")?;
+                    match name {
+                        b"extLst" if session.is_some() => {
+                            result.set_extensions(Some(super::ExtensionList::read(
+                                reader,
+                                child,
+                                empty,
+                                session.ok_or_else(|| {
+                                    crate::xml::xml_error("missing chart session")
+                                })?,
+                            )?));
+                            return Ok(true);
+                        }
+                        b"errDir" => {
+                            let parsed = raw.as_deref().and_then(ErrorBarDirection::parse);
+                            if let Some(raw) = raw.filter(|_| parsed.is_none()) {
+                                result.invalid_attributes.push(("errDir".into(), raw));
+                            }
+                            let mut v = ScalarElement::default();
+                            v.set_attribute(parsed);
+                            result.direction = Some(v);
+                        }
+                        b"errBarType" => {
+                            let parsed = raw.as_deref().and_then(ErrorBarType::parse);
+                            if let Some(raw) = raw.filter(|_| parsed.is_none()) {
+                                result.invalid_attributes.push(("errBarType".into(), raw));
+                            }
+                            let mut v = ScalarElement::default();
+                            v.set_attribute(parsed);
+                            result.bar_type = v;
+                            result.bar_type_present = true;
+                        }
+                        b"errValType" => {
+                            let parsed = raw.as_deref().and_then(ErrorBarValueType::parse);
+                            if let Some(raw) = raw.filter(|_| parsed.is_none()) {
+                                result.invalid_attributes.push(("errValType".into(), raw));
+                            }
+                            let mut v = ScalarElement::default();
+                            v.set_attribute(parsed);
+                            result.value_type = v;
+                            result.value_type_present = true;
+                        }
+                        b"noEndCap" => result.no_end_cap = Some(XmlBoolean::read(child)),
+                        b"val" => result.value = Some(XmlDouble::read(child)),
+                        b"spPr" => {
+                            let mut v = ShapeProperties::default();
+                            if !empty {
+                                match session {
+                                    Some(session) => {
+                                        v.set_attributes_with_session(reader, child, session)?;
+                                    }
+                                    None => v.set_attributes(reader, child)?,
+                                }
+                            }
+                            result.shape_properties = Some(v);
+                            return Ok(true);
+                        }
+                        b"plus" | b"minus" => {
+                            let (sources, invalid) = read_source(reader, child, empty, session)?;
+                            result.invalid |= invalid;
+                            if sources.is_empty() {
+                                result.empty_sources |= if name == b"plus" {
+                                    Self::EMPTY_PLUS
+                                } else {
+                                    Self::EMPTY_MINUS
+                                };
+                            }
+                            let (primary, extras) = if name == b"plus" {
+                                (&mut result.plus, &mut result.extra_plus)
+                            } else {
+                                (&mut result.minus, &mut result.extra_minus)
+                            };
+                            for source in sources {
+                                if primary.is_none() {
+                                    *primary = Some(source);
+                                } else {
+                                    extras.push(source);
+                                }
+                            }
+                            return Ok(true);
+                        }
+                        _ => (),
+                    }
+                    false
+                })
+            },
+        )?;
         result.invalid |= !complete;
-        result
+        Ok(result)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, workbook: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        workbook: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         if !self.is_valid() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c:errBars", vec![], false);
         if let Some(v) = &self.direction {
@@ -490,7 +510,7 @@ impl ErrorBars {
         for (name, source) in [("c:plus", &self.plus), ("c:minus", &self.minus)] {
             if let Some(v) = source {
                 write_start_tag(writer, name, vec![], false);
-                v.write_to(writer, workbook);
+                v.write_to(writer, workbook)?;
                 write_end_tag(writer, name);
             }
         }
@@ -498,12 +518,14 @@ impl ErrorBars {
             v.write_to(writer, "c:val");
         }
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(workbook), "errBars", None);
+            ext.write_for_owner(writer, Some(workbook), "errBars", None)?;
         }
         write_end_tag(writer, "c:errBars");
+
+        Ok(())
     }
 }
 fn write_enum(writer: &mut Writer<Cursor<Vec<u8>>>, name: &str, value: Option<&str>) {
@@ -519,44 +541,60 @@ fn read_source<R: std::io::BufRead>(
     owner: &BytesStart,
     empty: bool,
     session: Option<&crate::reader::xlsx::SourceCacheSession>,
-) -> (Vec<NumericDataSource>, bool) {
-    let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+) -> Result<(Vec<NumericDataSource>, bool), crate::XlsxError> {
+    let _scope_guard = session
+        .map(|session| session.enter_child_scope(owner))
+        .transpose()?
+        .flatten();
     let mut sources = Vec::new();
     let mut invalid = false;
-    let complete = children(reader, owner, empty, |reader, child, empty| {
-        match if session.is_none_or(|session| {
-            session.accepts_child_namespace(child, super::extension_registry::NS_C)
-        }) {
-            local_name(child.name().into_inner())
-        } else {
-            b""
-        } {
-            b"numRef" => {
-                // Numeric source caches are not imported or admitted. Only the
-                // existing NumberReference formula is
-                // populated; its writer regenerates caches.
-                let mut reference = NumberReference::default();
-                let policy = super::number_reference::NumericSourceCachePolicy::SkipSourceCache;
-                invalid |= !match session {
+    let complete = children(
+        reader,
+        owner,
+        empty,
+        |reader, child, empty| -> Result<bool, crate::XlsxError> {
+            Ok({
+                match if match session {
                     Some(session) => {
-                        reference.read_with_policy_session(reader, child, empty, policy, session)
+                        session.accepts_child_namespace(child, super::extension_registry::NS_C)?
                     }
-                    None => reference.read_with_policy(reader, child, empty, policy),
-                };
-                sources.push(NumericDataSource::Reference(Box::new(reference)));
-                true
-            }
-            b"numLit" => {
-                sources.push(NumericDataSource::Literal(Box::new(match session {
-                    Some(session) => NumericData::read_with_session(reader, child, empty, session),
-                    None => NumericData::read(reader, child, empty),
-                })));
-                true
-            }
-            _ => false,
-        }
-    });
-    (sources, invalid || !complete)
+                    None => true,
+                } {
+                    local_name(child.name().into_inner())
+                } else {
+                    b""
+                } {
+                    b"numRef" => {
+                        // Numeric source caches are not imported or admitted.
+                        // Only the
+                        // existing NumberReference formula is
+                        // populated; its writer regenerates caches.
+                        let mut reference = NumberReference::default();
+                        let policy =
+                            super::number_reference::NumericSourceCachePolicy::SkipSourceCache;
+                        invalid |= !match session {
+                            Some(session) => reference
+                                .read_with_policy_session(reader, child, empty, policy, session)?,
+                            None => reference.read_with_policy(reader, child, empty, policy)?,
+                        };
+                        sources.push(NumericDataSource::Reference(Box::new(reference)));
+                        true
+                    }
+                    b"numLit" => {
+                        sources.push(NumericDataSource::Literal(Box::new(match session {
+                            Some(session) => {
+                                NumericData::read_with_session(reader, child, empty, session)?
+                            }
+                            None => NumericData::read(reader, child, empty)?,
+                        })));
+                        true
+                    }
+                    _ => false,
+                }
+            })
+        },
+    )?;
+    Ok((sources, invalid || !complete))
 }
 
 /// Schema cardinality shared by emission, diagnostics and explicit conversions.

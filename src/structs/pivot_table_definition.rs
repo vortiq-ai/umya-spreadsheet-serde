@@ -11,15 +11,13 @@ use quick_xml::{
 };
 
 use crate::{
-    RowFields, helper::const_str::{
+    RowFields,
+    helper::const_str::{
         MC_NS,
         SHEET_MAIN_NS,
         SHEET_MS_REVISION_NS,
-    }, reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    }, structs::{
+    },
+    structs::{
         BooleanValue,
         ByteValue,
         ColumnFields,
@@ -31,10 +29,11 @@ use crate::{
         RowItems,
         StringValue,
         UInt32Value,
-    }, writer::driver::{
+    },
+    writer::driver::{
         write_end_tag,
         write_start_tag,
-    }
+    },
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -72,8 +71,172 @@ pub struct PivotTableDefinition {
     column_items:               ColumnItems,
     data_fields:                DataFields,
     pivot_table_style:          PivotTableStyle,
+    #[cfg_attr(feature = "serde", serde(default))]
+    properties:                 PivotTableProperties,
+    #[cfg_attr(feature = "serde", serde(default))]
+    formats:                    Option<crate::structs::PivotTableFormats>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    conditional_formats:        Option<crate::structs::PivotConditionalFormats>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    chart_formats:              Option<crate::structs::PivotChartFormats>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:                 Option<Vec<crate::structs::PivotTableExtension>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    hierarchies:                Option<crate::structs::PivotTableHierarchies>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, Default)]
+pub struct PivotTableProperties {
+    pub data_on_rows:              Option<bool>,
+    pub data_position:             Option<u32>,
+    pub grand_total_caption:       Option<String>,
+    pub error_caption:             Option<String>,
+    pub show_error:                Option<bool>,
+    pub missing_caption:           Option<String>,
+    pub show_missing:              Option<bool>,
+    pub page_style:                Option<String>,
+    pub pivot_table_style:         Option<String>,
+    pub vacated_style:             Option<String>,
+    pub tag:                       Option<String>,
+    pub asterisk_totals:           Option<bool>,
+    pub show_items:                Option<bool>,
+    pub edit_data:                 Option<bool>,
+    pub disable_field_list:        Option<bool>,
+    pub show_calc_mbrs:            Option<bool>,
+    pub visual_totals:             Option<bool>,
+    pub show_multiple_label:       Option<bool>,
+    pub show_data_drop_down:       Option<bool>,
+    pub show_drill:                Option<bool>,
+    pub print_drill:               Option<bool>,
+    pub show_member_property_tips: Option<bool>,
+    pub show_data_tips:            Option<bool>,
+    pub enable_wizard:             Option<bool>,
+    pub enable_drill:              Option<bool>,
+    pub enable_field_properties:   Option<bool>,
+    pub preserve_formatting:       Option<bool>,
+    pub page_wrap:                 Option<u32>,
+    pub page_over_then_down:       Option<bool>,
+    pub subtotal_hidden_items:     Option<bool>,
+    pub field_print_titles:        Option<bool>,
+    pub merge_item:                Option<bool>,
+    pub show_drop_zones:           Option<bool>,
+    pub show_empty_row:            Option<bool>,
+    pub show_empty_col:            Option<bool>,
+    pub show_headers:              Option<bool>,
+    pub compact:                   Option<bool>,
+    pub published:                 Option<bool>,
+    pub grid_drop_zones:           Option<bool>,
+    pub immersive:                 Option<bool>,
+    pub chart_format:              Option<u32>,
+    pub row_header_caption:        Option<String>,
+    pub col_header_caption:        Option<String>,
+    pub field_list_sort_ascending: Option<bool>,
+    pub mdx_subqueries:            Option<bool>,
+    pub custom_list_sort:          Option<bool>,
 }
 impl PivotTableDefinition {
+    #[must_use]
+    pub fn hierarchies(&self) -> Option<&crate::structs::PivotTableHierarchies> {
+        self.hierarchies.as_ref()
+    }
+
+    pub fn hierarchies_mut(&mut self) -> &mut Option<crate::structs::PivotTableHierarchies> {
+        &mut self.hierarchies
+    }
+
+    pub fn set_hierarchies(
+        &mut self,
+        value: Option<crate::structs::PivotTableHierarchies>,
+    ) -> &mut Self {
+        self.hierarchies = value;
+        self
+    }
+
+    pub fn from_xml(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = Reader::from_reader(bytes);
+        let mut value = None;
+        loop {
+            match reader.read_event().map_err(|error| error.to_string())? {
+                Event::Start(ref root) if value.is_none() => {
+                    let mut result = Self::default();
+                    result
+                        .set_attributes(&mut reader, root)
+                        .map_err(|error| error.to_string())?;
+                    value = Some(result);
+                }
+                Event::Decl(_) if value.is_none() => {}
+                Event::Comment(_) | Event::PI(_) => {}
+                Event::Text(ref text) if text.iter().all(u8::is_ascii_whitespace) => {}
+                Event::Eof => {
+                    return value.ok_or_else(|| "missing native pivot document root".into());
+                }
+                _ => return Err("invalid content outside native pivot root".into()),
+            }
+        }
+    }
+
+    pub fn to_xml(&self) -> Result<Vec<u8>, String> {
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        self.write_to(&mut writer)
+            .map_err(|error| error.to_string())?;
+        Ok(writer.into_inner().into_inner())
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&[crate::structs::PivotTableExtension]> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> &mut Option<Vec<crate::structs::PivotTableExtension>> {
+        &mut self.extensions
+    }
+
+    #[must_use]
+    pub fn chart_formats(&self) -> Option<&crate::structs::PivotChartFormats> {
+        self.chart_formats.as_ref()
+    }
+
+    pub fn set_chart_formats(
+        &mut self,
+        value: Option<crate::structs::PivotChartFormats>,
+    ) -> &mut Self {
+        self.chart_formats = value;
+        self
+    }
+
+    #[must_use]
+    pub fn conditional_formats(&self) -> Option<&crate::structs::PivotConditionalFormats> {
+        self.conditional_formats.as_ref()
+    }
+
+    pub fn set_conditional_formats(
+        &mut self,
+        value: Option<crate::structs::PivotConditionalFormats>,
+    ) -> &mut Self {
+        self.conditional_formats = value;
+        self
+    }
+
+    #[must_use]
+    pub fn formats(&self) -> Option<&crate::structs::PivotTableFormats> {
+        self.formats.as_ref()
+    }
+
+    pub fn set_formats(&mut self, value: Option<crate::structs::PivotTableFormats>) -> &mut Self {
+        self.formats = value;
+        self
+    }
+
+    #[must_use]
+    pub fn properties(&self) -> &PivotTableProperties {
+        &self.properties
+    }
+
+    pub fn properties_mut(&mut self) -> &mut PivotTableProperties {
+        &mut self.properties
+    }
+
     #[inline]
     #[must_use]
     pub fn apply_number_formats(&self) -> bool {
@@ -200,7 +363,7 @@ impl PivotTableDefinition {
     pub fn get_use_auto_formatting(&self) -> bool {
         self.use_auto_formatting()
     }
-    
+
     #[inline]
     pub fn set_use_auto_formatting(&mut self, value: bool) -> &mut Self {
         self.use_auto_formatting.set_value(value);
@@ -238,7 +401,7 @@ impl PivotTableDefinition {
     pub fn get_outline(&self) -> bool {
         self.outline()
     }
-    
+
     #[inline]
     pub fn set_outline(&mut self, value: bool) -> &mut Self {
         self.outline.set_value(value);
@@ -723,7 +886,11 @@ impl PivotTableDefinition {
     }
 
     /// Create a new minimal pivot table definition with required fields
-    pub fn new_simple(name: impl Into<String>, cache_id: u32, destination: impl Into<String>) -> Self {
+    pub fn new_simple(
+        name: impl Into<String>,
+        cache_id: u32,
+        destination: impl Into<String>,
+    ) -> Self {
         let mut pivot_def = Self::default();
 
         // Set required fields
@@ -751,39 +918,201 @@ impl PivotTableDefinition {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, name, "name");
-        set_string_from_xml!(self, e, xr_uid, "xr:uid");
-        set_string_from_xml!(self, e, cache_id, "cacheId");
-        set_string_from_xml!(self, e, apply_number_formats, "applyNumberFormats");
-        set_string_from_xml!(self, e, apply_border_formats, "applyBorderFormats");
-        set_string_from_xml!(self, e, apply_font_formats, "applyFontFormats");
-        set_string_from_xml!(self, e, apply_pattern_formats, "applyPatternFormats");
-        set_string_from_xml!(self, e, apply_alignment_formats, "applyAlignmentFormats");
-        set_string_from_xml!(
-            self,
+    ) -> Result<(), crate::XlsxError> {
+        use crate::xml::{
+            boolean,
+            optional_xstring_attribute,
+            unsigned,
+            xml_error,
+        };
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(e)
+            .map_err(xml_error)?;
+        if !scope
+            .resolve(e.name().as_ref(), false)
+            .map_err(xml_error)?
+            .is(SHEET_MAIN_NS, "pivotTableDefinition")
+        {
+            return Err(xml_error("expected native pivotTableDefinition root"));
+        }
+        let header = crate::drawing::charts::OpaqueElement::read(
+            reader,
             e,
-            apply_width_height_formats,
-            "applyWidthHeightFormats"
-        );
-        set_string_from_xml!(self, e, data_caption, "dataCaption");
-        set_string_from_xml!(self, e, updated_version, "updatedVersion");
-        set_string_from_xml!(self, e, min_refreshable_version, "minRefreshableVersion");
-        set_string_from_xml!(self, e, use_auto_formatting, "useAutoFormatting");
-        set_string_from_xml!(self, e, item_print_titles, "itemPrintTitles");
-        set_string_from_xml!(self, e, created_version, "createdVersion");
-        set_string_from_xml!(self, e, indent, "indent");
-        set_string_from_xml!(self, e, outline, "outline");
-        set_string_from_xml!(self, e, outline_data, "outlineData");
-        set_string_from_xml!(self, e, row_grand_totals, "rowGrandTotals");
-        set_string_from_xml!(self, e, col_grand_totals, "colGrandTotals");
-        set_string_from_xml!(self, e, compact_data, "compactData");
-        set_string_from_xml!(self, e, multiple_field_filters, "multipleFieldFilters");
-        set_string_from_xml!(self, e, refresh_on_load, "refreshOnLoad");
-
-        xml_read_loop!(
+            true,
+            &crate::drawing::charts::NamespaceScope::default(),
+        )
+        .map_err(xml_error)?;
+        if let Some(value) = optional_xstring_attribute(&header, "name") {
+            self.name.set_value(value);
+        }
+        if let Some((_, value)) = header
+            .attributes
+            .iter()
+            .find(|(name, _)| name.is(SHEET_MS_REVISION_NS, "uid"))
+        {
+            self.xr_uid.set_value(value.clone());
+        }
+        if let Some(value) = unsigned(&header, "cacheId").map_err(xml_error)? {
+            self.cache_id.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "applyNumberFormats").map_err(xml_error)? {
+            self.apply_number_formats.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "applyBorderFormats").map_err(xml_error)? {
+            self.apply_border_formats.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "applyFontFormats").map_err(xml_error)? {
+            self.apply_font_formats.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "applyPatternFormats").map_err(xml_error)? {
+            self.apply_pattern_formats.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "applyAlignmentFormats").map_err(xml_error)? {
+            self.apply_alignment_formats.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "applyWidthHeightFormats").map_err(xml_error)? {
+            self.apply_width_height_formats.set_value(value);
+        }
+        if let Some(value) = optional_xstring_attribute(&header, "dataCaption") {
+            self.data_caption.set_value(value);
+        }
+        if let Some(value) = unsigned(&header, "updatedVersion").map_err(xml_error)? {
+            self.updated_version
+                .set_value(u8::try_from(value).map_err(|_| xml_error("invalid updatedVersion"))?);
+        }
+        if let Some(value) = unsigned(&header, "minRefreshableVersion").map_err(xml_error)? {
+            self.min_refreshable_version.set_value(
+                u8::try_from(value).map_err(|_| xml_error("invalid minRefreshableVersion"))?,
+            );
+        }
+        if let Some(value) = boolean(&header, "useAutoFormatting").map_err(xml_error)? {
+            self.use_auto_formatting.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "itemPrintTitles").map_err(xml_error)? {
+            self.item_print_titles.set_value(value);
+        }
+        if let Some(value) = unsigned(&header, "createdVersion").map_err(xml_error)? {
+            self.created_version
+                .set_value(u8::try_from(value).map_err(|_| xml_error("invalid createdVersion"))?);
+        }
+        if let Some(value) = unsigned(&header, "indent").map_err(xml_error)? {
+            self.indent.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "outline").map_err(xml_error)? {
+            self.outline.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "outlineData").map_err(xml_error)? {
+            self.outline_data.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "rowGrandTotals").map_err(xml_error)? {
+            self.row_grand_totals.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "colGrandTotals").map_err(xml_error)? {
+            self.col_grand_totals.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "compactData").map_err(xml_error)? {
+            self.compact_data.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "multipleFieldFilters").map_err(xml_error)? {
+            self.multiple_field_filters.set_value(value);
+        }
+        if let Some(value) = boolean(&header, "refreshOnLoad").map_err(xml_error)? {
+            self.refresh_on_load.set_value(value);
+        }
+        self.properties.data_on_rows = boolean(&header, "dataOnRows").map_err(xml_error)?;
+        self.properties.data_position = unsigned(&header, "dataPosition").map_err(xml_error)?;
+        self.properties.grand_total_caption =
+            optional_xstring_attribute(&header, "grandTotalCaption");
+        self.properties.error_caption = optional_xstring_attribute(&header, "errorCaption");
+        self.properties.show_error = boolean(&header, "showError").map_err(xml_error)?;
+        self.properties.missing_caption = optional_xstring_attribute(&header, "missingCaption");
+        self.properties.show_missing = boolean(&header, "showMissing").map_err(xml_error)?;
+        self.properties.page_style = optional_xstring_attribute(&header, "pageStyle");
+        self.properties.pivot_table_style = optional_xstring_attribute(&header, "pivotTableStyle");
+        self.properties.vacated_style = optional_xstring_attribute(&header, "vacatedStyle");
+        self.properties.tag = optional_xstring_attribute(&header, "tag");
+        self.properties.asterisk_totals = boolean(&header, "asteriskTotals").map_err(xml_error)?;
+        self.properties.show_items = boolean(&header, "showItems").map_err(xml_error)?;
+        self.properties.edit_data = boolean(&header, "editData").map_err(xml_error)?;
+        self.properties.disable_field_list =
+            boolean(&header, "disableFieldList").map_err(xml_error)?;
+        self.properties.show_calc_mbrs = boolean(&header, "showCalcMbrs").map_err(xml_error)?;
+        self.properties.visual_totals = boolean(&header, "visualTotals").map_err(xml_error)?;
+        self.properties.show_multiple_label =
+            boolean(&header, "showMultipleLabel").map_err(xml_error)?;
+        self.properties.show_data_drop_down =
+            boolean(&header, "showDataDropDown").map_err(xml_error)?;
+        self.properties.show_drill = boolean(&header, "showDrill").map_err(xml_error)?;
+        self.properties.print_drill = boolean(&header, "printDrill").map_err(xml_error)?;
+        self.properties.show_member_property_tips =
+            boolean(&header, "showMemberPropertyTips").map_err(xml_error)?;
+        self.properties.show_data_tips = boolean(&header, "showDataTips").map_err(xml_error)?;
+        self.properties.enable_wizard = boolean(&header, "enableWizard").map_err(xml_error)?;
+        self.properties.enable_drill = boolean(&header, "enableDrill").map_err(xml_error)?;
+        self.properties.enable_field_properties =
+            boolean(&header, "enableFieldProperties").map_err(xml_error)?;
+        self.properties.preserve_formatting =
+            boolean(&header, "preserveFormatting").map_err(xml_error)?;
+        self.properties.page_wrap = unsigned(&header, "pageWrap").map_err(xml_error)?;
+        self.properties.page_over_then_down =
+            boolean(&header, "pageOverThenDown").map_err(xml_error)?;
+        self.properties.subtotal_hidden_items =
+            boolean(&header, "subtotalHiddenItems").map_err(xml_error)?;
+        self.properties.field_print_titles =
+            boolean(&header, "fieldPrintTitles").map_err(xml_error)?;
+        self.properties.merge_item = boolean(&header, "mergeItem").map_err(xml_error)?;
+        self.properties.show_drop_zones = boolean(&header, "showDropZones").map_err(xml_error)?;
+        self.properties.show_empty_row = boolean(&header, "showEmptyRow").map_err(xml_error)?;
+        self.properties.show_empty_col = boolean(&header, "showEmptyCol").map_err(xml_error)?;
+        self.properties.show_headers = boolean(&header, "showHeaders").map_err(xml_error)?;
+        self.properties.compact = boolean(&header, "compact").map_err(xml_error)?;
+        self.properties.published = boolean(&header, "published").map_err(xml_error)?;
+        self.properties.grid_drop_zones = boolean(&header, "gridDropZones").map_err(xml_error)?;
+        self.properties.immersive = boolean(&header, "immersive").map_err(xml_error)?;
+        self.properties.chart_format = unsigned(&header, "chartFormat").map_err(xml_error)?;
+        self.properties.row_header_caption =
+            optional_xstring_attribute(&header, "rowHeaderCaption");
+        self.properties.col_header_caption =
+            optional_xstring_attribute(&header, "colHeaderCaption");
+        self.properties.field_list_sort_ascending =
+            boolean(&header, "fieldListSortAscending").map_err(xml_error)?;
+        self.properties.mdx_subqueries = boolean(&header, "mdxSubqueries").map_err(xml_error)?;
+        self.properties.custom_list_sort = boolean(&header, "customListSort").map_err(xml_error)?;
+        crate::try_xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
+                let name = scope.child(e).map_err(xml_error)?
+                    .resolve(e.name().as_ref(), false).map_err(xml_error)?;
+                if name.is(SHEET_MAIN_NS,"pivotHierarchies") {
+                    if self.hierarchies.is_some(){return Err(xml_error("duplicate native pivot hierarchies"));}
+                    self.hierarchies=Some(crate::structs::PivotTableHierarchies::read(
+                        reader,e,true,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"formats") {
+                    if self.formats.is_some(){return Err(xml_error("duplicate formats"));}
+                    self.formats=Some(crate::structs::PivotTableFormats::read(
+                        reader,e,true,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"conditionalFormats") {
+                    if self.conditional_formats.is_some(){return Err(xml_error("duplicate conditionalFormats"));}
+                    self.conditional_formats=Some(crate::structs::PivotConditionalFormats::read(
+                        reader,e,true,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"chartFormats") {
+                    if self.chart_formats.is_some(){return Err(xml_error("duplicate chartFormats"));}
+                    self.chart_formats=Some(crate::structs::PivotChartFormats::read(
+                        reader,e,true,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"extLst") {
+                    if self.extensions.is_some(){return Err(xml_error("duplicate pivot table extensions"));}
+                    self.extensions=Some(crate::structs::pivot_table_extension::read_extensions(
+                        reader,e,true,&scope,
+                    ).map_err(xml_error)?);
+                }
                 if e.name().into_inner() == b"location" {
                     let mut obj = Location::default();
                     obj.set_attributes(reader, e);
@@ -796,9 +1125,41 @@ impl PivotTableDefinition {
                 }
             },
             Event::Start(ref e) => {
+                let name = scope.child(e).map_err(xml_error)?
+                    .resolve(e.name().as_ref(), false).map_err(xml_error)?;
+                if name.is(SHEET_MAIN_NS,"pivotHierarchies") {
+                    if self.hierarchies.is_some(){return Err(xml_error("duplicate native pivot hierarchies"));}
+                    self.hierarchies=Some(crate::structs::PivotTableHierarchies::read(
+                        reader,e,false,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"formats") {
+                    if self.formats.is_some(){return Err(xml_error("duplicate formats"));}
+                    self.formats=Some(crate::structs::PivotTableFormats::read(
+                        reader,e,false,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"conditionalFormats") {
+                    if self.conditional_formats.is_some(){return Err(xml_error("duplicate conditionalFormats"));}
+                    self.conditional_formats=Some(crate::structs::PivotConditionalFormats::read(
+                        reader,e,false,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"chartFormats") {
+                    if self.chart_formats.is_some(){return Err(xml_error("duplicate chartFormats"));}
+                    self.chart_formats=Some(crate::structs::PivotChartFormats::read(
+                        reader,e,false,&scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS,"extLst") {
+                    if self.extensions.is_some(){return Err(xml_error("duplicate pivot table extensions"));}
+                    self.extensions=Some(crate::structs::pivot_table_extension::read_extensions(
+                        reader,e,false,&scope,
+                    ).map_err(xml_error)?);
+                }
                 if e.name().into_inner() == b"pivotFields" {
                     let mut obj = PivotFields::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e)?;
                     self.set_pivot_fields(obj);
                 }
                 if e.name().into_inner() == b"rowFields" {
@@ -829,15 +1190,18 @@ impl PivotTableDefinition {
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"pivotTableDefinition" {
-                    return
+                    return Ok(())
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "pivotTableDefinition")
+            Event::Eof => return Err(xml_error("missing pivotTableDefinition end element"))
         );
     }
 
     #[inline]
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // pivotTableDefinition
         let mut attributes: crate::structs::AttrCollection = vec![
             ("xmlns", SHEET_MAIN_NS).into(),
@@ -847,7 +1211,13 @@ impl PivotTableDefinition {
         ];
 
         if self.name.has_value() {
-            attributes.push(("name", self.name.value_str()).into());
+            attributes.push(
+                (
+                    "name",
+                    crate::helper::utils::escape_xstring(self.name.value_str()).into_owned(),
+                )
+                    .into(),
+            );
         }
         if self.xr_uid.has_value() {
             attributes.push(("xr:uid", self.xr_uid.value_str()).into());
@@ -875,13 +1245,7 @@ impl PivotTableDefinition {
             );
         }
         if self.apply_font_formats.has_value() {
-            attributes.push(
-                (
-                    "applyFontFormats",
-                    self.apply_font_formats.value_string(),
-                )
-                    .into(),
-            );
+            attributes.push(("applyFontFormats", self.apply_font_formats.value_string()).into());
         }
         if self.apply_pattern_formats.has_value() {
             attributes.push(
@@ -911,7 +1275,14 @@ impl PivotTableDefinition {
             );
         }
         if self.data_caption.has_value() {
-            attributes.push(("dataCaption", self.data_caption.value_str()).into());
+            attributes.push(
+                (
+                    "dataCaption",
+                    crate::helper::utils::escape_xstring(self.data_caption.value_str())
+                        .into_owned(),
+                )
+                    .into(),
+            );
         }
         let updated_version_str = self.updated_version.value_string();
         if self.updated_version.has_value() {
@@ -919,22 +1290,10 @@ impl PivotTableDefinition {
         }
         let min_refreshable_version_str = self.min_refreshable_version.value_string();
         if self.min_refreshable_version.has_value() {
-            attributes.push(
-                (
-                    "minRefreshableVersion",
-                    &min_refreshable_version_str,
-                )
-                    .into(),
-            );
+            attributes.push(("minRefreshableVersion", &min_refreshable_version_str).into());
         }
         if self.use_auto_formatting.has_value() {
-            attributes.push(
-                (
-                    "useAutoFormatting",
-                    self.use_auto_formatting.value_string(),
-                )
-                    .into(),
-            );
+            attributes.push(("useAutoFormatting", self.use_auto_formatting.value_string()).into());
         }
         if self.item_print_titles.has_value() {
             attributes.push(("itemPrintTitles", self.item_print_titles.value_string()).into());
@@ -963,40 +1322,208 @@ impl PivotTableDefinition {
             );
         }
         if self.refresh_on_load.has_value() {
-            attributes.push(
-                (
-                    "refreshOnLoad",
-                    self.refresh_on_load.value_string(),
-                )
-                    .into(),
-            );
+            attributes.push(("refreshOnLoad", self.refresh_on_load.value_string()).into());
         }
         if self.row_grand_totals.has_value() {
-            attributes.push(
-                (
-                    "rowGrandTotals",
-                    self.row_grand_totals.value_string(),
-                )
-                    .into(),
-            );
+            attributes.push(("rowGrandTotals", self.row_grand_totals.value_string()).into());
         }
         if self.col_grand_totals.has_value() {
+            attributes.push(("colGrandTotals", self.col_grand_totals.value_string()).into());
+        }
+        if self.compact_data.has_value() {
+            attributes.push(("compactData", self.compact_data.value_string()).into());
+        }
+        if let Some(value) = self.properties.data_on_rows {
+            attributes.push(("dataOnRows", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.data_position {
+            attributes.push(("dataPosition", value.to_string()).into());
+        }
+        if let Some(value) = &self.properties.grand_total_caption {
             attributes.push(
                 (
-                    "colGrandTotals",
-                    self.col_grand_totals.value_string(),
+                    "grandTotalCaption",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
                 )
                     .into(),
             );
         }
-        if self.compact_data.has_value() {
+        if let Some(value) = &self.properties.error_caption {
             attributes.push(
                 (
-                    "compactData",
-                    self.compact_data.value_string(),
+                    "errorCaption",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
                 )
                     .into(),
             );
+        }
+        if let Some(value) = self.properties.show_error {
+            attributes.push(("showError", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = &self.properties.missing_caption {
+            attributes.push(
+                (
+                    "missingCaption",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = self.properties.show_missing {
+            attributes.push(("showMissing", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = &self.properties.page_style {
+            attributes.push(
+                (
+                    "pageStyle",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = &self.properties.pivot_table_style {
+            attributes.push(
+                (
+                    "pivotTableStyle",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = &self.properties.vacated_style {
+            attributes.push(
+                (
+                    "vacatedStyle",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = &self.properties.tag {
+            attributes.push(
+                (
+                    "tag",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = self.properties.asterisk_totals {
+            attributes.push(("asteriskTotals", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_items {
+            attributes.push(("showItems", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.edit_data {
+            attributes.push(("editData", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.disable_field_list {
+            attributes.push(("disableFieldList", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_calc_mbrs {
+            attributes.push(("showCalcMbrs", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.visual_totals {
+            attributes.push(("visualTotals", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_multiple_label {
+            attributes.push(("showMultipleLabel", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_data_drop_down {
+            attributes.push(("showDataDropDown", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_drill {
+            attributes.push(("showDrill", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.print_drill {
+            attributes.push(("printDrill", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_member_property_tips {
+            attributes.push(("showMemberPropertyTips", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_data_tips {
+            attributes.push(("showDataTips", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.enable_wizard {
+            attributes.push(("enableWizard", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.enable_drill {
+            attributes.push(("enableDrill", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.enable_field_properties {
+            attributes.push(("enableFieldProperties", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.preserve_formatting {
+            attributes.push(("preserveFormatting", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.page_wrap {
+            attributes.push(("pageWrap", value.to_string()).into());
+        }
+        if let Some(value) = self.properties.page_over_then_down {
+            attributes.push(("pageOverThenDown", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.subtotal_hidden_items {
+            attributes.push(("subtotalHiddenItems", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.field_print_titles {
+            attributes.push(("fieldPrintTitles", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.merge_item {
+            attributes.push(("mergeItem", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_drop_zones {
+            attributes.push(("showDropZones", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_empty_row {
+            attributes.push(("showEmptyRow", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_empty_col {
+            attributes.push(("showEmptyCol", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.show_headers {
+            attributes.push(("showHeaders", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.compact {
+            attributes.push(("compact", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.published {
+            attributes.push(("published", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.grid_drop_zones {
+            attributes.push(("gridDropZones", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.immersive {
+            attributes.push(("immersive", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.chart_format {
+            attributes.push(("chartFormat", value.to_string()).into());
+        }
+        if let Some(value) = &self.properties.row_header_caption {
+            attributes.push(
+                (
+                    "rowHeaderCaption",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = &self.properties.col_header_caption {
+            attributes.push(
+                (
+                    "colHeaderCaption",
+                    crate::helper::utils::escape_xstring(value).into_owned(),
+                )
+                    .into(),
+            );
+        }
+        if let Some(value) = self.properties.field_list_sort_ascending {
+            attributes.push(("fieldListSortAscending", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.mdx_subqueries {
+            attributes.push(("mdxSubqueries", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.custom_list_sort {
+            attributes.push(("customListSort", if value { "1" } else { "0" }).into());
         }
         write_start_tag(writer, "pivotTableDefinition", attributes, false);
 
@@ -1004,7 +1531,7 @@ impl PivotTableDefinition {
         self.location.write_to(writer);
 
         // pivotFields
-        self.pivot_fields.write_to(writer);
+        self.pivot_fields.write_to(writer)?;
 
         // rowFields
         self.row_fields.write_to(writer);
@@ -1021,10 +1548,35 @@ impl PivotTableDefinition {
         // dataFields
         self.data_fields.write_to(writer);
 
+        if let Some(hierarchies) = &self.hierarchies {
+            hierarchies
+                .write_to(writer)
+                .map_err(crate::xml::xml_error)?;
+        }
         // pivotTableStyleInfo
         self.pivot_table_style.write_to(writer);
 
+        if let Some(formats) = &self.formats {
+            formats
+                .write_to(writer, "formats")
+                .map_err(crate::xml::xml_error)?;
+        }
+        if let Some(formats) = &self.conditional_formats {
+            formats
+                .write_to(writer, "conditionalFormats")
+                .map_err(crate::xml::xml_error)?;
+        }
+        if let Some(formats) = &self.chart_formats {
+            formats
+                .write_to(writer, "chartFormats")
+                .map_err(crate::xml::xml_error)?;
+        }
+        if let Some(extensions) = &self.extensions {
+            crate::structs::pivot_table_extension::write_extensions(writer, extensions)
+                .map_err(crate::xml::xml_error)?;
+        }
         write_end_tag(writer, "pivotTableDefinition");
+        Ok(())
     }
 }
 
@@ -1066,7 +1618,7 @@ mod tests {
 
         // Write to XML
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        def.write_to(&mut writer);
+        def.write_to(&mut writer).unwrap();
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
 
         // Verify XML contains the attributes

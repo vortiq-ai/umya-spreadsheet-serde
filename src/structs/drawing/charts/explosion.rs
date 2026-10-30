@@ -14,10 +14,7 @@ use super::{
         parse_xml_unsigned,
     },
 };
-use crate::{
-    drawing::get_unescaped_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -83,10 +80,11 @@ impl Explosion {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         self.val = UInt32Value::default();
-        self.parts = get_unescaped_attribute(e, b"val")
+        self.parts = crate::reader::driver::read_attribute(e, b"val")?
             .map(|attribute| Box::new(ScalarLexeme { attribute }));
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

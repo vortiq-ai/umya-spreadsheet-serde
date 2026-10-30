@@ -28,6 +28,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     traits::AdjustmentCoordinateWithSheet,
@@ -35,7 +36,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -91,9 +91,7 @@ mod pivot_serialization_tests {
         chart.set_pivot_formats(Vec::new());
         let empty = bincode::serialize(&chart).unwrap();
         assert_eq!(&empty[..prefix.len()], prefix.as_slice());
-        // Parent option (1), pivot option (1), empty pivot Vec (8), invalid
-        // boolean (1), duplicate-container Vec (8) = 19 bytes.
-        assert_eq!(empty.len(), prefix.len() + 19);
+        assert_eq!(empty.len(), prefix.len() + 28);
         assert_eq!(empty[prefix.len()], 1);
         let restored: Chart = bincode::deserialize(&empty).unwrap();
         assert_eq!(restored.pivot_formats().unwrap().len(), 0);
@@ -127,25 +125,56 @@ impl Chart {
     pub const LANG_EN_GB: &'static str = "en_GB";
     pub const LANG_JA_JP: &'static str = "ja-JP";
 
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts
+            .as_deref()
+            .and_then(DrawingChartParts::extensions)
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(DrawingChartParts::extensions_mut)
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        if self.parts.is_some() || value.is_some() {
+            self.parts
+                .get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                .set_extensions(value);
+        }
+        self
+    }
+
+    /// Number of additional source extLst wrappers merged into the first list.
+    #[must_use]
+    pub fn normalized_extension_lists(&self) -> usize {
+        self.parts
+            .as_deref()
+            .map_or(0, DrawingChartParts::normalized_extension_lists)
+    }
+
     pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
-        match (&mut self.parts, &previous.parts) {
+    ) -> Result<usize, crate::XlsxError> {
+        Ok(match (&mut self.parts, &previous.parts) {
             (None, Some(previous)) => {
                 self.parts = Some(previous.clone());
                 previous.record_pivot_recreation(report);
                 1
             }
-            (Some(current), Some(previous)) => current.restore_export_parts(previous, report),
+            (Some(current), Some(previous)) => current.restore_export_parts(previous, report)?,
             (Some(current), None) => {
+                current.discard_root_extensions(report);
                 current.discard_untrusted_pivots(report);
                 self.parts = None;
                 0
             }
             _ => 0,
-        }
+        })
     }
 
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::ChartParts<'_> {
@@ -562,98 +591,102 @@ impl Chart {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
         // Reset legend presence so "no legend in source" round-trips through
         // the writer. Default-constructed Charts have `legend_present == true`
         // for backwards compatibility; on a real read we start over and let
         // the loop below set it only if `<c:legend>` is actually present.
         self.legend_present = false;
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.set_title(obj);
                 }
                 b"view3D" => {
                     let mut obj = View3D::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e)?;
                     self.set_view_3d(obj);
                 }
-                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
-                    if let Some(parts) = &mut self.parts {
-                        let duplicate = DrawingChartParts::read(reader, e, false, session);
-                        parts.push_duplicate(duplicate);
-                    } else {
-                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, false,
-                            session)));
-                    }
+                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_pivot_container(reader, e, false, session)?;
+                }
+                b"extLst" => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_extensions(reader, e, false, session)?;
                 }
                 b"floor" => {
                     let mut obj = Floor::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_floor(obj);
                 }
                 b"sideWall" => {
                     let mut obj = SideWall::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_side_wall(obj);
                 }
                 b"backWall" => {
                     let mut obj = BackWall::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_back_wall(obj);
                 }
                 b"plotArea" => {
-                    self.plot_area.set_attributes(reader, e, session);
+                    self.plot_area.set_attributes(reader, e, session)?;
                 }
                 b"legend" => {
-                    self.legend.set_attributes(reader, e, session);
+                    self.legend.set_attributes(reader, e, session)?;
                     self.legend_present = true;
                 }
-                _ => skip_element(reader, e),
+                _ => skip_element(reader, e)?,
             },
-            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
-                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
-                    if let Some(parts) = &mut self.parts {
-                        parts.push_duplicate(DrawingChartParts::read(reader, e, true, session));
-                    } else {
-                        self.parts = Some(Box::new(DrawingChartParts::read(reader, e, true,
-                            session)));
-                    }
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_pivot_container(reader, e, true, session)?;
+                }
+                b"extLst" => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_extensions(reader, e, true, session)?;
                 }
                 b"autoTitleDeleted" => {
-                    self.auto_title_deleted.set_attributes(reader, e);
+                    self.auto_title_deleted.set_attributes(reader, e)?;
                 }
                 b"plotVisOnly" => {
-                    self.plot_visible_only.set_attributes(reader, e);
+                    self.plot_visible_only.set_attributes(reader, e)?;
                 }
                 b"dispBlanksAs" => {
-                    self.display_blanks_as.set_attributes(reader, e);
+                    self.display_blanks_as.set_attributes(reader, e)?;
                 }
                 b"showDLblsOverMax" => {
-                    self.show_data_labels_over_maximum.set_attributes(reader, e);
+                    self.show_data_labels_over_maximum.set_attributes(reader, e)?;
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"chart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:chart"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:chart"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:chart
         write_start_tag(writer, "c:chart", vec![], false);
 
         // c:title
         if let Some(v) = &self.title {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:autoTitleDeleted
@@ -661,7 +694,7 @@ impl Chart {
 
         // c:pivotFmts (schema position immediately after autoTitleDeleted).
         if let Some(parts) = &self.parts {
-            parts.write_to(writer, wb);
+            parts.write_to(writer, wb)?;
         }
 
         // c:view3D
@@ -671,27 +704,27 @@ impl Chart {
 
         // c:floor
         if let Some(v) = &self.floor {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:sideWall
         if let Some(v) = &self.side_wall {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:backWall
         if let Some(v) = &self.back_wall {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:plotArea
-        self.plot_area.write_to(writer, wb);
+        self.plot_area.write_to(writer, wb)?;
 
         // c:legend - gated on `legend_present` so a chart whose source xlsx
         // had no `<c:legend>` element (or whose author explicitly hid the
         // legend) round-trips faithfully without re-emitting a default legend.
         if self.legend_present {
-            self.legend.write_to(writer);
+            self.legend.write_to(writer)?;
         }
 
         // c:plotVisOnly
@@ -703,7 +736,13 @@ impl Chart {
         // c:showDLblsOverMax
         self.show_data_labels_over_maximum.write_to(writer);
 
+        if let Some(extensions) = self.extensions() {
+            extensions.write_for_owner(writer, Some(wb), "chart", None)?;
+        }
+
         write_end_tag(writer, "c:chart");
+
+        Ok(())
     }
 }
 impl AdjustmentCoordinateWithSheet for Chart {

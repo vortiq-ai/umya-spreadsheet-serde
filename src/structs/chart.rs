@@ -371,10 +371,88 @@ impl Chart {
             .chart_space()
     }
 
+    fn clear_package_bindings(&mut self) {
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |_, frame| {
+                frame.set_source_parts(None);
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |_, frame| {
+                frame.clear_source_part();
+            });
+    }
+
+    fn restore_package_bindings(&mut self, previous: &Self) {
+        use std::collections::HashMap;
+
+        use crate::drawing::spreadsheet::DrawingFrameKey;
+
+        self.clear_package_bindings();
+        let mut current_counts: HashMap<DrawingFrameKey, usize> = HashMap::new();
+        let mut previous_counts: HashMap<DrawingFrameKey, usize> = HashMap::new();
+        self.two_cell_anchor.visit_standard_frames(&mut |key, _| {
+            *current_counts.entry(key).or_default() += 1;
+        });
+        self.two_cell_anchor.visit_extended_frames(&mut |key, _| {
+            *current_counts.entry(key).or_default() += 1;
+        });
+        previous
+            .two_cell_anchor
+            .visit_standard_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_default() += 1;
+            });
+        previous
+            .two_cell_anchor
+            .visit_extended_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_default() += 1;
+            });
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |key, frame| {
+                if current_counts.get(&key) != Some(&1) || previous_counts.get(&key) != Some(&1) {
+                    return;
+                }
+                previous
+                    .two_cell_anchor
+                    .visit_standard_frames(&mut |old_key, old| {
+                        let identity = frame
+                            .non_visual_graphic_frame_properties()
+                            .non_visual_drawing_properties();
+                        let old_identity = old
+                            .non_visual_graphic_frame_properties()
+                            .non_visual_drawing_properties();
+                        if key == old_key
+                            && identity.has_id()
+                            && identity.same_restore_identity(old_identity)
+                        {
+                            frame.restore_source_parts(old);
+                        }
+                    });
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |key, frame| {
+                if current_counts.get(&key) != Some(&1) || previous_counts.get(&key) != Some(&1) {
+                    return;
+                }
+                previous
+                    .two_cell_anchor
+                    .visit_extended_frames(&mut |old_key, old| {
+                        let identity = frame.frame_properties().non_visual_drawing_properties();
+                        let old_identity = old.frame_properties().non_visual_drawing_properties();
+                        if key == old_key
+                            && identity.has_id()
+                            && identity.same_restore_identity(old_identity)
+                        {
+                            frame.restore_source_part(old);
+                        }
+                    });
+            });
+    }
+
     /// Remove source caches and export-only metadata from a projection.
     /// Persistence, trusted copies and history keep the complete chart.
     pub fn strip_export_parts(&mut self) {
         self.strip_source_caches();
+        self.clear_package_bindings();
         if let Some(frame) = self.two_cell_anchor.graphic_frame_mut() {
             crate::drawing::charts::chart_reference_roles::strip_export_parts(
                 frame.graphic_mut().graphic_data_mut().chart_space_mut(),
@@ -390,22 +468,25 @@ impl Chart {
     pub fn restore_export_parts(
         &mut self,
         previous: &Chart,
-    ) -> crate::drawing::charts::RestoreReport {
+    ) -> Result<crate::drawing::charts::RestoreReport, crate::XlsxError> {
         use crate::drawing::charts::RestoreReport;
+        // Package binding trust is independent of direct ChartSpace metadata:
+        // a group-only chart can contain native standard and ChartEx frames.
+        self.restore_package_bindings(previous);
         let Some(previous) = previous.two_cell_anchor.graphic_frame() else {
             self.clear_source_caches();
-            return RestoreReport {
+            return Ok(RestoreReport {
                 incompatible_owners: 1,
                 diagnostics: vec!["previous chart has no physical graphic frame".into()],
                 ..RestoreReport::default()
-            };
+            });
         };
         let Some(current) = self.two_cell_anchor.graphic_frame_mut() else {
-            return RestoreReport {
+            return Ok(RestoreReport {
                 incompatible_owners: 1,
                 diagnostics: vec!["current chart has no physical graphic frame".into()],
                 ..RestoreReport::default()
-            };
+            });
         };
         let identity = current
             .non_visual_graphic_frame_properties()
@@ -415,16 +496,17 @@ impl Chart {
             .non_visual_drawing_properties();
         if !identity.same_restore_identity(old_identity) {
             self.clear_source_caches();
-            return RestoreReport {
+            return Ok(RestoreReport {
                 incompatible_owners: 1,
                 diagnostics: vec!["chart graphic-frame identity does not match".into()],
                 ..RestoreReport::default()
-            };
+            });
         }
-        crate::drawing::charts::chart_metadata_restoration::restore_space(
+        let report = crate::drawing::charts::chart_metadata_restoration::restore_space(
             current.graphic_mut().graphic_data_mut().chart_space_mut(),
             previous.graphic().graphic_data().chart_space(),
-        )
+        )?;
+        Ok(report)
     }
 
     /// Removes the source caches of every string reference of the chart: the

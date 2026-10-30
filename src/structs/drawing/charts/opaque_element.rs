@@ -198,6 +198,22 @@ impl OpaqueElement {
         result
     }
 
+    pub(crate) fn read_detached<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        inherited: &NamespaceScope,
+    ) -> Result<Self, String> {
+        let mut value = Self::read(reader, element, empty, inherited)?;
+        value.namespaces = inherited
+            .child(element)?
+            .effective_bindings()
+            .into_iter()
+            .filter(|(prefix, _)| prefix.as_deref() != Some("xml"))
+            .collect();
+        Ok(value)
+    }
+
     pub(crate) fn read_promoted<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         e: &BytesStart,
@@ -373,7 +389,11 @@ impl OpaqueElement {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         inherited: &NamespaceScope,
     ) -> Result<(), String> {
-        let rendered = self.materialized_in(None, inherited)?;
+        let mut rendered = self.materialized_in(None, inherited)?;
+        let inherited_bindings = inherited.effective_bindings();
+        rendered
+            .namespaces
+            .retain(|binding| !inherited_bindings.contains(binding));
         rendered.validate(inherited)?;
         rendered.emit(writer)
     }
@@ -444,6 +464,44 @@ impl OpaqueElement {
         Ok(self)
     }
 
+    pub(crate) fn compact_namespaces(&mut self, inherited: &NamespaceScope) -> Result<(), String> {
+        fn compact(
+            start: &mut OpaqueStart,
+            parent: &NamespaceScope,
+        ) -> Result<NamespaceScope, String> {
+            let bindings = parent.effective_bindings();
+            start
+                .namespaces
+                .retain(|binding| !bindings.contains(binding));
+            start_scope(start, parent)
+        }
+
+        self.validate(inherited)?;
+        let mut root = self.root_start();
+        let mut scopes = vec![compact(&mut root, inherited)?];
+        self.namespaces = root.namespaces;
+        for token in &mut self.children {
+            match token {
+                OpaqueToken::Start(start) => {
+                    let parent = scopes.last().ok_or("missing opaque parent scope")?;
+                    let scope = compact(start, parent)?;
+                    scopes.push(scope);
+                }
+                OpaqueToken::End => {
+                    if scopes.len() == 1 {
+                        return Err("unmatched opaque end".into());
+                    }
+                    scopes.pop();
+                }
+                _ => (),
+            }
+        }
+        if scopes.len() != 1 {
+            return Err("unterminated opaque subtree".into());
+        }
+        self.validate(inherited)
+    }
+
     pub(crate) fn fix_namespaces(&mut self, inherited: &NamespaceScope) -> Result<(), String> {
         let mut root = self.root_start();
         let scope = Self::fix_start(&mut root, inherited)?;
@@ -485,12 +543,19 @@ impl OpaqueElement {
             }
         }
         start.namespaces = unique;
-        let mut scope = start_scope(start, inherited)?;
+        let mut bindings = BytesStart::new("bindings");
+        for (prefix, uri) in &start.namespaces {
+            let name = prefix
+                .as_ref()
+                .map_or_else(|| "xmlns".into(), |prefix| format!("xmlns:{prefix}"));
+            bindings.push_attribute((name.as_str(), uri.as_str()));
+        }
+        let mut scope = inherited.child(&bindings)?;
         Self::fix_name(&mut start.name, false, &mut scope, &mut start.namespaces)?;
         for (name, _) in &mut start.attributes {
             Self::fix_name(name, true, &mut scope, &mut start.namespaces)?;
         }
-        Ok(scope)
+        start_scope(start, inherited)
     }
 
     fn fix_name(

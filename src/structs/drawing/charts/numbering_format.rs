@@ -11,10 +11,7 @@ use super::super::super::{
     BooleanValue,
     StringValue,
 };
-use crate::{
-    drawing::get_unescaped_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -208,22 +205,26 @@ impl NumberingFormat {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        if let Some(value) = get_unescaped_attribute(e, b"formatCode") {
+    ) -> Result<(), crate::XlsxError> {
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"formatCode")? {
             self.format_code.set_value(value);
         }
         self.source_linked = BooleanValue::default();
-        let source_linked = get_unescaped_attribute(e, b"sourceLinked").map(|value| {
-            let mut v = super::XmlBoolean::default();
-            v.set_lexical_attribute(Some(value));
-            v
-        });
+        let source_linked =
+            crate::reader::driver::read_attribute(e, b"sourceLinked")?.map(|value| {
+                let mut v = super::XmlBoolean::default();
+                v.set_lexical_attribute(Some(value));
+                v
+            });
 
         self.parts = None;
         match source_linked {
             Some(value) if matches!(value.attribute(), Some("0" | "1")) => {
-                self.source_linked
-                    .set_value(value.value().expect("canonical boolean"));
+                self.source_linked.set_value(
+                    value
+                        .value()
+                        .ok_or_else(|| crate::xml::xml_error("invalid sourceLinked boolean"))?,
+                );
             }
             Some(value) => {
                 self.parts = Some(Box::new(NumberingFormatParts {
@@ -232,6 +233,7 @@ impl NumberingFormat {
             }
             None => (),
         }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

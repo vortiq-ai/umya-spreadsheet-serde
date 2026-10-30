@@ -23,12 +23,14 @@ use super::{
     WidthMode,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -336,77 +338,80 @@ impl ManualLayout {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let empty=matches!(event,Event::Empty(_));
                 let mut consumed=false;
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().0)} else {b""} {
-                    b"extLst" => { self.set_extensions(Some(ExtensionList::read(reader,e,empty,session))); consumed=true; },
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().0)} else {b""} {
+                    b"extLst" => { self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)?)); consumed=true; },
                     b"h" => {
                         let mut obj = Height::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_height(obj);
                     }
                     b"hMode" => {
                         let mut obj = HeightMode::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_height_mode(obj);
                     }
                     b"layoutTarget" => {
                         let mut obj = LayoutTarget::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_layout_target(obj);
                     }
                     b"x" => {
                         let mut obj = Left::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_left(obj);
                     }
                     b"xMode" => {
                         let mut obj = LeftMode::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_left_mode(obj);
                     }
                     b"y" => {
                         let mut obj = Top::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_top(obj);
                     }
                     b"yMode" => {
                         let mut obj = TopMode::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_top_mode(obj);
                     }
                     b"w" => {
                         let mut obj = Width::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_width(obj);
                     }
                     b"wMode" => {
                         let mut obj = WidthMode::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_width_mode(obj);
                     }
                     _ => (),
                 }
                 if !empty && !consumed {
-                    crate::reader::driver::skip_element(reader, e);
+                    crate::reader::driver::skip_element(reader, e)?;
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:manualLayout"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:manualLayout"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // c:manualLayout
         write_start_tag(writer, "c:manualLayout", vec![], false);
 
@@ -456,8 +461,10 @@ impl ManualLayout {
         }
 
         if let Some(v) = self.extensions() {
-            v.write_for_owner(writer, None, "manualLayout", None);
+            v.write_for_owner(writer, None, "manualLayout", None)?;
         }
         write_end_tag(writer, "c:manualLayout");
+
+        Ok(())
     }
 }

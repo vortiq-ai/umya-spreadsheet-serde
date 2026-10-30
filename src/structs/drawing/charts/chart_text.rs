@@ -17,12 +17,14 @@ use crate::{
         NumericValue,
         StringReference,
     },
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -121,53 +123,59 @@ impl ChartText {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().into_inner())} else {b""} {
                     b"rich" => {
                         let mut v = RichText::default();
                         if !empty {
-                            v.read_with_session(reader, e, Some(session));
+                            v.read_with_session(reader, e, Some(session))?;
                         }
                         self.rich_text = Some(v);
                     }
                     b"strRef" => {
                         let mut v = StringReference::default();
                         if !empty {
-                            v.set_attributes(reader, e, session);
+                            v.set_attributes(reader, e, session)?;
                         }
                         self.string_reference = Some(v);
                     }
                     b"v" => {
                         let mut v = NumericValue::default();
                         if !empty {
-                            v.set_attributes(reader, e);
+                            v.set_attributes(reader, e)?;
                         }
                         self.numeric_value = Some(v);
                     }
                     _ => {
                         if !empty {
-                            crate::reader::driver::skip_element(reader, e);
+                            crate::reader::driver::skip_element(reader, e)?;
                         }
                     }
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Could not find chart text end element"),
+            Event::Eof => return Err(crate::xml::xml_error("Could not find chart text end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        self.write_to_as(writer, wb, "c:tx");
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, wb, "c:tx")?;
+
+        Ok(())
     }
 
     pub(crate) fn write_to_as(
@@ -175,17 +183,17 @@ impl ChartText {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &Workbook,
         name: &str,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(writer, name, vec![], false);
 
         // c:rich
         if let Some(v) = &self.rich_text {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:strRef
         if let Some(v) = &self.string_reference {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:v
@@ -194,5 +202,7 @@ impl ChartText {
         }
 
         write_end_tag(writer, name);
+
+        Ok(())
     }
 }

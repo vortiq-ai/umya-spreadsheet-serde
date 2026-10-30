@@ -55,39 +55,57 @@ impl ChartLines {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
-        let complete = children(reader, e, empty, |reader, e, empty| {
-            if !session.accepts_child_namespace(e, super::extension_registry::NS_C)
-                || local_name(e.name().into_inner()) != b"spPr"
-            {
-                return false;
-            }
-            result.duplicate_shape |= result.shape_properties.is_some();
-            let mut shape = ShapeProperties::default();
-            if !empty {
-                shape.set_attributes_with_session(reader, e, session);
-            }
-            result.shape_properties = Some(shape);
-            true
-        });
+        let complete = children(
+            reader,
+            e,
+            empty,
+            |reader, e, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if !session.accepts_child_namespace(e, super::extension_registry::NS_C)?
+                        || local_name(e.name().into_inner()) != b"spPr"
+                    {
+                        return Ok(false);
+                    }
+                    result.duplicate_shape |= result.shape_properties.is_some();
+                    let mut shape = ShapeProperties::default();
+                    if !empty {
+                        shape.set_attributes_with_session(reader, e, session)?;
+                    }
+                    result.shape_properties = Some(shape);
+                    true
+                })
+            },
+        )?;
         result.duplicate_shape |= !complete;
-        result
+        Ok(result)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to_as(writer, "c:leaderLines");
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, "c:leaderLines")?;
+
+        Ok(())
     }
 
-    pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, name, vec![], false);
         if let Some(shape) = &self.shape_properties {
-            shape.write_to(writer);
+            shape.write_to(writer)?;
         }
         write_end_tag(writer, name);
+
+        Ok(())
     }
 }

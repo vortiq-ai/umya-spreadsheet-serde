@@ -38,7 +38,9 @@ fn parse_part(
         match reader.read_event_into(&mut buffer).unwrap() {
             Event::Start(root) if local_name(root.name().into_inner()) == b"strRef" => {
                 let mut reference = StringReference::default();
-                reference.set_attributes(&mut reader, &root, session);
+                reference
+                    .set_attributes(&mut reader, &root, session)
+                    .unwrap();
                 parsed.push(reference);
             }
             Event::Eof => break,
@@ -74,7 +76,7 @@ pub(super) fn capture(
     provider: &mut dyn ChartPartProvider,
 ) -> crate::drawing::charts::WorkCounts {
     note_work(|counts| *counts = crate::drawing::charts::WorkCounts::default());
-    capture_chart_source_caches(book, &[0], session, provider);
+    capture_chart_source_caches(book, &[0], session, provider).unwrap();
     crate::drawing::charts::work_counts()
 }
 
@@ -514,41 +516,43 @@ fn replay_separates_shape_retention_and_sheet_classification() {
             points:          MAX_SOURCE_CACHE_POINTS,
             text:            MAX_SOURCE_CACHE_TEXT_BYTES,
         };
-        provider.with_memoized_part("same.xml", &session, &mut |part, memo| {
-            let result = replay_with_memo(
-                part.unwrap(),
-                memo,
-                &mut source,
-                &budget,
-                (request.sheet, classes[0], resolver.classification()),
-                |point, scratch| resolver.display(point, scratch, &mut formats),
-            )
+        provider
+            .with_memoized_part("same.xml", &session, &mut |part, memo| {
+                let result = replay_with_memo(
+                    part,
+                    memo,
+                    &mut source,
+                    &budget,
+                    (request.sheet, classes[0], resolver.classification()),
+                    |point, scratch| resolver.display(point, scratch, &mut formats),
+                )?;
+                if index == 0 {
+                    assert!(matches!(result, DeferredReduction::Reduced));
+                } else {
+                    let DeferredReduction::Candidate {
+                        source: Some(kept),
+                        points,
+                        text_bytes,
+                        ..
+                    } = result
+                    else {
+                        panic!("zero-charge kept source");
+                    };
+                    assert_eq!((points, text_bytes), (0, 0));
+                    assert_eq!(kept.formula(), FORMULA);
+                    assert_eq!(facts_of(&kept), facts(Some(1), &[], &[]));
+                }
+                if index < 3 {
+                    // The key owns the original String allocation, not a copy.
+                    assert!(source.formula.is_empty());
+                    assert_eq!(
+                        memo.entries.last().unwrap().formula.as_ptr(),
+                        formula_pointer
+                    );
+                }
+                Ok(())
+            })
             .unwrap();
-            if index == 0 {
-                assert!(matches!(result, DeferredReduction::Reduced));
-            } else {
-                let DeferredReduction::Candidate {
-                    source: Some(kept),
-                    points,
-                    text_bytes,
-                    ..
-                } = result
-                else {
-                    panic!("zero-charge kept source");
-                };
-                assert_eq!((points, text_bytes), (0, 0));
-                assert_eq!(kept.formula(), FORMULA);
-                assert_eq!(facts_of(&kept), facts(Some(1), &[], &[]));
-            }
-            if index < 3 {
-                // The key owns the original String allocation, not a copy.
-                assert!(source.formula.is_empty());
-                assert_eq!(
-                    memo.entries.last().unwrap().formula.as_ptr(),
-                    formula_pointer
-                );
-            }
-        });
     }
     assert_eq!(crate::drawing::charts::work_counts().decode_scans, 3);
     assert_eq!(provider.memo.observation.hits, 1);

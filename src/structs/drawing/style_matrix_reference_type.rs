@@ -11,15 +11,9 @@ use quick_xml::{
 };
 
 use super::SchemeColor;
-use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -66,49 +60,80 @@ impl StyleMatrixReferenceType {
         self.scheme_color = Some(Box::new(value));
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-        empty_flag: bool,
-    ) {
-        self.set_index(get_attribute(e, b"idx").unwrap());
-
-        if empty_flag {
-            return;
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        let index = crate::reader::driver::require_attribute(owner, b"idx")?;
+        if crate::reader::driver::local_name(owner.name().as_ref()) == b"fontRef" {
+            if !matches!(index.as_str(), "major" | "minor" | "none") {
+                return Err(crate::xml::xml_error(
+                    "invalid drawing font reference index",
+                ));
+            }
+        } else {
+            crate::xml::parse_u32(&index).map_err(crate::xml::xml_error)?;
         }
-
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                if e.name().into_inner() == b"a:schemeClr" {
-                    let mut scheme_color = SchemeColor::default();
-                    scheme_color.set_attributes(reader, e, is_empty);
-                    self.set_scheme_color(scheme_color);
+        self.set_index(index);
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if !name.is(crate::helper::const_str::DRAWINGML_MAIN_NS, "schemeClr")
+                        || self.scheme_color.is_some()
+                    {
+                        return Err(crate::xml::xml_error(
+                            "unsupported or duplicate drawing style color",
+                        ));
+                    }
+                    let mut value = SchemeColor::default();
+                    value.read_with_session(reader, child, empty, session)?;
+                    self.set_scheme_color(value);
                 }
-            },
-            Event::End(ref e) => {
-                match e.name().into_inner() {
-                    b"a:lnRef"     |
-                    b"a:fillRef"   |
-                    b"a:effectRef" |
-                    b"a:fontRef" => return,
-                    _ => (),
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated drawing style reference",
+                    ));
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:lnRef")
-        );
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, tag_name: &str) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        tag_name: &str,
+    ) -> Result<(), crate::XlsxError> {
         if let Some(color) = &self.scheme_color {
             write_start_tag(writer, tag_name, vec![("idx", &self.index).into()], false);
             // a:schemeClr
-            color.write_to(writer);
+            color.write_to(writer)?;
             write_end_tag(writer, tag_name);
         } else {
             write_start_tag(writer, tag_name, vec![("idx", &self.index).into()], true);
         }
+        Ok(())
     }
 }

@@ -11,14 +11,14 @@ use quick_xml::{
 };
 
 use super::{
+    HslColor,
     PresetColor,
     RgbColorModelHex,
+    RgbColorModelPercentage,
     SchemeColor,
 };
 use crate::{
     StringValue,
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -28,19 +28,59 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct OuterShadow {
-    blur_radius:         StringValue,
-    alignment:           StringValue,
-    horizontal_ratio:    StringValue,
-    vertical_ratio:      StringValue,
-    direction:           StringValue,
-    distance:            StringValue,
-    rotate_with_shape:   StringValue,
-    preset_color:        Option<Box<PresetColor>>,
-    scheme_color:        Option<Box<SchemeColor>>,
-    rgb_color_model_hex: Option<Box<RgbColorModelHex>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    hsl_color:                  Option<Box<HslColor>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    rgb_color_model_percentage: Option<Box<RgbColorModelPercentage>>,
+    blur_radius:                StringValue,
+    alignment:                  StringValue,
+    horizontal_ratio:           StringValue,
+    vertical_ratio:             StringValue,
+    direction:                  StringValue,
+    distance:                   StringValue,
+    rotate_with_shape:          StringValue,
+    preset_color:               Option<Box<PresetColor>>,
+    scheme_color:               Option<Box<SchemeColor>>,
+    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
 }
 
 impl OuterShadow {
+    #[must_use]
+    pub fn hsl_color(&self) -> Option<&HslColor> {
+        self.hsl_color.as_deref()
+    }
+
+    pub fn hsl_color_mut(&mut self) -> Option<&mut HslColor> {
+        self.hsl_color.as_deref_mut()
+    }
+
+    pub fn set_hsl_color(&mut self, value: HslColor) -> &mut Self {
+        self.scheme_color = None;
+        self.rgb_color_model_hex = None;
+        self.preset_color = None;
+        self.rgb_color_model_percentage = None;
+        self.hsl_color = Some(Box::new(value));
+        self
+    }
+
+    #[must_use]
+    pub fn rgb_color_model_percentage(&self) -> Option<&RgbColorModelPercentage> {
+        self.rgb_color_model_percentage.as_deref()
+    }
+
+    pub fn rgb_color_model_percentage_mut(&mut self) -> Option<&mut RgbColorModelPercentage> {
+        self.rgb_color_model_percentage.as_deref_mut()
+    }
+
+    pub fn set_rgb_color_model_percentage(&mut self, value: RgbColorModelPercentage) -> &mut Self {
+        self.scheme_color = None;
+        self.rgb_color_model_hex = None;
+        self.preset_color = None;
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = Some(Box::new(value));
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn blur_radius(&self) -> Option<&str> {
@@ -198,6 +238,8 @@ impl OuterShadow {
 
     #[inline]
     pub fn set_preset_color(&mut self, value: PresetColor) -> &mut Self {
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
         self.preset_color = Some(Box::new(value));
         self
     }
@@ -228,6 +270,8 @@ impl OuterShadow {
 
     #[inline]
     pub fn set_scheme_color(&mut self, value: SchemeColor) -> &mut Self {
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
         self.scheme_color = Some(Box::new(value));
         self
     }
@@ -258,6 +302,8 @@ impl OuterShadow {
 
     #[inline]
     pub fn set_rgb_color_model_hex(&mut self, value: RgbColorModelHex) -> &mut Self {
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
         self.rgb_color_model_hex = Some(Box::new(value));
         self
     }
@@ -267,8 +313,8 @@ impl OuterShadow {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) {
-        self.read_attributes_impl(reader, e, empty, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, None)
     }
 
     pub(crate) fn read_attributes_with_session<R: std::io::BufRead>(
@@ -277,98 +323,131 @@ impl OuterShadow {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_attributes_impl(reader, e, empty, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, Some(session))
     }
 
-    fn read_attributes_impl<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart<'_>,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        if let Some(v) = get_unescaped_attribute(e, b"blurRad") {
-            self.set_blur_radius(v);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"blurRad")? {
+            let parsed = crate::xml::trim_xml_whitespace(&value)
+                .parse::<i64>()
+                .map_err(crate::xml::xml_error)?;
+            if parsed < 0 {
+                return Err(crate::xml::xml_error("negative DrawingML blurRad"));
+            }
+            self.set_blur_radius(value);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"dist") {
-            self.set_distance(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"dist")? {
+            let parsed = crate::xml::trim_xml_whitespace(&value)
+                .parse::<i64>()
+                .map_err(crate::xml::xml_error)?;
+            if parsed < 0 {
+                return Err(crate::xml::xml_error("negative DrawingML dist"));
+            }
+            self.set_distance(value);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"dir") {
-            self.set_direction(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"dir")? {
+            let _validated = crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?;
+            self.set_direction(value);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"sx") {
-            self.set_horizontal_ratio(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"sx")? {
+            let _validated = crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?;
+            self.set_horizontal_ratio(value);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"sy") {
-            self.set_vertical_ratio(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"sy")? {
+            let _validated = crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?;
+            self.set_vertical_ratio(value);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"algn") {
-            self.set_alignment(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"algn")? {
+            self.set_alignment(value);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"rotWithShape") {
-            self.set_rotate_with_shape(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"rotWithShape")? {
+            let _validated = crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?;
+            self.set_rotate_with_shape(value);
         }
-
         if empty {
-            return;
+            return Ok(());
         }
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
-                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
-                        let empty=matches!(event,Event::Empty(_));
-                let native = session.is_none_or(|session| {
-                    session.accepts_child_namespace(
-                        e,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )
-                });
-                match if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-        b"prstClr" => {
-            let mut value = PresetColor::default();
-            if let Some(session) = session {
-                value.read_attributes_with_session(reader, e, empty, session);
-            } else {
-                value.read_attributes(reader, e, empty);
-            }
-            self.set_preset_color(value);
-        },
-        b"schemeClr" => {
-            let mut value = SchemeColor::default();
-            if let Some(session) = session {
-                value.set_attributes_with_session(reader, e, empty, session);
-            } else {
-                value.set_attributes(reader, e, empty);
-            }
-            self.set_scheme_color(value);
-        },
-        b"srgbClr" => {
-            let mut value = RgbColorModelHex::default();
-            if let Some(session) = session {
-                value.set_attributes_with_session(reader, e, empty, session);
-            } else {
-                value.set_attributes(reader, e, empty);
-            }
-            self.set_rgb_color_model_hex(value);
-        },
-                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
                         }
-                    },
-                    Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
+                        continue;
                     }
-                },
-                    Event::Eof => panic!("Could not find drawing owner end element"),
-                );
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"prstClr" => {
+                            let mut value = PresetColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_preset_color(value);
+                        }
+                        b"hslClr" => {
+                            let mut value = HslColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_hsl_color(value);
+                        }
+                        b"scrgbClr" => {
+                            let mut value = RgbColorModelPercentage::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_rgb_color_model_percentage(value);
+                        }
+                        b"schemeClr" => {
+                            let mut value = SchemeColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_scheme_color(value);
+                        }
+                        b"srgbClr" => {
+                            let mut value = RgbColorModelHex::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_rgb_color_model_hex(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
+                }
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // a:outerShdw
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if let Some(v) = self.blur_radius.value() {
@@ -396,19 +475,26 @@ impl OuterShadow {
 
         // a:prstClr
         if let Some(v) = &self.preset_color {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
+        if let Some(color) = &self.hsl_color {
+            color.write_to(writer)?;
+        }
+        if let Some(color) = &self.rgb_color_model_percentage {
+            color.write_to(writer)?;
+        }
         // a:schemeClr
         if let Some(v) = &self.scheme_color {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:srgbClr
         if let Some(v) = &self.rgb_color_model_hex {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:outerShdw");
+        Ok(())
     }
 }

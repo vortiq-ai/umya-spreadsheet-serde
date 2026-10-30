@@ -37,7 +37,7 @@ pub(crate) fn read(
             Ok(Event::Start(ref e)) => {
                 if e.name().into_inner() == b"pivotTableDefinition" {
                     let mut obj = PivotTableDefinition::default();
-                    obj.set_attributes(&mut reader, e);
+                    obj.set_attributes(&mut reader, e)?;
                     pivot_table.set_pivot_table_definition(obj);
                 }
             }

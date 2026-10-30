@@ -3,21 +3,11 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::super::Int32Value;
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -26,6 +16,10 @@ pub struct PercentageType {
 }
 
 impl PercentageType {
+    pub(crate) fn into_value(self) -> i32 {
+        self.val.value()
+    }
+
     #[inline]
     #[must_use]
     pub fn val(&self) -> i32 {
@@ -51,23 +45,28 @@ impl PercentageType {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        set_string_from_xml!(self, e, val, "val");
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty_flag, None)
+    }
 
-        if empty_flag {
-            return;
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"val")?;
+        self.val
+            .set_value(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
+        if !empty {
+            crate::structs::drawing::color_transform::consume_paint_leaf(reader, owner, session)?;
         }
-
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
-            Event::Start(ref child) => { crate::reader::driver::skip_element(reader,child); },
-            Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
-                    }
-                },
-            Event::Eof => panic!("Could not find percentage element end"),
-        );
+        Ok(())
     }
 
     #[inline]

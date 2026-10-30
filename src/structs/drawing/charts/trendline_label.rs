@@ -23,6 +23,7 @@ use crate::{
         driver::{
             local_name,
             skip_element,
+            try_xml_read_loop,
         },
         xlsx::SourceCacheSession,
     },
@@ -30,7 +31,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -221,20 +221,20 @@ impl TrendlineLabel {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
         if empty {
-            return result;
+            return Ok(result);
         }
         let end = e.name().into_inner().to_vec();
         let mut seen = std::collections::HashSet::new();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                let child = if session.accepts_child_namespace(e,super::extension_registry::NS_C) {
+                let child = if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {
                     local_name(e.name().into_inner())
                 } else { b"" };
                 if matches!(child,b"layout"|b"tx"|b"numFmt"|b"spPr"|b"txPr")
@@ -243,30 +243,30 @@ impl TrendlineLabel {
                     result.duplicate_children=true;
                 }
                 match child {
-                    b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)));consumed=true;},
+                    b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)?));consumed=true;},
                     b"layout" => {
                         let mut v = Layout::default();
-                        v.set_attributes(reader, e, empty, session);
+                        v.set_attributes(reader, e, empty, session)?;
                         result.layout = Some(v);
                         consumed = true;
                     }
                     b"tx" => {
                         let mut v = ChartText::default();
                         if !empty {
-                            v.set_attributes(reader, e, session);
+                            v.set_attributes(reader, e, session)?;
                         }
                         result.text = Some(v);
                         consumed = true;
                     }
                     b"numFmt" => {
                         let mut v = NumberingFormat::default();
-                        v.set_attributes(reader, e);
+                        v.set_attributes(reader, e)?;
                         result.numbering_format = Some(v);
                     }
                     b"spPr" => {
                         let mut v = ShapeProperties::default();
                         if !empty {
-                            v.set_attributes_with_session(reader, e, session);
+                            v.set_attributes_with_session(reader, e, session)?;
                         }
                         result.shape_properties = Some(v);
                         consumed = true;
@@ -274,7 +274,7 @@ impl TrendlineLabel {
                     b"txPr" => {
                         let mut v = TextProperties::default();
                         if !empty {
-                            v.read_with_session(reader, e, Some(session));
+                            v.read_with_session(reader, e, Some(session))?;
                         }
                         result.text_properties = Some(v);
                         consumed = true;
@@ -282,38 +282,44 @@ impl TrendlineLabel {
                     _ => (),
                 }
                 if !empty && !consumed {
-                    skip_element(reader, e);
+                    skip_element(reader, e)?;
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return result;
+                    return Ok(result);
                 }
             },
-            Event::Eof => panic!("Could not find trendline label end element"),
+            Event::Eof => return Err(crate::xml::xml_error("Could not find trendline label end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(writer, "c:trendlineLbl", vec![], false);
         if let Some(v) = &self.layout {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(v) = &self.text {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
         if let Some(v) = &self.numbering_format {
             v.write_to(writer);
         }
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(v) = &self.text_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "trendlineLbl", None);
+            ext.write_for_owner(writer, Some(wb), "trendlineLbl", None)?;
         }
         write_end_tag(writer, "c:trendlineLbl");
+
+        Ok(())
     }
 }

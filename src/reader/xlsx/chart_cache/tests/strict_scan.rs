@@ -35,13 +35,13 @@ fn snapshot(reduction: DeferredReduction) -> Snapshot {
     }
 }
 
-fn caught(operation: impl FnOnce() -> DeferredReduction) -> Result<Snapshot, String> {
+fn caught(
+    operation: impl FnOnce() -> Result<DeferredReduction, XlsxError>,
+) -> Result<Snapshot, String> {
     catch_panic(CatchSafe(operation))
+        .expect("fallible cache replay must not panic")
         .map(snapshot)
-        .map_err(|payload| match payload.downcast::<String>() {
-            Ok(message) => *message,
-            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_owned(),
-        })
+        .map_err(|error| error.to_string())
 }
 
 fn descriptor(data: &[u8]) -> DeferredSource {
@@ -94,7 +94,6 @@ fn compare(
             (None, 0, 0),
             |_, _| None,
         )
-        .unwrap()
     });
     assert_eq!(
         strict::SCANS.with(StateCell::get),
@@ -218,9 +217,9 @@ fn compact_cache_sizes_match_tokenized_reduction_at_caps() {
 }
 
 // Every excluded syntax must select fallback. The unchanged quick_xml path is
-// the required oracle for permissive parsing, replacement and exact panics.
+// the required oracle for permissive parsing, replacement and returned errors.
 #[test]
-fn noncompact_cache_syntax_restarts_with_identical_results_and_panics() {
+fn noncompact_cache_syntax_matches_canonical_results_and_errors() {
     let base = cache("c:", &[("0", "a")], "1");
     let mut cases = vec![
         base.replace("><", "> \t\r\n<"),
@@ -283,10 +282,6 @@ fn noncompact_cache_syntax_restarts_with_identical_results_and_panics() {
     }
 }
 
-fn unwrap_message(error: &dyn std::fmt::Debug) -> String {
-    format!("called `Result::unwrap()` on an `Err` value: {error:?}")
-}
-
 // Independent outcomes catch a fallback that agrees with itself while losing
 // whitespace handling, empty/last values, CDATA content or exact failures.
 #[test]
@@ -329,21 +324,22 @@ fn rejected_syntax_preserves_literal_values_and_failure_messages() {
     for limits in [budget(0, 0), budget(1, 13)] {
         assert_eq!(
             compare(unknown.as_bytes(), None, &limits, false),
-            Err(unwrap_message(
-                &quick_xml::escape::unescape("&unknown;").unwrap_err()
+            Err(format!(
+                "XML error: {}",
+                quick_xml::escape::unescape("&unknown;").unwrap_err()
             )),
         );
         assert_eq!(
             compare(truncated.as_bytes(), None, &limits, false),
-            Err("Error: Could not find c:strCache end element".to_owned()),
+            Err("XML error: Error: Could not find c:strCache end element".to_owned()),
         );
     }
 }
 
-// Invalid text must still panic, even after the cache has exhausted its caps;
+// Invalid text must still fail after the cache has exhausted its caps;
 // restart must preserve the original decoder's full payload and position.
 #[test]
-fn malformed_text_still_panics_after_restart_at_zero_budget() {
+fn malformed_text_returns_errors_after_restart_at_zero_budget() {
     let mut malformed: Vec<_> = ["&unknown;", "&#0;", "&unfinished"]
         .into_iter()
         .map(|value| cache("c:", &[("0", value)], "1").into_bytes())
@@ -430,7 +426,9 @@ fn repeated_capture_publishes_one_charge_per_occurrence_after_either_scan() {
             match reader.read_event_into(&mut buffer).unwrap() {
                 Event::Start(root) if local_name(root.name().into_inner()) == b"strRef" => {
                     let mut reference = StringReference::default();
-                    reference.set_attributes(&mut reader, &root, &session);
+                    reference
+                        .set_attributes(&mut reader, &root, &session)
+                        .unwrap();
                     book.sheet_mut(0)
                         .unwrap()
                         .add_chart(chart_with_reference(reference));
@@ -443,7 +441,7 @@ fn repeated_capture_publishes_one_charge_per_occurrence_after_either_scan() {
         strict::SCANS.with(|seen| seen.set((0, 0)));
         note_work(|work| *work = crate::drawing::charts::WorkCounts::default());
         let mut provider = lazy_provider();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         assert_eq!(
             strict::SCANS.with(StateCell::get),
             if compact { (1, 0) } else { (0, 1) }

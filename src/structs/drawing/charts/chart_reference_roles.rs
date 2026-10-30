@@ -522,15 +522,17 @@ macro_rules! reference_topology {
         }
         pub(super) fn space$(<$b>)?(space:& $($b)? $($m)* ChartSpace,
         w:&mut State<'_ $(, $b)?>) {
-            let (chart, space_shape)=get!(space, role_parts);
+            let (chart, space_shape, space_extensions)=get!(space, role_parts);
             if w.order==ReferenceOrder::NativeFormulaApi {
                 native_chart(chart, w);
                 if let Some(child)=space_shape { shape(None, child, w); }
+                if let Some(child)=space_extensions { list(None, child, w); }
                 return;
             }
             let rest=chart_begin(chart, w);
             if let Some(child)=space_shape { shape(None, child, w); }
             chart_tail(rest, w);
+            if let Some(child)=space_extensions { list(None, child, w); }
         }
         pub(super) fn chart$(<$b>)?(chart:& $($b)? $($m)* Chart,
         w:&mut State<'_ $(, $b)?>) {
@@ -1308,10 +1310,11 @@ macro_rules! reference_topology {
         struct ContainerRemainder<'a> {
             pivots: Vec<PivotRemainder<'a>>,
             duplicates: Vec<ContainerRemainder<'a>>,
+            extensions: Option<&'a $($m)* ExtensionList>,
         }
         fn primary_container<'a>(owner:&'a $($m)* DrawingChartParts,
         counts:Option<&OwnerCounts>, w:&mut State<'_ $(, $b)?>)->ContainerRemainder<'a> {
-            let (owners, duplicates)=get!(owner, role_parts);
+            let (owners, duplicates, extensions)=get!(owner, role_parts);
             let mut pivots=Vec::new();
             if let Some(owners)=owners {
                 for owner in owners {
@@ -1323,12 +1326,13 @@ macro_rules! reference_topology {
             }
             let mut remaining=Vec::new();
             for owner in duplicates { remaining.push(primary_container(owner, None, w)); }
-            ContainerRemainder { pivots, duplicates:remaining }
+            ContainerRemainder { pivots, duplicates:remaining, extensions }
         }
         fn container_remainder$(<$b>)?(rest:ContainerRemainder<$lt>,
         w:&mut State<'_ $(, $b)?>) {
             for owner in rest.pivots { pivot_remainder(owner, w); }
             for owner in rest.duplicates { container_remainder(owner, w); }
+            if let Some(child)=rest.extensions { list(None, child, w); }
         }
         enum DisplayChildRemainder<'a> {
             Layout(&'a $($m)* Layout),

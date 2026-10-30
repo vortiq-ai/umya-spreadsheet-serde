@@ -1007,11 +1007,19 @@ fn assert_selected_pattern_shape(
     let fill = shape.pattern_fill().expect("selected shape pattern fill");
     assert_eq!(fill.preset(), "pct5");
     assert!(matches!(
-        fill.foreground_color().scheme_color().val(),
+        fill.foreground_color()
+            .unwrap()
+            .scheme_color()
+            .unwrap()
+            .val(),
         umya_spreadsheet::drawing::SchemeColorValues::Accent1
     ));
     assert!(matches!(
-        fill.background_color().scheme_color().val(),
+        fill.background_color()
+            .unwrap()
+            .scheme_color()
+            .unwrap()
+            .val(),
         umya_spreadsheet::drawing::SchemeColorValues::Accent2
     ));
     assert_eq!(

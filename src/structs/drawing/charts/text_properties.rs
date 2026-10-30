@@ -16,10 +16,11 @@ use super::super::{
     Paragraph,
 };
 use crate::{
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         local_name,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -62,15 +63,18 @@ impl TextProperties {
                 .all(|(current, previous)| current.projected_structure_matches(previous))
     }
 
-    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
         if !self.projected_structure_matches(previous) {
-            return 0;
+            return Ok(0);
         }
         let mut restored = 0;
         if self.parts.is_none() {
             if let Some(parts) = &previous.parts {
                 let mut parts = parts.clone();
-                if !self.list_style.projected_values_match(&previous.list_style) {
+                if !self
+                    .list_style
+                    .projected_values_match(&previous.list_style)?
+                {
                     parts.list_style_present = true;
                 }
                 self.parts = Some(parts);
@@ -82,9 +86,9 @@ impl TextProperties {
             .restore_export_parts(&previous.body_properties);
         restored += self.list_style.restore_export_parts(&previous.list_style);
         for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
-            restored += current.restore_export_parts(previous);
+            restored += current.restore_export_parts(previous)?;
         }
-        restored
+        Ok(restored)
     }
 
     #[must_use]
@@ -173,54 +177,81 @@ impl TextProperties {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(e)?;
         self.parts = Some(Box::new(TextBodyParts::default()));
-        let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
-            reader,
+        let mut body_present = false;
+        let mut list_present = false;
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                let name = if native {
-                    local_name(e.name().into_inner())
-                } else { b"" };
-                match name {
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                match local_name(e.name().as_ref()) {
                     b"p" => {
-                        let mut v = Paragraph::default();
-                        if empty {
-                            v.mark_empty_import();
-                        } else {
-                            v.read_with_session(reader, e, session);
+                        if !body_present {
+                            return Err(crate::xml::xml_error("DrawingML paragraph precedes body properties"));
                         }
-                        self.add_paragraph(v);
+                        let mut paragraph = Paragraph::default();
+                        if empty {
+                            crate::reader::driver::validate_attributes(e)?;
+                            paragraph.mark_empty_import();
+                        } else {
+                            paragraph.read_with_session(reader, e, session)?;
+                        }
+                        self.add_paragraph(paragraph);
                     }
                     b"lstStyle" => {
+                        if !body_present || list_present || !self.paragraph.is_empty() {
+                            return Err(crate::xml::xml_error("duplicate or misplaced DrawingML list style"));
+                        }
+                        list_present = true;
                         if let Some(parts) = &mut self.parts { parts.list_style_present = true; }
-                        if !empty { self.list_style.read_with_session(reader, e, session); }
-                    }
-                    b"bodyPr" => {
-                        let mut v = BodyProperties::default();
-                        v.read_with_session(reader, e, empty, session);
-                        self.set_body_properties(v);
-                    }
-                    _ => {
-                        if !empty {
-                            crate::reader::driver::skip_element(reader, e);
+                        if empty {
+                            crate::reader::driver::validate_attributes(e)?;
+                        } else {
+                            self.list_style.read_with_session(reader, e, session)?;
                         }
                     }
+                    b"bodyPr" => {
+                        if body_present || !self.paragraph.is_empty() {
+                            return Err(crate::xml::xml_error("duplicate or misplaced DrawingML body properties"));
+                        }
+                        body_present = true;
+                        let mut properties = BodyProperties::default();
+                        properties.read_with_session(reader, e, empty, session)?;
+                        self.set_body_properties(properties);
+                    }
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == end.as_slice() {
-                    return;
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => {
+                if !body_present || self.paragraph.is_empty() {
+                    return Err(crate::xml::xml_error("DrawingML text body requires body properties and a paragraph"));
                 }
+                return Ok(());
             },
-            Event::Eof => panic!("Could not find text body end element"),
+            Event::Text(ref text)
+                if !text.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+            {
+                return Err(crate::xml::xml_error("unexpected text in DrawingML text body"));
+            },
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text body")),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // c:txPr
         write_start_tag(writer, "c:txPr", vec![], false);
 
@@ -233,15 +264,16 @@ impl TextProperties {
             .as_ref()
             .is_none_or(|parts| parts.list_style_present)
         {
-            self.list_style.write_to(writer);
+            self.list_style.write_to(writer)?;
         }
 
         // a:p
         for content in &self.paragraph {
-            content.write_to(writer);
+            content.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:txPr");
+        Ok(())
     }
 }
 
@@ -256,9 +288,9 @@ mod tests {
             _ => panic!("missing text properties"),
         };
         let mut value = TextProperties::default();
-        value.read_with_session(&mut reader, &start, None);
+        value.read_with_session(&mut reader, &start, None).unwrap();
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        value.write_to(&mut writer);
+        value.write_to(&mut writer).unwrap();
         String::from_utf8(writer.into_inner().into_inner()).unwrap()
     }
     #[test]
@@ -389,7 +421,8 @@ mod projection_tests {
             panic!("missing run");
         };
         let mut run = Run::default();
-        run.read_with_session(&mut reader, &start.into_owned(), None);
+        run.read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         assert_projection(run, Run::strip_export_parts);
     }
 
@@ -411,7 +444,9 @@ mod projection_tests {
             panic!("missing rich text");
         };
         let mut value = super::super::RichText::default();
-        value.read_with_session(&mut reader, &start.into_owned(), None);
+        value
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         value
             .body_properties_mut()
             .set_vertical(Some(TextVertical::Vertical));
@@ -447,7 +482,9 @@ mod projection_tests {
             panic!("missing text properties");
         };
         let mut value = TextProperties::default();
-        value.read_with_session(&mut reader, &start.into_owned(), None);
+        value
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         value
     }
 
@@ -457,7 +494,7 @@ mod projection_tests {
         let mut projected = original.clone();
         projected.strip_export_parts();
         assert!(projected.paragraph()[0].fields().is_empty());
-        assert!(projected.restore_export_parts(&original) > 0);
+        assert!(projected.restore_export_parts(&original).unwrap() > 0);
         assert_eq!(
             serde_json::to_value(&projected).unwrap(),
             serde_json::to_value(&original).unwrap()
@@ -466,7 +503,7 @@ mod projection_tests {
             bincode::serialize(&projected).unwrap(),
             bincode::serialize(&original).unwrap()
         );
-        assert_eq!(projected.restore_export_parts(&original), 0);
+        assert_eq!(projected.restore_export_parts(&original).unwrap(), 0);
     }
 
     #[test]
@@ -476,12 +513,12 @@ mod projection_tests {
                 .unwrap();
         let mut projected = original.clone();
         projected.strip_export_parts();
-        assert!(projected.restore_export_parts(&original) > 0);
+        assert!(projected.restore_export_parts(&original).unwrap() > 0);
         assert_eq!(
             bincode::serialize(&projected).unwrap(),
             bincode::serialize(&original).unwrap()
         );
-        assert_eq!(projected.restore_export_parts(&original), 0);
+        assert_eq!(projected.restore_export_parts(&original).unwrap(), 0);
     }
 
     #[test]
@@ -495,7 +532,7 @@ mod projection_tests {
         assert!(projected.paragraph_mut()[0].insert_run(0, replacement));
         let before = bincode::serialize(&projected).unwrap();
         assert!(!projected.projected_structure_matches(&original));
-        assert_eq!(projected.restore_export_parts(&original), 0);
+        assert_eq!(projected.restore_export_parts(&original).unwrap(), 0);
         assert_eq!(bincode::serialize(&projected).unwrap(), before);
         assert!(projected.paragraph()[0].fields().is_empty());
     }
@@ -509,7 +546,7 @@ mod projection_tests {
         projected.strip_export_parts();
         projected.set_text("replacement title");
         let before = bincode::serialize(&projected).unwrap();
-        assert_eq!(projected.restore_export_parts(&original), 0);
+        assert_eq!(projected.restore_export_parts(&original).unwrap(), 0);
         assert_eq!(bincode::serialize(&projected).unwrap(), before);
     }
 
@@ -526,7 +563,7 @@ mod projection_tests {
             .set_italic("1");
         assert!(projected.paragraph_mut()[0].remove_run(0).is_some());
         assert!(projected.paragraph_mut()[0].insert_run(0, changed_run));
-        assert!(projected.restore_export_parts(&original) > 0);
+        assert!(projected.restore_export_parts(&original).unwrap() > 0);
         assert_eq!(projected.body_properties().rotation(), 120000);
         assert_eq!(
             projected.paragraph()[0].run()[0].run_properties().bold(),
@@ -554,7 +591,9 @@ mod projection_tests {
             panic!("missing text properties");
         };
         let mut original = TextProperties::default();
-        original.read_with_session(&mut reader, &start.into_owned(), None);
+        original
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         let mut projected = original.clone();
         projected.strip_export_parts();
         let paragraph = &mut projected.paragraph_mut()[0];
@@ -563,9 +602,9 @@ mod projection_tests {
         run.run_properties_mut().set_bold("1");
         assert!(paragraph.remove_run(0).is_some());
         assert!(paragraph.insert_run(0, run));
-        assert!(projected.restore_export_parts(&original) > 0);
+        assert!(projected.restore_export_parts(&original).unwrap() > 0);
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        projected.write_to(&mut writer);
+        projected.write_to(&mut writer).unwrap();
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(xml.contains("<a:pPr rtl=\"1\""), "{xml}");
         assert!(xml.contains("<a:rPr b=\"1\""), "{xml}");
@@ -586,7 +625,7 @@ mod projection_tests {
         projected
             .body_properties_mut()
             .set_vertical(Some(TextVertical::Horizontal));
-        assert!(projected.restore_export_parts(&basis) > 0);
+        assert!(projected.restore_export_parts(&basis).unwrap() > 0);
         assert_eq!(
             projected.body_properties().vertical(),
             Some(TextVertical::Horizontal)
@@ -600,7 +639,7 @@ mod projection_tests {
         let original = TextProperties::default();
         let mut current = original.clone();
         let before = bincode::serialize(&current).unwrap();
-        assert_eq!(current.restore_export_parts(&original), 0);
+        assert_eq!(current.restore_export_parts(&original).unwrap(), 0);
         assert_eq!(bincode::serialize(&current).unwrap(), before);
     }
 
@@ -695,7 +734,9 @@ mod projection_tests {
             panic!("missing text properties");
         };
         let mut original = TextProperties::default();
-        original.read_with_session(&mut reader, &start.into_owned(), None);
+        original
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         let mut current = original.clone();
         current.strip_export_parts();
         assert!(
@@ -708,9 +749,9 @@ mod projection_tests {
             .set_underline(Some(TextUnderline::Double));
         assert!(current.paragraph_mut()[0].remove_run(0).is_some());
         assert!(current.paragraph_mut()[0].insert_run(0, run));
-        assert!(current.restore_export_parts(&original) > 0);
+        assert!(current.restore_export_parts(&original).unwrap() > 0);
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        current.write_to(&mut writer);
+        current.write_to(&mut writer).unwrap();
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(xml.contains("<a:pPr lvl=\"0\""), "{xml}");
         assert!(xml.contains("<a:rPr u=\"dbl\""), "{xml}");
@@ -725,7 +766,9 @@ mod projection_tests {
             panic!("missing text properties");
         };
         let mut original = TextProperties::default();
-        original.read_with_session(&mut reader, &start.into_owned(), None);
+        original
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         let mut current = original.clone();
         current.strip_export_parts();
         assert!(
@@ -737,9 +780,9 @@ mod projection_tests {
         run.run_properties_mut().set_underline(None);
         assert!(current.paragraph_mut()[0].remove_run(0).is_some());
         assert!(current.paragraph_mut()[0].insert_run(0, run));
-        assert!(current.restore_export_parts(&original) > 0);
+        assert!(current.restore_export_parts(&original).unwrap() > 0);
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        current.write_to(&mut writer);
+        current.write_to(&mut writer).unwrap();
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(xml.contains("<a:pPr/>"), "{xml}");
         assert!(xml.contains("<a:rPr/>"), "{xml}");
@@ -754,7 +797,9 @@ mod projection_tests {
             panic!("missing text properties");
         };
         let mut original = TextProperties::default();
-        original.read_with_session(&mut reader, &start.into_owned(), None);
+        original
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         for setter in [false, true] {
             let mut current = original.clone();
             current.strip_export_parts();
@@ -763,9 +808,9 @@ mod projection_tests {
             } else {
                 current.list_style_mut();
             }
-            current.restore_export_parts(&original);
+            current.restore_export_parts(&original).unwrap();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            current.write_to(&mut writer);
+            current.write_to(&mut writer).unwrap();
             let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
             assert!(xml.contains("<a:lstStyle/>"), "setter={setter}: {xml}");
         }
@@ -780,7 +825,9 @@ mod projection_tests {
             panic!("missing rich text");
         };
         let mut original = super::super::RichText::default();
-        original.read_with_session(&mut reader, &start.into_owned(), None);
+        original
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         for setter in [false, true] {
             let mut current = original.clone();
             current.strip_export_parts();
@@ -789,9 +836,9 @@ mod projection_tests {
             } else {
                 current.list_style_mut();
             }
-            current.restore_export_parts(&original);
+            current.restore_export_parts(&original).unwrap();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            current.write_to(&mut writer);
+            current.write_to(&mut writer).unwrap();
             let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
             assert!(xml.contains("<a:lstStyle/>"), "setter={setter}: {xml}");
         }
@@ -806,7 +853,9 @@ mod projection_tests {
             panic!("missing text properties");
         };
         let mut original = TextProperties::default();
-        original.read_with_session(&mut reader, &start.into_owned(), None);
+        original
+            .read_with_session(&mut reader, &start.into_owned(), None)
+            .unwrap();
         for setter in [false, true] {
             let mut current = original.clone();
             current.strip_export_parts();
@@ -820,9 +869,9 @@ mod projection_tests {
             }
             assert!(current.paragraph_mut()[0].remove_run(0).is_some());
             assert!(current.paragraph_mut()[0].insert_run(0, run));
-            current.restore_export_parts(&original);
+            current.restore_export_parts(&original).unwrap();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            current.write_to(&mut writer);
+            current.write_to(&mut writer).unwrap();
             let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
             assert!(xml.contains("<a:pPr/>"), "setter={setter}: {xml}");
             assert!(xml.contains("<a:rPr/>"), "setter={setter}: {xml}");
@@ -835,11 +884,104 @@ mod projection_tests {
         let mut current = original.clone();
         current.strip_export_parts();
         current.paragraph_mut()[0].paragraph_properties_mut();
-        assert!(current.restore_export_parts(&original) > 0);
+        assert!(current.restore_export_parts(&original).unwrap() > 0);
         assert_eq!(current.paragraph()[0].fields().len(), 1);
         assert_eq!(
             bincode::serialize(&current).unwrap(),
             bincode::serialize(&original).unwrap()
         );
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod paint_error_tests {
+    use super::*;
+    use crate::drawing::{
+        ParagraphProperties,
+        PresetColor,
+        Run,
+        RunProperties,
+        SolidFill,
+        TextParagraphPropertiesType,
+    };
+
+    fn invalid_paint_properties() -> RunProperties {
+        let mut color = PresetColor::default();
+        color.set_val("not-a-preset");
+        let mut fill = SolidFill::default();
+        fill.set_preset_color(color);
+        let mut properties = RunProperties::default();
+        properties.set_solid_fill(fill);
+        properties
+    }
+
+    #[test]
+    fn invalid_paints_fail_projected_style_comparison() {
+        let invalid = invalid_paint_properties();
+        assert!(
+            invalid
+                .projected_values_match(&RunProperties::default())
+                .is_err()
+        );
+        let mut paragraph = ParagraphProperties::default();
+        paragraph.set_default_run_properties(invalid.clone());
+        assert!(
+            paragraph
+                .projected_values_match(&ParagraphProperties::default())
+                .is_err()
+        );
+        let mut level = TextParagraphPropertiesType::default();
+        level.set_default_run_properties(invalid);
+        let mut list = ListStyle::default();
+        list.set_default_paragraph_properties(level);
+        assert!(list.projected_values_match(&ListStyle::default()).is_err());
+    }
+
+    #[test]
+    fn text_restore_reports_native_paint_errors_without_restoring_presence() {
+        let mut previous = TextProperties::default();
+        previous.parts = Some(Box::new(TextBodyParts {
+            list_style_present: true,
+        }));
+        let mut current = previous.clone();
+        current.strip_export_parts();
+        let mut level = TextParagraphPropertiesType::default();
+        level.set_default_run_properties(invalid_paint_properties());
+        current.list_style.set_default_paragraph_properties(level);
+        let before = bincode::serialize(&current).unwrap();
+        assert!(current.restore_export_parts(&previous).is_err());
+        assert_eq!(bincode::serialize(&current).unwrap(), before);
+        let mut rich: super::super::RichText =
+            serde_json::from_value(serde_json::to_value(&current).unwrap()).unwrap();
+        let previous_rich: super::super::RichText =
+            serde_json::from_value(serde_json::to_value(&previous).unwrap()).unwrap();
+        let before = bincode::serialize(&rich).unwrap();
+        assert!(rich.restore_export_parts(&previous_rich).is_err());
+        assert_eq!(bincode::serialize(&rich).unwrap(), before);
+    }
+
+    #[test]
+    fn run_and_paragraph_restore_propagate_native_paint_errors() {
+        let mut previous = Run::default();
+        previous.set_text("text");
+        previous.run_properties_mut().set_language("en-US");
+        let mut current = previous.clone();
+        *current.run_properties_mut() = invalid_paint_properties();
+        current.strip_export_parts();
+        let before = bincode::serialize(&current).unwrap();
+        assert!(current.restore_export_parts(&previous).is_err());
+        assert_eq!(bincode::serialize(&current).unwrap(), before);
+        let mut previous = Paragraph::default();
+        previous
+            .paragraph_properties_mut()
+            .set_alignment(crate::drawing::TextAlignmentTypeValues::Center);
+        let mut current = previous.clone();
+        current
+            .paragraph_properties_mut()
+            .set_default_run_properties(invalid_paint_properties());
+        current.strip_export_parts();
+        let before = bincode::serialize(&current).unwrap();
+        assert!(current.restore_export_parts(&previous).is_err());
+        assert_eq!(bincode::serialize(&current).unwrap(), before);
     }
 }

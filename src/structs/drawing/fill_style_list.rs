@@ -14,7 +14,7 @@ use super::{
     SolidFill,
 };
 use crate::{
-    reader::driver::xml_read_loop,
+    XlsxError,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -104,51 +104,89 @@ impl FillStyleList {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:solidFill" => {
-                        let mut obj = SolidFill::default();
-                        obj.set_attributes(reader, e);
-                        self.solid_fill.push(obj);
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(owner)?;
+
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        return Err(crate::xml::xml_error("foreign Theme child"));
                     }
-                    b"a:gradFill" => {
-                        let mut obj = GradientFill::default();
-                        obj.set_attributes(reader, e);
-                        self.gradient_fill_collection.push(obj);
+                    crate::reader::driver::validate_attributes(child)?;
+                    match crate::reader::driver::local_name(child.name().as_ref()) {
+                        b"solidFill" => {
+                            let mut value = SolidFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.solid_fill.push(value);
+                        }
+                        b"gradFill" => {
+                            let mut value = GradientFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.gradient_fill_collection.push(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:fillStyleLst" {
-                    return
+                Event::End(ref child) if child.name().as_ref() == end.as_slice() => {
+                    return Ok(());
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "fillStyleLst")
-        );
+                Event::Text(ref text)
+                    if !text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+                {
+                    return Err(crate::xml::xml_error("unexpected text in Theme container"));
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated Theme owner")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // a:fillStyleLst
         write_start_tag(writer, "a:fillStyleLst", vec![], false);
 
         // a:solidFill
         for v in &self.solid_fill {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:gradFill
         for v in &self.gradient_fill_collection {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:fillStyleLst");
+        Ok(())
     }
 }

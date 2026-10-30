@@ -54,7 +54,7 @@ impl Width {
             if self.val.has_value() {
                 return None;
             }
-            super::xml_scalar::parse_xml_double(&parts.attribute)
+            crate::xml::parse_double(&parts.attribute).ok()
         } else if self.val.has_value() {
             Some(self.val.value())
         } else {
@@ -76,12 +76,13 @@ impl Width {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         self.val = DoubleValue::default();
         self.parts = None;
-        if let Some(value) = crate::drawing::get_unescaped_attribute(e, b"val") {
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"val")? {
             self.parts = Some(Box::new(super::ScalarLexeme { attribute: value }));
         }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

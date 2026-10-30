@@ -213,84 +213,99 @@ impl CategoryFilterException {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
         let mut names = std::collections::HashSet::new();
-        let complete = element_children(reader, e, empty, |reader, child, empty| {
-            let name = if session.accepts_child_namespace(child, super::extension_registry::NS_C15)
-            {
-                local_name(child.name().into_inner())
-            } else {
-                b""
-            };
-            if !matches!(
-                name,
-                b"sqref"
-                    | b"spPr"
-                    | b"explosion"
-                    | b"invertIfNegative"
-                    | b"bubble3D"
-                    | b"marker"
-                    | b"dLbl"
-            ) {
-                return false;
-            }
-            if !names.insert(name.to_vec()) {
-                result.invalid = true;
-            }
-            match name {
-                b"sqref" => {
-                    result.references_present = true;
-                    match read_text(reader, child, empty) {
-                        Some(text) => {
-                            result.references.set_text(&text);
+        let complete = element_children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    let name = if session
+                        .accepts_child_namespace(child, super::extension_registry::NS_C15)?
+                    {
+                        local_name(child.name().into_inner())
+                    } else {
+                        b""
+                    };
+                    if !matches!(
+                        name,
+                        b"sqref"
+                            | b"spPr"
+                            | b"explosion"
+                            | b"invertIfNegative"
+                            | b"bubble3D"
+                            | b"marker"
+                            | b"dLbl"
+                    ) {
+                        return Ok(false);
+                    }
+                    if !names.insert(name.to_vec()) {
+                        result.invalid = true;
+                    }
+                    match name {
+                        b"sqref" => {
+                            result.references_present = true;
+                            match read_text(reader, child, empty)? {
+                                Some(text) => {
+                                    result.references.set_text(&text);
+                                }
+                                None => result.invalid = true,
+                            }
                         }
-                        None => result.invalid = true,
+                        b"spPr" => {
+                            let mut value = ShapeProperties::default();
+                            if !empty {
+                                value.set_attributes_with_session(reader, child, session)?;
+                            }
+                            result.shape_properties = Some(value);
+                        }
+                        b"explosion" => {
+                            result.explosion = Some(XmlUnsignedInt::read(child));
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                        b"invertIfNegative" => {
+                            result.invert_if_negative = Some(XmlBoolean::read(child));
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                        b"bubble3D" => {
+                            result.bubble_3d = Some(XmlBoolean::read(child));
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                        b"marker" => {
+                            let mut value = Marker::default();
+                            value.set_attributes_with_session(reader, child, empty, session)?;
+                            result.marker = Some(value);
+                        }
+                        b"dLbl" => {
+                            result.data_label =
+                                Some(DataLabel::read(reader, child, empty, session)?);
+                        }
+                        _ => unreachable!(),
                     }
-                }
-                b"spPr" => {
-                    let mut value = ShapeProperties::default();
-                    if !empty {
-                        value.set_attributes_with_session(reader, child, session);
-                    }
-                    result.shape_properties = Some(value);
-                }
-                b"explosion" => {
-                    result.explosion = Some(XmlUnsignedInt::read(child));
-                    if !empty {
-                        crate::reader::driver::skip_element(reader, child);
-                    }
-                }
-                b"invertIfNegative" => {
-                    result.invert_if_negative = Some(XmlBoolean::read(child));
-                    if !empty {
-                        crate::reader::driver::skip_element(reader, child);
-                    }
-                }
-                b"bubble3D" => {
-                    result.bubble_3d = Some(XmlBoolean::read(child));
-                    if !empty {
-                        crate::reader::driver::skip_element(reader, child);
-                    }
-                }
-                b"marker" => {
-                    let mut value = Marker::default();
-                    value.set_attributes_with_session(reader, child, empty, session);
-                    result.marker = Some(value);
-                }
-                b"dLbl" => result.data_label = Some(DataLabel::read(reader, child, empty, session)),
-                _ => unreachable!(),
-            }
-            true
-        });
+                    true
+                })
+            },
+        )?;
         result.invalid |= !complete;
-        result
+        Ok(result)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c15:categoryFilterException", vec![], false);
         write_start_tag(writer, "c15:sqref", vec![], false);
@@ -302,7 +317,7 @@ impl CategoryFilterException {
         );
         write_end_tag(writer, "c15:sqref");
         if let Some(v) = &self.shape_properties {
-            v.write_to_as(writer, "c15:spPr");
+            v.write_to_as(writer, "c15:spPr")?;
         }
         if let Some(v) = &self.explosion {
             v.write_to_as(writer, "c15:explosion");
@@ -314,12 +329,14 @@ impl CategoryFilterException {
             v.write_to(writer, "c15:bubble3D");
         }
         if let Some(v) = &self.marker {
-            v.write_to_as(writer, "c15:marker");
+            v.write_to_as(writer, "c15:marker")?;
         }
         if let Some(v) = &self.data_label {
-            v.write_to_as(writer, wb, "c15:dLbl");
+            v.write_to_as(writer, wb, "c15:dLbl")?;
         }
         write_end_tag(writer, "c15:categoryFilterException");
+
+        Ok(())
     }
 }
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -356,32 +373,45 @@ impl CategoryFilterExceptions {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
-        let complete = element_children(reader, e, empty, |reader, child, empty| {
-            if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)
-                || local_name(child.name().into_inner()) != b"categoryFilterException"
-            {
-                return false;
-            }
-            result
-                .entries
-                .push(CategoryFilterException::read(reader, child, empty, session));
-            true
-        });
+        let complete = element_children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)?
+                        || local_name(child.name().into_inner()) != b"categoryFilterException"
+                    {
+                        return Ok(false);
+                    }
+                    result.entries.push(CategoryFilterException::read(
+                        reader, child, empty, session,
+                    )?);
+                    true
+                })
+            },
+        )?;
         result.invalid |= !complete;
-        result
+        Ok(result)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c15:categoryFilterExceptions", vec![], false);
         for entry in &self.entries {
-            entry.write_to(writer, wb);
+            entry.write_to(writer, wb)?;
         }
         write_end_tag(writer, "c15:categoryFilterExceptions");
+
+        Ok(())
     }
 }

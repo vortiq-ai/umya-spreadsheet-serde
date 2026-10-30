@@ -1,4 +1,3 @@
-// xdr:cNvCxnSpPr
 use std::io::Cursor;
 
 use quick_xml::{
@@ -10,23 +9,23 @@ use quick_xml::{
     },
 };
 
-use super::super::{
-    EndConnection,
-    StartConnection,
-};
 use crate::{
-    reader::driver::xml_read_loop,
+    drawing::{
+        EndConnection,
+        StartConnection,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
 };
-
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct NonVisualConnectorShapeDrawingProperties {
     start_connection: Option<Box<StartConnection>>,
     end_connection:   Option<Box<EndConnection>>,
+    extensions:       Option<crate::drawing::ExtensionList>,
+    connector_locks:  Option<Box<crate::drawing::ConnectorLocks>>,
 }
 
 impl NonVisualConnectorShapeDrawingProperties {
@@ -76,55 +75,184 @@ impl NonVisualConnectorShapeDrawingProperties {
         self.end_connection = None;
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"a:stCxn" => {
-                        let mut connection_type = StartConnection::default();
-                        connection_type.set_attributes(reader, e);
-                        self.set_start_connection(connection_type);
-                    }
-                    b"a:endCxn" => {
-                        let mut connection_type = EndConnection::default();
-                        connection_type.set_attributes(reader, e);
-                        self.set_end_connection(connection_type);
-                    }
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"xdr:cNvCxnSpPr" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:cNvCxnSpPr")
-        );
+    #[must_use]
+    pub fn connector_locks(&self) -> Option<&crate::drawing::ConnectorLocks> {
+        self.connector_locks.as_deref()
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        // xdr:cNvCxnSpPr
-        if self.start_connection.is_some() || self.end_connection.is_some() {
-            write_start_tag(writer, "xdr:cNvCxnSpPr", vec![], false);
+    pub fn connector_locks_mut(&mut self) -> Option<&mut crate::drawing::ConnectorLocks> {
+        self.connector_locks.as_deref_mut()
+    }
 
-            // a:stCxn
-            if let Some(v) = &self.start_connection {
-                v.write_to(writer);
+    pub fn set_connector_locks(&mut self, value: crate::drawing::ConnectorLocks) {
+        self.connector_locks = Some(Box::new(value));
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&crate::drawing::ExtensionList> {
+        self.extensions.as_ref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut crate::drawing::ExtensionList> {
+        self.extensions.as_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<crate::drawing::ExtensionList>) {
+        self.extensions = value;
+    }
+
+    pub(crate) fn read_with_scope<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        parent: &crate::drawing::charts::NamespaceScope,
+    ) -> Result<(), crate::XlsxError> {
+        let scope = parent
+            .child(owner)
+            .map_err(super::extended_chart::drawing_error)?;
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut seen = std::collections::HashSet::new();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let child_scope = scope
+                        .child(child)
+                        .map_err(super::extended_chart::drawing_error)?;
+                    let name = child_scope
+                        .resolve(child.name().as_ref(), false)
+                        .map_err(super::extended_chart::drawing_error)?;
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS
+                        || !seen.insert(name.local_name.clone())
+                    {
+                        return Err(super::extended_chart::drawing_error(
+                            "foreign or duplicate nonvisual property",
+                        ));
+                    }
+                    match name.local_name.as_str() {
+                        "cxnSpLocks" => {
+                            let mut value = crate::drawing::ConnectorLocks::default();
+                            value.read_with_scope(reader, child, empty, &scope)?;
+                            self.set_connector_locks(value);
+                        }
+                        "stCxn" => {
+                            let mut value = StartConnection::default();
+                            value.set_attributes(reader, child)?;
+                            if !empty {
+                                crate::reader::driver::consume_empty_element(reader, child)?;
+                            }
+                            self.set_start_connection(value);
+                        }
+                        "endCxn" => {
+                            let mut value = EndConnection::default();
+                            value.set_attributes(reader, child)?;
+                            if !empty {
+                                crate::reader::driver::consume_empty_element(reader, child)?;
+                            }
+                            self.set_end_connection(value);
+                        }
+                        "extLst" => {
+                            self.extensions = Some(
+                                crate::drawing::ExtensionList::read(reader, child, empty, &scope)
+                                    .map_err(super::extended_chart::drawing_error)?,
+                            );
+                        }
+                        _ => {
+                            return Err(super::extended_chart::drawing_error(
+                                "unsupported nonvisual property",
+                            ));
+                        }
+                    }
+                }
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => {
+                    return Err(super::extended_chart::drawing_error(
+                        "unterminated nonvisual drawing properties",
+                    ));
+                }
+                ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+                    if !crate::reader::driver::decode_xml_character_event(event)?
+                        .is_some_and(|text| crate::xml::trim_xml_whitespace(&text).is_empty())
+                    {
+                        return Err(super::extended_chart::drawing_error(
+                            "non-whitespace nonvisual drawing content",
+                        ));
+                    }
+                }
+                Event::Comment(_) | Event::PI(_) => (),
+                _ => {
+                    return Err(super::extended_chart::drawing_error(
+                        "invalid nonvisual drawing event",
+                    ));
+                }
             }
+            buffer.clear();
+        }
+    }
 
-            // a:endCxn
-            if let Some(v) = &self.end_connection {
-                v.write_to(writer);
-            }
-
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        relationships: &[(String, String)],
+    ) -> Result<(), crate::XlsxError> {
+        let attributes: crate::structs::AttrCollection = Vec::new();
+        let empty = self.connector_locks.is_none()
+            && self.extensions.is_none()
+            && self.start_connection.is_none()
+            && self.end_connection.is_none();
+        write_start_tag(writer, "xdr:cNvCxnSpPr", attributes, empty);
+        if let Some(value) = &self.connector_locks {
+            value.write_with_relationships(writer, relationships)?;
+        }
+        if let Some(value) = &self.start_connection {
+            value.write_to(writer);
+        }
+        if let Some(value) = &self.end_connection {
+            value.write_to(writer);
+        }
+        if let Some(value) = &self.extensions {
+            value.write_with_relationships(writer, relationships)?;
+        }
+        if !empty {
             write_end_tag(writer, "xdr:cNvCxnSpPr");
-        } else {
-            write_start_tag(writer, "xdr:cNvCxnSpPr", vec![], true);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn visit_relationships(
+        &self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str),
+    ) {
+        if let Some(value) = &self.connector_locks {
+            value.visit_relationships(visit);
+        }
+        if let Some(element) = self
+            .extensions
+            .as_ref()
+            .and_then(crate::drawing::ExtensionList::element)
+        {
+            super::extension_relationships(element, visit);
+        }
+    }
+
+    pub(crate) fn visit_relationships_mut(
+        &mut self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &mut String),
+    ) {
+        if let Some(value) = &mut self.connector_locks {
+            value.visit_relationships_mut(visit);
+        }
+        if let Some(element) = self
+            .extensions
+            .as_mut()
+            .and_then(crate::drawing::ExtensionList::element_mut)
+        {
+            super::extension_relationships_mut(element, visit);
         }
     }
 }

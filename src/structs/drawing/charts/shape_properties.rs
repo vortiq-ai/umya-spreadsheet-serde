@@ -12,6 +12,7 @@ use quick_xml::{
 
 use super::super::{
     EffectList,
+    GradientFill,
     NoFill,
     Outline,
     PatternFill,
@@ -23,11 +24,7 @@ use super::super::{
 };
 use crate::{
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
-    reader::driver::{
-        local_name,
-        skip_element,
-        xml_read_loop,
-    },
+    reader::driver::local_name,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -48,6 +45,8 @@ pub struct ShapeProperties {
     shape_3d_type:   Option<Shape3DType>,
     #[cfg_attr(feature = "serde", serde(default))]
     parts:           Option<Box<ShapePropertiesParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    gradient_fill:   Option<Box<GradientFill>>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -103,7 +102,27 @@ impl ShapeProperties {
     }
 
     pub fn set_pattern_fill(&mut self, value: PatternFill) -> &mut Self {
+        self.solid_fill = None;
+        self.no_fill = None;
+        self.gradient_fill = None;
         self.pattern_fill = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn gradient_fill(&self) -> Option<&GradientFill> {
+        self.gradient_fill.as_deref()
+    }
+
+    pub fn gradient_fill_mut(&mut self) -> Option<&mut GradientFill> {
+        self.gradient_fill.as_deref_mut()
+    }
+
+    pub fn set_gradient_fill(&mut self, value: GradientFill) -> &mut Self {
+        self.pattern_fill = None;
+        self.solid_fill = None;
+        self.no_fill = None;
+        self.gradient_fill = Some(Box::new(value));
         self
     }
 
@@ -178,6 +197,9 @@ impl ShapeProperties {
     }
 
     pub fn set_solid_fill(&mut self, value: SolidFill) -> &mut Self {
+        self.pattern_fill = None;
+        self.no_fill = None;
+        self.gradient_fill = None;
         self.solid_fill = Some(value);
         self
     }
@@ -203,6 +225,9 @@ impl ShapeProperties {
     }
 
     pub fn set_no_fill(&mut self, value: NoFill) -> &mut Self {
+        self.pattern_fill = None;
+        self.solid_fill = None;
+        self.gradient_fill = None;
         self.no_fill = Some(value);
         self
     }
@@ -310,145 +335,184 @@ impl ShapeProperties {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        self.read_with_session(reader, e, None);
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, owner, false, None)
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_with_session(reader, e, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, owner, false, Some(session))
     }
 
-    fn read_with_session<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
+        empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
-        let end = owner.name().into_inner().to_vec();
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                match if native {
-                    local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"extLst" => {
-                        let session = session
-                            .expect("Chart extension namespace context is required");
-                        self.set_extensions(Some(super::ExtensionList::read(
-                            reader, e, false, session
+    ) -> Result<(), crate::XlsxError> {
+        crate::reader::driver::validate_attributes(owner)?;
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut seen = std::collections::HashSet::new();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(child, NS_A)?,
+                        None => true,
+                    };
+                    if !native {
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
+                    }
+                    let name = local_name(child.name().into_inner());
+                    let slot = match name {
+                        b"pattFill" | b"gradFill" | b"solidFill" | b"noFill" => Some("fill"),
+                        b"xfrm" => Some("transform"),
+                        b"prstGeom" => Some("geometry"),
+                        b"ln" => Some("outline"),
+                        b"effectLst" => Some("effects"),
+                        b"scene3d" => Some("scene"),
+                        b"sp3d" => Some("shape3d"),
+                        b"extLst" => Some("extensions"),
+                        _ => None,
+                    };
+                    if slot.is_some_and(|slot| !seen.insert(slot)) {
+                        return Err(crate::xml::xml_error(format!(
+                            "duplicate or conflicting shape property: {}",
+                            String::from_utf8_lossy(name),
                         )));
-                    },
-                    b"noFill" => {
-                        NoFill::set_attributes(reader, e, false);
-                        self.set_no_fill(NoFill::default());
                     }
-                    b"pattFill" => {
-                        let mut obj = PatternFill::default();
-                        if let Some(session) = session {
-                            obj.set_attributes_with_session(reader, e, session);
-                        } else {
-                            obj.set_attributes(reader, e);
+                    match name {
+                        b"extLst" => {
+                            let session = session.ok_or_else(|| {
+                                crate::xml::xml_error(
+                                    "shape extensions require original namespace context",
+                                )
+                            })?;
+                            self.set_extensions(Some(super::ExtensionList::read(
+                                reader, child, empty, session,
+                            )?));
                         }
-                        self.set_pattern_fill(obj);
-                    }
-                    b"xfrm" => {
-                        let mut obj = Transform2D::default();
-                        obj.set_attributes(reader, e);
-                        self.set_transform2d(obj);
-                    }
-                    b"prstGeom" => {
-                        let mut obj = PresetGeometry::default();
-                        obj.set_attributes(reader, e);
-                        self.set_geometry(obj);
-                    }
-                    b"ln" => {
-                        let mut obj = Outline::default();
-                        if let Some(session) = session {
-                            obj.set_attributes_with_session(reader, e, session);
-                        } else {
-                            obj.set_attributes(reader, e);
+                        b"noFill" => {
+                            NoFill::set_attributes(reader, child, empty)?;
+                            self.set_no_fill(NoFill::default());
                         }
-                        self.set_outline(obj);
-                    }
-                    b"solidFill" => {
-                        let mut obj = SolidFill::default();
-                        if let Some(session) = session {
-                            obj.read_attributes_with_session(reader, e, false, session);
-                        } else {
-                            obj.set_attributes(reader, e);
+                        b"pattFill" => {
+                            let mut value = PatternFill::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_pattern_fill(value);
                         }
-                        self.set_solid_fill(obj);
-                    }
-                    b"effectLst" => {
-                        let mut obj = EffectList::default();
-                        if let Some(session) = session {
-                            obj.set_attributes_with_session(reader, e, false, session);
-                        } else {
-                            obj.set_attributes(reader, e, false);
+                        b"gradFill" => {
+                            let mut value = GradientFill::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_gradient_fill(value);
                         }
-                        self.set_effect_list(obj);
+                        b"xfrm" => {
+                            let mut value = Transform2D::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_transform2d(value);
+                        }
+                        b"prstGeom" => {
+                            let mut value = PresetGeometry::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_geometry(value);
+                        }
+                        b"ln" => {
+                            let mut value = Outline::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_outline(value);
+                        }
+                        b"solidFill" => {
+                            let mut value = SolidFill::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_solid_fill(value);
+                        }
+                        b"effectLst" => {
+                            let mut value = EffectList::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_effect_list(value);
+                        }
+                        b"scene3d" => {
+                            let mut value = Scene3DType::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_scene_3d_type(value);
+                        }
+                        b"sp3d" => {
+                            let mut value = Shape3DType::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_shape_3d_type(value);
+                        }
+                        _ => {
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    b"scene3d" => {
-                        let mut obj = Scene3DType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_scene_3d_type(obj);
-                    }
-                    b"sp3d" => {
-                        let mut obj = Shape3DType::default();
-                        obj.set_attributes(reader, e);
-                        self.set_shape_3d_type(obj);
-                    }
-                    _ => skip_element(reader, e),
                 }
-            },
-            Event::Empty(ref e) => {
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                match if native {
-                    local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"extLst" => {
-                        let session = session
-                            .expect("Chart extension namespace context is required");
-                        self.set_extensions(Some(super::ExtensionList::read(
-                            reader, e, true, session
-                        )));
-                    },
-                    b"effectLst" => {
-                        self.set_effect_list(EffectList::default());
-                    },
-                    b"noFill" => {
-                        NoFill::set_attributes(reader, e, true);
-                        self.set_no_fill(NoFill::default());
-                    },
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == end.as_slice() {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:spPr")
-        );
+                Event::End(ref element) if element.name().as_ref() == end => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated shape properties")),
+                _ => return Err(crate::xml::xml_error("unexpected shape-property content")),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to_as(writer, "c:spPr");
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, "c:spPr")
     }
 
-    pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as_in_scope(writer, name, None)
+    }
+
+    pub(crate) fn write_to_as_in_scope(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+        inherited: Option<&super::NamespaceScope>,
+    ) -> Result<(), crate::XlsxError> {
+        if [
+            self.no_fill.is_some(),
+            self.solid_fill.is_some(),
+            self.pattern_fill.is_some(),
+            self.gradient_fill.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+            > 1
+        {
+            return Err(crate::xml::xml_error("conflicting shape fills"));
+        }
         write_start_tag(writer, name, vec![], false);
 
         // a:xfrm
@@ -463,12 +527,16 @@ impl ShapeProperties {
 
         // a:pattFill
         if let Some(v) = &self.pattern_fill {
-            v.write_to(writer);
+            v.write_to(writer)?;
+        }
+
+        if let Some(gradient) = &self.gradient_fill {
+            gradient.write_to(writer)?;
         }
 
         // a:solidFill
         if let Some(v) = &self.solid_fill {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:noFill
@@ -478,12 +546,12 @@ impl ShapeProperties {
 
         // a:ln
         if let Some(v) = &self.outline {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:effectLst
         if let Some(v) = &self.effect_list {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:scene3d
@@ -497,8 +565,13 @@ impl ShapeProperties {
         }
 
         if let Some(extensions) = self.extensions() {
-            extensions.write_for_owner(writer, None, "spPr", None);
+            if let Some(scope) = inherited {
+                extensions.write_for_owner_in_scope(writer, None, "spPr", None, scope)?;
+            } else {
+                extensions.write_for_owner(writer, None, "spPr", None)?;
+            }
         }
         write_end_tag(writer, name);
+        Ok(())
     }
 }

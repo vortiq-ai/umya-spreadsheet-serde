@@ -34,7 +34,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -135,7 +135,7 @@ impl ValueAxis {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
+    ) -> Result<usize, crate::XlsxError> {
         let mut restored = 0;
         let units_absent = previous.parts.as_ref().is_none_or(|parts| {
             parts.display_units().is_none() && parts.extra_display_units().is_empty()
@@ -150,7 +150,7 @@ impl ValueAxis {
         } else {
             match (&mut self.parts, &previous.parts) {
                 (Some(current), Some(previous)) => {
-                    restored += current.restore_export_parts(previous, report);
+                    restored += current.restore_export_parts(previous, report)?;
                 }
                 (None, Some(previous)) => {
                     self.parts = Some(previous.clone());
@@ -166,7 +166,7 @@ impl ValueAxis {
             (&mut self.text_properties, &previous.text_properties)
         {
             if current.projected_structure_matches(previous) {
-                restored += current.restore_export_parts(previous);
+                restored += current.restore_export_parts(previous)?;
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -174,7 +174,7 @@ impl ValueAxis {
                     .push("replaced value-axis text body retains no old fields".into());
             }
         }
-        restored
+        Ok(restored)
     }
 
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
@@ -632,91 +632,96 @@ impl ValueAxis {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
                 b"scaling" => {
-                    self.scaling.set_attributes(reader, e);
+                    self.scaling.set_attributes(reader, e)?;
                 }
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.set_title(obj);
                 }
-                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => {
+                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => {
                     let mut v=DisplayUnits::default();
-                    v.set_attributes(reader,e,false,session);
+                    v.set_attributes(reader,e,false,session)?;
                     self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default()))
                         .add_imported_display_units(v);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
                 b"txPr" => {
                     let mut obj = TextProperties::default();
-                    obj.read_with_session(reader, e, Some(session));
+                    obj.read_with_session(reader, e, Some(session))?;
                     self.set_text_properties(obj);
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes_with_session(reader, e, false, session);
+                    obj.set_attributes_with_session(reader, e, false, session)?;
                     self.set_major_gridlines(obj);
                 }
-                _ => skip_element(reader, e),
+                _ => skip_element(reader, e)?,
             },
-            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
-                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart") => { self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default())).add_imported_display_units(DisplayUnits::default()); },
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => { self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default())).add_imported_display_units(DisplayUnits::default()); },
                 b"axId" => {
-                    self.axis_id.set_attributes(reader, e);
+                    self.axis_id.set_attributes(reader, e)?;
                 }
                 b"delete" => {
-                    self.delete.set_attributes(reader, e);
+                    self.delete.set_attributes(reader, e)?;
                 }
                 b"axPos" => {
-                    self.axis_position.set_attributes(reader, e);
+                    self.axis_position.set_attributes(reader, e)?;
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes_with_session(reader, e, true, session);
+                    obj.set_attributes_with_session(reader, e, true, session)?;
                     self.set_major_gridlines(obj);
                 }
                 b"numFmt" => {
-                    self.numbering_format.set_attributes(reader, e);
+                    self.numbering_format.set_attributes(reader, e)?;
                 }
                 b"majorTickMark" => {
-                    self.major_tick_mark.set_attributes(reader, e);
+                    self.major_tick_mark.set_attributes(reader, e)?;
                 }
                 b"minorTickMark" => {
-                    self.minor_tick_mark.set_attributes(reader, e);
+                    self.minor_tick_mark.set_attributes(reader, e)?;
                 }
                 b"tickLblPos" => {
-                    self.tick_label_position.set_attributes(reader, e);
+                    self.tick_label_position.set_attributes(reader, e)?;
                 }
                 b"crossAx" => {
-                    self.crossing_axis.set_attributes(reader, e);
+                    self.crossing_axis.set_attributes(reader, e)?;
                 }
                 b"crosses" => {
-                    self.crosses.set_attributes(reader, e);
+                    self.crosses.set_attributes(reader, e)?;
                 }
                 b"crossBetween" => {
-                    self.cross_between.set_attributes(reader, e);
+                    self.cross_between.set_attributes(reader, e)?;
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"valAx" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:valAx")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:valAx")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:valAx
         write_start_tag(writer, "c:valAx", vec![], false);
 
@@ -734,12 +739,12 @@ impl ValueAxis {
 
         // c:majorGridlines
         if let Some(v) = &self.major_gridlines {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:title
         if let Some(v) = &self.title {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:numFmt
@@ -756,12 +761,12 @@ impl ValueAxis {
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:txPr
         if let Some(v) = &self.text_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:crossAx
@@ -773,9 +778,11 @@ impl ValueAxis {
         // c:crossBetween
         self.cross_between.write_to(writer);
         if let Some(v) = self.display_units() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         write_end_tag(writer, "c:valAx");
+
+        Ok(())
     }
 }

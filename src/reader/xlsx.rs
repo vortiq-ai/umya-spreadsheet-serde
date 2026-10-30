@@ -218,6 +218,76 @@ where
     )
 }
 
+pub(crate) struct WorksheetMaterialization {
+    original:       Worksheet,
+    raw:            RawWorksheet,
+    drawing_parts:  Option<crate::structs::drawing_parts::PreparedDrawingParts>,
+    chart_donors:   std::collections::HashMap<String, Option<(usize, usize)>>,
+    previous_parts: Vec<(String, Box<[u8]>)>,
+}
+
+impl WorksheetMaterialization {
+    fn commit(mut self, worksheet: &mut Worksheet) {
+        worksheet.set_drawing_parts(self.drawing_parts.map(|parts| parts.commit(&mut self.raw)));
+    }
+
+    fn rollback(
+        mut self,
+        worksheet: &mut Worksheet,
+        session: &SourceCacheSession,
+        provider: &mut dyn ChartPartProvider,
+    ) {
+        for (target, donor) in self.chart_donors {
+            let recovered = provider.recover_part(&target, session);
+            if let (Some((list_index, relationship_index)), Some(data)) = (donor, recovered) {
+                *self.raw.relationships_list_mut()[list_index].relationship_list_mut()
+                    [relationship_index]
+                    .raw_file_mut()
+                    .file_data_mut() = data;
+            }
+        }
+        session.restore_parts(self.previous_parts);
+        self.original.set_raw_data_of_worksheet(self.raw);
+        *worksheet = self.original;
+    }
+}
+
+fn rollback_worksheet_materializations(
+    book: &mut Workbook,
+    staged: Vec<(usize, WorksheetMaterialization)>,
+    session: &SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
+) {
+    provider.finish_sheet(session);
+    for (index, transaction) in staged.into_iter().rev() {
+        transaction.rollback(
+            &mut book.sheet_collection_unchecked_mut()[index],
+            session,
+            provider,
+        );
+    }
+}
+
+pub(crate) fn finish_worksheet_materializations(
+    book: &mut Workbook,
+    staged: Vec<(usize, WorksheetMaterialization)>,
+    session: &mut SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
+) -> Result<(), XlsxError> {
+    let fresh: Vec<_> = staged.iter().map(|(index, _)| *index).collect();
+    let report = *book.chart_source_cache_report();
+    if let Err(error) = capture_chart_source_caches(book, &fresh, session, provider) {
+        rollback_worksheet_materializations(book, staged, session, provider);
+        *book.chart_source_cache_report_mut() = report;
+        return Err(error);
+    }
+    for (index, transaction) in staged {
+        transaction.commit(&mut book.sheet_collection_unchecked_mut()[index]);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) fn raw_to_deserialize_by_worksheet(
     worksheet: &mut Worksheet,
     shared_string_table: &RwLock<SharedStringTable>,
@@ -225,8 +295,27 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     session: &mut SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
 ) -> Result<(), XlsxError> {
+    if let Some(staged) = prepare_worksheet_materialization(
+        worksheet,
+        shared_string_table,
+        stylesheet,
+        session,
+        provider,
+    )? {
+        staged.commit(worksheet);
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_worksheet_materialization(
+    worksheet: &mut Worksheet,
+    shared_string_table: &RwLock<SharedStringTable>,
+    stylesheet: &Stylesheet,
+    session: &mut SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
+) -> Result<Option<WorksheetMaterialization>, XlsxError> {
     if worksheet.is_deserialized() {
-        return Ok(());
+        return Ok(None);
     }
 
     let mut parsed = worksheet.materialization_target();
@@ -234,8 +323,11 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     let mut sheet_session = session.for_sheet();
     let mut chart_parts_added = false;
     let mut chart_donors = std::collections::HashMap::new();
+    let mut drawing_parts = None;
     let result = (|| {
-        let shared_string_table = &*shared_string_table.read().unwrap();
+        let shared_string_table = &*shared_string_table
+            .read()
+            .map_err(|error| crate::xml::xml_error(error.to_string()))?;
         worksheet::read(&mut parsed, &raw, shared_string_table, stylesheet)?;
         raw.load_relationship_file_data_from_source()?;
         let mut chart_parts = std::collections::HashMap::new();
@@ -243,7 +335,10 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
             for (relationship_index, relationship) in
                 relationships.relationship_list_mut().iter_mut().enumerate()
             {
-                if relationship.get_type() != crate::helper::const_str::CHART_NS {
+                if !matches!(
+                    relationship.get_type(),
+                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS
+                ) {
                     continue;
                 }
                 let file = relationship.raw_file_mut();
@@ -299,6 +394,8 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
                 }
             }
         }
+        drawing_parts =
+            crate::structs::drawing_parts::DrawingParts::prepare(&raw, &parsed, &sheet_session)?;
         Ok(())
     })();
     if chart_parts_added {
@@ -306,9 +403,15 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     }
     match result {
         Ok(()) => {
-            session.commit_sheet(&sheet_session);
-            *worksheet = parsed;
-            Ok(())
+            let previous_parts = session.commit_sheet(&sheet_session);
+            let original = std::mem::replace(worksheet, parsed);
+            Ok(Some(WorksheetMaterialization {
+                original,
+                raw,
+                drawing_parts,
+                chart_donors,
+                previous_parts,
+            }))
         }
         Err(error) => {
             if chart_parts_added {
@@ -336,20 +439,27 @@ fn materialize_eager_sheets<R: io::Read + io::Seek>(
     let shared_string_table = book.shared_string_table();
     let stylesheet = book.stylesheet().clone();
     let mut session = SourceCacheSession::deferred();
+    session.set_content_types(book.package_content_types());
     let mut provider = EagerChartPartProvider::new(archive);
-    let mut deserialized = Vec::new();
-    for (index, worksheet) in book.sheet_collection_unchecked_mut().iter_mut().enumerate() {
-        if !worksheet.is_deserialized() {
-            raw_to_deserialize_by_worksheet(
-                worksheet,
+    let mut staged = Vec::new();
+    for index in 0..book.sheet_collection_no_check().len() {
+        if !book.sheet_collection_no_check()[index].is_deserialized() {
+            match prepare_worksheet_materialization(
+                &mut book.sheet_collection_unchecked_mut()[index],
                 &shared_string_table,
                 &stylesheet,
                 &mut session,
                 &mut provider,
-            )?;
-            deserialized.push(index);
+            ) {
+                Ok(Some(transaction)) => staged.push((index, transaction)),
+                Ok(None) => (),
+                Err(error) => {
+                    rollback_worksheet_materializations(book, staged, &session, &mut provider);
+                    return Err(error);
+                }
+            }
         }
     }
-    capture_chart_source_caches(book, &deserialized, &mut session, &mut provider);
+    finish_worksheet_materializations(book, staged, &mut session, &mut provider)?;
     Ok(())
 }

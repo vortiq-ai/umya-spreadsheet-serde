@@ -26,11 +26,6 @@ use crate::{
         BlackWhiteModeValues,
         GradientFill,
     },
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::raw::RawRelationships,
     writer::driver::{
         write_end_tag,
@@ -342,80 +337,123 @@ impl ShapeProperties {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
+        empty: bool,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        set_string_from_xml!(self, e, black_white_mode, "bwMode");
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:xfrm" => {
-                        let mut obj = Transform2D::default();
-                        obj.set_attributes(reader, e);
-                        self.set_transform2d(obj);
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"bwMode")? {
+            self.set_black_white_mode(
+                value
+                    .parse()
+                    .map_err(|()| crate::xml::xml_error("invalid drawing black-and-white mode"))?,
+            );
+        }
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS {
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
                     }
-                    b"a:prstGeom" => {
-                        self.preset_geometry.set_attributes(reader, e);
+                    match name.local_name.as_str() {
+                        "xfrm" => {
+                            let mut value = Transform2D::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_transform2d(value);
+                        }
+                        "prstGeom" => self.preset_geometry.read_with_session(
+                            reader,
+                            child,
+                            empty,
+                            Some(session),
+                        )?,
+                        "blipFill" => {
+                            let mut value = BlipFill::default();
+                            value.read_with_session(
+                                reader,
+                                child,
+                                empty,
+                                drawing_relationships,
+                                session,
+                            )?;
+                            self.set_blip_fill(value);
+                        }
+                        "gradFill" => {
+                            let mut value = GradientFill::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_gradient_fill(value);
+                        }
+                        "ln" => {
+                            let mut value = Outline::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_outline(value);
+                        }
+                        "solidFill" => {
+                            let mut value = SolidFill::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_solid_fill(value);
+                        }
+                        "effectLst" => {
+                            let mut value = EffectList::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_effect_list(value);
+                        }
+                        "noFill" => {
+                            if !empty {
+                                crate::reader::driver::consume_empty_element(reader, child)?;
+                            }
+                            self.set_no_fill(NoFill::default());
+                        }
+                        "extLst" => {
+                            self.set_extension_list(
+                                ExtensionList::read(reader, child, empty, &scope)
+                                    .map_err(crate::xml::xml_error)?,
+                            );
+                        }
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported drawing shape property",
+                            ));
+                        }
                     }
-                    b"a:blipFill" => {
-                        let mut obj = BlipFill::default();
-                        obj.set_attributes(reader, e, drawing_relationships);
-                        self.set_blip_fill(obj);
-                    }
-                    b"a:gradFill" => {
-                        let mut obj = GradientFill::default();
-                        obj.set_attributes(reader, e);
-                        self.set_gradient_fill(obj);
-                    }
-                    b"a:ln" => {
-                        let mut outline = Outline::default();
-                        outline.set_attributes(reader, e);
-                        self.set_outline(outline);
-                    }
-                    b"a:solidFill" => {
-                        let mut solid_fill = SolidFill::default();
-                        solid_fill.set_attributes(reader, e);
-                        self.set_solid_fill(solid_fill);
-                    }
-                    b"a:effectLst" => {
-                        let mut effect_list = EffectList::default();
-                        effect_list.set_attributes(reader, e, false);
-                        self.set_effect_list(effect_list);
-                    }
-                    b"a:extLst" => {
-                        let obj = ExtensionList::default();
-                        ExtensionList::set_attributes(reader, e);
-                        self.set_extension_list(obj);
-                    }
-                    _ => (),
                 }
-            },
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:noFill" {
-                    let obj = NoFill::default();
-                    NoFill::set_attributes(reader, e, true);
-                    self.set_no_fill(obj);
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated drawing shape properties",
+                    ));
                 }
-            },
-            Event::End(ref e) => {
-                if matches!(e.name().into_inner(), b"xdr:spPr" | b"spPr") {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "spPr")
-        );
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         // xdr:spPr
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.black_white_mode.has_value() {
@@ -433,12 +471,15 @@ impl ShapeProperties {
 
         // a:blipFill
         if let Some(v) = &self.blip_fill {
-            v.write_to(writer, rel_list);
+            v.write_to(writer, rel_list)?;
         }
 
         // a:solidFill
         if let Some(v) = &self.solid_fill {
-            v.write_to(writer);
+            v.write_to(writer)?;
+        }
+        if let Some(v) = &self.gradient_fill {
+            v.write_to(writer)?;
         }
 
         // a:noFill
@@ -448,14 +489,159 @@ impl ShapeProperties {
 
         // a:ln
         if let Some(v) = &self.outline {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:effectLst
         if let Some(v) = &self.effect_list {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
+        if let Some(value) = &self.extension_list {
+            let mut metadata = value.clone();
+            if let Some(element) = metadata.element_mut() {
+                super::non_visual_drawing_properties::extension_relationships_mut(
+                    element,
+                    &mut |_, id| {
+                        super::non_visual_drawing_properties::rebind_relationship_id(id, rel_list);
+                    },
+                );
+            }
+            metadata
+                .write_to(writer)
+                .map_err(super::extended_chart::drawing_error)?;
+        }
         write_end_tag(writer, "xdr:spPr");
+        Ok(())
+    }
+}
+
+impl ShapeProperties {
+    pub(crate) fn visit_relationships(
+        &self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str),
+    ) {
+        if let Some(fill) = &self.blip_fill {
+            fill.blip().visit_relationships(visit);
+        }
+        if let Some(value) = self
+            .extension_list
+            .as_ref()
+            .and_then(ExtensionList::element)
+        {
+            super::non_visual_drawing_properties::extension_relationships(value, visit);
+        }
+    }
+
+    pub(crate) fn visit_relationships_mut(
+        &mut self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &mut String),
+    ) {
+        if let Some(fill) = &mut self.blip_fill {
+            fill.blip_mut().visit_relationships_mut(visit);
+        }
+        if let Some(value) = self
+            .extension_list
+            .as_mut()
+            .and_then(ExtensionList::element_mut)
+        {
+            super::non_visual_drawing_properties::extension_relationships_mut(value, visit);
+        }
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+
+    #[test]
+    fn gradient_fill_is_written_with_native_geometry_and_edits() {
+        let mut value = read(
+            r#"<x:spPr xmlns:x="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:srgbClr val="123456"/></a:gs><a:gs pos="100000"><a:srgbClr val="ABCDEF"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></x:spPr>"#,
+        );
+        let fill = value.gradient_fill_mut().unwrap();
+        assert!(fill.rotate_with_shape());
+        fill.set_rotate_with_shape(false);
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        value.write_to(&mut writer, &mut Vec::new()).unwrap();
+        let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+        assert!(output.contains("<a:gradFill"));
+        assert!(output.contains("rotWithShape=\"0\""));
+        assert!(output.contains("123456"));
+        assert!(output.contains("ABCDEF"));
+        assert!(output.contains("ang=\"5400000\""));
+    }
+
+    fn read(xml: &str) -> ShapeProperties {
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let Event::Start(start) = reader.read_event().unwrap() else {
+            panic!("root")
+        };
+        let mut value = ShapeProperties::default();
+        let session = crate::reader::xlsx::SourceCacheSession::immediate();
+        let _scope = session.push_extension_scope(
+            crate::drawing::charts::NamespaceScope::default()
+                .child(&start)
+                .unwrap(),
+        );
+        value
+            .read_with_session(&mut reader, &start, false, None, &session)
+            .unwrap();
+        value
+    }
+    #[test]
+    fn source_hidden_fill_and_no_fill_are_preserved_without_capturing_foreign_lookalikes() {
+        for no_fill in ["<d:noFill/>", "<d:noFill></d:noFill>"] {
+            let xml = format!(
+                "<x:spPr xmlns:x=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" \
+                 xmlns:d=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:f=\"urn:foreign\" bwMode=\"auto\">\
+                 <f:noFill/><f:extLst/>{no_fill}<d:extLst><d:ext uri=\"{{909E8E84-426E-40DD-AFC4-6F175D3DCCD1}}\">\
+                 <a14:hiddenFill xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\">\
+                 <d:solidFill><d:srgbClr val=\"FFFFFF\"/></d:solidFill></a14:hiddenFill>\
+                 </d:ext></d:extLst></x:spPr>"
+            );
+            let value = read(&xml);
+            assert!(value.no_fill().is_some());
+            let extension = value.extension_list().unwrap().element().unwrap();
+            assert!(
+                extension
+                    .name
+                    .is(crate::helper::const_str::DRAWINGML_MAIN_NS, "extLst")
+            );
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            write_start_tag(
+                &mut writer,
+                "xdr:wsDr",
+                vec![
+                    ("xmlns:xdr", crate::helper::const_str::SHEET_DRAWING_NS).into(),
+                    ("xmlns:a", crate::helper::const_str::DRAWINGML_MAIN_NS).into(),
+                ],
+                false,
+            );
+            value.write_to(&mut writer, &mut Vec::new()).unwrap();
+            write_end_tag(&mut writer, "xdr:wsDr");
+            let bytes = writer.into_inner().into_inner();
+            let output = std::str::from_utf8(&bytes).unwrap();
+            assert!(output.contains("hiddenFill"));
+            assert!(output.contains("FFFFFF"));
+            assert!(!output.contains("<f:noFill"));
+            assert!(!output.contains("<f:extLst"));
+            let mut reader = Reader::from_reader(bytes.as_slice());
+            let Event::Start(root) = reader.read_event().unwrap() else {
+                panic!("root")
+            };
+            let root = crate::drawing::charts::OpaqueElement::read(
+                &mut reader,
+                &root,
+                false,
+                &crate::drawing::charts::NamespaceScope::default(),
+            )
+            .unwrap();
+            let children = crate::xml::direct_children(&root).unwrap();
+            let xml = super::super::extended_chart::canonical_xml(&children[0]).unwrap();
+            let reread = read(std::str::from_utf8(&xml).unwrap());
+            assert!(reread.no_fill().is_some());
+            assert!(reread.extension_list().unwrap().element().is_some());
+        }
     }
 }

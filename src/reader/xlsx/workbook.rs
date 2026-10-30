@@ -36,6 +36,7 @@ pub(crate) fn read<R: io::Read + io::Seek>(
     let mut wb = Workbook::default();
 
     let mut defined_names: Vec<DefinedName> = Vec::new();
+    let mut sheet_ids = std::collections::HashSet::new();
 
     try_xml_read_loop!(
         reader,
@@ -58,6 +59,11 @@ pub(crate) fn read<R: io::Read + io::Seek>(
                     wb.set_workbook_protection(obj);
                 }
                 b"sheet" => {
+                    let raw_id = get_required_attribute(e, b"sheetId")?;
+                    let id=raw_id.parse::<u32>().map_err(|_| XlsxError::with_message(crate::XlsxErrorKind::Xml,"invalid worksheet id"))?;
+                    if !sheet_ids.insert(id) {
+                        return Err(XlsxError::with_message(crate::XlsxErrorKind::Xml,"duplicate worksheet id"));
+                    }
                     let mut worksheet = Worksheet::default();
                     worksheet.set_attributes_from_wookbook(&mut reader, e, is_empty);
                     wb.add_sheet(worksheet)?;

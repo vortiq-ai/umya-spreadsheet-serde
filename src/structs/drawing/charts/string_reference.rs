@@ -137,8 +137,9 @@ impl StringReference {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &SourceCacheSession,
-    ) {
-        self.read_named(reader, e, session, b"strCache");
+    ) -> Result<(), crate::XlsxError> {
+        self.read_named(reader, e, session, b"strCache")?;
+        Ok(())
     }
 
     /// Reads a real reference-shaped owner from the original chart reader.
@@ -150,8 +151,9 @@ impl StringReference {
         e: &BytesStart,
         session: &SourceCacheSession,
         cache_name: &[u8],
-    ) {
-        self.read_named_with(reader, e, session, cache_name, |_, _, _, _| false);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_named_with(reader, e, session, cache_name, |_, _, _, _| Ok(false))?;
+        Ok(())
     }
 
     /// Returns direct formula/cache occurrence counts. Extension owners retain
@@ -162,9 +164,14 @@ impl StringReference {
         e: &BytesStart,
         session: &SourceCacheSession,
         cache_name: &[u8],
-        mut extra: impl FnMut(&mut Reader<R>, &BytesStart, bool, (usize, usize)) -> bool,
-    ) -> (usize, usize, bool) {
-        let _scope_guard = session.enter_child_scope(e);
+        mut extra: impl FnMut(
+            &mut Reader<R>,
+            &BytesStart,
+            bool,
+            (usize, usize),
+        ) -> Result<bool, crate::XlsxError>,
+    ) -> Result<(usize, usize, bool), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let namespace = if cache_name == b"strCache" {
             super::extension_registry::NS_C
         } else {
@@ -177,8 +184,8 @@ impl StringReference {
         loop {
             buffer.clear();
             let start = reader.buffer_position();
-            match reader.read_event_into(&mut buffer).unwrap() {
-                Event::Start(e) => match if session.accepts_child_namespace(&e, namespace) {
+            match reader.read_event_into(&mut buffer)? {
+                Event::Start(e) => match if session.accepts_child_namespace(&e, namespace)? {
                     local_name(e.name().into_inner())
                 } else {
                     b""
@@ -186,12 +193,12 @@ impl StringReference {
                     b"extLst" if cache_name == b"strCache" => {
                         self.set_extensions(Some(super::ExtensionList::read(
                             reader, &e, false, session,
-                        )));
+                        )?));
                     }
                     b"f" => {
                         ordered &= counts.1 == 0;
                         counts.0 += 1;
-                        self.formula.set_attributes(reader, &e);
+                        self.formula.set_attributes(reader, &e)?;
                     }
                     name if name == cache_name => {
                         ordered &= counts.0 > 0;
@@ -204,7 +211,7 @@ impl StringReference {
                                     self.formula.address_str(),
                                     e.name().into_inner(),
                                     true,
-                                );
+                                )?;
                             register_parsed_string_cache(
                                 session,
                                 &mut self.string_cache,
@@ -212,8 +219,11 @@ impl StringReference {
                                 summary,
                             );
                         } else {
-                            (self.cached_value, self.string_cache) =
-                                StringCache::set_attributes(reader, &e, self.formula.address_str());
+                            (self.cached_value, self.string_cache) = StringCache::set_attributes(
+                                reader,
+                                &e,
+                                self.formula.address_str(),
+                            )?;
                             register_parsed_string_cache(
                                 session,
                                 &mut self.string_cache,
@@ -223,12 +233,12 @@ impl StringReference {
                         }
                     }
                     _ => {
-                        if !extra(reader, &e, false, counts) {
-                            crate::reader::driver::skip_element(reader, &e);
+                        if !extra(reader, &e, false, counts)? {
+                            crate::reader::driver::skip_element(reader, &e)?;
                         }
                     }
                 },
-                Event::Empty(e) => match if session.accepts_child_namespace(&e, namespace) {
+                Event::Empty(e) => match if session.accepts_child_namespace(&e, namespace)? {
                     local_name(e.name().into_inner())
                 } else {
                     b""
@@ -236,7 +246,7 @@ impl StringReference {
                     b"extLst" if cache_name == b"strCache" => {
                         self.set_extensions(Some(super::ExtensionList::read(
                             reader, &e, true, session,
-                        )));
+                        )?));
                     }
                     b"f" => {
                         ordered &= counts.1 == 0;
@@ -257,7 +267,7 @@ impl StringReference {
                         );
                     }
                     _ => {
-                        extra(reader, &e, true, counts);
+                        extra(reader, &e, true, counts)?;
                     }
                 },
                 Event::End(e) if e.name().into_inner() == end.as_slice() => {
@@ -266,15 +276,23 @@ impl StringReference {
                         &mut self.string_cache,
                         self.formula.address_str(),
                     );
-                    return (counts.0, counts.1, ordered);
+                    return Ok((counts.0, counts.1, ordered));
                 }
-                Event::Eof => panic!("unterminated string reference owner"),
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated string reference owner".to_string(),
+                    ));
+                }
                 _ => (),
             }
         }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:strRef
         write_start_tag(writer, "c:strRef", vec![], false);
 
@@ -285,8 +303,10 @@ impl StringReference {
         self.string_cache.write_to(writer, self.formula(), wb);
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "strRef", None);
+            ext.write_for_owner(writer, Some(wb), "strRef", None)?;
         }
         write_end_tag(writer, "c:strRef");
+
+        Ok(())
     }
 }

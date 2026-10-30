@@ -9,7 +9,7 @@ use quick_xml::{
 
 use super::super::super::UInt32Value;
 use crate::{
-    reader::driver::get_attribute,
+    reader::driver::require_attribute,
     writer::driver::write_start_tag,
 };
 
@@ -61,10 +61,14 @@ impl EndConnection {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.id.set_value_string(get_attribute(e, b"id").unwrap());
-        self.index
-            .set_value_string(get_attribute(e, b"idx").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        let id = require_attribute(e, b"id")?;
+        let index = require_attribute(e, b"idx")?;
+        let id = crate::xml::parse_u32(&id).map_err(crate::xml::xml_error)?;
+        let index = crate::xml::parse_u32(&index).map_err(crate::xml::xml_error)?;
+        self.set_id(id);
+        self.set_index(index);
+        Ok(())
     }
 
     #[inline]
@@ -78,5 +82,40 @@ impl EndConnection {
             ],
             true,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quick_xml::events::Event;
+
+    use super::*;
+
+    fn parsed(xml: &str) -> Result<EndConnection, crate::XlsxError> {
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let Event::Empty(start) = reader.read_event().unwrap() else {
+            panic!("expected empty connection");
+        };
+        let mut value = EndConnection::default();
+        value.set_attributes(&mut reader, &start)?;
+        Ok(value)
+    }
+
+    #[test]
+    fn connection_attributes_are_required_normalized_and_checked() {
+        let value = parsed(r#"<a:endCxn id=" &#x32; " idx="0"/>"#).unwrap();
+        assert_eq!(value.id(), 2);
+        assert_eq!(value.index(), 0);
+        for attrs in [
+            r#"id="1""#,
+            r#"idx="0""#,
+            r#"id="bad" idx="0""#,
+            r#"id="1" idx="-1""#,
+            r#"id="4294967296" idx="0""#,
+            r#"id="1" id="2" idx="0""#,
+            r#"id="1" idx="&missing;""#,
+        ] {
+            assert!(parsed(&format!("<a:endCxn {attrs}/>")).is_err(), "{attrs}");
+        }
     }
 }

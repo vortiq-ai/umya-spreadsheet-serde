@@ -19,7 +19,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -89,8 +89,9 @@ impl SideWall {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-    ) {
-        self.read_with_session(reader, owner, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, owner, None)?;
+        Ok(())
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
@@ -98,8 +99,9 @@ impl SideWall {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_with_session(reader, e, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, Some(session))?;
+        Ok(())
     }
 
     fn read_with_session<R: std::io::BufRead>(
@@ -107,47 +109,56 @@ impl SideWall {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
         let end = owner.name().into_inner().to_vec();
 
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_C));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_C)?,
+                    None => true,
+                };
                 match if native { local_name(e.name().into_inner()) } else { b"" } {
                     b"thickness" => {
                         let mut obj = Thickness::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_thickness(obj);
-                        if !empty { skip_element(reader, e); }
+                        if !empty { skip_element(reader, e)?; }
                     },
                     b"spPr" => {
                         let mut obj = ShapeProperties::default();
                         if !empty {
                             match session {
                                 Some(session) => {
-                                    obj.set_attributes_with_session(reader, e, session);
+                                    obj.set_attributes_with_session(reader, e, session)?;
                                 }
-                                None => obj.set_attributes(reader, e),
+                                None => obj.set_attributes(reader, e)?,
                             }
                         }
                         self.set_shape_properties(obj);
                     },
-                    _ => { if !empty { skip_element(reader, e); } },
+                    _ => { if !empty { skip_element(reader, e)?; } },
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:sideWall")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:sideWall")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // c:sideWall
         write_start_tag(writer, "c:sideWall", vec![], false);
 
@@ -158,9 +169,11 @@ impl SideWall {
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:sideWall");
+
+        Ok(())
     }
 }

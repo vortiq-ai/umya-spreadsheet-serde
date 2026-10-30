@@ -17,16 +17,15 @@ use super::{
     extension_registry::NS_C,
 };
 use crate::{
-    drawing::get_unescaped_attribute,
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -113,16 +112,22 @@ impl PictureOptions {
         owner: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(owner));
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
         let end = owner.name().into_inner().to_vec();
         let mut result = Self::default();
         if empty {
-            return result;
+            return Ok(result);
         }
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_C));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_C)?,
+                    None => true,
+                };
                 match if native {
                     local_name(e.name().into_inner())
                 } else {
@@ -131,14 +136,16 @@ impl PictureOptions {
                     b"applyToFront" => result.apply_to_front = Some(XmlBoolean::read(e)),
                     b"applyToSides" => result.apply_to_sides = Some(XmlBoolean::read(e)),
                     b"applyToEnd" => result.apply_to_end = Some(XmlBoolean::read(e)),
-                    b"pictureFormat" => result.format = Some({ let mut value = ScalarElement::default(); value.set_attribute(get_unescaped_attribute(e,b"val").and_then(|v| match v.as_str() { "stretch" => Some(PictureFormat::Stretch), "stack" => Some(PictureFormat::Stack), "stackScale" => Some(PictureFormat::StackScale), _ => None })); value }),
+                    b"pictureFormat" => result.format = Some({ let mut value = ScalarElement::default(); value.set_attribute(crate::reader::driver::read_attribute(e,b"val")?.and_then(|v| match v.as_str() { "stretch" => Some(PictureFormat::Stretch), "stack" => Some(PictureFormat::Stack), "stackScale" => Some(PictureFormat::StackScale), _ => None })); value }),
                     b"pictureStackUnit" => result.stack_unit = Some(XmlDouble::read(e)),
                     _ => (),
                 }
-                if matches!(event, Event::Start(_)) { skip_element(reader,e); }
+                if matches!(event, Event::Start(_)) { skip_element(reader,e)?; }
             },
-            Event::End(ref e) => { if e.name().into_inner() == end.as_slice() { return result; } },
-            Event::Eof => panic!("Could not find pictureOptions end element"),
+            Event::End(ref e) => {
+                if e.name().into_inner() == end.as_slice() { return Ok(result); }
+            },
+            Event::Eof => return Err(crate::xml::xml_error("Could not find pictureOptions end element".to_string())),
         );
     }
 

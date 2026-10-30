@@ -141,8 +141,8 @@ fn outline_ignores_foreign_dash_and_fill_choices() {
 
 fn gradient(inner: &str) -> String {
     format!(
-        "<a:ln><a:gradFill><a:gsLst><a:gs pos=\"0\"><a:srgbClr \
-         val=\"00FF00\"/></a:gs></a:gsLst>{inner}</a:gradFill></a:ln>"
+        "<a:ln><a:gradFill><a:gsLst><a:gs pos=\"0\"><a:srgbClr val=\"00FF00\"/></a:gs><a:gs \
+         pos=\"100000\"><a:srgbClr val=\"0000FF\"/></a:gs></a:gsLst>{inner}</a:gradFill></a:ln>"
     )
 }
 

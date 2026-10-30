@@ -341,11 +341,54 @@ fn chart_raw_files(sheet: &serde_json::Value) -> Vec<&serde_json::Value> {
 #[test]
 fn aliased_chart_targets_survive_late_failure_and_retry() {
     let valid = aliased_chart_input();
-    let control = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(&valid), true).unwrap();
+    let mut control =
+        umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(&valid), true).unwrap();
     assert_eq!(control.sheet(1).unwrap().chart_collection().len(), 2);
+    // Byte-identical aliases legitimately share one emitted part. Give the
+    // second actual frame distinct native metadata to exercise independent
+    // part allocation without changing its source cache payload.
+    control.sheet_mut(1).unwrap().chart_collection_mut()[1]
+        .chart_space_mut()
+        .editing_language_mut()
+        .set_val("fr-FR");
     let exported = fixture::write_workbook(&control);
-    for name in ["xl/charts/chart2.xml", "xl/charts/chart3.xml"] {
-        assert!(part(&exported, name).contains("Original one"));
+    // Export assigns leaf keys from actual native frame identities, not
+    // collection ordinals. Follow the package's chart relationships.
+    let relationships = part(&exported, "xl/drawings/_rels/drawing2.xml.rels");
+    let mut reader = quick_xml::Reader::from_str(&relationships);
+    let mut targets = Vec::new();
+    loop {
+        match reader.read_event().unwrap() {
+            quick_xml::events::Event::Empty(element)
+                if element.local_name().as_ref() == b"Relationship" =>
+            {
+                let attributes: Vec<_> = element.attributes().map(Result::unwrap).collect();
+                if attributes.iter().any(|attribute| {
+                    attribute.key.as_ref() == b"Type" && attribute.value.ends_with(b"/chart")
+                }) {
+                    let target = attributes
+                        .iter()
+                        .find(|attribute| attribute.key.as_ref() == b"Target")
+                        .unwrap();
+                    let target = target
+                        .decoded_and_normalized_value(
+                            quick_xml::XmlVersion::Implicit1_0,
+                            reader.decoder(),
+                        )
+                        .unwrap();
+                    targets.push(format!("xl/{}", target.strip_prefix("../").unwrap()));
+                }
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => (),
+        }
+    }
+    assert_eq!(targets.len(), 2);
+    assert_ne!(targets[0], targets[1]);
+    for (target, language) in targets.iter().zip(["en-GB", "fr-FR"]) {
+        let xml = part(&exported, target);
+        assert!(xml.contains("Original one"));
+        assert!(xml.contains(&format!("<c:lang val=\"{language}\"/>")));
     }
     let mut drawing = part(&valid, "xl/drawings/drawing2.xml");
     drawing.push_str("<bad></wrong>");

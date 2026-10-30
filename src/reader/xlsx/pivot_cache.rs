@@ -27,7 +27,7 @@ pub(crate) fn read(
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 if e.name().into_inner() == b"pivotCacheDefinition" {
-                    pivot_cache_def.set_attributes(&mut reader, e);
+                    pivot_cache_def.set_attributes(&mut reader, e)?;
                 }
             }
             Ok(Event::End(ref e)) => {

@@ -164,7 +164,44 @@ fn chart_json_without_parts_preserves_existing_fields() {
             serde_json::Value::Object(fields) => {
                 let object = current.as_object().unwrap();
                 for (key, value) in fields {
-                    assert_existing_subset(value, &object[key]);
+                    if key == "shape_auto_fit" {
+                        assert!(
+                            value.is_null(),
+                            "fixture only contains absent legacy autofit"
+                        );
+                        assert_eq!(object.get("auto_fit"), Some(&serde_json::Value::Null));
+                        assert!(!object.contains_key("shape_auto_fit"));
+                    } else if key == "rgb_color_model_hex" && value.is_object() {
+                        // This fixture has no legacy color transforms. Their
+                        // canonical native representation is one ordered list.
+                        let old_color = value.as_object().unwrap();
+                        let current_color = object[key].as_object().unwrap();
+                        let legacy_transforms = [
+                            "alpha",
+                            "luminance",
+                            "luminance_modulation",
+                            "luminance_offset",
+                            "saturation",
+                            "saturation_modulation",
+                            "shade",
+                            "tint",
+                        ];
+                        for transform in legacy_transforms {
+                            assert_eq!(old_color.get(transform), Some(&serde_json::Value::Null));
+                            assert!(!current_color.contains_key(transform));
+                        }
+                        assert_eq!(
+                            current_color.get("transforms"),
+                            Some(&serde_json::json!([]))
+                        );
+                        for (color_key, color_value) in old_color {
+                            if !legacy_transforms.contains(&color_key.as_str()) {
+                                assert_existing_subset(color_value, &current_color[color_key]);
+                            }
+                        }
+                    } else {
+                        assert_existing_subset(value, &object[key]);
+                    }
                 }
             }
             serde_json::Value::Array(values) => {

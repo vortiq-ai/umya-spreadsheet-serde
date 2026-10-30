@@ -528,6 +528,128 @@ fn codec_variants(book: &Workbook) -> [Chart; 3] {
     assert_eq!(serde_json::to_value(&binary).unwrap(), expected);
     [original, json, binary]
 }
+
+#[test]
+fn extension_list_numeric_whitespace_survives_eager_and_lazy_import() {
+    let fixture = include_str!("fixtures/chart_extensions/registered-ser-uniqueId.xml");
+    let xml = fixture.replace("<c:extLst>", "<c:extLst>&#32;&#x9;&#10;&#13;");
+    let bytes = replace_part(&base(), &xml);
+    for eager in [true, false] {
+        let mut book = load(&bytes, eager);
+        book.try_read_sheet(0).unwrap();
+        let list = series(&book)[0].extensions().unwrap();
+        assert!(list.conflict().is_none());
+        assert!(
+            list.export_diagnostics_for_owner(Some(&book), "ser", Some(SeriesFamily::Bar))
+                .is_empty()
+        );
+        assert!(part(&save(&book, "list-numeric-whitespace")).contains("uniqueId"));
+    }
+}
+
+#[test]
+fn typed_extension_element_only_content_is_diagnosed_not_silently_cleaned() {
+    for (fixture, element, owner) in [
+        (
+            include_str!("fixtures/chart_extensions/registered-ser-uniqueId.xml"),
+            "c16:uniqueId",
+            "ser",
+        ),
+        (
+            include_str!("fixtures/chart_extensions/registered-dLbls-showLeaderLines.xml"),
+            "c15:showLeaderLines",
+            "dLbls",
+        ),
+    ] {
+        for (content, valid) in [
+            (" \t\r\n", true),
+            ("<![CDATA[ \t\n]]>", true),
+            ("&#32;&#x9;&#10;&#13;", true),
+            ("unexpected", false),
+            ("<![CDATA[unexpected]]>", false),
+            ("&#120;", false),
+        ] {
+            let start = fixture.find(&format!("<{element} ")).unwrap();
+            let end = start + fixture[start..].find("/>").unwrap();
+            let xml = format!(
+                "{}>{content}</{element}>{}",
+                &fixture[..end],
+                &fixture[end + 2..]
+            );
+            let bytes = replace_part(&base(), &xml);
+            for eager in [true, false] {
+                let mut book = load(&bytes, eager);
+                book.try_read_sheet(0).unwrap();
+                let native_series = &series(&book)[0];
+                assert_eq!(native_series.index().val(), 7);
+                assert_eq!(native_series.order().val(), 8);
+                let list = if owner == "ser" {
+                    native_series.extensions().unwrap()
+                } else {
+                    native_series.data_labels().unwrap().extensions().unwrap()
+                };
+                let diagnostics =
+                    list.export_diagnostics_for_owner(Some(&book), owner, Some(SeriesFamily::Bar));
+                assert_eq!(
+                    diagnostics.len(),
+                    usize::from(!valid),
+                    "{element}: {content}"
+                );
+                if !valid {
+                    assert_eq!(diagnostics[0].reason, "InvalidValue");
+                }
+                let before = serde_json::to_value(chart(&book)).unwrap();
+                let output = save(&book, "typed-element-only-content");
+                let output_xml = part(&output);
+                assert_eq!(
+                    output_xml.contains(element),
+                    valid,
+                    "{element}: {content}: {output_xml}"
+                );
+                assert_eq!(serde_json::to_value(chart(&book)).unwrap(), before);
+                let reloaded = load(&output, true);
+                assert_eq!(series(&reloaded)[0].index().val(), 7);
+                assert_eq!(series(&reloaded)[0].order().val(), 8);
+            }
+        }
+    }
+}
+
+#[test]
+fn extension_character_decode_errors_propagate_for_lists_and_typed_payloads() {
+    let unique = include_str!("fixtures/chart_extensions/registered-ser-uniqueId.xml");
+    let boolean = include_str!("fixtures/chart_extensions/registered-dLbls-showLeaderLines.xml");
+    for entity in ["&missing;", "&#xZZ;", "&#0;"] {
+        for xml in [
+            unique.replace("<c:extLst>", &format!("<c:extLst>{entity}")),
+            unique.replace(
+                "<c16:uniqueId val=\"lexical ID, not necessarily a GUID\"/>",
+                &format!(
+                    "<c16:uniqueId val=\"lexical ID, not necessarily a \
+                     GUID\">{entity}</c16:uniqueId>"
+                ),
+            ),
+            boolean.replace(
+                "<c15:showLeaderLines val=\"false\"/>",
+                &format!("<c15:showLeaderLines val=\"false\">{entity}</c15:showLeaderLines>"),
+            ),
+        ] {
+            let bytes = replace_part(&base(), &xml);
+            for eager in [true, false] {
+                match umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(&bytes), eager) {
+                    Err(_) => (),
+                    Ok(mut book) => {
+                        assert!(!eager, "eager import accepted {entity}: {xml}");
+                        assert!(
+                            book.try_read_sheet(0).is_err(),
+                            "lazy import accepted {entity}: {xml}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
 #[test]
 fn every_supported_registry_fixture_keeps_complete_chart_state_through_both_codecs_and_export() {
     assert_eq!(CASES.len(), 56);

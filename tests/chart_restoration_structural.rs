@@ -108,7 +108,7 @@ fn assert_edited_projection(mut book: Workbook, expected: BTreeMap<String, usize
     let mut replacement = basis.clone();
     replacement.strip_export_parts();
     replacement.set_title("metadata update after source edit");
-    let report = replacement.restore_export_parts(&basis);
+    let report = replacement.restore_export_parts(&basis).unwrap();
     assert_eq!(report.matched_series, 2, "{report:?}");
     assert_eq!(report.ambiguous_series, 0, "{report:?}");
     for group in replacement.chart_space().chart().plot_area().chart_groups() {
@@ -259,7 +259,7 @@ fn changing_editable_values_keeps_original_custom_errors_and_point_indices() {
             .formula_mut()
             .set_address_str("Data!$H$8:$H$11");
     }
-    current.restore_export_parts(&basis);
+    current.restore_export_parts(&basis).unwrap();
     book.sheet_mut(0).unwrap().chart_collection_mut()[0] = current;
     let mut expected = expected_roles("Data", COLUMNS, Some((2, 5)));
     assert_eq!(expected.remove("Data!$B$2:$B$5"), Some(2));
@@ -319,7 +319,7 @@ fn replacement_discards_supplied_caches_and_only_restores_the_matched_trusted_ca
     let expected = category_source(&basis).unwrap().clone();
     let mut current = cached_chart("untrusted client");
     assert_ne!(category_source(&current), Some(&expected));
-    let report = current.restore_export_parts(&basis);
+    let report = current.restore_export_parts(&basis).unwrap();
     assert!(report.restored_caches >= 1, "{report:?}");
     assert_eq!(category_source(&current), Some(&expected));
     assert_eq!(category_source(&basis), Some(&expected));
@@ -340,7 +340,7 @@ fn actual_formula_changes_invalidate_cache_eligibility_without_guard_retagging()
             .formula_mut()
             .set_address_str("Data!$A$3:$A$6");
     }
-    current.restore_export_parts(&basis);
+    current.restore_export_parts(&basis).unwrap();
     assert!(category_source(&current).is_none());
     assert_eq!(category_source(&basis).unwrap().formula(), old_guard);
 }

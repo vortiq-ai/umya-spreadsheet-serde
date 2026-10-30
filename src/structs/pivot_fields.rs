@@ -4,14 +4,10 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use crate::{
-    reader::driver::xml_read_loop,
     structs::PivotField,
     writer::driver::{
         write_end_tag,
@@ -48,40 +44,76 @@ impl PivotFields {
     pub fn get_list_mut(&mut self) -> &mut Vec<PivotField> {
         self.list_mut()
     }
-    
+
     #[inline]
     pub fn add_list_mut(&mut self, value: PivotField) -> &mut Self {
         self.list.push(value);
         self
     }
 
-    #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        element: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        self.set_attributes_scoped(
             reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                if e.name().into_inner() == b"pivotField" {
-                    let mut obj = PivotField::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.add_list_mut(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"pivotFields" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "pivotFields")
-        );
+            element,
+            false,
+            &crate::drawing::charts::NamespaceScope::with_bindings([(
+                None,
+                "http://schemas.openxmlformats.org/spreadsheetml/2006/main".into(),
+            )]),
+        )
+    }
+
+    pub(crate) fn set_attributes_scoped<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        parent: &crate::drawing::charts::NamespaceScope,
+    ) -> Result<(), crate::XlsxError> {
+        use crate::xml::{
+            attributes,
+            direct_children,
+            expect,
+            unsigned,
+            xml_error,
+        };
+        let node = crate::drawing::charts::OpaqueElement::read(reader, element, empty, parent)
+            .map_err(xml_error)?;
+        expect(
+            &node,
+            "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+            "pivotFields",
+        )
+        .map_err(xml_error)?;
+        attributes(
+            &node,
+            &["count"],
+            &[(crate::helper::const_str::MC_NS, "Ignorable")],
+        )
+        .map_err(xml_error)?;
+        let mut list = Vec::new();
+        for child in direct_children(&node).map_err(xml_error)? {
+            list.push(PivotField::from_element(&child).map_err(xml_error)?);
+        }
+        if unsigned(&node, "count")
+            .map_err(xml_error)?
+            .is_some_and(|count| count as usize != list.len())
+        {
+            return Err(xml_error("pivot field count mismatch"));
+        }
+        self.list = list;
+        Ok(())
     }
 
     #[inline]
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // pivotFields
         write_start_tag(
             writer,
@@ -92,9 +124,10 @@ impl PivotFields {
 
         // pivotField
         for sheet_view in &self.list {
-            sheet_view.write_to(writer);
+            sheet_view.write_to(writer)?;
         }
 
         write_end_tag(writer, "pivotFields");
+        Ok(())
     }
 }

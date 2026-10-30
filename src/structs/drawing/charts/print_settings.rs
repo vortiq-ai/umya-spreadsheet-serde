@@ -18,7 +18,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -113,32 +113,25 @@ impl PrintSettings {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        source_owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = source_owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
-                b"headerFooter" => {
-                    HeaderFooter::set_attributes(reader, e);
-                }
-                b"pageSetup" => {
-                    PageSetup::set_attributes(reader, e);
-                }
-                _ => (),
-                }
+                crate::reader::driver::skip_element(reader, e)?;
             },
             Event::Empty(ref e) => {
                 if local_name(e.name().0) == b"pageMargins" {
-                    self.page_margins.set_attributes(reader, e);
+                    self.page_margins.set_attributes(reader, e)?;
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"printSettings" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:printSettings")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:printSettings")))
         );
     }
 

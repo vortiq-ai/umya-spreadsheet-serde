@@ -98,69 +98,37 @@ fn corrupt_chart_crc(bytes: &[u8]) -> Vec<u8> {
     panic!("chart entry was not found in the ZIP directory");
 }
 
+fn assert_chart_transport_error_is_atomic(bytes: &[u8], label: &str) {
+    assert!(umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).is_err());
+    let path = std::env::temp_dir().join(format!("umya-chart-{label}-{}.xlsx", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
+    let before = serde_json::to_value(&lazy.sheet_collection_no_check()[0]).unwrap();
+    let report = cache_report(&lazy);
+    for _ in 0..3 {
+        assert!(lazy.try_read_sheet(0).is_err());
+        assert_eq!(
+            serde_json::to_value(&lazy.sheet_collection_no_check()[0]).unwrap(),
+            before
+        );
+        assert_eq!(cache_report(&lazy), report);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
-fn missing_chart_parts_keep_the_existing_empty_result() {
+fn missing_chart_parts_return_errors_without_mutating_lazy_state() {
     let bytes = rewrite_part(
         &chart_package(),
         "xl/drawings/_rels/drawing1.xml.rels",
         |xml| xml.replace("../charts/chart1.xml", "../charts/missing.xml"),
     );
-    let book = read_book(&bytes);
-    assert_eq!(cache_report(&book), (0, 0, 0, 0, 0, 0, 0, 0));
-    let output = write(&book);
-    assert!(
-        zip::ZipArchive::new(Cursor::new(output))
-            .unwrap()
-            .by_name("xl/charts/chart1.xml")
-            .is_err()
-    );
-
-    let path = std::env::temp_dir().join(format!(
-        "umya-chart-missing-{}-{}.xlsx",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("reader")
-    ));
-    std::fs::write(&path, &bytes).unwrap();
-    let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
-    lazy.sheet_mut(0).unwrap();
-    std::fs::remove_file(&path).unwrap();
-    assert_eq!(cache_report(&lazy), (0, 0, 0, 0, 0, 0, 0, 0));
-    assert!(
-        zip::ZipArchive::new(Cursor::new(write(&lazy)))
-            .unwrap()
-            .by_name("xl/charts/chart1.xml")
-            .is_err()
-    );
+    assert_chart_transport_error_is_atomic(&bytes, "missing");
 }
 
 #[test]
-fn unreadable_chart_parts_discard_partial_bytes() {
-    let bytes = corrupt_chart_crc(&chart_package());
-    let eager = read_book(&bytes);
-    assert_eq!(cache_report(&eager), (0, 0, 0, 0, 0, 0, 0, 0));
-    assert!(
-        zip::ZipArchive::new(Cursor::new(write(&eager)))
-            .unwrap()
-            .by_name("xl/charts/chart1.xml")
-            .is_err()
-    );
-
-    let path = std::env::temp_dir().join(format!(
-        "umya-chart-crc-{}-{}.xlsx",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("reader")
-    ));
-    std::fs::write(&path, &bytes).unwrap();
-    let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();
-    lazy.sheet_mut(0).unwrap();
-    std::fs::remove_file(&path).unwrap();
-    assert_eq!(cache_report(&lazy), (0, 0, 0, 0, 0, 0, 0, 0));
-    assert!(
-        zip::ZipArchive::new(Cursor::new(write(&lazy)))
-            .unwrap()
-            .by_name("xl/charts/chart1.xml")
-            .is_err()
-    );
+fn unreadable_chart_parts_discard_partial_bytes_and_roll_back() {
+    assert_chart_transport_error_is_atomic(&corrupt_chart_crc(&chart_package()), "crc");
 }
 
 #[test]
@@ -352,52 +320,24 @@ fn chart_zip_name_compatibility_matches_the_raw_loader() {
 }
 
 #[test]
-fn replay_read_failure_clears_a_canonical_deferred_source() {
-    let canonical = umya_spreadsheet::reader::xlsx::read_reader(
-        fail_on_last_chart_open(&chart_package()),
-        true,
-    )
-    .unwrap();
-    assert_eq!(canonical.sheet(0).unwrap().chart_collection().len(), 1);
-    assert!(stored_caches(&canonical).is_empty());
-    assert_eq!(cache_report(&canonical), (0, 0, 0, 0, 0, 0, 0, 0));
-    assert_eq!(
-        category_reference(&part(&write(&canonical), "xl/charts/chart1.xml"), 0),
-        reference_xml("Sheet1!$A$1", &dense_cache(1, |_| "cells".into()))
+fn replay_read_failure_returns_a_structured_error() {
+    assert!(
+        umya_spreadsheet::reader::xlsx::read_reader(
+            fail_on_last_chart_open(&chart_package()),
+            true,
+        )
+        .is_err()
     );
 }
 
 #[test]
-fn unreadable_chart_part_leaves_an_image_frame_without_sources() {
-    // A drawing with a single image frame replays its sources from the buffer
-    // its own metadata parse just filled, so the last chart open is that
-    // parse: a failed read leaves the frame with an empty chart and nothing
-    // to replay.
-    let image = umya_spreadsheet::reader::xlsx::read_reader(
-        fail_on_last_chart_open(&grouped_one_cell_drawing(&chart_package())),
-        true,
-    )
-    .unwrap();
-    let drawing = image.sheet(0).unwrap().worksheet_drawing();
-    assert!(drawing.chart_collection().is_empty());
-    assert_eq!(drawing.image_collection().len(), 1);
-    assert!(stored_caches(&image).is_empty());
-    assert_eq!(cache_report(&image), (0, 0, 0, 0, 0, 0, 0, 0));
-    let chart_space = drawing.image_collection()[0]
-        .one_cell_anchor()
-        .unwrap()
-        .graphic_frame()
-        .unwrap()
-        .graphic()
-        .graphic_data()
-        .chart_space();
+fn unreadable_chart_part_returns_an_error_instead_of_an_empty_image_frame() {
     assert!(
-        chart_space
-            .chart()
-            .plot_area()
-            .chart_groups()
-            .next()
-            .is_none()
+        umya_spreadsheet::reader::xlsx::read_reader(
+            fail_on_last_chart_open(&grouped_one_cell_drawing(&chart_package())),
+            true,
+        )
+        .is_err()
     );
 }
 
@@ -423,13 +363,14 @@ fn image_frame_before_another_chart_part() -> Vec<u8> {
         let end = start
             + xml[start..].find("</xdr:twoCellAnchor>").unwrap()
             + "</xdr:twoCellAnchor>".len();
-        let anchor = one_cell_chart_anchor(&xml[start..end]).replacen(
-            "<xdr:graphicFrame",
-            "<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" name=\"Group \
-             1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp><xdr:\
-             graphicFrame",
-            1,
-        );
+        let anchor = one_cell_chart_anchor(&xml[start..end])
+            .replacen(
+                "<xdr:graphicFrame",
+                "<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"9001\" name=\"Group \
+                 1\"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr/><xdr:graphicFrame",
+                1,
+            )
+            .replacen("</xdr:graphicFrame>", "</xdr:graphicFrame></xdr:grpSp>", 1);
         format!("{}{anchor}{}", &xml[..start], &xml[end..])
     })
 }
@@ -457,8 +398,7 @@ fn assert_image_frame_before_another_chart_part(book: &Workbook) {
     assert!(drawing.one_cell_anchor_collection().is_empty());
     let category = drawing.image_collection()[0]
         .one_cell_anchor()
-        .unwrap()
-        .graphic_frame()
+        .map(grouped_chart_frame)
         .unwrap()
         .graphic()
         .graphic_data()
@@ -505,25 +445,15 @@ fn image_hydration_reopen_reads_the_part_the_following_chart_displaced() {
 }
 
 #[test]
-fn failed_image_hydration_reopen_leaves_the_frame_without_a_source() {
+fn failed_image_hydration_reopen_returns_a_structured_error() {
     let bytes = image_frame_before_another_chart_part();
-    // Only the image frame uses chart part 1, and its replay is the last
-    // thing to open it, after the following chart has displaced it.
-    let mut book =
-        umya_spreadsheet::reader::xlsx::read_reader(fail_on_last_chart_open(&bytes), true).unwrap();
-    assert_image_frame_before_another_chart_part(&book);
-    assert_eq!(cache_report(&book), (1, 1, 6, 0, 0, 0, 0, 0));
-    assert_eq!(
-        formulas(&stored_caches(&book)),
-        [FOLLOWING_CHART_FORMULA.to_string()]
+    // A failing final reopen cannot expose partially hydrated chart state.
+    assert!(
+        umya_spreadsheet::reader::xlsx::read_reader(fail_on_last_chart_open(&bytes), true).is_err()
     );
-    assert_eq!(
-        category_reference(
-            &export_image_frame_part(&mut book, "xl/charts/chart2.xml"),
-            0
-        ),
-        generated(IMAGE_FRAME_FORMULA, 2)
-    );
+    // Ordinary source-backed lazy failures preserve both raw buffers and
+    // the workbook cache report on repeated materialization attempts.
+    assert_chart_transport_error_is_atomic(&corrupt_chart_crc(&bytes), "image-hydration");
 }
 
 /// Replaces the cache of the `n`-th `c:cat` of `xml` with `cache`.
@@ -901,14 +831,19 @@ fn source_cache_budget_is_per_workbook_in_worksheet_order() {
         assert_eq!(report.over_cap_text_bytes, report.kept_text_bytes);
         assert_eq!(self::formulas(&stored_caches(&book)), [formulas[0].clone()]);
         let output = write(&book);
-        assert_eq!(
-            category_reference(&part(&output, "xl/charts/chart1.xml"), 0),
-            reference_xml(formulas[0], &cache)
-        );
-        assert_eq!(
-            category_reference(&part(&output, "xl/charts/chart2.xml"), 0),
-            generated(formulas[1], rows)
-        );
+        // Preferred source part names remain stable when workbook sheet
+        // order changes; cache admission still follows worksheet order.
+        for (target, formula) in [
+            ("xl/charts/chart1.xml", &first),
+            ("xl/charts/chart2.xml", &second),
+        ] {
+            let expected = if formula == formulas[0] {
+                reference_xml(formula, &cache)
+            } else {
+                generated(formula, rows)
+            };
+            assert_eq!(category_reference(&part(&output, target), 0), expected);
+        }
         reconcile_admission(&book);
     }
 }
@@ -1068,9 +1003,7 @@ fn image_frame_without_a_stored_cache_exports_the_cell_display() {
         (7, 0, 0, 0)
     );
     assert_eq!((frame.extent().cx(), frame.extent().cy()), (1, 1));
-    let category = frame
-        .graphic_frame()
-        .unwrap()
+    let category = grouped_chart_frame(frame)
         .graphic()
         .graphic_data()
         .chart_space()
@@ -1104,18 +1037,31 @@ fn report_tuple(book: &Workbook) -> (usize, usize, usize, usize, usize, usize, u
     )
 }
 
+fn grouped_chart_frame(
+    anchor: &umya_spreadsheet::drawing::spreadsheet::OneCellAnchor,
+) -> &umya_spreadsheet::drawing::spreadsheet::GraphicFrame {
+    let group = anchor.group_shape().expect("authored native group");
+    assert_eq!(group.content().len(), 1);
+    let umya_spreadsheet::drawing::spreadsheet::DrawingObject::GraphicFrame(frame) =
+        &group.content()[0]
+    else {
+        panic!("authored group child is a native chart frame");
+    };
+    frame
+}
+
 fn grouped_one_cell_drawing(bytes: &[u8]) -> Vec<u8> {
     rewrite_part(bytes, "xl/drawings/drawing1.xml", |xml| {
         let start = xml.find("<xdr:to>").unwrap();
         let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
         format!(
-            "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" \
-             name=\"Group \
-             1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp>{}",
+            "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"9001\" \
+             name=\"Group 1\"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr/>{}",
             &xml[..start],
             &xml[end..]
         )
         .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
+        .replacen("</xdr:graphicFrame>", "</xdr:graphicFrame></xdr:grpSp>", 1)
     })
 }
 
@@ -1141,8 +1087,7 @@ fn export_image_frame_part(book: &mut Workbook, part_name: &str) -> String {
         .worksheet_drawing()
         .image_collection()[0]
         .one_cell_anchor()
-        .unwrap()
-        .graphic_frame()
+        .map(grouped_chart_frame)
         .unwrap()
         .graphic()
         .graphic_data()
@@ -1266,6 +1211,7 @@ fn alternate_content_ole_frames_keep_uncaptured_caches_without_charging() {
     ole.set_object_extension("bin");
     ole.set_object_data([0_u8]);
     ole.set_two_cell_anchor(anchor);
+    book.sheet_mut(0).unwrap().chart_collection_mut().clear();
     book.sheet_mut(0)
         .unwrap()
         .ole_objects_mut()
@@ -1729,7 +1675,7 @@ fn shared_chart_parts_are_independent_admission_occurrences() {
         let end = xml[start..].find("</xdr:twoCellAnchor>").unwrap()
             + start
             + "</xdr:twoCellAnchor>".len();
-        let anchor = &xml[start..end];
+        let anchor = xml[start..end].replace("<xdr:cNvPr id=\"1\"", "<xdr:cNvPr id=\"9003\"");
         xml.replacen("</xdr:wsDr>", &format!("{anchor}</xdr:wsDr>"), 1)
     });
     let book = read_book(&bytes);
@@ -1995,16 +1941,18 @@ fn discarded_chart_parts_do_not_charge_caches_before_a_supported_chart() {
         formulas(&stored_caches(&book)),
         std::slice::from_ref(&second_formula)
     );
+    let target = book.sheet(0).unwrap().chart_collection()[0]
+        .two_cell_anchor()
+        .graphic_frame()
+        .unwrap()
+        .source_parts()[0]
+        .clone();
+    assert_eq!(target, "xl/charts/chart2.xml");
     assert_eq!(
-        category_reference(&part(&write(&book), "xl/charts/chart1.xml"), 0),
+        category_reference(&part(&write(&book), &target), 0),
         reference_xml(&second_formula, &dense_cache(1, |_| "B".into()))
     );
-    assert_eq!(
-        part(&write(&book), "xl/charts/chart1.xml")
-            .matches("<c:title>")
-            .count(),
-        0
-    );
+    assert_eq!(part(&write(&book), &target).matches("<c:title>").count(), 0);
 }
 
 #[test]
@@ -3205,7 +3153,8 @@ fn imported_source_caches_all_pass_admission() {
         let anchor = &xml[start..end];
         let frame_start = anchor.find("<xdr:graphicFrame").unwrap();
         let frame_end = anchor.find("</xdr:graphicFrame>").unwrap() + "</xdr:graphicFrame>".len();
-        let graphic = &anchor[frame_start..frame_end];
+        let graphic =
+            anchor[frame_start..frame_end].replace("<xdr:cNvPr id=\"1\"", "<xdr:cNvPr id=\"9002\"");
         let one = format!(
             "<xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:\
              row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx=\"1\" \

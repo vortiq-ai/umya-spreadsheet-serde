@@ -25,6 +25,7 @@ use crate::{
         driver::{
             local_name,
             skip_element,
+            try_xml_read_loop,
         },
         xlsx::SourceCacheSession,
     },
@@ -32,19 +33,84 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct DrawingChartParts {
-    pivot_formats:        Option<Vec<PivotFormat>>,
+    pivot_formats:              Option<Vec<PivotFormat>>,
     #[cfg_attr(feature = "serde", serde(default))]
-    invalid:              bool,
+    invalid:                    bool,
     #[cfg_attr(feature = "serde", serde(default))]
-    duplicate_containers: Vec<DrawingChartParts>,
+    duplicate_containers:       Vec<DrawingChartParts>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:                 Option<ExtensionList>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    normalized_extension_lists: usize,
 }
 impl DrawingChartParts {
+    pub(crate) fn extensions(&self) -> Option<&ExtensionList> {
+        self.extensions.as_ref()
+    }
+
+    pub(crate) fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.extensions.as_mut()
+    }
+
+    pub(crate) fn normalized_extension_lists(&self) -> usize {
+        self.normalized_extension_lists
+    }
+
+    pub(crate) fn set_extensions(&mut self, value: Option<ExtensionList>) {
+        self.extensions = value;
+        self.normalized_extension_lists = 0;
+    }
+
+    pub(crate) fn read_pivot_container<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        session: &SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let value = Self::read(reader, element, empty, session)?;
+        if self.pivot_formats.is_some() {
+            self.push_duplicate(value);
+        } else {
+            self.pivot_formats = value.pivot_formats;
+            self.invalid |= value.invalid;
+            self.duplicate_containers.extend(value.duplicate_containers);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read_extensions<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        session: &SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let list = ExtensionList::read(reader, element, empty, session)?;
+        if let Some(previous) = &mut self.extensions {
+            previous.append_list(list);
+            self.normalized_extension_lists += 1;
+        } else {
+            self.extensions = Some(list);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn discard_root_extensions(&mut self, report: &mut super::RestoreReport) {
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "chart/extLst",
+            report,
+        );
+        self.extensions = None;
+        self.normalized_extension_lists = 0;
+    }
+
     pub(crate) fn discard_untrusted_pivots(&mut self, report: &mut super::RestoreReport) {
         let count = self.pivot_formats.as_ref().map_or(0, Vec::len);
         report.removed_incompatible_parts += count + self.duplicate_containers.len();
@@ -79,35 +145,46 @@ impl DrawingChartParts {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
+    ) -> Result<usize, crate::XlsxError> {
         use std::collections::{
             HashMap,
             HashSet,
         };
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "chart/extLst",
+            report,
+        );
+        let restored_extensions = super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        );
+        self.normalized_extension_lists = previous.normalized_extension_lists;
         if previous.pivot_formats.as_ref().is_none_or(Vec::is_empty) {
             let missing_before = self.pivot_formats.is_none();
             self.discard_untrusted_pivots(report);
             *self = previous.clone();
-            return usize::from(missing_before && previous.pivot_formats.is_some());
+            return Ok(restored_extensions
+                + usize::from(missing_before && previous.pivot_formats.is_some()));
         }
         // With no supplied owners there is no pair to make: restore the
         // whole hidden source collection, including ambiguous/invalid state.
         if self.pivot_formats.as_ref().is_some_and(Vec::is_empty) {
             *self = previous.clone();
             previous.record_pivot_recreation(report);
-            return 1;
+            return Ok(restored_extensions + 1);
         }
         let Some(current) = self.pivot_formats.as_mut() else {
             *self = previous.clone();
             previous.record_pivot_recreation(report);
-            return 1;
+            return Ok(restored_extensions + 1);
         };
         let Some(old) = previous.pivot_formats.as_ref() else {
             report.incompatible_owners += current.len();
             report
                 .diagnostics
                 .push("unmatched supplied pivot collection".into());
-            return 0;
+            return Ok(restored_extensions);
         };
         let mut current_counts = HashMap::new();
         for pivot in current.iter() {
@@ -143,7 +220,7 @@ impl DrawingChartParts {
             });
             if let Some(old) = matched {
                 matched_old.insert(old.index().val());
-                pivot.restore_export_parts(old, report);
+                pivot.restore_export_parts(old, report)?;
             } else {
                 pivot.discard_untrusted_hidden_owners(position, report);
                 report.incompatible_owners += 1;
@@ -181,25 +258,46 @@ impl DrawingChartParts {
                     .push("unmatched or ambiguous stored pivot owner".into());
             }
         }
-        0
+        Ok(restored_extensions)
     }
 
-    pub(crate) fn reference_role_parts(&self) -> (Option<&[PivotFormat]>, &[DrawingChartParts]) {
-        (self.pivot_formats.as_deref(), &self.duplicate_containers)
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (
+        Option<&[PivotFormat]>,
+        &[DrawingChartParts],
+        Option<&ExtensionList>,
+    ) {
+        (
+            self.pivot_formats.as_deref(),
+            &self.duplicate_containers,
+            self.extensions.as_ref(),
+        )
     }
 
     pub(crate) fn projection_parts_mut(
         &mut self,
-    ) -> (Option<&mut [PivotFormat]>, &mut [DrawingChartParts]) {
+    ) -> (
+        Option<&mut [PivotFormat]>,
+        &mut [DrawingChartParts],
+        Option<&mut ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.normalized_extension_lists = 0;
         self.reference_role_parts_mut()
     }
 
     pub(crate) fn reference_role_parts_mut(
         &mut self,
-    ) -> (Option<&mut [PivotFormat]>, &mut [DrawingChartParts]) {
+    ) -> (
+        Option<&mut [PivotFormat]>,
+        &mut [DrawingChartParts],
+        Option<&mut ExtensionList>,
+    ) {
         (
             self.pivot_formats.as_deref_mut(),
             &mut self.duplicate_containers,
+            self.extensions.as_mut(),
         )
     }
 
@@ -259,27 +357,32 @@ impl DrawingChartParts {
         e: &BytesStart,
         empty: bool,
         s: &SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         let mut out = Self::default();
-        let _scope = s.enter_child_scope(e);
+        let _scope = s.enter_child_scope(e)?;
         out.pivot_formats = Some(Vec::new());
         if empty {
-            return out;
+            return Ok(out);
         }
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(r,ref event@(Event::Start(ref c)|Event::Empty(ref c))=>{let ce=matches!(event,Event::Empty(_));if s.accepts_child_namespace(c,"http://schemas.openxmlformats.org/drawingml/2006/chart") && local_name(c.name().into_inner())==b"pivotFmt"{let mut v=PivotFormat::default();v.set_attributes(r,c,ce,s);out.pivot_formats.get_or_insert_with(Vec::new).push(v)}else{out.invalid=true;if !ce{skip_element(r,c)}}},ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => { if !super::display_units::body_event_is_whitespace(event) { out.invalid=true; } },Event::End(ref c)=>if c.name().into_inner()==end.as_slice(){return out},Event::Eof=>panic!("unterminated c:pivotFmts"));
+        try_xml_read_loop!(r,ref event@(Event::Start(ref c)|Event::Empty(ref c))=>{let ce=matches!(event,Event::Empty(_));if s.accepts_child_namespace(c,"http://schemas.openxmlformats.org/drawingml/2006/chart")? && local_name(c.name().into_inner())==b"pivotFmt"{let mut v=PivotFormat::default();v.set_attributes(r,c,ce,s)?;out.pivot_formats.get_or_insert_with(Vec::new).push(v)}else{out.invalid=true;if !ce{skip_element(r,c)?}}},ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => { if !super::display_units::body_event_is_whitespace(event)? { out.invalid=true; } },Event::End(ref c)=>if c.name().into_inner()==end.as_slice(){return Ok(out)},Event::Eof=>return Err(crate::xml::xml_error("unterminated c:pivotFmts".to_string())));
     }
 
-    pub(crate) fn write_to(&self, w: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        w: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         if self.pivot_formats.is_some() {
             write_start_tag(w, "c:pivotFmts", vec![], false);
             if let Some(items) = &self.pivot_formats {
                 for v in items {
-                    v.write_to(w, wb);
+                    v.write_to(w, wb)?;
                 }
             }
             write_end_tag(w, "c:pivotFmts");
         }
+        Ok(())
     }
 }
 // Native occurrence presence and malformed attribute spelling are distinct
@@ -412,7 +515,11 @@ impl PivotFormat {
         self.extra_extensions.clear();
     }
 
-    fn restore_export_parts(&mut self, previous: &Self, report: &mut super::RestoreReport) {
+    fn restore_export_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<(), crate::XlsxError> {
         let incoming_shape = self.shape_properties.is_some();
         let incoming_marker = self.marker.is_some();
         let incoming_label = self.label.is_some();
@@ -445,7 +552,7 @@ impl PivotFormat {
         report.restored_owners += 1;
         if let (Some(current), Some(old)) = (&mut self.text_properties, &previous.text_properties) {
             if current.projected_structure_matches(old) {
-                report.restored_owners += current.restore_export_parts(old);
+                report.restored_owners += current.restore_export_parts(old)?;
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -464,18 +571,19 @@ impl PivotFormat {
         }
         if let (true, Some(marker)) = (incoming_marker, current.marker) {
             if let Some(old) = old.marker {
-                super::chart_metadata_restoration::restore_marker(marker, old, report);
+                super::chart_metadata_restoration::restore_marker(marker, old, report)?;
             } else {
                 super::chart_metadata_restoration::discard_marker_extensions(marker, report);
             }
         }
         if let (true, Some(label)) = (incoming_label, current.label) {
             if let Some(old) = old.label {
-                label.restore_export_parts(old, report);
+                label.restore_export_parts(old, report)?;
             } else {
                 label.discard_extensions(report);
             }
         }
+        Ok(())
     }
 
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::PivotParts<'_> {
@@ -688,27 +796,27 @@ impl PivotFormat {
         e: &BytesStart,
         empty: bool,
         s: &SourceCacheSession,
-    ) {
-        let _scope = s.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope = s.enter_child_scope(e)?;
         if empty {
-            return;
+            return Ok(());
         }
         let end = e.name().into_inner().to_vec();
         let mut last_order = 0;
-        xml_read_loop!(r,
+        try_xml_read_loop!(r,
             ref event @ (Event::Start(ref c) | Event::Empty(ref c)) => {
                 let ce = matches!(event, Event::Empty(_));
-                if !s.accepts_child_namespace(c,"http://schemas.openxmlformats.org/drawingml/2006/chart") { self.invalid_index=true; if !ce { skip_element(r,c); } continue; }
+                if !s.accepts_child_namespace(c,"http://schemas.openxmlformats.org/drawingml/2006/chart")? { self.invalid_index=true; if !ce { skip_element(r,c)?; } continue; }
                 let name = local_name(c.name().into_inner());
                 let order = match name { b"idx"=>1,b"spPr"=>2,b"txPr"=>3,b"marker"=>4,b"dLbl"=>5,b"extLst"=>6,_=>0 };
                 if order == 0 || order <= last_order { self.invalid_index = true; }
                 else { last_order = order; }
                 match name {
                     b"idx" => {
-                        if self.index_seen.0 { self.invalid_index = true; self.index_present = false; self.duplicate_indices.push(crate::reader::driver::get_attribute(c, b"val")); }
+                        if self.index_seen.0 { self.invalid_index = true; self.index_present = false; self.duplicate_indices.push(crate::reader::driver::read_attribute(c, b"val")?); }
                         else {
                             self.index_seen.0 = true;
-                            if let Some(raw) = crate::reader::driver::get_attribute(c, b"val") {
+                            if let Some(raw) = crate::reader::driver::read_attribute(c, b"val")? {
                                 if let Some(value) = super::xml_scalar::parse_xml_unsigned(&raw) {
                                     self.index.set_val(value); self.index_present = true;
                                 } else { self.invalid_index = true; self.invalid_first_index =
@@ -716,49 +824,55 @@ impl PivotFormat {
                             } else { self.invalid_index = true; self.invalid_first_index = Some(
                                 InvalidIndexLexeme(None)); }
                         }
-                        if !ce && !super::display_units::scalar_body_is_empty(r, c) {
+                        if !ce && !super::display_units::scalar_body_is_empty(r, c)? {
                             self.invalid_index_body = true; }
                     }
-                    b"spPr" => { let mut v=ShapeProperties::default(); if !ce { v.set_attributes_with_session(r,c,s); }
+                    b"spPr" => { let mut v=ShapeProperties::default(); if !ce { v.set_attributes_with_session(r,c,s)?; }
                         if self.shape_properties.is_some(){self.extra_shapes.push(v)}else{
                             self.shape_properties=Some(v);} }
-                    b"txPr" => { let mut v=TextProperties::default(); if !ce { v.read_with_session(r, c, Some(s)); }
+                    b"txPr" => { let mut v=TextProperties::default(); if !ce { v.read_with_session(r, c, Some(s))?; }
                         if self.text_properties.is_some(){self.extra_texts.push(v)}else{
                             self.text_properties=Some(v);} }
-                    b"marker" => { let mut v=Marker::default(); v.set_attributes_with_session(r,c,ce,s); if self.marker.is_some(){self.extra_markers.push(v)}else{self.marker=Some(v)} }
-                    b"dLbl" => { let v=DataLabel::read(r,c,ce,s); if self.label.is_some(){self.extra_labels.push(v)}else{self.label=Some(v)} }
-                    b"extLst" => { let v=ExtensionList::read(r,c,ce,s); if self.extensions.is_some(){self.invalid_index=true;self.extra_extensions.push(v)}else{self.extensions=Some(v)} }
-                    _ => { self.invalid_index=true; if !ce { skip_element(r,c); } }
+                    b"marker" => { let mut v=Marker::default(); v.set_attributes_with_session(r,c,ce,s)?; if self.marker.is_some(){self.extra_markers.push(v)}else{self.marker=Some(v)} }
+                    b"dLbl" => { let v=DataLabel::read(r,c,ce,s)?; if self.label.is_some(){self.extra_labels.push(v)}else{self.label=Some(v)} }
+                    b"extLst" => { let v=ExtensionList::read(r,c,ce,s)?; if self.extensions.is_some(){self.invalid_index=true;self.extra_extensions.push(v)}else{self.extensions=Some(v)} }
+                    _ => { self.invalid_index=true; if !ce { skip_element(r,c)?; } }
                 }
             },
             ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => { if
-                !super::display_units::body_event_is_whitespace(event) {
+                !super::display_units::body_event_is_whitespace(event)? {
                 self.invalid_index_body = true; } },
-            Event::End(ref c) => if c.name().into_inner()==end.as_slice() { return },
-            Event::Eof => panic!("unterminated c:pivotFmt")
+            Event::End(ref c) => if c.name().into_inner()==end.as_slice() { return Ok(()) },
+            Event::Eof => return Err(crate::xml::xml_error("unterminated c:pivotFmt".to_string()))
         );
     }
 
-    pub(crate) fn write_to(&self, w: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        w: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(w, "c:pivotFmt", vec![], false);
         if self.index_is_present() {
             self.index.write_to(w);
         }
         if let Some(v) = &self.shape_properties {
-            v.write_to(w);
+            v.write_to(w)?;
         }
         if let Some(v) = &self.text_properties {
-            v.write_to(w);
+            v.write_to(w)?;
         }
         if let Some(v) = &self.marker {
-            v.write_to(w);
+            v.write_to(w)?;
         }
         if let Some(v) = &self.label {
-            v.write_to(w, wb);
+            v.write_to(w, wb)?;
         }
         if let Some(v) = &self.extensions {
-            v.write_for_owner(w, Some(wb), "pivotFmt", None);
+            v.write_for_owner(w, Some(wb), "pivotFmt", None)?;
         }
         write_end_tag(w, "c:pivotFmt");
+
+        Ok(())
     }
 }

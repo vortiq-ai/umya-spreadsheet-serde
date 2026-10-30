@@ -125,7 +125,7 @@ impl InvertSolidFill {
         e: &BytesStart,
         empty: bool,
         inherited: &NamespaceScope,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, inherited, None)
     }
 
@@ -135,7 +135,7 @@ impl InvertSolidFill {
         empty: bool,
         inherited: &NamespaceScope,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, inherited, Some(session))
     }
 
@@ -145,53 +145,67 @@ impl InvertSolidFill {
         empty: bool,
         inherited: &NamespaceScope,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         let mut result = Self::default();
         let scope = inherited.child(e).ok();
         result.invalid |= scope.is_none();
-        let complete = element_children(reader, e, empty, |reader, child, empty| {
-            let Some(scope) = &scope else {
-                return false;
-            };
-            let Ok(child_scope) = scope.child(child) else {
-                result.invalid = true;
-                return false;
-            };
-            let Ok(name) = child_scope.resolve(child.name().into_inner(), false) else {
-                result.invalid = true;
-                return false;
-            };
-            if name.is(NS_C14, "spPr") {
-                let mut shape = ShapeProperties::default();
-                if !empty {
-                    match session {
-                        Some(session) => shape.set_attributes_with_session(reader, child, session),
-                        None => shape.set_attributes(reader, child),
+        let complete = element_children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    let Some(scope) = &scope else {
+                        return Ok(false);
+                    };
+                    let Ok(child_scope) = scope.child(child) else {
+                        result.invalid = true;
+                        return Ok(false);
+                    };
+                    let Ok(name) = child_scope.resolve(child.name().into_inner(), false) else {
+                        result.invalid = true;
+                        return Ok(false);
+                    };
+                    if name.is(NS_C14, "spPr") {
+                        let mut shape = ShapeProperties::default();
+                        if !empty {
+                            match session {
+                                Some(session) => {
+                                    shape.set_attributes_with_session(reader, child, session)?;
+                                }
+                                None => shape.set_attributes(reader, child)?,
+                            }
+                        }
+                        if result.shape_properties.is_none() {
+                            result.shape_properties = Some(shape);
+                        } else {
+                            result.extra_shapes.push(shape);
+                        }
+                        true
+                    } else {
+                        false
                     }
-                }
-                if result.shape_properties.is_none() {
-                    result.shape_properties = Some(shape);
-                } else {
-                    result.extra_shapes.push(shape);
-                }
-                true
-            } else {
-                false
-            }
-        });
+                })
+            },
+        )?;
         result.invalid |= !complete;
-        result
+        Ok(result)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         if let Some(shape) = &self.shape_properties {
             write_start_tag(writer, "c14:invertSolidFillFmt", vec![], false);
             // CT_InvertSolidFillFmt requires c14:spPr.
-            shape.write_to_as(writer, "c14:spPr");
+            shape.write_to_as(writer, "c14:spPr")?;
             write_end_tag(writer, "c14:invertSolidFillFmt");
         }
+
+        Ok(())
     }
 }

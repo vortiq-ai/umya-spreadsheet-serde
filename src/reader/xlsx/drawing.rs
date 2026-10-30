@@ -14,7 +14,11 @@ use crate::{
     },
     structs::{
         Worksheet,
-        drawing::spreadsheet::WorksheetDrawing,
+        XlsxErrorKind,
+        drawing::{
+            charts::NamespaceScope,
+            spreadsheet::WorksheetDrawing,
+        },
         raw::{
             RawFile,
             RawRelationships,
@@ -36,7 +40,11 @@ pub(crate) fn read(
     try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
-            if matches!(e.name().into_inner(), b"xdr:wsDr" | b"wsDr") {
+            let scope=NamespaceScope::default().child(e)
+                .map_err(|error|XlsxError::with_message(XlsxErrorKind::Xml,error))?;
+            let name=scope.resolve(e.name().as_ref(),false)
+                .map_err(|error|XlsxError::with_message(XlsxErrorKind::Xml,error))?;
+            if name.is(crate::helper::const_str::SHEET_DRAWING_NS,"wsDr") {
                 let mut obj = WorksheetDrawing::default();
                 obj.set_attributes(
                     &mut reader,
@@ -45,8 +53,8 @@ pub(crate) fn read(
                     worksheet.ole_objects_mut(),
                     session,
                     provider,
-                );
-                session.hydrate_image_frames(&mut obj, provider);
+                )?;
+                session.hydrate_image_frames(&mut obj, provider)?;
                 worksheet.set_worksheet_drawing(obj);
             }
         },

@@ -37,7 +37,6 @@ use super::{
         NS_C16,
     },
     numeric_data::{
-        children,
         element_children,
         read_text,
     },
@@ -202,49 +201,70 @@ impl ExtensionPayload {
         let local = name.local_name.as_str();
         let mut invalid = false;
         let value = if name.is(NS_C14, "invertSolidFillFmt") {
-            ExtensionPayloadValue::InvertSolidFill(Box::new(InvertSolidFill::read_with_session(
-                reader, e, empty, inherited, session,
-            )))
+            ExtensionPayloadValue::InvertSolidFill(Box::new(
+                InvertSolidFill::read_with_session(reader, e, empty, inherited, session)
+                    .map_err(|error| error.to_string())?,
+            ))
         } else if name.is(NS_C16, "uniqueId") {
             let v = ChartUniqueId::read(e);
             if !empty {
-                invalid = !children(reader, e, false, |_, _, _| {
-                    invalid = true;
-                    false
-                }) || invalid;
+                invalid = !element_children(
+                    reader,
+                    e,
+                    false,
+                    |_, _, _| -> Result<bool, crate::XlsxError> {
+                        Ok({
+                            invalid = true;
+                            false
+                        })
+                    },
+                )
+                .map_err(|error| error.to_string())?
+                    || invalid;
             }
             ExtensionPayloadValue::UniqueId(Box::new(v))
         } else if name.namespace_uri == NS_C15 {
             match local {
                 "datalabelsRange" => ExtensionPayloadValue::DataLabelsRange(Box::new(
-                    SeriesDataLabelsRange::read(reader, e, empty, session),
+                    SeriesDataLabelsRange::read(reader, e, empty, session)
+                        .map_err(|error| error.to_string())?,
                 )),
                 "dlblFieldTable" => ExtensionPayloadValue::FieldTable(Box::new(
-                    DataLabelFieldTable::read(reader, e, empty, session),
+                    DataLabelFieldTable::read(reader, e, empty, session)
+                        .map_err(|error| error.to_string())?,
                 )),
                 "fullRef" | "levelRef" | "formulaRef" => {
                     let mut v = ReferenceSequence::default();
                     let mut count = 0;
-                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
-                        let Ok(child_scope) = scope.child(child) else {
-                            invalid = true;
-                            return false;
-                        };
-                        if !child_scope
-                            .resolve(child.name().into_inner(), false)
-                            .is_ok_and(|n| n.is(NS_C15, "sqref"))
-                        {
-                            return false;
-                        }
-                        count += 1;
-                        match read_text(reader, child, empty) {
-                            Some(text) => {
-                                v.set_text(&text);
-                            }
-                            None => v.invalidate(),
-                        }
-                        true
-                    }) || invalid;
+                    invalid = !element_children(
+                        reader,
+                        e,
+                        empty,
+                        |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                            Ok({
+                                let Ok(child_scope) = scope.child(child) else {
+                                    invalid = true;
+                                    return Ok(false);
+                                };
+                                if !child_scope
+                                    .resolve(child.name().into_inner(), false)
+                                    .is_ok_and(|n| n.is(NS_C15, "sqref"))
+                                {
+                                    return Ok(false);
+                                }
+                                count += 1;
+                                match read_text(reader, child, empty)? {
+                                    Some(text) => {
+                                        v.set_text(&text);
+                                    }
+                                    None => v.invalidate(),
+                                }
+                                true
+                            })
+                        },
+                    )
+                    .map_err(|error| error.to_string())?
+                        || invalid;
                     if count != 1 {
                         v.invalidate();
                     }
@@ -257,18 +277,26 @@ impl ExtensionPayload {
                 "filteredSeriesTitle" => {
                     let mut v = ChartText::default();
                     let mut count = 0;
-                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
-                        if !session.accepts_child_namespace(child, NS_C15)
-                            || local_name(child.name().into_inner()) != b"tx"
-                        {
-                            return false;
-                        }
-                        count += 1;
-                        if !empty {
-                            v.set_attributes(reader, child, session);
-                        }
-                        true
-                    });
+                    invalid = !element_children(
+                        reader,
+                        e,
+                        empty,
+                        |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                            Ok({
+                                if !session.accepts_child_namespace(child, NS_C15)?
+                                    || local_name(child.name().into_inner()) != b"tx"
+                                {
+                                    return Ok(false);
+                                }
+                                count += 1;
+                                if !empty {
+                                    v.set_attributes(reader, child, session)?;
+                                }
+                                true
+                            })
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
                     invalid |= count != 1
                         || v.rich_text().is_some()
                         || usize::from(v.string_reference().is_some())
@@ -279,22 +307,33 @@ impl ExtensionPayload {
                 "filteredCategoryTitle" => {
                     let mut v = AxisDataSource::default();
                     let mut count = 0;
-                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
-                        if !session.accepts_child_namespace(child, NS_C15)
-                            || local_name(child.name().into_inner()) != b"cat"
-                        {
-                            return false;
-                        }
-                        count += 1;
-                        v = AxisDataSource::read(reader, child, empty, session);
-                        true
-                    });
+                    invalid = !element_children(
+                        reader,
+                        e,
+                        empty,
+                        |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                            Ok({
+                                if !session.accepts_child_namespace(child, NS_C15)?
+                                    || local_name(child.name().into_inner()) != b"cat"
+                                {
+                                    return Ok(false);
+                                }
+                                count += 1;
+                                v = AxisDataSource::read(reader, child, empty, session)?;
+                                true
+                            })
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
                     invalid |= count != 1;
                     ExtensionPayloadValue::FilteredCategoryTitle(Box::new(v))
                 }
-                "categoryFilterExceptions" => ExtensionPayloadValue::CategoryFilterExceptions(
-                    Box::new(CategoryFilterExceptions::read(reader, e, empty, session)),
-                ),
+                "categoryFilterExceptions" => {
+                    ExtensionPayloadValue::CategoryFilterExceptions(Box::new(
+                        CategoryFilterExceptions::read(reader, e, empty, session)
+                            .map_err(|error| error.to_string())?,
+                    ))
+                }
                 "filteredAreaSeries"
                 | "filteredBarSeries"
                 | "filteredBubbleSeries"
@@ -313,18 +352,26 @@ impl ExtensionPayload {
                     };
                     let mut series = AreaChartSeries::default();
                     let mut count = 0;
-                    invalid = !element_children(reader, e, empty, |reader, child, empty| {
-                        if !session.accepts_child_namespace(child, NS_C15)
-                            || local_name(child.name().into_inner()) != b"ser"
-                        {
-                            return false;
-                        }
-                        count += 1;
-                        if !empty {
-                            series.set_attributes(reader, child, session);
-                        }
-                        true
-                    });
+                    invalid = !element_children(
+                        reader,
+                        e,
+                        empty,
+                        |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                            Ok({
+                                if !session.accepts_child_namespace(child, NS_C15)?
+                                    || local_name(child.name().into_inner()) != b"ser"
+                                {
+                                    return Ok(false);
+                                }
+                                count += 1;
+                                if !empty {
+                                    series.set_attributes(reader, child, session)?;
+                                }
+                                true
+                            })
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
                     invalid |= count != 1;
                     ExtensionPayloadValue::FilteredSeries(Box::new(FilteredSeries {
                         family,
@@ -334,34 +381,40 @@ impl ExtensionPayload {
                 }
                 "layout" => {
                     let mut v = Layout::default();
-                    v.set_attributes(reader, e, empty, session);
+                    v.set_attributes(reader, e, empty, session)
+                        .map_err(|error| error.to_string())?;
                     ExtensionPayloadValue::LabelLayout(Box::new(v))
                 }
                 "numFmt" => {
                     let mut v = NumberingFormat::default();
-                    v.set_attributes(reader, e);
+                    v.set_attributes(reader, e)
+                        .map_err(|error| error.to_string())?;
                     if !empty {
-                        crate::reader::driver::skip_element(reader, e);
+                        crate::reader::driver::skip_element(reader, e)
+                            .map_err(|error| error.to_string())?;
                     }
                     ExtensionPayloadValue::LabelNumberFormat(Box::new(v))
                 }
                 "spPr" => {
                     let mut v = ShapeProperties::default();
                     if !empty {
-                        v.set_attributes_with_session(reader, e, session);
+                        v.set_attributes_with_session(reader, e, session)
+                            .map_err(|error| error.to_string())?;
                     }
                     ExtensionPayloadValue::LabelShape(Box::new(v))
                 }
                 "tx" => {
                     let mut v = ChartText::default();
                     if !empty {
-                        v.set_attributes(reader, e, session);
+                        v.set_attributes(reader, e, session)
+                            .map_err(|error| error.to_string())?;
                     }
                     ExtensionPayloadValue::LabelText(Box::new(v))
                 }
-                "leaderLines" => ExtensionPayloadValue::LeaderLines(Box::new(ChartLines::read(
-                    reader, e, empty, session,
-                ))),
+                "leaderLines" => ExtensionPayloadValue::LeaderLines(Box::new(
+                    ChartLines::read(reader, e, empty, session)
+                        .map_err(|error| error.to_string())?,
+                )),
                 "showDataLabelsRange" | "showLeaderLines" | "xForSave" | "autoCat" => {
                     let kind = match local {
                         "showDataLabelsRange" => ExtensionBooleanKind::ShowDataLabelsRange,
@@ -371,10 +424,19 @@ impl ExtensionPayload {
                     };
                     let value = XmlBoolean::read(e);
                     if !empty {
-                        invalid = !children(reader, e, false, |_, _, _| {
-                            invalid = true;
-                            false
-                        }) || invalid;
+                        invalid = !element_children(
+                            reader,
+                            e,
+                            false,
+                            |_, _, _| -> Result<bool, crate::XlsxError> {
+                                Ok({
+                                    invalid = true;
+                                    false
+                                })
+                            },
+                        )
+                        .map_err(|error| error.to_string())?
+                            || invalid;
                     }
                     ExtensionPayloadValue::Boolean(Box::new(ExtensionBoolean { kind, value }))
                 }
@@ -490,7 +552,9 @@ impl ExtensionPayload {
         }
         let mut writer = Writer::new(Cursor::new(Vec::new()));
         match &self.value {
-            ExtensionPayloadValue::InvertSolidFill(v) => v.write_to(&mut writer),
+            ExtensionPayloadValue::InvertSolidFill(v) => {
+                v.write_to(&mut writer).map_err(|error| error.to_string())?;
+            }
             ExtensionPayloadValue::UniqueId(v) => v.write_to(&mut writer),
             ExtensionPayloadValue::DataLabelsRange(v) => {
                 v.write_to(&mut writer, required_workbook(wb)?);
@@ -498,19 +562,23 @@ impl ExtensionPayload {
             ExtensionPayloadValue::FieldTable(v) => v.write_to(&mut writer, required_workbook(wb)?),
             ExtensionPayloadValue::FilteredCategoryTitle(v) => {
                 write_start_tag(&mut writer, "c15:filteredCategoryTitle", vec![], false);
-                v.write_to_as(&mut writer, required_workbook(wb)?, "c15:cat");
+                v.write_to_as(&mut writer, required_workbook(wb)?, "c15:cat")
+                    .map_err(|error| error.to_string())?;
                 write_end_tag(&mut writer, "c15:filteredCategoryTitle");
             }
             ExtensionPayloadValue::FilteredSeriesTitle(v) => {
                 write_start_tag(&mut writer, "c15:filteredSeriesTitle", vec![], false);
-                v.write_to_as(&mut writer, required_workbook(wb)?, "c15:tx");
+                v.write_to_as(&mut writer, required_workbook(wb)?, "c15:tx")
+                    .map_err(|error| error.to_string())?;
                 write_end_tag(&mut writer, "c15:filteredSeriesTitle");
             }
             ExtensionPayloadValue::LabelText(v) => {
-                v.write_to_as(&mut writer, required_workbook(wb)?, "c15:tx");
+                v.write_to_as(&mut writer, required_workbook(wb)?, "c15:tx")
+                    .map_err(|error| error.to_string())?;
             }
             ExtensionPayloadValue::CategoryFilterExceptions(v) => {
-                v.write_to(&mut writer, required_workbook(wb)?);
+                v.write_to(&mut writer, required_workbook(wb)?)
+                    .map_err(|error| error.to_string())?;
             }
             ExtensionPayloadValue::FullReference(v)
             | ExtensionPayloadValue::LevelReference(v)
@@ -537,18 +605,26 @@ impl ExtensionPayload {
                     SeriesFamily::Scatter => "c15:filteredScatterSeries",
                 };
                 write_start_tag(&mut writer, name, vec![], false);
-                v.series.write_to_as(
-                    &mut writer,
-                    required_workbook(wb)?,
-                    SeriesFamily::from(&v.family),
-                    "c15:ser",
-                );
+                v.series
+                    .write_to_as(
+                        &mut writer,
+                        required_workbook(wb)?,
+                        SeriesFamily::from(&v.family),
+                        "c15:ser",
+                    )
+                    .map_err(|error| error.to_string())?;
                 write_end_tag(&mut writer, name);
             }
-            ExtensionPayloadValue::LabelLayout(v) => v.write_to(&mut writer),
+            ExtensionPayloadValue::LabelLayout(v) => {
+                v.write_to(&mut writer).map_err(|error| error.to_string())?;
+            }
             ExtensionPayloadValue::LabelNumberFormat(v) => v.write_to(&mut writer),
-            ExtensionPayloadValue::LabelShape(v) => v.write_to_as(&mut writer, "c15:spPr"),
-            ExtensionPayloadValue::LeaderLines(v) => v.write_to_as(&mut writer, "c15:leaderLines"),
+            ExtensionPayloadValue::LabelShape(v) => v
+                .write_to_as(&mut writer, "c15:spPr")
+                .map_err(|error| error.to_string())?,
+            ExtensionPayloadValue::LeaderLines(v) => v
+                .write_to_as(&mut writer, "c15:leaderLines")
+                .map_err(|error| error.to_string())?,
             ExtensionPayloadValue::Boolean(v) => v.value.write_to(&mut writer, v.kind.name()),
         }
         // This parses ONLY newly generated typed output, never imported source

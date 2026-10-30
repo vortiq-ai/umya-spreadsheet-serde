@@ -15,12 +15,14 @@ use super::{
     ManualLayout,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -119,18 +121,19 @@ impl Layout {
         e: &BytesStart,
         empty_flag: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         if empty_flag {
-            return;
+            return Ok(());
         }
 
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let child = if session.accepts_child_namespace(e, super::extension_registry::NS_C) {
+                let child =
+                    if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
                     local_name(e.name().into_inner())
                 } else {
                     b""
@@ -138,25 +141,28 @@ impl Layout {
                 if child == b"manualLayout" {
                     let mut v = ManualLayout::default();
                     if !empty {
-                        v.set_attributes(reader, e, session);
+                        v.set_attributes(reader, e, session)?;
                     }
                     self.set_manual_layout(v);
                 } else if child == b"extLst" {
-                    self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)));
+                    self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)?));
                 } else if !empty {
-                    crate::reader::driver::skip_element(reader, e);
+                    crate::reader::driver::skip_element(reader, e)?;
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Could not find layout end element"),
+            Event::Eof => return Err(crate::xml::xml_error("Could not find layout end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if self.is_empty() {
             // c:layout
             write_start_tag(writer, "c:layout", vec![], true);
@@ -166,13 +172,15 @@ impl Layout {
 
             // c:manualLayout
             if let Some(v) = &self.manual_layout {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
 
             if let Some(v) = self.extensions() {
-                v.write_for_owner(writer, None, "layout", None);
+                v.write_for_owner(writer, None, "layout", None)?;
             }
             write_end_tag(writer, "c:layout");
         }
+
+        Ok(())
     }
 }

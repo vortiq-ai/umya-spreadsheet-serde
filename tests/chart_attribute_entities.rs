@@ -188,12 +188,19 @@ fn chart_number_formats_do_not_amplify_entities_over_two_round_trips() {
 
 /// Every attribute below is read from raw attribute text and stored as a
 /// string. Each carries a numeric or named entity that must be decoded once.
-const CHART_SPACE_SHAPE: &str = concat!(
+// Separate genuine shape carriers keep CT_ShapeProperties' fill max-choice
+// valid.
+const PLOT_AREA_PATTERN: &str = concat!(
     "<c:spPr>",
     "<a:pattFill prst=\"pct&#53;\">",
     "<a:fgClr><a:srgbClr val=\"&#70;F0000\"/></a:fgClr>",
     "<a:bgClr><a:srgbClr val=\"FFFFF&#70;\"/></a:bgClr>",
     "</a:pattFill>",
+    "</c:spPr>"
+);
+
+const CHART_SPACE_SHAPE: &str = concat!(
+    "<c:spPr>",
     "<a:xfrm rot=\"&#49;800000\" flipH=\"&#49;\" flipV=\"&#48;\">",
     "<a:off x=\"0\" y=\"0\"/><a:ext cx=\"10\" cy=\"10\"/>",
     "</a:xfrm>",
@@ -293,6 +300,11 @@ fn string_attribute_workbook() -> Vec<u8> {
             &xml,
             "<c:autoTitleDeleted val=\"0\"/>",
             &format!("{CHART_TITLE}<c:autoTitleDeleted val=\"0\"/>"),
+        );
+        let xml = replace_once(
+            &xml,
+            "</c:plotArea>",
+            &format!("{PLOT_AREA_PATTERN}</c:plotArea>"),
         );
         replace_once(
             &xml,

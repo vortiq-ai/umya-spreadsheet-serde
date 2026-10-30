@@ -9,6 +9,8 @@ macro_rules! declare_const_strings {
 declare_const_strings! {
     CERTIFICATE_NS       => "http://schemas.microsoft.com/office/2006/keyEncryptor/certificate",
     CHART_NS             => "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart",
+    CHART_EX_NS          => "http://schemas.microsoft.com/office/2014/relationships/chartEx",
+    CHART_EX_TYPE        => "application/vnd.ms-office.chartex+xml",
     CHART_TYPE           => "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
     COMMENTS_NS          => "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
     COMMENTS_TYPE        => "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml",

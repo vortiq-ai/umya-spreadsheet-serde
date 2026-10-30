@@ -43,7 +43,7 @@ pub(crate) use crate::xml_read_loop;
 /// `Result<_, XlsxError>`.
 #[macro_export]
 macro_rules! try_xml_read_loop {
-    ($reader:ident $(,$pat:pat => $result:expr)+ $(,)?) => {
+    ($reader:ident $(,$pat:pat $(if $guard:expr)? => $result:expr)+ $(,)?) => {
         let mut buf = Vec::new();
         loop {
             let ev = match $reader.read_event_into(&mut buf) {
@@ -52,7 +52,7 @@ macro_rules! try_xml_read_loop {
             };
 
             match ev {
-                $($pat => $result,)+
+                $($pat $(if $guard)? => $result,)+
                 _ => (),
             }
 
@@ -105,10 +105,9 @@ pub(crate) fn local_name(name: &[u8]) -> &[u8] {
 pub(crate) fn skip_element<R: io::BufRead>(
     reader: &mut quick_xml::Reader<R>,
     start: &quick_xml::events::BytesStart,
-) {
-    if let Err(e) = reader.read_to_end_into(start.name(), &mut Vec::new()) {
-        panic!("Error at position {}: {e:?}", reader.buffer_position());
-    }
+) -> Result<(), XlsxError> {
+    reader.read_to_end_into(start.name(), &mut Vec::new())?;
+    Ok(())
 }
 
 pub(crate) fn normalize_path(path: &str) -> PathBuf {
@@ -211,6 +210,92 @@ pub(crate) fn get_required_attribute(
                 "missing attribute '{}' in element '{}'",
                 String::from_utf8_lossy(key),
                 String::from_utf8_lossy(e.name().into_inner()),
+            ),
+        )
+    })
+}
+
+fn visit_attributes(
+    element: &quick_xml::events::BytesStart<'_>,
+    mut visit: impl FnMut(&[u8], &str),
+) -> Result<(), XlsxError> {
+    for attribute in element.attributes() {
+        let attribute = attribute
+            .map_err(|error| XlsxError::with_message(XlsxErrorKind::Xml, error.to_string()))?;
+        let decoded = attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0)?;
+        visit(attribute.key.as_ref(), &decoded);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_attributes(
+    element: &quick_xml::events::BytesStart<'_>,
+) -> Result<(), XlsxError> {
+    visit_attributes(element, |_, _| {})
+}
+
+/// Read an exact attribute name, validating and decoding the complete attribute
+/// list.
+pub(crate) fn read_attribute(
+    element: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Result<Option<String>, XlsxError> {
+    let mut value = None;
+    visit_attributes(element, |name, decoded| {
+        if name == key {
+            value = Some(decoded.to_owned());
+        }
+    })?;
+    Ok(value)
+}
+
+pub(crate) fn require_attribute(
+    element: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Result<String, XlsxError> {
+    read_attribute(element, key)?.ok_or_else(|| {
+        XlsxError::with_message(
+            XlsxErrorKind::Xml,
+            format!(
+                "missing attribute '{}' in element '{}'",
+                String::from_utf8_lossy(key),
+                String::from_utf8_lossy(element.name().as_ref()),
+            ),
+        )
+    })
+}
+
+pub(crate) fn read_enum_attribute<T: crate::EnumTrait + std::str::FromStr>(
+    element: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Result<Option<T>, XlsxError> {
+    read_attribute(element, key)?
+        .map(|value| {
+            T::from_str(crate::xml::trim_xml_whitespace(&value)).map_err(|_| {
+                XlsxError::with_message(
+                    XlsxErrorKind::Xml,
+                    format!(
+                        "invalid attribute '{}' in element '{}': {value:?}",
+                        String::from_utf8_lossy(key),
+                        String::from_utf8_lossy(element.name().as_ref()),
+                    ),
+                )
+            })
+        })
+        .transpose()
+}
+
+pub(crate) fn require_enum_attribute<T: crate::EnumTrait + std::str::FromStr>(
+    element: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+) -> Result<T, XlsxError> {
+    read_enum_attribute(element, key)?.ok_or_else(|| {
+        XlsxError::with_message(
+            XlsxErrorKind::Xml,
+            format!(
+                "missing attribute '{}' in element '{}'",
+                String::from_utf8_lossy(key),
+                String::from_utf8_lossy(element.name().as_ref()),
             ),
         )
     })
@@ -326,33 +411,41 @@ pub(crate) fn try_attribute_u32(
 
 /// Decode one XML character event using the same one-pass entity semantics for
 /// simple-text and element-only owners.
-pub(crate) fn decode_xml_character_event(event: &quick_xml::events::Event<'_>) -> Option<String> {
+pub(crate) fn decode_xml_character_event(
+    event: &quick_xml::events::Event<'_>,
+) -> Result<Option<String>, XlsxError> {
     use quick_xml::events::Event;
-    match event {
+    let value = match event {
         Event::Text(text) => {
-            let decoded = text.decode().ok()?;
-            Some(quick_xml::escape::unescape(&decoded).ok()?.into_owned())
+            let decoded = text.decode()?;
+            quick_xml::escape::unescape(&decoded)
+                .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                .into_owned()
         }
-        Event::CData(text) => Some(text.decode().ok()?.into_owned()),
+        Event::CData(text) => text.decode()?.into_owned(),
         Event::GeneralRef(reference) => {
-            let escaped = format!("&{};", reference.decode().ok()?);
-            Some(quick_xml::escape::unescape(&escaped).ok()?.into_owned())
+            let escaped = format!("&{};", reference.decode()?);
+            quick_xml::escape::unescape(&escaped)
+                .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                .into_owned()
         }
-        _ => None,
-    }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
 }
 
-/// Decode one simple XML text owner for numeric literals and formulas. Preserve
-/// significant text, decode entities exactly once, and restore caller settings.
+/// Read a simple-text owner, preserving significant whitespace and one-pass
+/// entity decoding. Nested content remains a semantic conflict; malformed XML
+/// and invalid character data are errors. Caller settings are restored on exit.
 pub(crate) fn read_simple_text<R: io::BufRead>(
     reader: &mut quick_xml::Reader<R>,
     e: &quick_xml::events::BytesStart,
     empty: bool,
-) -> Option<String> {
+) -> Result<Option<String>, XlsxError> {
     use quick_xml::events::Event;
 
     if empty {
-        return Some(String::new());
+        return Ok(Some(String::new()));
     }
     let config = reader.config().clone();
     reader.config_mut().trim_text(false);
@@ -362,21 +455,25 @@ pub(crate) fn read_simple_text<R: io::BufRead>(
         let mut buffer = Vec::new();
         let mut invalid = false;
         loop {
-            match reader.read_event_into(&mut buffer).ok()? {
+            match reader.read_event_into(&mut buffer)? {
                 ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
-                    value.push_str(&decode_xml_character_event(event)?);
+                    if let Some(text) = decode_xml_character_event(event)? {
+                        value.push_str(&text);
+                    }
                 }
                 Event::Start(child) => {
                     invalid = true;
-                    reader
-                        .read_to_end_into(child.name(), &mut Vec::new())
-                        .ok()?;
+                    reader.read_to_end_into(child.name(), &mut Vec::new())?;
                 }
                 Event::Empty(_) => invalid = true,
                 Event::End(child) if child.name().into_inner() == end.as_slice() => {
-                    return (!invalid).then_some(value);
+                    return Ok((!invalid).then_some(value));
                 }
-                Event::End(_) | Event::Eof | Event::Decl(_) | Event::DocType(_) => return None,
+                Event::End(_) | Event::Eof | Event::Decl(_) | Event::DocType(_) => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated or invalid simple-text element",
+                    ));
+                }
                 _ => (),
             }
             buffer.clear();
@@ -384,4 +481,83 @@ pub(crate) fn read_simple_text<R: io::BufRead>(
     })();
     *reader.config_mut() = config;
     result
+}
+
+pub(crate) fn consume_empty_element<R: io::BufRead>(
+    reader: &mut quick_xml::Reader<R>,
+    element: &quick_xml::events::BytesStart<'_>,
+) -> Result<(), XlsxError> {
+    use quick_xml::events::Event;
+    let end = element.name().as_ref().to_vec();
+    let mut buffer = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer)? {
+            Event::End(element) if element.name().as_ref() == end => return Ok(()),
+            Event::Text(text)
+                if text
+                    .iter()
+                    .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+            Event::Comment(_) | Event::PI(_) => (),
+            _ => {
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::Xml,
+                    "attribute-only element has nonempty or unterminated content",
+                ));
+            }
+        }
+        buffer.clear();
+    }
+}
+
+#[cfg(test)]
+mod empty_content_tests {
+    use super::*;
+
+    fn consume(xml: &[u8]) -> Result<(), XlsxError> {
+        let mut reader = quick_xml::Reader::from_reader(xml);
+        reader.config_mut().trim_text(false);
+        let quick_xml::events::Event::Start(start) = reader.read_event()? else {
+            panic!("start element required");
+        };
+        consume_empty_element(&mut reader, &start)
+    }
+
+    #[test]
+    fn explicit_empty_elements_accept_only_ignorable_content() {
+        for xml in ["<leaf></leaf>", "<leaf> \t\r\n<!--comment--><?x y?></leaf>"] {
+            consume(xml.as_bytes()).unwrap();
+        }
+        for xml in ["<leaf>text</leaf>", "<leaf><nested/></leaf>", "<leaf>"] {
+            assert!(consume(xml.as_bytes()).is_err(), "{xml}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod attribute_tests {
+    use super::*;
+
+    #[test]
+    fn attributes_are_decoded_once_without_local_name_guessing() {
+        let element = quick_xml::events::BytesStart::from_content(
+            r#"leaf val="&amp;amp;&#x9;" other:val="wrong""#,
+            4,
+        );
+        assert_eq!(require_attribute(&element, b"val").unwrap(), "&amp;\t");
+        assert!(read_attribute(&element, b"r:val").unwrap().is_none());
+    }
+
+    #[test]
+    fn malformed_or_duplicate_attributes_are_not_hidden_by_a_valid_match() {
+        for content in [
+            r#"leaf val="one" val="two""#,
+            r#"leaf val="one" bad="&missing;""#,
+            r#"leaf val="one" bad"#,
+        ] {
+            let element = quick_xml::events::BytesStart::from_content(content, 4);
+            assert!(read_attribute(&element, b"val").is_err(), "{content}");
+        }
+        let missing = quick_xml::events::BytesStart::new("leaf");
+        assert!(require_attribute(&missing, b"val").is_err());
+    }
 }

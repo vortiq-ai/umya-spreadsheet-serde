@@ -22,7 +22,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -218,49 +218,54 @@ impl PieChart {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
         self.data_labels.mark_group_absent();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e, session);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e, session);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
-                    _ => skip_element(reader, e),
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));},
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
                     b"dLbls" => self.data_labels.mark_empty_import(),
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
                     }
                     b"firstSliceAng" => {
-                        self.first_slice_angle.set_attributes(reader, e);
+                        self.first_slice_angle.set_attributes(reader, e)?;
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"pieChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:pieChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:pieChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:pieChart
         write_start_tag(writer, "c:pieChart", vec![], false);
 
@@ -269,18 +274,20 @@ impl PieChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb, SeriesFamily::Pie);
+            v.write_to(writer, wb, SeriesFamily::Pie)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer, wb);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:firstSliceAng
         self.first_slice_angle.write_to(writer);
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "pieChart", Some(SeriesFamily::Pie));
+            ext.write_for_owner(writer, Some(wb), "pieChart", Some(SeriesFamily::Pie))?;
         }
         write_end_tag(writer, "c:pieChart");
+
+        Ok(())
     }
 }

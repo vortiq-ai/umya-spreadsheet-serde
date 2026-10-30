@@ -1,26 +1,21 @@
-// a:schemeClr
+// a:schemeClr: one ordered native transform list (including repetitions).
 use std::io::Cursor;
 
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::{
-    super::EnumValue,
+    Alpha,
+    ColorTransform,
     PercentageType,
     PositiveFixedPercentageType,
     SchemeColorValues,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    structs::EnumValue,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -30,17 +25,10 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct SchemeColor {
-    val:                   EnumValue<SchemeColorValues>,
-    luminance:             Option<PercentageType>,
-    luminance_modulation:  Option<PercentageType>,
-    luminance_offset:      Option<PercentageType>,
-    saturation:            Option<PercentageType>,
-    saturation_modulation: Option<PercentageType>,
-    shade:                 Option<PositiveFixedPercentageType>,
-    alpha:                 Option<PositiveFixedPercentageType>,
-    tint:                  Option<PositiveFixedPercentageType>,
+    val:        EnumValue<SchemeColorValues>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    transforms: Vec<ColorTransform>,
 }
-
 impl SchemeColor {
     #[inline]
     #[must_use]
@@ -61,409 +49,408 @@ impl SchemeColor {
         self
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn luminance(&self) -> Option<&PercentageType> {
-        self.luminance.as_ref()
+    pub fn luminance(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Luminance(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use luminance()")]
-    pub fn get_luminance(&self) -> Option<&PercentageType> {
+    pub fn get_luminance(&self) -> Option<&str> {
         self.luminance()
     }
 
-    #[inline]
-    pub fn luminance_mut(&mut self) -> Option<&mut PercentageType> {
-        self.luminance.as_mut()
+    pub fn luminance_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Luminance(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use luminance_mut()")]
-    pub fn get_luminance_mut(&mut self) -> Option<&mut PercentageType> {
+    pub fn get_luminance_mut(&mut self) -> Option<&mut String> {
         self.luminance_mut()
     }
 
-    #[inline]
     pub fn set_luminance(&mut self, value: PercentageType) {
-        self.luminance = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.luminance_mut() {
+            *current = transform;
+        } else {
+            self.transforms.push(ColorTransform::Luminance(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn luminance_modulation(&self) -> Option<&PercentageType> {
-        self.luminance_modulation.as_ref()
+    pub fn luminance_modulation(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::LuminanceModulation(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use luminance_modulation()")]
-    pub fn get_luminance_modulation(&self) -> Option<&PercentageType> {
+    pub fn get_luminance_modulation(&self) -> Option<&str> {
         self.luminance_modulation()
     }
 
-    #[inline]
-    pub fn luminance_modulation_mut(&mut self) -> Option<&mut PercentageType> {
-        self.luminance_modulation.as_mut()
+    pub fn luminance_modulation_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::LuminanceModulation(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use luminance_modulation_mut()")]
-    pub fn get_luminance_modulation_mut(&mut self) -> Option<&mut PercentageType> {
+    pub fn get_luminance_modulation_mut(&mut self) -> Option<&mut String> {
         self.luminance_modulation_mut()
     }
 
-    #[inline]
     pub fn set_luminance_modulation(&mut self, value: PercentageType) {
-        self.luminance_modulation = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.luminance_modulation_mut() {
+            *current = transform;
+        } else {
+            self.transforms
+                .push(ColorTransform::LuminanceModulation(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn luminance_offset(&self) -> Option<&PercentageType> {
-        self.luminance_offset.as_ref()
+    pub fn luminance_offset(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::LuminanceOffset(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use luminance_offset()")]
-    pub fn get_luminance_offset(&self) -> Option<&PercentageType> {
+    pub fn get_luminance_offset(&self) -> Option<&str> {
         self.luminance_offset()
     }
 
-    #[inline]
-    pub fn luminance_offset_mut(&mut self) -> Option<&mut PercentageType> {
-        self.luminance_offset.as_mut()
+    pub fn luminance_offset_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::LuminanceOffset(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use luminance_offset_mut()")]
-    pub fn get_luminance_offset_mut(&mut self) -> Option<&mut PercentageType> {
+    pub fn get_luminance_offset_mut(&mut self) -> Option<&mut String> {
         self.luminance_offset_mut()
     }
 
-    #[inline]
     pub fn set_luminance_offset(&mut self, value: PercentageType) {
-        self.luminance_offset = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.luminance_offset_mut() {
+            *current = transform;
+        } else {
+            self.transforms
+                .push(ColorTransform::LuminanceOffset(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn saturation(&self) -> Option<&PercentageType> {
-        self.saturation.as_ref()
+    pub fn saturation(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Saturation(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use saturation()")]
-    pub fn get_saturation(&self) -> Option<&PercentageType> {
+    pub fn get_saturation(&self) -> Option<&str> {
         self.saturation()
     }
 
-    #[inline]
-    pub fn saturation_mut(&mut self) -> Option<&mut PercentageType> {
-        self.saturation.as_mut()
+    pub fn saturation_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Saturation(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use saturation_mut()")]
-    pub fn get_saturation_mut(&mut self) -> Option<&mut PercentageType> {
+    pub fn get_saturation_mut(&mut self) -> Option<&mut String> {
         self.saturation_mut()
     }
 
-    #[inline]
     pub fn set_saturation(&mut self, value: PercentageType) {
-        self.saturation = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.saturation_mut() {
+            *current = transform;
+        } else {
+            self.transforms.push(ColorTransform::Saturation(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn saturation_modulation(&self) -> Option<&PercentageType> {
-        self.saturation_modulation.as_ref()
+    pub fn saturation_modulation(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::SaturationModulation(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use saturation_modulation()")]
-    pub fn get_saturation_modulation(&self) -> Option<&PercentageType> {
+    pub fn get_saturation_modulation(&self) -> Option<&str> {
         self.saturation_modulation()
     }
 
-    #[inline]
-    pub fn saturation_modulation_mut(&mut self) -> Option<&mut PercentageType> {
-        self.saturation_modulation.as_mut()
+    pub fn saturation_modulation_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::SaturationModulation(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use saturation_modulation_mut()")]
-    pub fn get_saturation_modulation_mut(&mut self) -> Option<&mut PercentageType> {
+    pub fn get_saturation_modulation_mut(&mut self) -> Option<&mut String> {
         self.saturation_modulation_mut()
     }
 
-    #[inline]
     pub fn set_saturation_modulation(&mut self, value: PercentageType) {
-        self.saturation_modulation = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.saturation_modulation_mut() {
+            *current = transform;
+        } else {
+            self.transforms
+                .push(ColorTransform::SaturationModulation(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn shade(&self) -> Option<&PositiveFixedPercentageType> {
-        self.shade.as_ref()
+    pub fn shade(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Shade(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use shade()")]
-    pub fn get_shade(&self) -> Option<&PositiveFixedPercentageType> {
+    pub fn get_shade(&self) -> Option<&str> {
         self.shade()
     }
 
-    #[inline]
-    pub fn shade_mut(&mut self) -> Option<&mut PositiveFixedPercentageType> {
-        self.shade.as_mut()
+    pub fn shade_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Shade(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use shade_mut()")]
-    pub fn get_shade_mut(&mut self) -> Option<&mut PositiveFixedPercentageType> {
+    pub fn get_shade_mut(&mut self) -> Option<&mut String> {
         self.shade_mut()
     }
 
-    #[inline]
     pub fn set_shade(&mut self, value: PositiveFixedPercentageType) {
-        self.shade = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.shade_mut() {
+            *current = transform;
+        } else {
+            self.transforms.push(ColorTransform::Shade(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn alpha(&self) -> Option<&PositiveFixedPercentageType> {
-        self.alpha.as_ref()
+    pub fn alpha(&self) -> Option<&Alpha> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Alpha(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use alpha()")]
-    pub fn get_alpha(&self) -> Option<&PositiveFixedPercentageType> {
+    pub fn get_alpha(&self) -> Option<&Alpha> {
         self.alpha()
     }
 
-    #[inline]
-    pub fn alpha_mut(&mut self) -> Option<&mut PositiveFixedPercentageType> {
-        self.alpha.as_mut()
+    pub fn alpha_mut(&mut self) -> Option<&mut Alpha> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Alpha(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use alpha_mut()")]
-    pub fn get_alpha_mut(&mut self) -> Option<&mut PositiveFixedPercentageType> {
+    pub fn get_alpha_mut(&mut self) -> Option<&mut Alpha> {
         self.alpha_mut()
     }
 
-    #[inline]
     pub fn set_alpha(&mut self, value: PositiveFixedPercentageType) {
-        self.alpha = Some(value);
+        let mut transform = Alpha::default();
+        transform.set_val(value.into_value().to_string());
+        if let Some(current) = self.alpha_mut() {
+            *current = transform;
+        } else {
+            self.transforms.push(ColorTransform::Alpha(transform));
+        }
     }
 
-    #[inline]
+    /// Last matching transform, without discarding its original lexical value.
     #[must_use]
-    pub fn tint(&self) -> Option<&PositiveFixedPercentageType> {
-        self.tint.as_ref()
+    pub fn tint(&self) -> Option<&str> {
+        self.transforms
+            .iter()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Tint(value) => Some(value.as_str()),
+                _ => None,
+            })
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use tint()")]
-    pub fn get_tint(&self) -> Option<&PositiveFixedPercentageType> {
+    pub fn get_tint(&self) -> Option<&str> {
         self.tint()
     }
 
-    #[inline]
-    pub fn tint_mut(&mut self) -> Option<&mut PositiveFixedPercentageType> {
-        self.tint.as_mut()
+    pub fn tint_mut(&mut self) -> Option<&mut String> {
+        self.transforms
+            .iter_mut()
+            .rev()
+            .find_map(|transform| match transform {
+                ColorTransform::Tint(value) => Some(value),
+                _ => None,
+            })
     }
 
-    #[inline]
-    #[deprecated(since = "3.0.0", note = "Use tint_mut()")]
-    pub fn get_tint_mut(&mut self) -> Option<&mut PositiveFixedPercentageType> {
+    pub fn get_tint_mut(&mut self) -> Option<&mut String> {
         self.tint_mut()
     }
 
-    #[inline]
     pub fn set_tint(&mut self, value: PositiveFixedPercentageType) {
-        self.tint = Some(value);
+        let transform = value.into_value().to_string();
+        if let Some(current) = self.tint_mut() {
+            *current = transform;
+        } else {
+            self.transforms.push(ColorTransform::Tint(transform));
+        }
     }
 
-    #[inline]
+    #[must_use]
+    pub fn transforms(&self) -> &[ColorTransform] {
+        &self.transforms
+    }
+
+    pub fn transforms_mut(&mut self) -> &mut Vec<ColorTransform> {
+        &mut self.transforms
+    }
+
+    pub fn set_transforms(&mut self, values: Vec<ColorTransform>) -> &mut Self {
+        self.transforms = values;
+        self
+    }
+
     pub(crate) fn with_inner_params(&self) -> bool {
-        self.luminance.is_some()
-            || self.luminance_modulation.is_some()
-            || self.luminance_offset.is_some()
-            || self.saturation.is_some()
-            || self.saturation_modulation.is_some()
-            || self.shade.is_some()
-            || self.alpha.is_some()
-            || self.tint.is_some()
+        !self.transforms.is_empty()
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-        empty_flag: bool,
-    ) {
-        self.set_attributes_impl(reader, e, empty_flag, None);
+        owner: &BytesStart,
+        empty: bool,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, owner, empty, None)
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-        empty_flag: bool,
+        owner: &BytesStart,
+        empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.set_attributes_impl(reader, e, empty_flag, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, owner, empty, Some(session))
     }
 
-    fn set_attributes_impl<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-        empty_flag: bool,
+        owner: &BytesStart,
+        empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
-
-        if empty_flag {
-            return;
-        }
-
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                let native = session.is_none_or(|session| {
-                    session.accepts_child_namespace(
-                        e,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )
-                });
-                match if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"lum" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.luminance = Some(obj);
-                    }
-                    b"lumMod" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.luminance_modulation = Some(obj);
-                    }
-                    b"lumOff" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.luminance_offset = Some(obj);
-                    }
-                    b"sat" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.saturation = Some(obj);
-                    }
-                    b"satMod" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.saturation_modulation = Some(obj);
-                    }
-                    b"shade" => {
-                        let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.shade = Some(obj);
-                    }
-                    b"alpha" => {
-                        let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.alpha = Some(obj);
-                    }
-                    b"tint" => {
-                        let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.tint = Some(obj);
-                    }
-                    _ => { if !is_empty { crate::reader::driver::skip_element(reader,e); } },
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().as_ref()==end_name.as_slice() {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:schemeClr")
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|s| s.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"val")?;
+        self.val.set_value(
+            value
+                .parse::<SchemeColorValues>()
+                .map_err(|()| crate::xml::xml_error("invalid DrawingML enumeration"))?,
         );
+        if !empty {
+            self.transforms = super::color_transform::read_transforms(reader, owner, session)?;
+        }
+        Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        // a:schemeClr
-        if self.with_inner_params() {
-            write_start_tag(
-                writer,
-                "a:schemeClr",
-                vec![("val", self.val.value_string()).into()],
-                false,
-            );
-
-            // a:luminance
-            if let Some(v) = &self.luminance {
-                v.write_to_lum(writer);
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        let value = self.val.value_string();
+        let attributes: crate::structs::AttrCollection = vec![("val", value).into()];
+        write_start_tag(
+            writer,
+            "a:schemeClr",
+            attributes,
+            self.transforms.is_empty(),
+        );
+        if !self.transforms.is_empty() {
+            for transform in &self.transforms {
+                transform.write_to(writer)?;
             }
-
-            // a:lumMod
-            if let Some(v) = &self.luminance_modulation {
-                v.write_to_lum_mod(writer);
-            }
-
-            // a:lumOff
-            if let Some(v) = &self.luminance_offset {
-                v.write_to_lum_off(writer);
-            }
-
-            // a:sat
-            if let Some(v) = &self.saturation {
-                v.write_to_sat(writer);
-            }
-
-            // a:satMod
-            if let Some(v) = &self.saturation_modulation {
-                v.write_to_sat_mod(writer);
-            }
-
-            // a:shade
-            if let Some(v) = &self.shade {
-                v.write_to_shade(writer);
-            }
-
-            // a:alpha
-            if let Some(v) = &self.alpha {
-                v.write_to_alpha(writer);
-            }
-
-            // a:tint
-            if let Some(v) = &self.tint {
-                v.write_to_tint(writer);
-            }
-
             write_end_tag(writer, "a:schemeClr");
-        } else {
-            write_start_tag(
-                writer,
-                "a:schemeClr",
-                vec![("val", self.val.value_string()).into()],
-                true,
-            );
         }
+        Ok(())
     }
 }

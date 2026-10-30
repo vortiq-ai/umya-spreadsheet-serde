@@ -2,15 +2,30 @@
 use quick_xml::events::Event;
 
 use super::*;
-fn parse(input: &str, policy: NumericSourceCachePolicy) -> (NumberReference, bool) {
+fn parse_result(
+    input: &str,
+    policy: NumericSourceCachePolicy,
+) -> Result<(NumberReference, bool), crate::XlsxError> {
     let mut reader = Reader::from_reader(input.as_bytes());
     let mut buf = Vec::new();
     let Event::Start(e) = reader.read_event_into(&mut buf).unwrap() else {
         panic!("root")
     };
     let mut reference = NumberReference::default();
-    let valid = reference.read_with_policy(&mut reader, &e, false, policy);
-    (reference, valid)
+    let valid = reference.read_with_policy(&mut reader, &e, false, policy)?;
+    Ok((reference, valid))
+}
+fn parse(input: &str, policy: NumericSourceCachePolicy) -> (NumberReference, bool) {
+    parse_result(input, policy).unwrap()
+}
+
+fn assert_rejected(input: &str, policy: NumericSourceCachePolicy) {
+    let result = std::panic::catch_unwind(|| parse_result(input, policy))
+        .expect("numeric reference reader must not panic");
+    match result {
+        Ok((_, valid)) => assert!(!valid, "invalid reference accepted: {input}"),
+        Err(error) => assert_eq!(error.kind(), crate::XlsxErrorKind::Xml),
+    }
 }
 #[test]
 fn existing_default_policy_keeps_cache_format_code_and_shared_formula_normalization() {
@@ -31,7 +46,7 @@ fn existing_default_policy_keeps_cache_format_code_and_shared_formula_normalizat
         panic!("root")
     };
     let mut default = NumberReference::default();
-    default.set_attributes(&mut reader, &e);
+    default.set_attributes(&mut reader, &e).unwrap();
     assert_eq!(default.numbering_cache().format_code().text(), "0.000");
     assert_eq!(
         default.formula().address_str(),
@@ -50,11 +65,10 @@ fn skipped_cache_and_unknown_wrappers_cannot_replace_the_direct_formula() {
 }
 #[test]
 fn malformed_new_route_and_duplicate_formula_are_diagnosable_without_panics() {
-    let (_, valid) = parse(
+    assert_rejected(
         "<numRef><f>Sheet1!B2</f>",
         NumericSourceCachePolicy::SkipSourceCache,
     );
-    assert!(!valid);
     let (_, valid) = parse(
         "<numRef><f>Sheet1!B2</f><f>Sheet1!B3</f></numRef>",
         NumericSourceCachePolicy::SkipSourceCache,
@@ -73,7 +87,7 @@ fn malformed_new_route_and_duplicate_formula_are_diagnosable_without_panics() {
 }
 
 #[test]
-fn legacy_reference_reader_panics_on_parse_failure_but_keeps_complete_formula_behavior() {
+fn reference_reader_returns_parse_errors_and_keeps_complete_formula_behavior() {
     for xml in [
         "<numRef><f>Sheet1!B2</f>",
         "<numRef><f>Sheet1!B2</wrong></numRef>",
@@ -85,11 +99,13 @@ fn legacy_reference_reader_panics_on_parse_failure_but_keeps_complete_formula_be
                 panic!("root")
             };
             let mut reference = NumberReference::default();
-            reference.set_attributes(&mut reader, &e);
+            reference.set_attributes(&mut reader, &e)
         });
-        assert!(failed.is_err());
-        let (_, valid) = parse(xml, NumericSourceCachePolicy::SkipSourceCache);
-        assert!(!valid);
+        assert_eq!(
+            failed.expect("reader must not panic").unwrap_err().kind(),
+            crate::XlsxErrorKind::Xml
+        );
+        assert_rejected(xml, NumericSourceCachePolicy::SkipSourceCache);
     }
     for (xml, formula) in [
         ("<numRef></numRef>", None),
@@ -104,7 +120,7 @@ fn legacy_reference_reader_panics_on_parse_failure_but_keeps_complete_formula_be
             panic!("root")
         };
         let mut reference = NumberReference::default();
-        reference.set_attributes(&mut reader, &e);
+        reference.set_attributes(&mut reader, &e).unwrap();
         if let Some(formula) = formula {
             assert_eq!(reference.formula().address_str(), formula);
         }
@@ -114,7 +130,7 @@ fn legacy_reference_reader_panics_on_parse_failure_but_keeps_complete_formula_be
 }
 
 #[test]
-fn invalid_formula_entities_are_fallible_for_both_policies_and_panic_in_legacy_wrapper() {
+fn invalid_formula_entities_are_rejected_without_panics_for_both_policies() {
     for xml in [
         "<numRef><f>Sheet1!B2 &bogus;</f></numRef>",
         "<numRef><f>Sheet1!B2 &broken</f></numRef>",
@@ -123,9 +139,7 @@ fn invalid_formula_entities_are_fallible_for_both_policies_and_panic_in_legacy_w
             NumericSourceCachePolicy::Read,
             NumericSourceCachePolicy::SkipSourceCache,
         ] {
-            let result = std::panic::catch_unwind(|| parse(xml, policy));
-            assert!(result.is_ok());
-            assert!(!result.unwrap().1);
+            assert_rejected(xml, policy);
         }
         let result = std::panic::catch_unwind(|| {
             let mut reader = Reader::from_reader(xml.as_bytes());
@@ -133,9 +147,12 @@ fn invalid_formula_entities_are_fallible_for_both_policies_and_panic_in_legacy_w
             let Event::Start(e) = reader.read_event_into(&mut buffer).unwrap() else {
                 panic!("root")
             };
-            NumberReference::default().set_attributes(&mut reader, &e);
+            NumberReference::default().set_attributes(&mut reader, &e)
         });
-        assert!(result.is_err());
+        assert_eq!(
+            result.expect("reader must not panic").unwrap_err().kind(),
+            crate::XlsxErrorKind::Xml
+        );
     }
 }
 
@@ -165,7 +182,7 @@ fn formula_text_decodes_cdata_and_entities_once_for_both_policies_and_legacy_rea
             panic!("root")
         };
         let mut reference = NumberReference::default();
-        reference.set_attributes(&mut reader, &owner);
+        reference.set_attributes(&mut reader, &owner).unwrap();
         assert_eq!(reference.formula().address_str(), expected);
         assert!(matches!(
             reader.read_event_into(&mut buffer).unwrap(),
@@ -184,7 +201,7 @@ fn formula_text_decodes_cdata_and_entities_once_for_both_policies_and_legacy_rea
             NumericSourceCachePolicy::Read,
             NumericSourceCachePolicy::SkipSourceCache,
         ] {
-            assert!(!parse(xml, policy).1);
+            assert_rejected(xml, policy);
         }
         let result = std::panic::catch_unwind(|| {
             let mut reader = Reader::from_reader(xml.as_bytes());
@@ -192,8 +209,11 @@ fn formula_text_decodes_cdata_and_entities_once_for_both_policies_and_legacy_rea
             let Event::Start(owner) = reader.read_event_into(&mut buffer).unwrap() else {
                 panic!("root")
             };
-            NumberReference::default().set_attributes(&mut reader, &owner);
+            NumberReference::default().set_attributes(&mut reader, &owner)
         });
-        assert!(result.is_err());
+        assert_eq!(
+            result.expect("reader must not panic").unwrap_err().kind(),
+            crate::XlsxErrorKind::Xml
+        );
     }
 }

@@ -197,7 +197,10 @@ impl RawWorksheet {
     pub(crate) fn load_relationship_file_data_from_source(&mut self) -> Result<(), XlsxError> {
         for relationships in self.relationships_list_mut() {
             for relationship in relationships.relationship_list_mut() {
-                if relationship.get_type() == crate::helper::const_str::CHART_NS {
+                if matches!(
+                    relationship.get_type(),
+                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS
+                ) {
                     continue;
                 }
                 relationship.raw_file_mut().load_file_data_from_source()?;

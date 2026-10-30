@@ -16,8 +16,9 @@ use super::{
     RunProperties,
 };
 use crate::{
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
-    reader::driver::xml_read_loop,
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -87,48 +88,68 @@ impl TextField {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<Self, XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut result = Self {
-            id: crate::drawing::get_unescaped_attribute(e, b"id").unwrap_or_default(),
-            kind: crate::drawing::get_unescaped_attribute(e, b"type"),
+            id: crate::reader::driver::require_attribute(e, b"id")?,
+            kind: crate::reader::driver::read_attribute(e, b"type")?,
             ..Self::default()
         };
         if empty {
-            return result;
+            return Ok(result);
         }
-        let end = e.name().into_inner().to_vec();
-        xml_read_loop!(reader,
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
-                let empty=matches!(event,Event::Empty(_));
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                let name = if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else { b"" };
-                match name {
-                    b"rPr" => { let mut v=RunProperties::default(); v.read_with_session(reader,e,empty,session); result.run_properties=Some(v); },
-                    b"pPr" => { let mut v=ParagraphProperties::default(); v.read_with_session(reader,e,empty,session); result.paragraph_properties=Some(v); },
-                    b"t" => { result.text=Some(crate::reader::driver::read_simple_text(reader,e,empty)
-                        .expect("invalid DrawingML field text")); },
-                    _ => { if !empty { crate::reader::driver::skip_element(reader,e); } },
+                let empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                match crate::reader::driver::local_name(e.name().as_ref()) {
+                    b"rPr" if result.run_properties.is_none() && result.paragraph_properties.is_none() && result.text.is_none() => {
+                        let mut value = RunProperties::default();
+                        value.read_with_session(reader, e, empty, session)?;
+                        result.run_properties = Some(value);
+                    }
+                    b"pPr" if result.paragraph_properties.is_none() && result.text.is_none() => {
+                        let mut value = ParagraphProperties::default();
+                        value.read_with_session(reader, e, empty, session)?;
+                        result.paragraph_properties = Some(value);
+                    }
+                    b"t" if result.text.is_none() => {
+                        crate::reader::driver::validate_attributes(e)?;
+                        let text = crate::reader::driver::read_simple_text(reader, e, empty)?;
+                        result.text = Some(text
+                            .ok_or_else(|| crate::xml::xml_error("invalid DrawingML field text"))?);
+                    }
+                    b"rPr" | b"pPr" | b"t" => return Err(crate::xml::xml_error("duplicate or misplaced DrawingML text field child")),
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
-            Event::End(ref e) => { if e.name().into_inner()==end.as_slice() { return result; } },
-            Event::Eof => panic!("Could not find DrawingML text field end element"),
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => return Ok(result),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text field")),
         );
     }
 
-    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         let mut attrs: crate::structs::AttrCollection = vec![("id", self.id.as_str()).into()];
         if let Some(v) = &self.kind {
             attrs.push(("type", v.as_str()).into());
         }
         write_start_tag(writer, "a:fld", attrs, false);
         if let Some(v) = &self.run_properties {
-            v.write_to_rpr(writer);
+            v.write_to_rpr(writer)?;
         }
         if let Some(v) = &self.paragraph_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(v) = &self.text {
             write_start_tag(writer, "a:t", vec![], false);
@@ -136,6 +157,7 @@ impl TextField {
             write_end_tag(writer, "a:t");
         }
         write_end_tag(writer, "a:fld");
+        Ok(())
     }
 }
 
@@ -166,9 +188,9 @@ impl Paragraph {
                 .all(|(current, previous)| current.text() == previous.text())
     }
 
-    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
         if !self.projected_structure_matches(previous) {
-            return 0;
+            return Ok(0);
         }
         let mut restored = 0;
         if self.parts.is_none() {
@@ -178,7 +200,7 @@ impl Paragraph {
                 if self.paragraph_properties.export_parts_supplied()
                     || !self
                         .paragraph_properties
-                        .projected_values_match(&previous.paragraph_properties)
+                        .projected_values_match(&previous.paragraph_properties)?
                 {
                     parts.properties_present = true;
                 }
@@ -198,7 +220,7 @@ impl Paragraph {
             .paragraph_properties
             .restore_export_parts(&previous.paragraph_properties);
         for (current, previous) in self.run.iter_mut().zip(&previous.run) {
-            restored += current.restore_export_parts(previous);
+            restored += current.restore_export_parts(previous)?;
         }
         if let (Some(current), Some(previous)) = (
             &mut self.end_para_run_properties,
@@ -206,7 +228,7 @@ impl Paragraph {
         ) {
             restored += current.restore_export_parts(previous);
         }
-        restored
+        Ok(restored)
     }
 
     #[must_use]
@@ -382,8 +404,8 @@ impl Paragraph {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.read_with_session(reader, e, None);
+    ) -> Result<(), XlsxError> {
+        self.read_with_session(reader, e, None)
     }
 
     pub(crate) fn read_with_session<R: std::io::BufRead>(
@@ -391,66 +413,69 @@ impl Paragraph {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(e)?;
         self.parts = Some(Box::new(ParagraphParts::default()));
-        let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                let name = if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else { b"" };
-                match name {
-                    b"pPr" => {
-                        self.parts.as_mut().unwrap().properties_present=true;
-                        self.paragraph_properties
-                            .read_with_session(reader, e, is_empty, session);
+        let mut properties_present = false;
+        let mut end_properties_present = false;
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                match crate::reader::driver::local_name(e.name().as_ref()) {
+                    b"pPr" if !properties_present && self.run.is_empty() && self.parts.as_ref().is_none_or(|parts| parts.fields.is_empty()) && !end_properties_present => {
+                        properties_present = true;
+                        self.parts.get_or_insert_with(Default::default).properties_present = true;
+                        self.paragraph_properties.read_with_session(reader, e, empty, session)?;
                     }
-                    b"fld" => {
-                        let field = TextField::read(reader, e, is_empty, session);
-                        self.parts.as_mut().unwrap().fields.push(PositionedTextField {
-                            before_run: run_position(self.run.len()),
-                            field,
-                        });
+                    b"fld" if !end_properties_present => {
+                        let field = TextField::read(reader, e, empty, session)?;
+                        let before_run = u32::try_from(self.run.len())
+                            .map_err(|_| crate::xml::xml_error("DrawingML paragraph contains too many runs"))?;
+                        self.parts.get_or_insert_with(Default::default).fields.push(
+                            PositionedTextField { before_run, field },
+                        );
                     }
-                    b"r" => {
+                    b"r" if !end_properties_present => {
+                        if empty { return Err(crate::xml::xml_error("DrawingML run requires a text element")); }
                         let mut run = Run::default();
-                        if !is_empty {
-                            run.read_with_session(reader, e, session);
-                        }
+                        run.read_with_session(reader, e, session)?;
                         self.run.push(run);
                     }
-                    b"endParaRPr" => {
-                        let mut run_properties = RunProperties::default();
-                        run_properties.read_with_session(reader, e, is_empty, session);
-                        self.set_end_para_run_properties(run_properties);
+                    b"endParaRPr" if !end_properties_present => {
+                        end_properties_present = true;
+                        let mut properties = RunProperties::default();
+                        properties.read_with_session(reader, e, empty, session)?;
+                        self.set_end_para_run_properties(properties);
                     }
-                    _ => {
-                        if !is_empty {
-                            crate::reader::driver::skip_element(reader, e);
-                        }
-                    }
+                    b"pPr" | b"fld" | b"r" | b"endParaRPr" => return Err(crate::xml::xml_error("duplicate or misplaced DrawingML paragraph child")),
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == end.as_slice() {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:p"),
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML paragraph")),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // a:p
         write_start_tag(writer, "a:p", vec![], false);
 
         // a:pPr
         if self.parts.as_ref().is_none_or(|p| p.properties_present) {
-            self.paragraph_properties.write_to(writer);
+            self.paragraph_properties.write_to(writer)?;
         }
 
         // a:r
@@ -458,10 +483,10 @@ impl Paragraph {
             if let Some(p) = &self.parts {
                 let run_index = run_position(i);
                 for field in p.fields.iter().filter(|v| v.before_run == run_index) {
-                    field.field.write_to(writer);
+                    field.field.write_to(writer)?;
                 }
             }
-            run.write_to(writer);
+            run.write_to(writer)?;
         }
         if let Some(p) = &self.parts {
             for field in p
@@ -469,16 +494,17 @@ impl Paragraph {
                 .iter()
                 .filter(|v| v.before_run == run_position(self.run.len()))
             {
-                field.field.write_to(writer);
+                field.field.write_to(writer)?;
             }
         }
 
         // a:endParaRPr
         if let Some(v) = &self.end_para_run_properties {
-            v.write_to_end_para_rpr(writer);
+            v.write_to_end_para_rpr(writer)?;
         }
 
         write_end_tag(writer, "a:p");
+        Ok(())
     }
 }
 
@@ -511,10 +537,10 @@ mod parity_tests {
             _ => panic!("expected paragraph"),
         };
         let mut p = Paragraph::default();
-        p.set_attributes(&mut reader, &e);
+        p.set_attributes(&mut reader, &e).unwrap();
         assert_eq!(p.fields()[0].before_run, 1);
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        p.write_to(&mut writer);
+        p.write_to(&mut writer).unwrap();
         let out = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(!out.contains("<a:pPr"));
         assert!(out.find("<a:fld").unwrap() > out.find(">A</a:t>").unwrap());

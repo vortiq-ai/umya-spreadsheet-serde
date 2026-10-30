@@ -11,10 +11,7 @@ use super::{
     super::super::EnumValue,
     MarkerStyleValues,
 };
-use crate::{
-    drawing::get_unescaped_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -42,10 +39,14 @@ impl Symbol {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        if let Some(value) = get_unescaped_attribute(e, b"val") {
-            self.val.set_value_string(value);
+    ) -> Result<(), crate::XlsxError> {
+        self.val = EnumValue::default();
+        if let Some(value) =
+            crate::reader::driver::read_enum_attribute::<MarkerStyleValues>(e, b"val")?
+        {
+            self.val.set_value(value);
         }
+        Ok(())
     }
 
     /// Whether the required symbol value was explicitly supplied.

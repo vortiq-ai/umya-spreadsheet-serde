@@ -11,13 +11,9 @@ use quick_xml::{
 };
 
 use super::shape_guide::ShapeGuide;
-use crate::{
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -64,25 +60,80 @@ impl AdjustValueList {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:gd" {
-                    let mut shape_guide = ShapeGuide::default();
-                    shape_guide.set_name(get_unescaped_attribute(e, b"name").unwrap());
-                    shape_guide.set_fmla(get_unescaped_attribute(e, b"fmla").unwrap());
-                    self.add_shape_guide_collection(shape_guide);
+        e: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
+                    }
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"gd" => {
+                            let mut value = ShapeGuide::default();
+                            value.set_name(crate::reader::driver::require_attribute(
+                                child, b"name",
+                            )?);
+                            value.set_fmla(crate::reader::driver::require_attribute(
+                                child, b"fmla",
+                            )?);
+                            if !child_empty {
+                                crate::structs::drawing::color_transform::consume_paint_leaf(
+                                    reader, child, session,
+                                )?;
+                            }
+                            self.add_shape_guide_collection(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:avLst" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:avLst")
-        );
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

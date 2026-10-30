@@ -19,11 +19,11 @@ use super::{
 };
 use crate::{
     Workbook,
-    drawing::get_unescaped_attribute,
     reader::{
         driver::{
             local_name,
             skip_element,
+            try_xml_read_loop,
         },
         xlsx::SourceCacheSession,
     },
@@ -31,7 +31,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 /// The six trendline algorithms, with their native chart spellings.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -392,23 +391,23 @@ impl Trendline {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self {
             type_element: false,
             ..Self::default()
         };
         if empty {
-            return result;
+            return Ok(result);
         }
         let end = e.name().into_inner().to_vec();
         let mut seen = std::collections::HashSet::new();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                let child = if session.accepts_child_namespace(e,super::extension_registry::NS_C) {
+                let child = if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {
                     local_name(e.name().into_inner())
                 } else { b"" };
                 if matches!(
@@ -433,22 +432,22 @@ impl Trendline {
                         result.name = Some(if empty {
                             String::new()
                         } else {
-                            read_name(reader, e)
+                            read_name(reader, e)?
                         });
                         consumed = true;
                     }
-                    b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)));consumed=true;},
+                    b"extLst"=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session)?));consumed=true;},
                     b"spPr" => {
                         let mut v = ShapeProperties::default();
                         if !empty {
-                            v.set_attributes_with_session(reader, e, session);
+                            v.set_attributes_with_session(reader, e, session)?;
                         }
                         result.shape_properties = Some(v);
                         consumed = true;
                     }
                     b"trendlineType" => {
                         result.type_element = true;
-                        result.kind_attribute = get_unescaped_attribute(e, b"val");
+                        result.kind_attribute = crate::reader::driver::read_attribute(e, b"val")?;
                     }
                     b"order" => result.order = Some(XmlUnsignedInt::read(e)),
                     b"period" => result.period = Some(XmlUnsignedInt::read(e)),
@@ -460,27 +459,31 @@ impl Trendline {
                     b"trendlineLbl" => {
                         result.label = Some(Box::new(TrendlineLabel::read(
                             reader, e, empty, session,
-                        )));
+                        )?));
                         consumed = true;
                     }
                     _ => (),
                 }
                 if !empty && !consumed {
-                    skip_element(reader, e);
+                    skip_element(reader, e)?;
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return result;
+                    return Ok(result);
                 }
             },
-            Event::Eof => panic!("Could not find trendline end element"),
+            Event::Eof => return Err(crate::xml::xml_error("Could not find trendline end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c:trendline", vec![], false);
         if let Some(name) = &self.name {
@@ -489,7 +492,7 @@ impl Trendline {
             write_end_tag(writer, "c:name");
         }
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         write_start_tag(
             writer,
@@ -528,41 +531,20 @@ impl Trendline {
             v.write_to(writer, "c:dispEq");
         }
         if let Some(v) = &self.label {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "trendline", None);
+            ext.write_for_owner(writer, Some(wb), "trendline", None)?;
         }
         write_end_tag(writer, "c:trendline");
+
+        Ok(())
     }
 }
-fn read_name<R: std::io::BufRead>(reader: &mut Reader<R>, e: &BytesStart) -> String {
-    let end = e.name().into_inner().to_vec();
-    let config = reader.config().clone();
-    reader.config_mut().trim_text(false);
-    let mut value = String::new();
-    let mut buf = Vec::new();
-    loop {
-        match reader
-            .read_event_into(&mut buf)
-            .expect("trendline name XML")
-        {
-            Event::Text(t) => value.push_str(
-                &quick_xml::escape::unescape(&t.decode().expect("name encoding"))
-                    .expect("name escaping"),
-            ),
-            Event::CData(t) => value.push_str(&t.decode().expect("name encoding")),
-            Event::GeneralRef(reference) => {
-                let escaped = format!("&{};", reference.decode().expect("name reference encoding"));
-                value.push_str(&quick_xml::escape::unescape(&escaped).expect("name reference"));
-            }
-            Event::Start(e) => skip_element(reader, &e),
-            Event::End(e) if e.name().into_inner() == end.as_slice() => break,
-            Event::Eof => panic!("Could not find trendline name end element"),
-            _ => (),
-        }
-        buf.clear();
-    }
-    *reader.config_mut() = config;
-    value
+fn read_name<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    e: &BytesStart,
+) -> Result<String, crate::XlsxError> {
+    crate::reader::driver::read_simple_text(reader, e, false)?
+        .ok_or_else(|| crate::xml::xml_error("invalid trendline name text"))
 }

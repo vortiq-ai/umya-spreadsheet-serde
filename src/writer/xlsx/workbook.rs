@@ -112,10 +112,10 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     let mut index = 1;
     for worksheet in wb.sheet_collection_no_check() {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
-        let id = index.to_string();
+        let id = worksheet.sheet_id();
         let r_id = format!("rId{index}");
         attributes.push(("name", worksheet.name()).into());
-        attributes.push(("sheetId", &id).into());
+        attributes.push(("sheetId", id).into());
         attributes.push(("r:id", &r_id).into());
         if worksheet.has_state() {
             attributes.push(("state", worksheet.state_str()).into());

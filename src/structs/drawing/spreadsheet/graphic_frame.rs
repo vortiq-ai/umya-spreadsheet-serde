@@ -19,8 +19,6 @@ use super::{
     Transform,
 };
 use crate::{
-    drawing::get_unescaped_attribute,
-    reader::driver::xml_read_loop,
     structs::raw::RawRelationships,
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
@@ -36,9 +34,24 @@ pub struct GraphicFrame {
     non_visual_graphic_frame_properties: NonVisualGraphicFrameProperties,
     transform:                           Transform,
     graphic:                             Graphic,
+    #[cfg_attr(feature = "serde", serde(default))]
+    source_parts:                        Option<Box<[String]>>,
 }
 
 impl GraphicFrame {
+    #[must_use]
+    pub fn source_parts(&self) -> &[String] {
+        self.source_parts.as_deref().unwrap_or_default()
+    }
+
+    pub(crate) fn set_source_parts(&mut self, value: Option<Vec<String>>) {
+        self.source_parts = value.map(Vec::into_boxed_slice);
+    }
+
+    pub(crate) fn restore_source_parts(&mut self, previous: &Self) {
+        self.source_parts.clone_from(&previous.source_parts);
+    }
+
     #[inline]
     #[must_use]
     pub fn r#macro(&self) -> &str {
@@ -161,55 +174,83 @@ impl GraphicFrame {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
         session: &crate::reader::xlsx::SourceCacheSession,
         provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
-    ) {
-        if let Some(v) = get_unescaped_attribute(e, b"macro") {
-            self.r#macro.set_value_string(v);
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"macro")? {
+            self.r#macro.set_value(value);
         }
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"xdr:nvGraphicFramePr" | b"nvGraphicFramePr" => {
-                        self.non_visual_graphic_frame_properties
-                            .set_attributes(reader, e);
-                        }
-                    b"xdr:xfrm" | b"xfrm" => {
-                        self.transform.set_attributes(reader, e);
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if !seen.insert((name.namespace_uri.clone(), name.local_name.clone())) {
+                        return Err(crate::xml::xml_error("duplicate graphic frame child"));
                     }
-                    b"a:graphic" | b"graphic" => {
-                        self.graphic
-                            .set_attributes(reader, e, drawing_relationships, session, provider);
+                    if name.is(crate::helper::const_str::DRAWINGML_MAIN_NS, "graphic") {
+                        if empty {
+                            return Err(crate::xml::xml_error("empty drawing graphic"));
                         }
-                    _ => (),
+                        let parts = self.graphic.set_attributes(
+                            reader,
+                            child,
+                            drawing_relationships,
+                            session,
+                            provider,
+                        )?;
+                        self.set_source_parts((!parts.is_empty()).then_some(parts));
+                    } else if name.is(
+                        crate::helper::const_str::SHEET_DRAWING_NS,
+                        "nvGraphicFramePr",
+                    ) {
+                        if empty {
+                            return Err(crate::xml::xml_error(
+                                "empty nonvisual graphic frame properties",
+                            ));
+                        }
+                        self.non_visual_graphic_frame_properties
+                            .set_attributes(reader, child, session)?;
+                    } else if name.is(crate::helper::const_str::SHEET_DRAWING_NS, "xfrm") {
+                        self.transform
+                            .read_with_session(reader, child, empty, Some(session))?;
+                    } else {
+                        return Err(crate::xml::xml_error("unsupported graphic frame child"));
+                    }
                 }
-            },
-            // The reader is not namespace-aware (`read_event_into`, not
-            // `read_resolved_event`), so every element arrives under whatever
-            // prefix the producer wrote. A writer that declares the
-            // SpreadsheetDrawing namespace as the DEFAULT one emits a bare
-            // `<graphicFrame>`; `WorksheetDrawing` and `TwoCellAnchor` already
-            // accept both spellings, but this loop did not, so it never met its
-            // own end tag, consumed the rest of the document and died on `Eof`.
-            // Six SpreadsheetBench-v2 workbooks failed to open for that alone.
-            Event::End(ref e) => {
-                if matches!(e.name().into_inner(), b"xdr:graphicFrame" | b"graphicFrame") {
-                    return
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if seen.len() != 3 {
+                        return Err(crate::xml::xml_error(
+                            "missing required graphic frame child",
+                        ));
+                    }
+                    return Ok(());
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:graphicFrame")
-        );
+                Event::Eof => return Err(crate::xml::xml_error("unterminated graphic frame")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
-    ) {
+        ole_id: usize,
+    ) -> Result<(), crate::XlsxError> {
         // xdr:graphicFrame
         write_start_tag(
             writer,
@@ -219,7 +260,8 @@ impl GraphicFrame {
         );
 
         // xdr:nvGraphicFramePr
-        self.non_visual_graphic_frame_properties.write_to(writer);
+        self.non_visual_graphic_frame_properties
+            .write_to(writer, rel_list, ole_id)?;
 
         // xdr:xfrm
         self.transform.write_to(writer);
@@ -228,6 +270,7 @@ impl GraphicFrame {
         Graphic::write_to(writer, rel_list);
 
         write_end_tag(writer, "xdr:graphicFrame");
+        Ok(())
     }
 }
 impl AdjustmentCoordinateWithSheet for GraphicFrame {

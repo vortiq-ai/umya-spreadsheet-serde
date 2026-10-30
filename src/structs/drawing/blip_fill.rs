@@ -17,11 +17,6 @@ use super::{
     Stretch,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::raw::RawRelationships,
     writer::driver::{
         write_end_tag,
@@ -148,74 +143,113 @@ impl BlipFill {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
+        empty: bool,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        set_string_from_xml!(self, e, rotate_with_shape, "rotWithShape");
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:blip" => {
-                        self.blip
-                            .set_attributes(reader, e, drawing_relationships.unwrap(), false);
-                        }
-                    b"a:stretch" => {
-                        self.stretch.set_attributes(reader, e);
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"rotWithShape")? {
+            self.set_rotate_with_shape(
+                crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?,
+            );
+        }
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS
+                        || !seen.insert(name.local_name.clone())
+                    {
+                        return Err(crate::xml::xml_error(
+                            "foreign or duplicate drawing blip-fill child",
+                        ));
                     }
-                    _ => (),
-                }
-            },
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"a:blip" => {
-                        self.blip
-                            .set_attributes(reader, e, drawing_relationships.unwrap(), true);
+                    match name.local_name.as_str() {
+                        "blip" => {
+                            let relationships = drawing_relationships.ok_or_else(|| {
+                                crate::xml::xml_error("drawing image relationships are missing")
+                            })?;
+                            self.blip.read_with_session(
+                                reader,
+                                child,
+                                empty,
+                                relationships,
+                                Some(session),
+                            )?;
                         }
-                    b"a:srcRect" => {
-                        let mut source_rectangle = SourceRectangle::default();
-                        source_rectangle.set_attributes(reader, e);
-                        self.set_source_rectangle(source_rectangle);
+                        "srcRect" => {
+                            let mut value = SourceRectangle::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_source_rectangle(value);
+                        }
+                        "stretch" => {
+                            self.stretch
+                                .read_with_session(reader, child, empty, Some(session))?;
+                        }
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported drawing blip-fill child",
+                            ));
+                        }
                     }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:blipFill" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:blipFill")
-        );
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing blip fill")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
-    ) {
-        // a:blipFill
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, rel_list, "a:blipFill")
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        rel_list: &mut Vec<(String, String)>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.rotate_with_shape.has_value() {
             attributes.push(("rotWithShape", self.rotate_with_shape.value_string()).into());
         }
-        write_start_tag(writer, "a:blipFill", attributes, false);
+        write_start_tag(writer, name, attributes, false);
 
         // a:blip
-        self.blip.write_to(writer, rel_list);
+        self.blip.write_to(writer, rel_list)?;
 
         // a:srcRect
         if let Some(v) = &self.source_rectangle {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:stretch
-        self.stretch.write_to(writer);
+        self.stretch.write_to(writer)?;
 
-        write_end_tag(writer, "a:blipFill");
+        write_end_tag(writer, name);
+        Ok(())
     }
 }

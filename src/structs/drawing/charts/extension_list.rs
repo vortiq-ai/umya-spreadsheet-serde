@@ -210,6 +210,19 @@ impl Extension {
     }
 }
 impl ExtensionList {
+    pub(crate) fn append_list(&mut self, other: Self) {
+        let same_name = |left: &QName, right: &QName| {
+            left.namespace_uri == right.namespace_uri && left.local_name == right.local_name
+        };
+        self.invalid |= other.invalid
+            || !same_name(&self.name, &other.name)
+            || !same_name(&self.owner, &other.owner)
+            || self.owner_path != other.owner_path
+            || self.chart_part != other.chart_part
+            || self.source_part_sha256 != other.source_part_sha256;
+        self.entries.extend(other.entries);
+    }
+
     #[must_use]
     pub fn source_part_sha256(&self) -> &str {
         &self.source_part_sha256
@@ -251,37 +264,13 @@ impl ExtensionList {
 
     pub(crate) fn read<R: std::io::BufRead>(
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let Some(context) = session.extension_context(reader.buffer_position(), e) else {
-            // Missing original context is not a license to infer namespaces
-            // from prefixes, promote payloads, or emit a fabricated owner.
-            // Keep an invalid list so ordinary conflict/export diagnostics
-            // fail closed, while consuming only this boundary's subtree.
-            let owner_path = format!("unresolved-extension-boundary@{}", reader.buffer_position());
-            if !empty {
-                crate::reader::driver::skip_element(reader, e);
-            }
-            return Self {
-                entries: Vec::new(),
-                name: QName {
-                    namespace_uri:    String::new(),
-                    local_name:       "extLst".into(),
-                    preferred_prefix: None,
-                },
-                owner: QName {
-                    namespace_uri:    String::new(),
-                    local_name:       String::new(),
-                    preferred_prefix: None,
-                },
-                owner_path,
-                chart_part: String::new(),
-                source_part_sha256: String::new(),
-                invalid: true,
-            };
-        };
+    ) -> Result<Self, crate::XlsxError> {
+        let context = session
+            .extension_context(reader.buffer_position(), owner)
+            .ok_or_else(|| crate::xml::xml_error("missing original extension namespace context"))?;
         let mut result = Self {
             entries:            Vec::new(),
             name:               context.container,
@@ -292,60 +281,61 @@ impl ExtensionList {
             invalid:            false,
         };
         if empty {
-            return result;
+            return Ok(result);
         }
         let config = reader.config().clone();
         reader.config_mut().trim_text(false);
-        let end = e.name().into_inner().to_vec();
-        let mut buf = Vec::new();
-        let family = family_from_path(&result.owner_path);
-        loop {
-            buf.clear();
-            match reader
-                .read_event_into(&mut buf)
-                .expect("valid extension-list XML")
-            {
-                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
-                    let empty = matches!(event, Event::Empty(_));
-                    let scope = context
-                        .scope
-                        .child(child)
-                        .expect("valid extension namespace");
-                    let name = scope
-                        .resolve(child.name().into_inner(), false)
-                        .expect("bound extension QName");
-                    if name.namespace_uri == result.name.namespace_uri && name.local_name == "ext" {
-                        result.entries.push(
-                            read_extension(
-                                reader,
-                                child,
-                                empty,
-                                &context.scope,
-                                &result.owner.local_name,
-                                family,
-                                session,
-                            )
-                            .expect("valid extension content"),
-                        );
-                    } else {
-                        result.invalid = true;
-                        if !empty {
-                            crate::reader::driver::skip_element(reader, child);
+        let parsed = (|| {
+            let end = owner.name().as_ref().to_vec();
+            let mut buffer = Vec::new();
+            let family = family_from_path(&result.owner_path);
+            loop {
+                match reader.read_event_into(&mut buffer)? {
+                    ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                        let empty = matches!(event, Event::Empty(_));
+                        let name = context
+                            .scope
+                            .child(child)
+                            .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                            .map_err(crate::xml::xml_error)?;
+                        if name.namespace_uri == result.name.namespace_uri
+                            && name.local_name == "ext"
+                        {
+                            result.entries.push(
+                                read_extension(
+                                    reader,
+                                    child,
+                                    empty,
+                                    &context.scope,
+                                    &result.owner.local_name,
+                                    family,
+                                    session,
+                                )
+                                .map_err(crate::xml::xml_error)?,
+                            );
+                        } else {
+                            result.invalid = true;
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
                         }
                     }
+                    Event::End(child) if child.name().as_ref() == end => return Ok(result),
+                    ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+                        let value = crate::reader::driver::decode_xml_character_event(event)?
+                            .ok_or_else(|| crate::xml::xml_error("invalid extension list text"))?;
+                        result.invalid |=
+                            !value.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                    }
+                    Event::Eof => return Err(crate::xml::xml_error("unterminated extension list")),
+                    Event::Comment(_) | Event::PI(_) => (),
+                    _ => result.invalid = true,
                 }
-                Event::End(child) if child.name().into_inner() == end.as_slice() => break,
-                Event::Text(text) => {
-                    let value = text.decode().expect("extension whitespace");
-                    result.invalid |= !value.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
-                }
-                Event::Eof => panic!("unterminated extension list"),
-                Event::Comment(_) | Event::PI(_) => (),
-                _ => result.invalid = true,
+                buffer.clear();
             }
-        }
+        })();
         *reader.config_mut() = config;
-        result
+        parsed
     }
 
     #[must_use]
@@ -385,8 +375,24 @@ impl ExtensionList {
         })
     }
 
+    fn omission_reason(
+        &self,
+        entry: &Extension,
+        owner: &str,
+        family: Option<SeriesFamily>,
+    ) -> Option<String> {
+        if self.invalid {
+            return Some("invalid extension-list content".into());
+        }
+        entry
+            .conflict_for_owner(owner, family.map(family_name))
+            .map(|reason| format!("{reason:?}"))
+            .or_else(|| entry.validate_namespaces().err())
+    }
+
     /// Reports each invalid occurrence without mutating or normalizing storage.
     /// Workbook-less owners cannot silently generate replacement source caches.
+    #[must_use]
     pub fn export_diagnostics_for_owner(
         &self,
         wb: Option<&Workbook>,
@@ -408,16 +414,12 @@ impl ExtensionList {
             if entry.is_empty_known_label_shell(owner) {
                 continue;
             }
-            let reason = if self.invalid {
-                Some("invalid extension-list content".into())
-            } else if let Some(reason) = entry.conflict_for_owner(owner, family.map(family_name)) {
-                Some(format!("{reason:?}"))
-            } else {
+            let reason = self.omission_reason(entry, owner, family).or_else(|| {
                 entry
                     .materialized(wb)
                     .and_then(|root| root.materialized_in(wb, &NamespaceScope::default()))
                     .err()
-            };
+            });
             if let Some(reason) = reason {
                 diagnostics.push(ExtensionExportDiagnostic {
                     chart_part: self.chart_part.clone(),
@@ -450,12 +452,19 @@ impl ExtensionList {
         removed
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        self.write_for_owner(writer, Some(wb), &self.owner.local_name, None);
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_for_owner(writer, Some(wb), &self.owner.local_name, None)
     }
 
-    pub(crate) fn write_without_workbook(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_for_owner(writer, None, &self.owner.local_name, None);
+    pub(crate) fn write_without_workbook(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_for_owner(writer, None, &self.owner.local_name, None)
     }
 
     pub(crate) fn write_for_owner(
@@ -464,35 +473,26 @@ impl ExtensionList {
         wb: Option<&Workbook>,
         owner: &str,
         family: Option<SeriesFamily>,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
+        self.write_for_owner_in_scope(writer, wb, owner, family, &NamespaceScope::default())
+    }
+
+    pub(crate) fn write_for_owner_in_scope(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: Option<&Workbook>,
+        owner: &str,
+        family: Option<SeriesFamily>,
+        inherited: &NamespaceScope,
+    ) -> Result<(), crate::XlsxError> {
         let namespace = if owner == "spPr" {
             "http://schemas.openxmlformats.org/drawingml/2006/main"
         } else {
             NS_C
         };
         if self.invalid {
-            return;
+            return Ok(());
         }
-        let mut rendered = Vec::new();
-        for entry in &self.entries {
-            if entry.is_empty_known_label_shell(owner)
-                || (owner == "spPr" && entry.uri.is_none())
-                || entry
-                    .conflict_for_owner(owner, family.map(family_name))
-                    .is_some()
-            {
-                continue;
-            }
-            if let Ok(element) = entry
-                .materialized(wb)
-                .and_then(|root| root.with_native_root(namespace, "ext"))
-                .and_then(|entry| entry.materialized_in(wb, &NamespaceScope::default()))
-            {
-                rendered.push(element);
-            }
-        }
-        // Preserve an empty imported list as an empty list. Known shell
-        // omission alone never creates unknown extension normalization.
         let mut root = OpaqueElement {
             name:       QName {
                 namespace_uri:    namespace.into(),
@@ -503,27 +503,39 @@ impl ExtensionList {
             attributes: Vec::new(),
             children:   Vec::new(),
         };
-        for element in rendered {
+        for entry in &self.entries {
+            if entry.is_empty_known_label_shell(owner) {
+                continue;
+            }
+            // Stored invalid occurrences are diagnosed and omitted, not
+            // repaired.
+            if self.omission_reason(entry, owner, family).is_some() {
+                continue;
+            }
+            let element = entry
+                .materialized(wb)
+                .and_then(|root| root.with_native_root(namespace, "ext"))
+                .and_then(|entry| entry.materialized_in(wb, &NamespaceScope::default()))
+                .map_err(crate::xml::xml_error)?;
             append_element(&mut root, element);
+        }
+        if root.children.is_empty() && !self.entries.is_empty() {
+            return Ok(());
         }
         root.namespaces.push((
             root.name.preferred_prefix.clone(),
             root.name.namespace_uri.clone(),
         ));
-        if root.validate(&NamespaceScope::default()).is_err() {
-            return;
-        }
+        root.compact_namespaces(inherited)
+            .map_err(crate::xml::xml_error)?;
+        // Stage the validated list before appending it to the chart.
         let mut staged = Writer::new(Cursor::new(Vec::new()));
-        if root.emit(&mut staged).is_err() {
-            return;
-        }
-        // Cursor<Vec<u8>> cannot fail an I/O write. Validation and
-        // materialization completed atomically before the enclosing
-        // chart writer is touched.
+        root.write_to(&mut staged, inherited)
+            .map_err(crate::xml::xml_error)?;
         writer
             .get_mut()
-            .write_all(&staged.into_inner().into_inner())
-            .expect("in-memory chart writer");
+            .write_all(&staged.into_inner().into_inner())?;
+        Ok(())
     }
 }
 fn read_extension<R: std::io::BufRead>(
@@ -709,6 +721,85 @@ mod tests {
         *,
     };
 
+    #[test]
+    fn extension_rendering_errors_leave_the_destination_unchanged() {
+        let name = |local: &str| QName {
+            namespace_uri:    NS_C.into(),
+            local_name:       local.into(),
+            preferred_prefix: Some("c".into()),
+        };
+        let list = ExtensionList {
+            entries:            vec![authored_extension(
+                "ser",
+                URI_FILTER,
+                "<c15:filteredSeriesTitle><c15:tx><c:v>Title</c:v></c15:tx></c15:\
+                 filteredSeriesTitle>",
+            )],
+            name:               name("extLst"),
+            owner:              name("ser"),
+            owner_path:         "/chartSpace/chart/plotArea/lineChart/ser".into(),
+            chart_part:         "xl/charts/chart1.xml".into(),
+            source_part_sha256: "a".repeat(64),
+            invalid:            false,
+        };
+        assert!(
+            list.omission_reason(&list.entries[0], "ser", None)
+                .is_none()
+        );
+        let mut writer = Writer::new(Cursor::new(b"unchanged".to_vec()));
+        let error = list.write_without_workbook(&mut writer).unwrap_err();
+        assert_eq!(error.kind(), crate::XlsxErrorKind::Xml);
+        assert!(error.to_string().contains("workbook"), "{error}");
+        assert_eq!(writer.into_inner().into_inner(), b"unchanged");
+    }
+
+    #[test]
+    fn appending_lists_retains_occurrences_and_rejects_mismatched_provenance() {
+        let name = |local: &str| QName {
+            namespace_uri:    NS_C.into(),
+            local_name:       local.into(),
+            preferred_prefix: Some("c".into()),
+        };
+        let source = ExtensionList {
+            entries:            vec![authored_extension(
+                "chartSpace",
+                "urn:future",
+                "<c15:future/>",
+            )],
+            name:               name("extLst"),
+            owner:              name("chartSpace"),
+            owner_path:         "/chartSpace[1]".into(),
+            chart_part:         "xl/charts/chart1.xml".into(),
+            source_part_sha256: "a".repeat(64),
+            invalid:            false,
+        };
+        let mut compatible = source.clone();
+        let mut alias = source.clone();
+        alias.name.preferred_prefix = Some("alias".into());
+        alias.owner.preferred_prefix = Some("alias".into());
+        compatible.append_list(alias);
+        assert_eq!(compatible.entries.len(), 2);
+        assert_eq!(compatible.conflict(), None);
+        for changed in ["invalid", "name", "owner", "path", "part", "hash"] {
+            let mut current = source.clone();
+            let mut incoming = source.clone();
+            match changed {
+                "invalid" => incoming.invalid = true,
+                "name" => incoming.name.namespace_uri = "urn:foreign".into(),
+                "owner" => incoming.owner.local_name = "chart".into(),
+                "path" => incoming.owner_path.push_str("/other[1]"),
+                "part" => incoming.chart_part = "xl/charts/chart2.xml".into(),
+                "hash" => incoming.source_part_sha256 = "b".repeat(64),
+                _ => unreachable!(),
+            }
+            current.append_list(incoming);
+            assert_eq!(current.entries.len(), 2, "{changed}");
+            assert_eq!(current.owner_path, source.owner_path);
+            assert_eq!(current.chart_part, source.chart_part);
+            assert!(current.conflict().is_some(), "{changed}");
+        }
+    }
+
     fn authored_extension(owner: &str, uri: &str, payload: &str) -> Extension {
         let xml = format!(
             "<c:ext xmlns:c=\"{NS_C}\" xmlns:c15=\"{NS_C15}\" uri=\"{uri}\">{payload}</c:ext>"
@@ -812,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_namespace_context_is_invalid_and_reported_without_panicking() {
+    fn missing_namespace_context_returns_an_error_before_consuming_content() {
         for xml in [
             "<c:extLst xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"/>",
             "<c:extLst xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:ext \
@@ -824,18 +915,16 @@ mod tests {
             let (Event::Start(start) | Event::Empty(start)) = event else {
                 panic!("extension-list start");
             };
-            let list =
-                ExtensionList::read(&mut reader, &start, empty, &SourceCacheSession::deferred());
-            assert_eq!(
-                list.conflict(),
-                Some(SeriesPartConflictReason::InvalidValue)
-            );
+            let before = reader.buffer_position();
+            let error =
+                ExtensionList::read(&mut reader, &start, empty, &SourceCacheSession::deferred())
+                    .unwrap_err();
             assert!(
-                !list
-                    .export_diagnostics_for_owner(None, "dLbls", None)
-                    .is_empty()
+                error
+                    .to_string()
+                    .contains("missing original extension namespace context")
             );
-            assert!(matches!(reader.read_event().unwrap(), Event::Eof));
+            assert_eq!(reader.buffer_position(), before);
         }
     }
 }

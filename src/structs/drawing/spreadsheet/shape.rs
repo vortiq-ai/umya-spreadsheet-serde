@@ -18,11 +18,6 @@ use super::{
     TextBody,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::{
         StringValue,
         raw::RawRelationships,
@@ -201,41 +196,87 @@ impl Shape {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        set_string_from_xml!(self, e, r#macro, "macro");
-
-        xml_read_loop!(
-            reader,
-                Event::Start(ref e) => {
-                    match e.name().into_inner() {
-                        b"xdr:nvSpPr" => {
-                            self.non_visual_shape_properties.set_attributes(reader, e);
-                        }
-                        b"xdr:spPr" => {
-                            self.shape_properties.set_attributes(reader, e, drawing_relationships);
-                        }
-                        b"xdr:style" => {
-                            let mut obj = ShapeStyle::default();
-                            obj.set_attributes(reader, e);
-                            self.set_shape_style(obj);
-                        }
-                        b"xdr:txBody" => {
-                            let mut obj = TextBody::default();
-                            obj.set_attributes(reader, e);
-                            self.set_text_body(obj);
-                        }
-                        _ => (),
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"macro")? {
+            self.set_macro(value);
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::SHEET_DRAWING_NS {
+                        return Err(crate::xml::xml_error("foreign spreadsheet drawing child"));
                     }
-                },
-                Event::End(ref e) => {
-                    if e.name().into_inner() == b"xdr:sp" {
-                        return;
+                    if !seen.insert(name.local_name.clone()) {
+                        return Err(crate::xml::xml_error("duplicate spreadsheet drawing child"));
                     }
-                },
-                Event::Eof => panic!("Error: Could not find {} end element", "xdr:sp")
-        );
+                    match name.local_name.as_str() {
+                        "nvSpPr" => {
+                            if empty {
+                                return Err(crate::xml::xml_error(
+                                    "empty nonvisual shape properties",
+                                ));
+                            }
+                            self.non_visual_shape_properties
+                                .set_attributes(reader, child, session)?;
+                        }
+                        "spPr" => {
+                            self.shape_properties.read_with_session(
+                                reader,
+                                child,
+                                empty,
+                                drawing_relationships,
+                                session,
+                            )?;
+                        }
+                        "style" => {
+                            let mut value = ShapeStyle::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_shape_style(value);
+                        }
+                        "txBody" => {
+                            let mut value = TextBody::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_text_body(value);
+                        }
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported spreadsheet drawing child",
+                            ));
+                        }
+                    }
+                }
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if !(seen.contains("nvSpPr") && seen.contains("spPr")) {
+                        return Err(crate::xml::xml_error(
+                            "missing required spreadsheet drawing child",
+                        ));
+                    }
+                    return Ok(());
+                }
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated spreadsheet drawing object",
+                    ));
+                }
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
@@ -243,7 +284,7 @@ impl Shape {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
         ole_id: usize,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         // xdr:sp
         write_start_tag(
             writer,
@@ -256,21 +297,23 @@ impl Shape {
         );
 
         // xdr:nvSpPr
-        self.non_visual_shape_properties.write_to(writer, ole_id);
+        self.non_visual_shape_properties
+            .write_to(writer, ole_id, rel_list)?;
 
         // xdr:spPr
-        self.shape_properties.write_to(writer, rel_list);
+        self.shape_properties.write_to(writer, rel_list)?;
 
         // xdr:style
         if let Some(v) = &self.shape_style {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // xdr:txBody
         if let Some(v) = &self.text_body {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "xdr:sp");
+        Ok(())
     }
 }

@@ -100,7 +100,7 @@ fn unmatched_populated_series_drops_each_hidden_occurrence_but_keeps_editable_st
     let previous = imported(&series(Some(1), "Data!$B$2:$B$5", false), "", "", "");
     let before = bincode::serialize(&previous).unwrap();
     let mut current = imported(&series(Some(44), "Data!$H$8:$H$11", true), "", "", "");
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.unmatched_series, 1);
     assert_eq!(report.ambiguous_series, 0);
     assert_eq!(
@@ -153,7 +153,7 @@ fn ambiguous_populated_pair_is_cleared_without_positional_matching() {
         "",
         "",
     );
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.ambiguous_series, 2);
     assert_eq!(report.matched_series, 0);
     assert_eq!(report.removed_incompatible_parts, 8, "{report:?}");
@@ -173,7 +173,7 @@ fn unmatched_group_drops_extensions_and_point_labels_not_label_flag_presence() {
          ><c:showPercent val=\"false\"/>{TEXT}</c:dLbls>{EXT}"
     );
     let mut current = imported(&series(Some(44), "Data!$H$8:$H$11", false), &labels, "", "");
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.removed_incompatible_parts, 2, "{report:?}");
     match current
         .chart_space()
@@ -219,7 +219,7 @@ fn unmatched_value_axis_drops_units_and_duplicates_not_editable_text() {
                  strRef></c:tx></c:dispUnitsLbl></c:dispUnits>";
     let axis = format!("<c:valAx><c:axId val=\"77\"/>{TEXT}{units}{units}</c:valAx>");
     let mut current = imported(&series(Some(1), "Data!$B$2:$B$5", false), "", &axis, "");
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.removed_incompatible_parts, 2, "{report:?}");
     let axis = &current.chart_space().chart().plot_area().value_axis()[0];
     assert!(axis.display_units().is_none());
@@ -267,7 +267,7 @@ fn basis_without_pivots_rejects_supplied_collections_and_duplicate_containers() 
             pivot(Some(8), "Injected!$E$1")
         );
         let mut current = imported(&series(Some(1), "Data!$B$2:$B$5", false), "", "", &pivots);
-        let report = current.restore_export_parts(&previous);
+        let report = current.restore_export_parts(&previous).unwrap();
         assert_eq!(report.removed_incompatible_parts, 2, "{report:?}");
         assert!(
             current
@@ -308,7 +308,7 @@ fn ambiguous_and_missing_pivot_placeholders_survive_but_their_hidden_owners_do_n
             .map(|index| pivot(*index, "Injected!$G$1"))
             .collect::<String>();
         let mut current = imported("", "", "", &format!("<c:pivotFmts>{pivots}</c:pivotFmts>"));
-        let report = current.restore_export_parts(&previous);
+        let report = current.restore_export_parts(&previous).unwrap();
         assert!(report.incompatible_owners > 0);
         let owners = current.chart_space().chart().pivot_formats().unwrap();
         assert!(owners.len() >= supplied.len());
@@ -402,7 +402,7 @@ fn matched_value_axis_without_authoritative_units_rejects_incoming_units() {
          c:tx></c:dispUnitsLbl></c:dispUnits></c:valAx>"
     );
     let mut current = imported(&series(Some(1), "Data!$B$2:$B$5", false), "", &axis, "");
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.removed_incompatible_parts, 1, "{report:?}");
     assert!(
         current.chart_space().chart().plot_area().value_axis()[0]
@@ -428,7 +428,10 @@ fn matched_value_axis_without_authoritative_units_rejects_incoming_units() {
 fn empty_authoritative_pivot_owner_counts_only_actual_recreation() {
     let plain = imported(&series(Some(1), "Data!$B$2:$B$5", false), "", "", "");
     let mut baseline = plain.clone();
-    let ordinary_owners = baseline.restore_export_parts(&plain).restored_owners;
+    let ordinary_owners = baseline
+        .restore_export_parts(&plain)
+        .unwrap()
+        .restored_owners;
     let empty = imported(
         &series(Some(1), "Data!$B$2:$B$5", false),
         "",
@@ -443,7 +446,7 @@ fn empty_authoritative_pivot_owner_counts_only_actual_recreation() {
         if projected {
             current.strip_export_parts();
         }
-        let report = current.restore_export_parts(basis);
+        let report = current.restore_export_parts(basis).unwrap();
         assert_eq!(
             report.restored_owners,
             ordinary_owners + extra_owner,
@@ -494,10 +497,10 @@ fn matched_value_axis_with_authoritative_empty_parts_rejects_incoming_units() {
         );
         assert!(!old_axis.display_units_has_conflict());
         let mut present = basis.clone();
-        let present_report = present.restore_export_parts(&basis);
+        let present_report = present.restore_export_parts(&basis).unwrap();
         let mut omitted = basis.clone();
         omitted.strip_export_parts();
-        let omitted_report = omitted.restore_export_parts(&basis);
+        let omitted_report = omitted.restore_export_parts(&basis).unwrap();
         assert_eq!(
             omitted_report.restored_owners,
             present_report.restored_owners + 1
@@ -508,7 +511,7 @@ fn matched_value_axis_with_authoritative_empty_parts_rejects_incoming_units() {
             &incoming_axis,
             "",
         );
-        let report = current.restore_export_parts(&basis);
+        let report = current.restore_export_parts(&basis).unwrap();
         assert_eq!(report.removed_incompatible_parts, 1, "{report:?}");
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.contains("display units") && diagnostic.contains("axis id:20")
@@ -571,7 +574,7 @@ fn matched_group_discards_supplied_extensions_without_an_authoritative_extension
     for basis in authority_variants(&previous) {
         let before = bincode::serialize(&basis).unwrap();
         let mut current = imported(&series(Some(1), "Data!$B$2:$B$5", false), &labels, "", "");
-        let report = current.restore_export_parts(&basis);
+        let report = current.restore_export_parts(&basis).unwrap();
         assert_eq!(report.matched_series, 1);
         assert_eq!(report.removed_incompatible_parts, 1, "{report:?}");
         assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -651,7 +654,7 @@ fn nested_numeric_extensions_are_untrusted_for_matched_unmatched_and_ambiguous_s
         for basis in authority_variants(&previous) {
             let before = bincode::serialize(&basis).unwrap();
             let mut current = incoming.clone();
-            let report = current.restore_export_parts(&basis);
+            let report = current.restore_export_parts(&basis).unwrap();
             assert_eq!(report.matched_series, usize::from(current_index == Some(1)));
             assert_eq!(
                 report.unmatched_series,
@@ -736,7 +739,7 @@ fn matched_shape_extension_is_dropped_without_losing_current_shape_or_text_style
     for basis in authority_variants(&previous) {
         let before = bincode::serialize(&basis).unwrap();
         let mut current = imported(&supplied, "", "", "");
-        let report = current.restore_export_parts(&basis);
+        let report = current.restore_export_parts(&basis).unwrap();
         assert_eq!(report.matched_series, 1);
         assert_eq!(report.removed_incompatible_parts, 1, "{report:?}");
         assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -804,7 +807,7 @@ fn authoritative_extensions_replace_different_supplied_group_shape_and_numeric_e
     for basis in authority_variants(&previous) {
         let before = bincode::serialize(&basis).unwrap();
         let mut current = imported(&supplied, EXT, "", "");
-        let report = current.restore_export_parts(&basis);
+        let report = current.restore_export_parts(&basis).unwrap();
         assert_eq!(report.matched_series, 1);
         assert_eq!(report.removed_incompatible_parts, 3, "{report:?}");
         let old_group = basis
@@ -876,7 +879,7 @@ fn changed_numeric_and_string_formulas_discard_incoming_and_previous_extensions(
     for basis in authority_variants(&previous) {
         let before = bincode::serialize(&basis).unwrap();
         let mut current = imported(&supplied, "", "", "");
-        let report = current.restore_export_parts(&basis);
+        let report = current.restore_export_parts(&basis).unwrap();
         assert_eq!(report.matched_series, 1);
         assert_eq!(report.removed_incompatible_parts, 2, "{report:?}");
         for kind in ["numRef", "strRef"] {
@@ -974,7 +977,7 @@ fn added_or_default_group_label_owners_discard_hidden_parents_once() {
                 _ => panic!("wrong group"),
             }
             let mut current = incoming.clone();
-            let report = current.restore_export_parts(&basis);
+            let report = current.restore_export_parts(&basis).unwrap();
             assert_eq!(report.matched_series, 1);
             assert_eq!(report.removed_incompatible_parts, 2, "{report:?}");
             assert!(

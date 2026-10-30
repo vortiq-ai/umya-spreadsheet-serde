@@ -148,25 +148,25 @@ impl Formula {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        assert!(
-            self.try_set_attributes(reader, e),
-            "Could not read formula text"
-        );
+    ) -> Result<(), crate::XlsxError> {
+        if !self.try_set_attributes(reader, e)? {
+            return Err(crate::xml::xml_error("invalid chart formula text"));
+        }
+        Ok(())
     }
 
-    /// Same normalization as the historical reader, without panicking for the
-    /// new diagnostic-bearing numeric-reference route.
+    /// Preserve formula normalization and distinguish unsupported content from
+    /// XML errors.
     pub(crate) fn try_set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) -> bool {
-        let Some(value) = super::numeric_data::read_text(reader, e, false) else {
-            return false;
+    ) -> Result<bool, crate::XlsxError> {
+        let Some(value) = super::numeric_data::read_text(reader, e, false)? else {
+            return Ok(false);
         };
         self.set_address_str(value);
-        true
+        Ok(true)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -282,5 +282,53 @@ mod reference_identity_regression {
         assert!(formula.replace_reference_text_preserving_address_identity("Data!$B$3:$B$5"));
         assert_eq!(formula.address_str(), "Data!$B$3:$B$5");
         assert_eq!(formula.address().sheet_name(), "Data");
+    }
+}
+
+#[cfg(test)]
+mod text_reader_tests {
+    use quick_xml::{
+        Reader,
+        events::Event,
+    };
+
+    #[test]
+    fn simple_text_errors_restore_reader_configuration() {
+        for xml in [
+            &b"<f>&bogus;</f><tail>  value  </tail>"[..],
+            &b"<f>unfinished"[..],
+            &b"<f><nested></wrong></f>"[..],
+            &b"<f>a\xFFb</f>"[..],
+            &b"<f><![CDATA[a\xFFb]]></f>"[..],
+        ] {
+            let mut reader = Reader::from_reader(xml);
+            reader.config_mut().trim_text(true);
+            let mut buffer = Vec::new();
+            let Event::Start(start) = reader.read_event_into(&mut buffer).unwrap() else {
+                panic!("formula start")
+            };
+            let result = crate::reader::driver::read_simple_text(&mut reader, &start, false);
+            assert_eq!(result.unwrap_err().kind(), crate::XlsxErrorKind::Xml);
+            assert!(reader.config().trim_text_start);
+            assert!(reader.config().trim_text_end);
+        }
+    }
+
+    #[test]
+    fn nested_formula_content_remains_a_semantic_conflict() {
+        let mut reader = Reader::from_str("<f>A<nested/>B</f><tail>  value  </tail>");
+        reader.config_mut().trim_text(true);
+        let Event::Start(start) = reader.read_event().unwrap() else {
+            panic!("formula start")
+        };
+        assert_eq!(
+            crate::reader::driver::read_simple_text(&mut reader, &start, false).unwrap(),
+            None
+        );
+        assert!(matches!(reader.read_event().unwrap(), Event::Start(_)));
+        let Event::Text(tail) = reader.read_event().unwrap() else {
+            panic!("tail text")
+        };
+        assert_eq!(tail.decode().unwrap(), "value");
     }
 }

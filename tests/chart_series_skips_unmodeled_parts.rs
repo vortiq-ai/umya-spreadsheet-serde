@@ -4,6 +4,10 @@ use std::io::{
     Write,
 };
 
+use sha2::{
+    Digest,
+    Sha256,
+};
 use umya_spreadsheet::{
     Chart,
     ChartType,
@@ -13,6 +17,47 @@ use umya_spreadsheet::{
         spreadsheet::MarkerType,
     },
 };
+
+/// Record every opaque element, attribute, text and nesting boundary.
+fn opaque_payload(list: &umya_spreadsheet::drawing::charts::ExtensionList) -> Vec<String> {
+    use umya_spreadsheet::drawing::charts::{
+        ExtensionNode,
+        OpaqueToken,
+        QName,
+    };
+    let start = |name: &QName, attributes: &[(QName, String)]| {
+        let namespace = match name.preferred_prefix.as_deref() {
+            Some("c") => "http://schemas.openxmlformats.org/drawingml/2006/chart",
+            Some("a") => "http://schemas.openxmlformats.org/drawingml/2006/main",
+            other => panic!("unexpected payload prefix: {other:?}"),
+        };
+        assert_eq!(name.namespace_uri, namespace);
+        let mut value = name.lexical();
+        for (name, attribute) in attributes {
+            assert!(name.namespace_uri.is_empty());
+            value.push_str(&format!(" {}={attribute}", name.local_name));
+        }
+        value
+    };
+    assert_eq!(list.entries.len(), 1);
+    let mut result = Vec::new();
+    for node in &list.entries[0].nodes {
+        let ExtensionNode::Unknown(element) = node else {
+            panic!("native-looking opaque payload was promoted: {node:?}");
+        };
+        result.push(start(&element.name, &element.attributes));
+        for token in &element.children {
+            result.push(match token {
+                OpaqueToken::Start(element) => start(&element.name, &element.attributes),
+                OpaqueToken::End => "/".into(),
+                OpaqueToken::Text(value) => format!("text={value}"),
+                other => panic!("unexpected opaque payload token: {other:?}"),
+            });
+        }
+        result.push("/".into());
+    }
+    result
+}
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();
@@ -732,8 +777,95 @@ fn skipped_series_extensions_do_not_admit_or_request_their_string_caches() {
         line.extensions().unwrap().entries[0].uri.as_deref(),
         Some("family")
     );
-    // Unsupported chart-root extensions stay opaque.
-    assert!(!written.contains("Data!$D$1"), "{written}");
+    // Unknown root content remains opaque at its exact owner, not a cache role.
+    let reimported = read(&write(&book));
+    for (candidate, source_xml) in [(&book, &input_xml), (&reimported, &written)] {
+        let root = chart_of(candidate).chart_space().chart();
+        let group = root.plot_area().line_chart().unwrap();
+        for (list, uri, owner, formula) in [
+            (
+                root.extensions().unwrap(),
+                "chart",
+                "/chartSpace[1]/chart[1]",
+                "Data!$D$1",
+            ),
+            (
+                group.extensions().unwrap(),
+                "family",
+                "/chartSpace[1]/chart[1]/plotArea[1]/lineChart[1]",
+                "Data!$C$1",
+            ),
+        ] {
+            assert_eq!(list.entries.len(), 1);
+            assert_eq!(list.entries[0].uri.as_deref(), Some(uri));
+            let expected_owner = owner
+                .split('/')
+                .skip(1)
+                .map(|segment| {
+                    format!("/{{http://schemas.openxmlformats.org/drawingml/2006/chart}}{segment}")
+                })
+                .collect::<String>();
+            assert_eq!(list.owner_path(), expected_owner);
+            assert_eq!(list.chart_part(), "xl/charts/chart1.xml");
+            assert_eq!(
+                list.source_part_sha256(),
+                Sha256::digest(source_xml.as_bytes())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            assert!(
+                list.export_diagnostics_for_owner(
+                    Some(candidate),
+                    if uri == "chart" { "chart" } else { "lineChart" },
+                    None
+                )
+                .is_empty()
+            );
+            assert_eq!(
+                opaque_payload(list),
+                [
+                    "c:cat",
+                    "c:strRef",
+                    "c:f",
+                    &format!("text={formula}"),
+                    "/",
+                    "c:strCache",
+                    "c:ptCount val=1",
+                    "/",
+                    "c:pt idx=0",
+                    "c:v",
+                    "text=A",
+                    "/",
+                    "/",
+                    "/",
+                    "/",
+                    "/",
+                ]
+            );
+        }
+        let report = candidate.chart_source_cache_report();
+        assert_eq!(
+            (
+                report.kept_caches,
+                report.kept_points,
+                report.kept_text_bytes,
+                report.dropped_caches,
+                report.reduced_caches,
+                report.over_cap_caches,
+                report.over_cap_points,
+                report.over_cap_text_bytes
+            ),
+            (1, 1, 2, 0, 0, 0, 0, 0)
+        );
+        let output = chart_part(&write(candidate));
+        assert!(!output.contains("Data!$B$1"), "{output}");
+        assert!(output.contains("Data!$D$1"), "{output}");
+        assert_eq!(
+            between(&output, "<c:cat>", "</c:cat>"),
+            between(&written, "<c:cat>", "</c:cat>")
+        );
+    }
 }
 
 #[test]
@@ -788,5 +920,166 @@ fn unmodeled_chart_and_chart_space_parts_do_not_change_their_parents_fields() {
                 1,
             )
     });
-    assert_eq!(chart_part(&write(&read(&patched))), expected);
+    let baseline = read(&plain);
+    let imported = read(&patched);
+    let reimported = read(&write(&imported));
+    let previous = chart_of(&imported);
+    let mut restored = previous.clone();
+    restored.strip_export_parts();
+    assert!(restored.chart_space().extensions().is_none());
+    assert!(restored.chart_space().chart().extensions().is_none());
+    assert!(
+        restored
+            .restore_export_parts(previous)
+            .unwrap()
+            .restored_owners
+            >= 2
+    );
+    let mut incoming = chart_of(&read(&with_chart_part(&plain, |xml| {
+        xml.replacen(
+            "</c:chart>",
+            "<c:extLst><c:ext uri=\"untrusted-chart\"/></c:extLst></c:chart>",
+            1,
+        )
+        .replacen(
+            "</c:chartSpace>",
+            "<c:extLst><c:ext uri=\"untrusted-space\"/></c:extLst></c:chartSpace>",
+            1,
+        )
+    })))
+    .clone();
+    assert!(
+        incoming
+            .restore_export_parts(previous)
+            .unwrap()
+            .removed_incompatible_parts
+            >= 2
+    );
+    let imported_xml = chart_part(&patched);
+    let written_xml = chart_part(&write(&imported));
+    for (candidate, source_xml) in [
+        (previous, &imported_xml),
+        (chart_of(&reimported), &written_xml),
+        (&restored, &imported_xml),
+        (&incoming, &imported_xml),
+    ] {
+        let space = candidate.chart_space();
+        let root = space.chart();
+        let base_space = chart_of(&baseline).chart_space();
+        let base_root = base_space.chart();
+        // Compare absent optional fields as well as modeled parent values.
+        assert_eq!(
+            format!(
+                "{:?}",
+                (
+                    root.auto_title_deleted(),
+                    root.plot_visible_only(),
+                    root.display_blanks_as(),
+                    root.show_data_labels_over_maximum(),
+                    space.editing_language(),
+                    space.rounded_corners(),
+                    space.date1904(),
+                    space.shape_properties()
+                )
+            ),
+            format!(
+                "{:?}",
+                (
+                    base_root.auto_title_deleted(),
+                    base_root.plot_visible_only(),
+                    base_root.display_blanks_as(),
+                    base_root.show_data_labels_over_maximum(),
+                    base_space.editing_language(),
+                    base_space.rounded_corners(),
+                    base_space.date1904(),
+                    base_space.shape_properties()
+                )
+            )
+        );
+        for (list, uri, owner) in [
+            (
+                root.extensions().unwrap(),
+                "{56B9EC1D-385E-4148-901F-78D8002777C0}",
+                "/chartSpace[1]/chart[1]",
+            ),
+            (
+                space.extensions().unwrap(),
+                "{781A3756-C4B2-4CAC-9D66-4F8BD8637D16}",
+                "/chartSpace[1]",
+            ),
+        ] {
+            assert_eq!(list.entries.len(), 1);
+            assert_eq!(list.entries[0].uri.as_deref(), Some(uri));
+            let expected_owner = owner
+                .split('/')
+                .skip(1)
+                .map(|segment| {
+                    format!("/{{http://schemas.openxmlformats.org/drawingml/2006/chart}}{segment}")
+                })
+                .collect::<String>();
+            assert_eq!(list.owner_path(), expected_owner);
+            assert_eq!(list.chart_part(), "xl/charts/chart1.xml");
+            assert_eq!(
+                list.source_part_sha256(),
+                Sha256::digest(source_xml.as_bytes())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            assert!(
+                list.export_diagnostics_for_owner(
+                    Some(&imported),
+                    if owner.ends_with("/chart[1]") {
+                        "chart"
+                    } else {
+                        "chartSpace"
+                    },
+                    None
+                )
+                .is_empty()
+            );
+        }
+        assert_eq!(
+            opaque_payload(root.extensions().unwrap()),
+            [
+                "c:autoTitleDeleted val=1",
+                "/",
+                "c:plotVisOnly val=0",
+                "/",
+                "c:dispBlanksAs val=span",
+                "/",
+                "c:showDLblsOverMax val=1",
+                "/",
+            ]
+        );
+        assert_eq!(
+            opaque_payload(space.extensions().unwrap()),
+            [
+                "c:lang val=fr-FR",
+                "/",
+                "c:roundedCorners val=1",
+                "/",
+                "c:date1904 val=1",
+                "/",
+                "c:spPr",
+                "a:solidFill",
+                "a:srgbClr val=ff0000",
+                "/",
+                "/",
+                "/",
+            ]
+        );
+        // Clear ONLY these two asserted direct-owner capsules on a test clone.
+        // Every other field and the entire remaining output must equal
+        // baseline.
+        let mut without_capsules = candidate.clone();
+        without_capsules
+            .chart_space_mut()
+            .chart_mut()
+            .set_extensions(None);
+        without_capsules.chart_space_mut().set_extensions(None);
+        let mut isolated = baseline.clone();
+        isolated.sheet_mut(0).unwrap().chart_collection_mut()[0] = without_capsules;
+        assert_eq!(chart_part(&write(&isolated)), expected);
+    }
 }

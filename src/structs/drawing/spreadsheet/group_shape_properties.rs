@@ -11,12 +11,9 @@ use quick_xml::{
 };
 
 use super::super::Transform2D;
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -56,27 +53,49 @@ impl GroupShapeProperties {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().0 == b"a:xfrm" {
-                    let mut obj = Transform2D::default();
-                    obj.set_attributes(reader, e);
-                    self.set_transform2d(obj);
+        owner: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if !name.is(crate::helper::const_str::DRAWINGML_MAIN_NS, "xfrm")
+                        || self.transform2d.is_some()
+                    {
+                        return Err(crate::xml::xml_error(
+                            "unsupported or duplicate group shape property",
+                        ));
+                    }
+                    let mut value = Transform2D::default();
+                    value.read_with_session(reader, child, empty, Some(session))?;
+                    self.set_transform2d(value);
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().0 == b"xdr:grpSpPr" {
-                    return;
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => {
+                    return Err(crate::xml::xml_error("unterminated group shape properties"));
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:grpSpPr")
-        );
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

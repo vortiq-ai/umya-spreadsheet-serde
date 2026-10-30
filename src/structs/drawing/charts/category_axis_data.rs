@@ -21,7 +21,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -56,9 +56,11 @@ mod category_writer_tests {
                 panic!("literal start");
             };
             let mut categories = CategoryAxisData::default();
-            categories.set_string_literal(StringLiteral::read(&mut reader, &start, false));
+            categories.set_string_literal(StringLiteral::read(&mut reader, &start, false).unwrap());
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            categories.write_to(&mut writer, &Workbook::default());
+            categories
+                .write_to(&mut writer, &Workbook::default())
+                .unwrap();
             assert!(writer.into_inner().into_inner().is_empty());
         }
     }
@@ -66,7 +68,9 @@ mod category_writer_tests {
     #[test]
     fn empty_category_choice_omits_the_entire_category_wrapper() {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        CategoryAxisData::default().write_to(&mut writer, &Workbook::default());
+        CategoryAxisData::default()
+            .write_to(&mut writer, &Workbook::default())
+            .unwrap();
         assert!(writer.into_inner().into_inner().is_empty());
     }
 }
@@ -253,56 +257,60 @@ impl CategoryAxisData {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(owner)?;
         let end = owner.name().into_inner().to_vec();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().into_inner())} else {b""} {
                     b"multiLvlStrRef" => {
                         let mut obj = MultiLevelStringReference::default();
-                        obj.set_attributes_with_session(reader, e, session);
+                        obj.set_attributes_with_session(reader, e, session)?;
                         self.set_multi_level_string_reference(obj);
                     }
                     b"strRef" => {
                         let mut obj = StringReference::default();
-                        obj.set_attributes(reader, e, session);
+                        obj.set_attributes(reader, e, session)?;
                         self.set_string_reference(obj);
                     }
                     b"strLit" => {
                         let mut obj = StringLiteral::default();
-                        obj.set_attributes_with_session(reader, e, session);
+                        obj.set_attributes_with_session(reader, e, session)?;
                         self.set_string_literal(obj);
                     }
                     b"numRef" => {
                         let mut obj = NumberReference::default();
-                        obj.set_attributes_with_session(reader, e, session);
+                        obj.set_attributes_with_session(reader, e, session)?;
                         self.set_number_reference(obj);
                     }
-                    _ => skip_element(reader, e),
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                if session.accepts_child_namespace(e, super::extension_registry::NS_C)
+                if session.accepts_child_namespace(e, super::extension_registry::NS_C)?
                     && local_name(e.name().into_inner()) == b"strLit"
                 {
-                    let literal = StringLiteral::read_with_session(reader, e, true, session);
+                    let literal = StringLiteral::read_with_session(reader, e, true, session)?;
                     self.set_string_literal(literal);
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:cat")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:cat")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         // c:cat
         write_start_tag(writer, "c:cat", vec![], false);
@@ -310,24 +318,26 @@ impl CategoryAxisData {
         // Keep hierarchy and sparse point indices in their native
         // representation.
         if let Some(v) = &self.multi_level_string_reference {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:strRef
         if let Some(v) = &self.string_reference {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:strLit
         if let Some(v) = &self.string_literal {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:numRef
         if let Some(v) = &self.number_reference {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         write_end_tag(writer, "c:cat");
+
+        Ok(())
     }
 }

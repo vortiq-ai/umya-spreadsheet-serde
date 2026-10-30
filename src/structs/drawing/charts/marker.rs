@@ -19,7 +19,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -180,8 +180,9 @@ impl Marker {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        self.read_with_session(reader, e, empty_flag, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty_flag, None)?;
+        Ok(())
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
@@ -190,8 +191,9 @@ impl Marker {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_with_session(reader, e, empty, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, Some(session))?;
+        Ok(())
     }
 
     fn read_with_session<R: std::io::BufRead>(
@@ -200,28 +202,31 @@ impl Marker {
         e: &BytesStart,
         empty_flag: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let end = e.name().into_inner().to_vec();
         if empty_flag {
-            return;
+            return Ok(());
         }
 
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                match if session.is_none_or(|session|session.accepts_child_namespace(e,super::extension_registry::NS_C)) {local_name(e.name().into_inner())} else {b""} {
-                    b"symbol" => { let mut value=Symbol::default(); value.set_attributes(reader,e); self.symbol=Some(value); },
-                    b"size" => { let mut value=Size::default(); value.set_attributes(reader,e); self.size=Some(value); },
-                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session {Some(session)=>value.set_attributes_with_session(reader,e,session),None=>value.set_attributes(reader,e)} } self.shape_properties=Some(value); consumed=true; },
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session.expect("chart extension requires original chart session"))));consumed=true;},
+                match if match session { Some(session) => session.accepts_child_namespace(e,super::extension_registry::NS_C)?, None => true } {local_name(e.name().into_inner())} else {b""} {
+                    b"symbol" => { let mut value=Symbol::default(); value.set_attributes(reader,e)?; self.symbol=Some(value); },
+                    b"size" => { let mut value=Size::default(); value.set_attributes(reader,e)?; self.size=Some(value); },
+                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session {Some(session)=>value.set_attributes_with_session(reader,e,session)?,None=>value.set_attributes(reader,e)?} } self.shape_properties=Some(value); consumed=true; },
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session.ok_or_else(|| crate::xml::xml_error("missing chart session"))?)?));consumed=true;},
                     _ => (),
                 }
-                if !empty && !consumed { skip_element(reader,e); }
+                if !empty && !consumed { skip_element(reader,e)?; }
             },
-            Event::End(ref e) => { if e.name().into_inner() == end.as_slice() { return; } },
-            Event::Eof => panic!("Could not find marker end element"),
+            Event::End(ref e) => { if e.name().into_inner() == end.as_slice() { return Ok(()); } },
+            Event::Eof => return Err(crate::xml::xml_error("Could not find marker end element".to_string())),
         );
     }
 
@@ -239,13 +244,22 @@ impl Marker {
             && self.size.as_ref().is_none_or(Size::is_valid)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to_as(writer, "c:marker");
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, "c:marker")?;
+
+        Ok(())
     }
 
-    pub(crate) fn write_to_as(&self, writer: &mut Writer<Cursor<Vec<u8>>>, name: &str) {
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
         if !self.structural_is_valid() {
-            return;
+            return Ok(());
         }
         // c:marker
         if self.symbol.is_some()
@@ -267,16 +281,18 @@ impl Marker {
 
             // c:spPr
             if let Some(v) = &self.shape_properties {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
 
             if let Some(ext) = self.extensions() {
-                ext.write_for_owner(writer, None, "marker", None);
+                ext.write_for_owner(writer, None, "marker", None)?;
             }
             write_end_tag(writer, name);
         } else {
             write_start_tag(writer, name, vec![], true);
         }
+
+        Ok(())
     }
 }
 
@@ -292,13 +308,13 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         };
         let mut marker = Marker::default();
-        marker.set_attributes(&mut reader, &start, false);
+        marker.set_attributes(&mut reader, &start, false).unwrap();
         marker
     }
 
     fn write_marker(marker: &Marker) -> String {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        marker.write_to(&mut writer);
+        marker.write_to(&mut writer).unwrap();
         String::from_utf8(writer.into_inner().into_inner()).unwrap()
     }
 

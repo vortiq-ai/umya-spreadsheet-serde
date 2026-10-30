@@ -20,28 +20,14 @@ use crate::{
     try_xml_read_loop,
 };
 
-struct ChartPartReadGuard<'a>(&'a SourceCacheSession);
-
-impl Drop for ChartPartReadGuard<'_> {
-    fn drop(&mut self) {
-        self.0.end_chart_part();
-    }
-}
-
 pub(crate) fn read(
     raw_file: &RawFile,
     chart_space: &mut ChartSpace,
     session: &SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
 ) -> Result<(), XlsxError> {
-    let mut result = Ok(());
     provider.with_part(raw_file.file_target(), session, &mut |data| {
-        let Some(data) = data else {
-            return;
-        };
-        result = (|| {
-            session.begin_chart_part(raw_file.file_target());
-            let _part_guard = ChartPartReadGuard(session);
+            let _part_guard = session.enter_chart_part(raw_file.file_target());
             session
                 .prepare_chart_namespaces(data, raw_file.file_target())
                 .map_err(|error| XlsxError::with_message(XlsxErrorKind::Xml, error))?;
@@ -60,15 +46,66 @@ pub(crate) fn read(
                             return Err(XlsxError::with_message(
                                 XlsxErrorKind::Xml, "invalid chart root expanded name"));
                         }
-                        chart_space.set_attributes(&mut reader, e, session);
+                        chart_space.set_attributes(&mut reader, e, session)?;
                     }
                     // A foreign chart root does not promote native descendants.
                     break;
                 },
-                Event::Eof => break,
+                Event::Eof => return Err(crate::xml::xml_error("missing chartSpace root in required chart part")),
             );
             Ok(())
-        })();
-    });
+    })
+}
+
+pub(crate) fn read_extended(
+    target: &str,
+    session: &SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
+) -> Result<crate::drawing::charts::ChartExSpace, XlsxError> {
+    let mut result = None;
+    provider.with_part(target, session, &mut |data| {
+        let space = (|| {
+            let _guard = session.enter_chart_part(target);
+            session
+                .prepare_chart_namespaces(data, target)
+                .map_err(crate::xml::xml_error)?;
+            let mut reader = Reader::from_reader(data);
+            loop {
+                match reader.read_event()? {
+                    Event::Start(root) => {
+                        let space =
+                            crate::drawing::charts::ChartExSpace::read(&mut reader, &root, session)
+                                .map_err(|error| {
+                                    XlsxError::with_message(XlsxErrorKind::Xml, error)
+                                })?;
+                        loop {
+                            match reader.read_event()? {
+                                Event::Eof => return Ok(space),
+                                Event::Comment(_) | Event::PI(_) => (),
+                                Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => (),
+                                _ => {
+                                    return Err(XlsxError::with_message(
+                                        XlsxErrorKind::Xml,
+                                        "content after ChartEx root",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Event::Decl(_) | Event::Comment(_) | Event::PI(_) => (),
+                    Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => (),
+                    _ => {
+                        return Err(XlsxError::with_message(
+                            XlsxErrorKind::Xml,
+                            "missing ChartEx chartSpace root",
+                        ));
+                    }
+                }
+            }
+        })()?;
+        result = Some(space);
+        Ok(())
+    })?;
     result
+        .ok_or_else(|| crate::xml::xml_error("chart provider did not visit required ChartEx part"))
 }

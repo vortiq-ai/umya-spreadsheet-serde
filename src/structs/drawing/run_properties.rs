@@ -26,10 +26,11 @@ use super::{
     TextFontType,
 };
 use crate::{
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         get_attribute,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     structs::StringValue,
     writer::driver::{
@@ -204,15 +205,15 @@ impl RunProperties {
         usize::from(restored)
     }
 
-    pub(crate) fn projected_values_match(&self, previous: &Self) -> bool {
-        let bytes = |value: &Self| {
+    pub(crate) fn projected_values_match(&self, previous: &Self) -> Result<bool, XlsxError> {
+        let bytes = |value: &Self| -> Result<Vec<u8>, XlsxError> {
             let mut value = value.clone();
             value.strip_export_parts();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            value.write_to_rpr(&mut writer);
-            writer.into_inner().into_inner()
+            value.write_to_rpr(&mut writer)?;
+            Ok(writer.into_inner().into_inner())
         };
-        self.text == previous.text && bytes(self) == bytes(previous)
+        Ok(self.text == previous.text && bytes(self)? == bytes(previous)?)
     }
 
     #[must_use]
@@ -708,168 +709,191 @@ impl RunProperties {
         e: &BytesStart,
         empty_flag: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        if let Some(v) = get_unescaped_attribute(e, b"u") {
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"u")? {
             let parsed = TextUnderline::read(&v);
             let p = self.parts.get_or_insert_with(Default::default);
             p.underline = parsed;
             p.invalid_attributes |= u8::from(parsed.is_none());
         }
-        if let Some(v) = get_unescaped_attribute(e, b"kern") {
-            let parsed = v.parse().ok();
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"kern")? {
+            let parsed = crate::xml::parse_i32(&v)
+                .ok()
+                .filter(|value| (0..=400_000).contains(value))
+                .and_then(|value| u32::try_from(value).ok());
             let p = self.parts.get_or_insert_with(Default::default);
             p.kerning = parsed;
             p.invalid_attributes |= u8::from(parsed.is_none()) << 1;
         }
-        if let Some(v) = get_unescaped_attribute(e, b"baseline") {
-            let parsed = v.parse().ok();
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"baseline")? {
+            let parsed = crate::xml::parse_i32(&v).ok();
             let p = self.parts.get_or_insert_with(Default::default);
             p.baseline = parsed;
             p.invalid_attributes |= u8::from(parsed.is_none()) << 2;
         }
-        if let Some(v) = get_unescaped_attribute(e, b"kumimoji") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"kumimoji")? {
+            crate::xml::parse_bool(&v).map_err(crate::xml::xml_error)?;
             self.set_kumimoji(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"lang") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"lang")? {
             self.set_language(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"altLang") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"altLang")? {
             self.set_alternative_language(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"b") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"b")? {
+            crate::xml::parse_bool(&v).map_err(crate::xml::xml_error)?;
             self.set_bold(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"sz") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"sz")? {
+            let size = crate::xml::parse_i32(&v).map_err(crate::xml::xml_error)?;
+            if !(100..=400_000).contains(&size) {
+                return Err(crate::xml::xml_error(
+                    "DrawingML font size is outside its schema range",
+                ));
+            }
             self.set_sz(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"strike") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"strike")? {
+            if !matches!(v.as_str(), "noStrike" | "sngStrike" | "dblStrike") {
+                return Err(crate::xml::xml_error("invalid DrawingML text strike"));
+            }
             self.set_strike(v);
         }
-        if let Some(v) = get_unescaped_attribute(e, b"i") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"i")? {
+            crate::xml::parse_bool(&v).map_err(crate::xml::xml_error)?;
             self.set_italic(v);
         }
-        if let Some(v) = get_attribute(e, b"cap") {
-            self.capital.set_value_string(v);
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"cap")? {
+            self.capital
+                .set_value(v.parse().map_err(|()| {
+                    crate::xml::xml_error("invalid DrawingML text capitalization")
+                })?);
         }
-        if let Some(v) = get_attribute(e, b"spc") {
-            self.spacing.set_value_string(v);
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"spc")? {
+            let value = crate::xml::parse_i32(&v).map_err(crate::xml::xml_error)?;
+            if !(-400_000..=400_000).contains(&value) {
+                return Err(crate::xml::xml_error(
+                    "DrawingML character spacing is outside its schema range",
+                ));
+            }
+            self.set_spacing(value);
         }
 
         if empty_flag {
-            return;
+            return Ok(());
         }
 
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                let name = if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else { b"" };
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !is_empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                let name = crate::reader::driver::local_name(e.name().into_inner());
                 match name {
-                    b"uFillTx" => { self.parts.get_or_insert_with(Default::default).underline_uses_text_fill=true; if !is_empty { crate::reader::driver::skip_element(reader,e); } }
+                    b"uFillTx" => {
+                        crate::reader::driver::validate_attributes(e)?;
+                        if !is_empty { crate::reader::driver::consume_empty_element(reader, e)?; }
+                        let parts = self.parts.get_or_insert_with(Default::default);
+                        parts.underline_uses_text_fill = true;
+                    }
                     b"solidFill" => {
                         let mut obj = SolidFill::default();
-                        match session {
-                            Some(session) => {
-                                obj.read_attributes_with_session(reader, e, is_empty, session);
-                            }
-                            None => obj.read_attributes(reader, e, is_empty),
-                        }
+                        obj.read_with_session(reader, e, is_empty, session)?;
                         self.set_solid_fill(obj);
                     }
                     b"ln" => {
                         let mut obj = Outline::default();
-                        if !is_empty {
-                            match session {
-                                Some(session) => {
-                                    obj.set_attributes_with_session(reader, e, session);
-                                }
-                                None => obj.set_attributes(reader, e),
-                            }
-                        }
+                        obj.read_with_session(reader, e, is_empty, session)?;
                         self.set_outline(obj);
                     }
                     b"gradFill" => {
                         let mut obj = GradientFill::default();
-                        match session {
-                            Some(session) => {
-                                obj.read_attributes_with_session(reader, e, is_empty, session);
-                            }
-                            None => obj.read_attributes(reader, e, is_empty),
-                        }
+                        obj.read_with_session(reader, e, is_empty, session)?;
                         self.set_gradient_fill(obj);
                     }
                     b"effectLst" => {
                         let mut effect_list = EffectList::default();
-                        match session {
-                            Some(session) => {
-                                effect_list.set_attributes_with_session(
-                                    reader, e, is_empty, session,
-                                );
-                            }
-                            None => effect_list.set_attributes(reader, e, is_empty),
-                        }
+                        effect_list.read_with_session(reader, e, is_empty, session)?;
                         self.set_effect_list(effect_list);
                     }
                     b"latin" => {
                         let mut obj = TextFontType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.set_latin_font(obj);
                     }
                     b"ea" => {
                         let mut obj = TextFontType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.set_east_asian_font(obj);
                     }
                     b"cs" => {
                         let mut obj = TextFontType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.set_complex_script_font(obj);
                     }
                     b"noFill" => {
                         let obj = NoFill::default();
-                        NoFill::set_attributes(reader, e, is_empty);
+                        NoFill::set_attributes(reader, e, is_empty)?;
                         self.set_no_fill(obj);
                     }
                     _ => {
                         if !is_empty {
-                            crate::reader::driver::skip_element(reader, e);
+                            crate::reader::driver::skip_element(reader, e)?;
                         }
                     }
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!(
-                "Error: Could not find {} end element",
-                "a:rPr, a:endParaRPr, a:defRPr"
-            ),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text properties")),
         );
     }
 
     #[inline]
-    pub(crate) fn write_to_rpr(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:rPr");
+    pub(crate) fn write_to_rpr(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:rPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_end_para_rpr(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:endParaRPr");
+    pub(crate) fn write_to_end_para_rpr(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:endParaRPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_def_rpr(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:defRPr");
+    pub(crate) fn write_to_def_rpr(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:defRPr")
     }
 
-    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, tag_name: &str) {
+    fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        tag_name: &str,
+    ) -> Result<(), XlsxError> {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.kumimoji.has_value() {
             attributes.push(("kumimoji", self.kumimoji.value_str()).into());
@@ -925,17 +949,17 @@ impl RunProperties {
             // Native character-property sequence: line, fill choice, effects,
             // fonts.
             if let Some(v) = &self.outline {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
             if let Some(v) = &self.solid_fill {
-                v.write_to(writer);
+                v.write_to(writer)?;
             } else if let Some(v) = &self.gradient_fill {
-                v.write_to(writer);
+                v.write_to(writer)?;
             } else if self.no_fill.is_some() {
                 NoFill::write_to(writer);
             }
             if let Some(v) = &self.effect_list {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
             if self.underline_uses_text_fill() {
                 write_start_tag(writer, "a:uFillTx", vec![], true);
@@ -954,6 +978,7 @@ impl RunProperties {
         } else {
             write_start_tag(writer, tag_name, attributes, true);
         }
+        Ok(())
     }
 }
 
@@ -970,13 +995,13 @@ mod parity_tests {
             _ => panic!("expected run properties"),
         };
         let mut p = RunProperties::default();
-        p.read_with_session(&mut reader, &e, false, None);
+        p.read_with_session(&mut reader, &e, false, None).unwrap();
         assert_eq!(p.underline(), Some(TextUnderline::WavyDouble));
         assert_eq!(p.kerning(), Some(1200));
         assert_eq!(p.baseline(), Some(-2000));
         assert!(p.underline_uses_text_fill());
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        p.write_to_rpr(&mut writer);
+        p.write_to_rpr(&mut writer).unwrap();
         let out = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         for part in [
             "u=\"wavyDbl\"",

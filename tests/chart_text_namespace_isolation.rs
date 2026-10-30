@@ -292,3 +292,30 @@ fn foreign_title_subtrees_do_not_replace_native_rich_text() {
         Some("native-field")
     );
 }
+
+#[test]
+fn unmodeled_native_wrappers_do_not_promote_modeled_text_descendants() {
+    for (end, wrapper) in [
+        ("</a:bodyPr>", "<a:future><a:spAutoFit/></a:future>"),
+        ("</a:lstStyle>", "<a:future><a:defPPr/></a:future>"),
+        (
+            "</a:p>",
+            "<a:future><a:r><a:t>poison-run</a:t></a:r></a:future>",
+        ),
+        ("</a:fld>", "<a:future><a:t>poison-field</a:t></a:future>"),
+        ("</a:r>", "<a:future><a:t>poison-run</a:t></a:future>"),
+        (
+            "</a:lnSpc>",
+            "<a:future><a:spcPct val=\"99999\"/></a:future>",
+        ),
+    ] {
+        assert_ignored(end, wrapper);
+    }
+    for route in ["properties", "rich"] {
+        let wrapped = format!("<a:future><a:bodyPr/><a:p/></a:future>{BODY}");
+        assert_eq!(
+            model(&input(route, &wrapped), route),
+            model(&input(route, BODY), route)
+        );
+    }
+}

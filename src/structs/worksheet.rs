@@ -119,13 +119,26 @@ pub struct Worksheet {
     data_validations_2010:             Option<DataValidations2010>,
     sheet_format_properties:           SheetFormatProperties,
     sheet_protection:                  Option<SheetProtection>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    drawing_parts:                     Option<Box<super::drawing_parts::DrawingParts>>,
 }
 
 impl Worksheet {
-    /// Walk stored chart carriers in ordinary drawing serialization order.
-    pub(crate) fn visit_chart_spaces<'a>(
-        &'a self,
-        visit: &mut dyn FnMut(&'a crate::drawing::charts::ChartSpace),
+    pub(crate) fn drawing_parts(&self) -> Option<&super::drawing_parts::DrawingParts> {
+        self.drawing_parts.as_deref()
+    }
+
+    pub(crate) fn set_drawing_parts(
+        &mut self,
+        parts: Option<Box<super::drawing_parts::DrawingParts>>,
+    ) {
+        self.drawing_parts = parts;
+    }
+
+    /// Preserve the existing carrier prefix when adding newer drawing owners.
+    pub(crate) fn visit_chart_spaces(
+        &self,
+        visit: &mut dyn FnMut(&crate::drawing::charts::ChartSpace),
     ) {
         let drawing = self.worksheet_drawing();
         for chart in drawing.chart_collection() {
@@ -147,8 +160,10 @@ impl Worksheet {
                 visit(frame.graphic().graphic_data().chart_space());
             }
         }
-        for frame in drawing.graphic_frame_collection() {
-            visit(frame.graphic().graphic_data().chart_space());
+        for anchor in drawing.two_cell_anchor_collection() {
+            if let Some(frame) = anchor.graphic_frame() {
+                visit(frame.graphic().graphic_data().chart_space());
+            }
         }
         for anchor in drawing.one_cell_anchor_collection() {
             if let Some(frame) = anchor.graphic_frame() {
@@ -159,6 +174,57 @@ impl Worksheet {
             if let Some(frame) = ole.two_cell_anchor().graphic_frame() {
                 visit(frame.graphic().graphic_data().chart_space());
             }
+        }
+        let mut nested = |_, frame: &crate::drawing::spreadsheet::GraphicFrame| {
+            visit(frame.graphic().graphic_data().chart_space());
+        };
+        // Direct frames were visited above; append group-owned frames once.
+        for chart in drawing.chart_collection() {
+            let anchor = chart.two_cell_anchor();
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames(&mut nested);
+            }
+        }
+        for image in drawing.image_collection() {
+            if let Some(anchor) = image.two_cell_anchor() {
+                if anchor.graphic_frame().is_none() {
+                    anchor.visit_standard_frames(&mut nested);
+                }
+            }
+            if let Some(anchor) = image.one_cell_anchor() {
+                if anchor.graphic_frame().is_none() {
+                    anchor.visit_standard_frames(&mut nested);
+                }
+            }
+        }
+        for anchor in drawing.two_cell_anchor_collection() {
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames(&mut nested);
+            }
+        }
+        for anchor in drawing.one_cell_anchor_collection() {
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames(&mut nested);
+            }
+        }
+        for ole in self.ole_objects().ole_object() {
+            let anchor = ole.two_cell_anchor();
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames(&mut nested);
+            }
+        }
+        for anchor in drawing.absolute_anchors() {
+            if let Some(content) = anchor.content() {
+                content.visit_standard_frames(
+                    &crate::drawing::spreadsheet::DrawingFrameKey::primary(content.id()),
+                    &mut |_, frame| visit(frame.graphic().graphic_data().chart_space()),
+                );
+            }
+        }
+        for chart in drawing.extended_charts() {
+            chart.visit_standard_frames(&mut |_, frame| {
+                visit(frame.graphic().graphic_data().chart_space());
+            });
         }
     }
 
@@ -186,8 +252,10 @@ impl Worksheet {
                 visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
             }
         }
-        for frame in drawing.graphic_frame_collection_mut() {
-            visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+        for anchor in drawing.two_cell_anchor_collection_mut() {
+            if let Some(frame) = anchor.graphic_frame_mut() {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            }
         }
         for anchor in drawing.one_cell_anchor_collection_mut() {
             if let Some(frame) = anchor.graphic_frame_mut() {
@@ -198,6 +266,58 @@ impl Worksheet {
             if let Some(frame) = ole.two_cell_anchor_mut().graphic_frame_mut() {
                 visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
             }
+        }
+        let drawing = self.worksheet_drawing_mut();
+        let mut nested = |_, frame: &mut crate::drawing::spreadsheet::GraphicFrame| {
+            visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+        };
+        for chart in drawing.chart_collection_mut() {
+            let anchor = chart.two_cell_anchor_mut();
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames_mut(&mut nested);
+            }
+        }
+        for image in drawing.image_collection_mut() {
+            if let Some(anchor) = image.two_cell_anchor_mut() {
+                if anchor.graphic_frame().is_none() {
+                    anchor.visit_standard_frames_mut(&mut nested);
+                }
+            }
+            if let Some(anchor) = image.one_cell_anchor_mut() {
+                if anchor.graphic_frame().is_none() {
+                    anchor.visit_standard_frames_mut(&mut nested);
+                }
+            }
+        }
+        for anchor in drawing.two_cell_anchor_collection_mut() {
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames_mut(&mut nested);
+            }
+        }
+        for anchor in drawing.one_cell_anchor_collection_mut() {
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames_mut(&mut nested);
+            }
+        }
+        for ole in self.ole_objects_mut().ole_object_mut() {
+            let anchor = ole.two_cell_anchor_mut();
+            if anchor.graphic_frame().is_none() {
+                anchor.visit_standard_frames_mut(&mut nested);
+            }
+        }
+        let drawing = self.worksheet_drawing_mut();
+        for anchor in drawing.absolute_anchors_mut() {
+            if let Some(content) = anchor.content_mut() {
+                content.visit_standard_frames_mut(
+                    &crate::drawing::spreadsheet::DrawingFrameKey::primary(content.id()),
+                    &mut |_, frame| visit(frame.graphic_mut().graphic_data_mut().chart_space_mut()),
+                );
+            }
+        }
+        for chart in drawing.extended_charts_mut() {
+            chart.visit_standard_frames_mut(&mut |_, frame| {
+                visit(frame.graphic_mut().graphic_data_mut().chart_space_mut());
+            });
         }
     }
 
@@ -226,6 +346,19 @@ impl Worksheet {
             });
             spaces.push(leaves);
         });
+        self.worksheet_drawing()
+            .visit_extended_spaces(&mut |space| {
+                let mut leaves = Vec::new();
+                space.visit_formulas(&mut |formula| {
+                    leaves.push(edit_prepared_formula_text(
+                        &formula.address_str(),
+                        host,
+                        prepared,
+                        false,
+                    ));
+                });
+                spaces.push(leaves);
+            });
         spaces
     }
 
@@ -251,6 +384,23 @@ impl Worksheet {
                 "chart references changed after preflight"
             );
         });
+        self.worksheet_drawing_mut()
+            .visit_extended_spaces_mut(&mut |space| {
+                let mut leaves = spaces
+                    .next()
+                    .expect("chart carrier changed after reference preflight")
+                    .into_iter();
+                space.visit_formulas_mut(&mut |formula| {
+                    let decision = leaves
+                        .next()
+                        .expect("chart references changed after preflight");
+                    formula.replace_reference_text_preserving_address_identity(&decision.text);
+                });
+                assert!(
+                    leaves.next().is_none(),
+                    "chart references changed after preflight"
+                );
+            });
         assert!(
             spaces.next().is_none(),
             "chart carrier changed after reference preflight"
@@ -1538,6 +1688,14 @@ impl Worksheet {
     #[must_use]
     pub fn has_drawing_object(&self) -> bool {
         self.worksheet_drawing.has_drawing_object()
+            || self.ole_objects.ole_object().iter().any(|object| {
+                let anchor = object.two_cell_anchor();
+                anchor.shape().is_some()
+                    || anchor.picture().is_some()
+                    || anchor.graphic_frame().is_some()
+                    || anchor.group_shape().is_some()
+                    || anchor.connection_shape().is_some()
+            })
     }
 
     // ************************
@@ -3551,7 +3709,19 @@ mod chart_carrier_tests {
                 &mut |_metadata, target| seen.push(target.formula().address_str()),
             );
         });
-        assert_eq!(seen.len(), 6);
+        assert_eq!(seen.len(), 6, "{seen:?}");
         assert!(seen.iter().all(|value| value == "Data!$A$2"), "{seen:?}");
+    }
+}
+
+impl Worksheet {
+    pub(crate) fn visit_drawing_relationships(
+        &self,
+        visit: &mut dyn FnMut(super::drawing::spreadsheet::DrawingRelationshipKind, &str),
+    ) {
+        self.worksheet_drawing().visit_relationships(visit);
+        for object in self.ole_objects().ole_object() {
+            object.two_cell_anchor().visit_relationships(visit);
+        }
     }
 }

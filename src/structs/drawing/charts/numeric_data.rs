@@ -64,7 +64,11 @@ impl NumericPoint {
         self
     }
 
-    fn read<R: std::io::BufRead>(reader: &mut Reader<R>, e: &BytesStart, empty: bool) -> Self {
+    fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, None)
     }
 
@@ -73,7 +77,7 @@ impl NumericPoint {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, Some(session))
     }
 
@@ -82,29 +86,33 @@ impl NumericPoint {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut point = Self::default();
         point
             .index
-            .set_lexical_attribute(crate::drawing::get_unescaped_attribute(e, b"idx"));
-        point.format_code = crate::drawing::get_unescaped_attribute(e, b"formatCode");
-        let complete = children(reader, e, empty, |reader, child, empty| {
-            if session.is_none_or(|session| {
-                session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) && local_name(child.name().into_inner()) == b"v"
-            {
+            .set_lexical_attribute(crate::reader::driver::read_attribute(e, b"idx")?);
+        point.format_code = crate::reader::driver::read_attribute(e, b"formatCode")?;
+        children(reader, e, empty, |reader, child, empty| {
+            let native = match session {
+                Some(session) => {
+                    session.accepts_child_namespace(child, super::extension_registry::NS_C)?
+                }
+                None => true,
+            };
+            if native && local_name(child.name().as_ref()) == b"v" {
                 point.invalid |= point.value.is_some();
-                point.value = read_text(reader, child, empty);
+                point.value = read_text(reader, child, empty)?;
                 point.invalid |= point.value.is_none();
-                true
+                Ok(true)
             } else {
-                false
+                Ok(false)
             }
-        });
-        point.invalid |= !complete;
-        point
+        })?;
+        Ok(point)
     }
 
     fn is_valid(&self) -> bool {
@@ -194,7 +202,7 @@ impl NumericData {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, None)
     }
 
@@ -203,7 +211,7 @@ impl NumericData {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, Some(session))
     }
 
@@ -212,51 +220,55 @@ impl NumericData {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut data = Self::default();
-        let complete = children(reader, e, empty, |reader, child, empty| {
-            match if session.is_none_or(|session| {
-                session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                local_name(child.name().into_inner())
-            } else {
-                b""
-            } {
+        children(reader, e, empty, |reader, child, empty| {
+            let native = match session {
+                Some(session) => {
+                    session.accepts_child_namespace(child, super::extension_registry::NS_C)?
+                }
+                None => true,
+            };
+            if !native {
+                return Ok(false);
+            }
+            match local_name(child.name().as_ref()) {
                 b"extLst" if session.is_some() => {
+                    let session = session
+                        .ok_or_else(|| crate::xml::xml_error("missing extension session"))?;
                     data.set_extensions(Some(super::ExtensionList::read(
-                        reader,
-                        child,
-                        empty,
-                        session.expect("checked session"),
-                    )));
-                    true
+                        reader, child, empty, session,
+                    )?));
+                    Ok(true)
                 }
                 b"formatCode" => {
                     data.invalid |= data.format_code.is_some();
-                    data.format_code = read_text(reader, child, empty);
+                    data.format_code = read_text(reader, child, empty)?;
                     data.invalid |= data.format_code.is_none();
-                    true
+                    Ok(true)
                 }
                 b"ptCount" => {
                     data.invalid |= data.point_count.is_some();
                     data.point_count = Some(XmlUnsignedInt::read(child));
-                    false
+                    Ok(false)
                 }
                 b"pt" => {
                     data.points.push(match session {
                         Some(session) => {
-                            NumericPoint::read_with_session(reader, child, empty, session)
+                            NumericPoint::read_with_session(reader, child, empty, session)?
                         }
-                        None => NumericPoint::read(reader, child, empty),
+                        None => NumericPoint::read(reader, child, empty)?,
                     });
-                    true
+                    Ok(true)
                 }
-                _ => false,
+                _ => Ok(false),
             }
-        });
-        data.invalid |= !complete;
-        data
+        })?;
+        Ok(data)
     }
 
     #[must_use]
@@ -270,9 +282,12 @@ impl NumericData {
             && self.points.iter().all(NumericPoint::is_valid)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if !self.is_valid() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c:numLit", vec![], false);
         if let Some(value) = &self.format_code {
@@ -295,9 +310,11 @@ impl NumericData {
             point.write_to(writer);
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, None, "numLit", None);
+            ext.write_for_owner(writer, None, "numLit", None)?;
         }
         write_end_tag(writer, "c:numLit");
+
+        Ok(())
     }
 }
 
@@ -345,110 +362,101 @@ impl NumericDataSource {
         }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, workbook: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        workbook: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         match self {
-            Self::Reference(value) => value.write_to(writer, workbook),
-            Self::Literal(value) => value.write_to(writer),
+            Self::Reference(value) => value.write_to(writer, workbook)?,
+            Self::Literal(value) => value.write_to(writer)?,
         }
+
+        Ok(())
     }
 }
 
 pub(crate) fn is_native_numeric_reference(
     child: &BytesStart<'_>,
     session: Option<&crate::reader::xlsx::SourceCacheSession>,
-) -> bool {
-    session.is_none_or(|session| {
-        session.accepts_child_namespace(child, super::extension_registry::NS_C)
-    }) && local_name(child.name().into_inner()) == b"numRef"
+) -> Result<bool, crate::XlsxError> {
+    let native = match session {
+        Some(session) => session.accepts_child_namespace(child, super::extension_registry::NS_C)?,
+        None => true,
+    };
+    Ok(native && local_name(child.name().into_inner()) == b"numRef")
 }
 
-/// Visit only direct children and stop at the exact owning `QName`. Unknown
-/// start elements are consumed as whole subtrees, never exposing grandchildren.
-/// A callback returns true when it consumed the child's end itself.
+/// Visit direct children; the callback reports whether it consumed the owner
+/// end.
 pub(crate) fn children<R: std::io::BufRead>(
     reader: &mut Reader<R>,
     owner: &BytesStart,
     empty: bool,
-    mut visit: impl FnMut(&mut Reader<R>, &BytesStart, bool) -> bool,
-) -> bool {
+    mut visit: impl FnMut(&mut Reader<R>, &BytesStart, bool) -> Result<bool, crate::XlsxError>,
+) -> Result<bool, crate::XlsxError> {
     if empty {
-        return true;
+        return Ok(true);
     }
-    let end = owner.name().into_inner().to_vec();
-    let mut buf = Vec::new();
+    let end = owner.name().as_ref().to_vec();
+    let mut buffer = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(ref child)) => {
-                visit(reader, child, true);
+        match reader.read_event_into(&mut buffer)? {
+            Event::Empty(child) => {
+                visit(reader, &child, true)?;
             }
-            Ok(Event::Start(ref child)) => {
-                if !visit(reader, child, false) && !skip(reader) {
-                    return false;
+            Event::Start(child) => {
+                if !visit(reader, &child, false)? {
+                    crate::reader::driver::skip_element(reader, &child)?;
                 }
             }
-            Ok(Event::End(ref child)) if child.name().into_inner() == end => return true,
-            Ok(Event::Eof) | Err(_) => return false,
+            Event::End(child) if child.name().as_ref() == end => return Ok(true),
+            Event::Eof | Event::End(_) => {
+                return Err(crate::xml::xml_error("unterminated chart element"));
+            }
             _ => (),
         }
-        buf.clear();
+        buffer.clear();
     }
 }
-/// Consume an element-only owner without legalizing declined children or text.
-/// Whitespace, comments and processing instructions do not affect its value.
+
+/// Element-only owners retain declined-child diagnostics, not XML parse errors.
 pub(crate) fn element_children<R: std::io::BufRead>(
     reader: &mut Reader<R>,
     owner: &BytesStart,
     empty: bool,
-    mut visit: impl FnMut(&mut Reader<R>, &BytesStart, bool) -> bool,
-) -> bool {
+    mut visit: impl FnMut(&mut Reader<R>, &BytesStart, bool) -> Result<bool, crate::XlsxError>,
+) -> Result<bool, crate::XlsxError> {
     if empty {
-        return true;
+        return Ok(true);
     }
-    let end = owner.name().into_inner().to_vec();
+    let end = owner.name().as_ref().to_vec();
     let mut valid = true;
-    let mut buf = Vec::new();
+    let mut buffer = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(ref child)) => valid &= visit(reader, child, true),
-            Ok(Event::Start(ref child)) => {
-                if !visit(reader, child, false) {
+        match reader.read_event_into(&mut buffer)? {
+            Event::Empty(child) => valid &= visit(reader, &child, true)?,
+            Event::Start(child) => {
+                if !visit(reader, &child, false)? {
                     valid = false;
-                    if !skip(reader) {
-                        return false;
-                    }
+                    crate::reader::driver::skip_element(reader, &child)?;
                 }
             }
-            Ok(Event::End(ref child)) if child.name().into_inner() == end => return valid,
-            Ok(ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
-                valid &=
-                    crate::reader::driver::decode_xml_character_event(event).is_some_and(|text| {
-                        text.bytes()
-                            .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
-                    });
+            Event::End(child) if child.name().as_ref() == end => return Ok(valid),
+            ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+                let text = crate::reader::driver::decode_xml_character_event(event)?
+                    .ok_or_else(|| crate::xml::xml_error("invalid chart XML text"))?;
+                valid &= text
+                    .bytes()
+                    .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'));
             }
-            Ok(Event::Comment(_) | Event::PI(_)) => (),
-            _ => return false,
-        }
-        buf.clear();
-    }
-}
-
-fn skip<R: std::io::BufRead>(reader: &mut Reader<R>) -> bool {
-    let mut depth = 1usize;
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(_)) => depth += 1,
-            Ok(Event::End(_)) => {
-                depth -= 1;
-                if depth == 0 {
-                    return true;
-                }
+            Event::Comment(_) | Event::PI(_) => (),
+            Event::Eof | Event::End(_) => {
+                return Err(crate::xml::xml_error("unterminated chart element"));
             }
-            Ok(Event::Eof) | Err(_) => return false,
-            _ => (),
+            _ => return Ok(false),
         }
-        buf.clear();
+        buffer.clear();
     }
 }
 pub(crate) use crate::reader::driver::read_simple_text as read_text;

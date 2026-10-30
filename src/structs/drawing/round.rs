@@ -4,16 +4,10 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -24,21 +18,11 @@ impl Round {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        if empty_flag {
-            return;
+    ) -> Result<(), crate::XlsxError> {
+        if !empty_flag {
+            crate::structs::drawing::color_transform::consume_paint_leaf(reader, e, None)?;
         }
-
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
-            Event::Start(ref child) => { crate::reader::driver::skip_element(reader,child); },
-            Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
-                    }
-                },
-            Event::Eof => panic!("Could not find drawing leaf end"),
-        );
+        Ok(())
     }
 
     #[inline]

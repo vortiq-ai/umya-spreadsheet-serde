@@ -25,9 +25,11 @@ fn invert(input: &str) -> InvertSolidFill {
     let mut buf = Vec::new();
     match reader.read_event_into(&mut buf).unwrap() {
         Event::Start(e) => {
-            InvertSolidFill::read(&mut reader, &e, false, &NamespaceScope::default())
+            InvertSolidFill::read(&mut reader, &e, false, &NamespaceScope::default()).unwrap()
         }
-        Event::Empty(e) => InvertSolidFill::read(&mut reader, &e, true, &NamespaceScope::default()),
+        Event::Empty(e) => {
+            InvertSolidFill::read(&mut reader, &e, true, &NamespaceScope::default()).unwrap()
+        }
         _ => panic!("root"),
     }
 }
@@ -74,7 +76,7 @@ fn invert_fill_uses_real_shape_owner_and_c14_child_name() {
     ));
     assert!(value.conflict().is_none());
     let mut writer = Writer::new(Cursor::new(Vec::new()));
-    value.write_to(&mut writer);
+    value.write_to(&mut writer).unwrap();
     assert_eq!(
         String::from_utf8(writer.into_inner().into_inner()).unwrap(),
         "<c14:invertSolidFillFmt><c14:spPr><a:noFill/></c14:spPr></c14:invertSolidFillFmt>"

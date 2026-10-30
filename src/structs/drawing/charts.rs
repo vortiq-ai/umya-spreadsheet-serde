@@ -1,6 +1,12 @@
 mod chart;
 pub use self::chart::*;
 
+mod chart_ex;
+pub use self::chart_ex::*;
+
+pub(crate) mod chart_ex_values;
+pub use self::chart_ex_values::WorkbookChartExResolver;
+
 mod layout;
 pub use self::layout::*;
 

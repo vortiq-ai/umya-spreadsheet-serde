@@ -79,6 +79,8 @@ impl DefinedName {
     pub fn set_address<S: Into<String>>(&mut self, value: S) -> &mut Self {
         let value = value.into();
         let list = Self::split_str(value.as_str());
+        self.address.clear();
+        self.string_value = StringValue::default();
         if list.iter().all(is_address) {
             for v in &list {
                 self.add_address(v);
@@ -344,5 +346,23 @@ mod tests {
             assert_eq!(name.address(), value);
             assert!(name.address.is_empty(), "{value}");
         }
+    }
+}
+
+#[cfg(test)]
+mod assignment_tests {
+    use super::DefinedName;
+
+    #[test]
+    fn replacing_a_name_definition_clears_its_previous_value_and_addresses() {
+        let mut name = DefinedName::default();
+        name.set_address("\"Old text\"");
+        name.set_address("Sheet1!A1");
+        assert_eq!(name.address(), "Sheet1!A1");
+        name.set_address("Sheet1!B1");
+        assert_eq!(name.address(), "Sheet1!B1");
+        name.set_address("42");
+        assert_eq!(name.address(), "42");
+        assert!(name.address_obj().is_empty());
     }
 }

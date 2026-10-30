@@ -36,7 +36,7 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         write_new_line(&mut writer);
 
         // Write pivot table definition
-        pivot_table.pivot_table_definition().write_to(&mut writer);
+        pivot_table.pivot_table_definition().write_to(&mut writer)?;
 
         let pivot_table_no = writer_mng.next_pivot_table_no();
         pivot_table_no_list.push(pivot_table_no.to_string());

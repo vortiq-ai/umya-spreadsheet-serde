@@ -23,7 +23,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -250,18 +250,19 @@ impl AreaChart {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
         self.data_labels.mark_group_absent();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty,session)));},
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e, session);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
@@ -269,37 +270,41 @@ impl AreaChart {
                         if is_empty {
                             self.data_labels.mark_empty_import();
                         } else {
-                            self.data_labels.set_attributes(reader, e, session);
+                            self.data_labels.set_attributes(reader, e, session)?;
                         }
                     }
                     b"grouping" => {
-                        self.grouping.set_attributes(reader, e);
+                        self.grouping.set_attributes(reader, e)?;
                     }
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
                     }
                     b"axId" => {
                         let mut obj = AxisId::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.add_axis_id(obj);
                     }
                     _ => {
                         if !is_empty {
-                            skip_element(reader, e);
+                            skip_element(reader, e)?;
                         }
                     }
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"areaChart" {
-                    return
+                if e.name().as_ref() == owner_end {
+                    return Ok(())
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:areaChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:areaChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:areaChart
         write_start_tag(writer, "c:areaChart", vec![], false);
 
@@ -311,11 +316,11 @@ impl AreaChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb, SeriesFamily::Area);
+            v.write_to(writer, wb, SeriesFamily::Area)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer, wb);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:axId
         for v in &self.axis_id {
@@ -323,8 +328,10 @@ impl AreaChart {
         }
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "areaChart", Some(SeriesFamily::Area));
+            ext.write_for_owner(writer, Some(wb), "areaChart", Some(SeriesFamily::Area))?;
         }
         write_end_tag(writer, "c:areaChart");
+
+        Ok(())
     }
 }

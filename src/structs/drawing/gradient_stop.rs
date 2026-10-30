@@ -11,46 +11,110 @@ use quick_xml::{
 };
 
 use super::{
+    HslColor,
+    PresetColor,
     RgbColorModelHex,
+    RgbColorModelPercentage,
     SchemeColor,
+    SystemColor,
 };
-use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct GradientStop {
-    position:            i32,
-    scheme_color:        Option<Box<SchemeColor>>,
-    rgb_color_model_hex: Option<Box<RgbColorModelHex>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    hsl_color:                  Option<Box<HslColor>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    rgb_color_model_percentage: Option<Box<RgbColorModelPercentage>>,
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "deserialize_position"))]
+    pub(super) position:        Box<str>,
+    scheme_color:               Option<Box<SchemeColor>>,
+    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    preset_color:               Option<Box<PresetColor>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    system_color:               Option<Box<SystemColor>>,
+}
+
+impl Default for GradientStop {
+    fn default() -> Self {
+        Self {
+            hsl_color:                  None,
+            rgb_color_model_percentage: None,
+            position:                   "0".into(),
+            scheme_color:               None,
+            rgb_color_model_hex:        None,
+            preset_color:               None,
+            system_color:               None,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_position<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Box<str>, D::Error> {
+    let value: Box<str> = serde::Deserialize::deserialize(deserializer)?;
+    super::color_transform::validate_positive_fixed_percentage(&value)
+        .map_err(serde::de::Error::custom)?;
+    Ok(value)
 }
 
 impl GradientStop {
-    #[inline]
     #[must_use]
-    pub fn position(&self) -> i32 {
-        self.position
+    pub fn hsl_color(&self) -> Option<&HslColor> {
+        self.hsl_color.as_deref()
     }
 
-    #[inline]
-    #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use position()")]
-    pub fn get_position(&self) -> i32 {
-        self.position()
+    pub fn hsl_color_mut(&mut self) -> Option<&mut HslColor> {
+        self.hsl_color.as_deref_mut()
     }
 
-    #[inline]
-    pub fn set_position(&mut self, value: i32) -> &mut GradientStop {
-        self.position = value;
+    pub fn set_hsl_color(&mut self, value: HslColor) -> &mut Self {
+        self.scheme_color = None;
+        self.rgb_color_model_hex = None;
+        self.preset_color = None;
+        self.system_color = None;
+        self.rgb_color_model_percentage = None;
+        self.hsl_color = Some(Box::new(value));
         self
+    }
+
+    #[must_use]
+    pub fn rgb_color_model_percentage(&self) -> Option<&RgbColorModelPercentage> {
+        self.rgb_color_model_percentage.as_deref()
+    }
+
+    pub fn rgb_color_model_percentage_mut(&mut self) -> Option<&mut RgbColorModelPercentage> {
+        self.rgb_color_model_percentage.as_deref_mut()
+    }
+
+    pub fn set_rgb_color_model_percentage(&mut self, value: RgbColorModelPercentage) -> &mut Self {
+        self.scheme_color = None;
+        self.rgb_color_model_hex = None;
+        self.preset_color = None;
+        self.system_color = None;
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = Some(Box::new(value));
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn position(&self) -> &str {
+        &self.position
+    }
+
+    #[inline]
+    pub fn set_position(&mut self, value: &str) -> Result<&mut Self, crate::XlsxError> {
+        let value = crate::xml::trim_xml_whitespace(value);
+        super::color_transform::validate_positive_fixed_percentage(value)?;
+        self.position = value.into();
+        Ok(self)
     }
 
     #[inline]
@@ -79,6 +143,11 @@ impl GradientStop {
 
     #[inline]
     pub fn set_scheme_color(&mut self, value: SchemeColor) -> &mut GradientStop {
+        self.system_color = None;
+        self.preset_color = None;
+        self.rgb_color_model_hex = None;
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
         self.scheme_color = Some(Box::new(value));
         self
     }
@@ -109,7 +178,50 @@ impl GradientStop {
 
     #[inline]
     pub fn set_rgb_color_model_hex(&mut self, value: RgbColorModelHex) -> &mut GradientStop {
+        self.system_color = None;
+        self.preset_color = None;
+        self.scheme_color = None;
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
         self.rgb_color_model_hex = Some(Box::new(value));
+        self
+    }
+
+    #[must_use]
+    pub fn preset_color(&self) -> Option<&PresetColor> {
+        self.preset_color.as_deref()
+    }
+
+    pub fn preset_color_mut(&mut self) -> Option<&mut PresetColor> {
+        self.preset_color.as_deref_mut()
+    }
+
+    pub fn set_preset_color(&mut self, value: PresetColor) -> &mut Self {
+        self.system_color = None;
+        self.scheme_color = None;
+        self.rgb_color_model_hex = None;
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
+        self.preset_color = Some(Box::new(value));
+        self
+    }
+
+    #[must_use]
+    pub fn system_color(&self) -> Option<&SystemColor> {
+        self.system_color.as_deref()
+    }
+
+    pub fn system_color_mut(&mut self) -> Option<&mut SystemColor> {
+        self.system_color.as_deref_mut()
+    }
+
+    pub fn set_system_color(&mut self, value: SystemColor) -> &mut Self {
+        self.scheme_color = None;
+        self.rgb_color_model_hex = None;
+        self.preset_color = None;
+        self.hsl_color = None;
+        self.rgb_color_model_percentage = None;
+        self.system_color = Some(Box::new(value));
         self
     }
 
@@ -118,8 +230,8 @@ impl GradientStop {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) {
-        self.read_attributes_impl(reader, e, empty, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, None)
     }
 
     pub(crate) fn read_attributes_with_session<R: std::io::BufRead>(
@@ -128,89 +240,197 @@ impl GradientStop {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_attributes_impl(reader, e, empty, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, Some(session))
     }
 
-    fn read_attributes_impl<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart<'_>,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        if let Some(v) = get_attribute(e, b"pos") {
-            self.set_position(v.parse::<i32>().unwrap());
-        }
-
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"pos")?;
+        self.set_position(&value)?;
         if empty {
-            return;
+            return Err(crate::xml::xml_error(
+                "gradient stop requires exactly one color",
+            ));
         }
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
-                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
-                        let empty=matches!(event,Event::Empty(_));
-                let native = session.is_none_or(|session| {
-                    session.accepts_child_namespace(
-                        e,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )
-                });
-                match if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-        b"schemeClr" => {
-            let mut value = SchemeColor::default();
-            if let Some(session) = session {
-                value.set_attributes_with_session(reader, e, empty, session);
-            } else {
-                value.set_attributes(reader, e, empty);
-            }
-            self.set_scheme_color(value);
-        },
-        b"srgbClr" => {
-            let mut value = RgbColorModelHex::default();
-            if let Some(session) = session {
-                value.set_attributes_with_session(reader, e, empty, session);
-            } else {
-                value.set_attributes(reader, e, empty);
-            }
-            self.set_rgb_color_model_hex(value);
-        },
-                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+        let end_name = owner.name().as_ref().to_vec();
+        let mut color_seen = false;
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
                         }
-                    },
-                    Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
+                        continue;
                     }
-                },
-                    Event::Eof => panic!("Could not find drawing owner end element"),
-                );
+                    if !matches!(
+                        crate::reader::driver::local_name(child.name().into_inner()),
+                        b"prstClr"
+                            | b"schemeClr"
+                            | b"srgbClr"
+                            | b"sysClr"
+                            | b"hslClr"
+                            | b"scrgbClr"
+                    ) {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
+                    }
+                    if color_seen {
+                        return Err(crate::xml::xml_error(
+                            "duplicate or conflicting gradient color",
+                        ));
+                    }
+                    color_seen = true;
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"sysClr" => {
+                            let mut value = SystemColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_system_color(value);
+                        }
+                        b"prstClr" => {
+                            let mut value = PresetColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_preset_color(value);
+                        }
+                        b"schemeClr" => {
+                            let mut value = SchemeColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_scheme_color(value);
+                        }
+                        b"hslClr" => {
+                            let mut value = HslColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_hsl_color(value);
+                        }
+                        b"scrgbClr" => {
+                            let mut value = RgbColorModelPercentage::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_rgb_color_model_percentage(value);
+                        }
+                        b"srgbClr" => {
+                            let mut value = RgbColorModelHex::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_rgb_color_model_hex(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
+                }
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => {
+                    return if color_seen {
+                        Ok(())
+                    } else {
+                        Err(crate::xml::xml_error(
+                            "gradient stop requires exactly one color",
+                        ))
+                    };
+                }
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        super::color_transform::validate_positive_fixed_percentage(self.position())?;
+        if [
+            self.hsl_color.is_some(),
+            self.rgb_color_model_percentage.is_some(),
+            self.scheme_color.is_some(),
+            self.rgb_color_model_hex.is_some(),
+            self.preset_color.is_some(),
+            self.system_color.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+            != 1
+        {
+            return Err(crate::xml::xml_error(
+                "gradient stop requires exactly one color",
+            ));
+        }
+
         // a:gs
-        write_start_tag(
-            writer,
-            "a:gs",
-            vec![("pos", &self.position.to_string()).into()],
-            false,
-        );
+        write_start_tag(writer, "a:gs", vec![("pos", self.position()).into()], false);
 
         // a:schemeClr
         if let Some(v) = &self.scheme_color {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
+        if let Some(color) = &self.hsl_color {
+            color.write_to(writer)?;
+        }
+        if let Some(color) = &self.rgb_color_model_percentage {
+            color.write_to(writer)?;
+        }
         // a:srgbClr
         if let Some(v) = &self.rgb_color_model_hex {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
+        if let Some(color) = &self.system_color {
+            color.write_to(writer)?;
+        }
+        if let Some(color) = &self.preset_color {
+            color.write_to(writer)?;
+        }
         write_end_tag(writer, "a:gs");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_native_positions_and_missing_colors_fail_before_output() {
+        let mut stop = GradientStop::default();
+        for invalid in ["-1", "100001", "bad"] {
+            stop.position = invalid.into();
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            assert!(stop.write_to(&mut writer).is_err());
+            assert!(writer.into_inner().into_inner().is_empty());
+        }
+        stop.position = "0".into();
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        assert!(stop.write_to(&mut writer).is_err());
+        assert!(writer.into_inner().into_inner().is_empty());
     }
 }

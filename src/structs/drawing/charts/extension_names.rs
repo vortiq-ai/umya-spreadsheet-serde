@@ -69,6 +69,22 @@ impl NamespaceScope {
     pub fn child(&self, element: &BytesStart) -> Result<Self, String> {
         let mut result = self.clone();
         result.bindings.extend(Self::declarations(element)?);
+        result.resolve(element.name().as_ref(), false)?;
+        let mut attributes = std::collections::HashSet::new();
+        for attribute in element.attributes() {
+            let attribute = attribute.map_err(|error| error.to_string())?;
+            let key = attribute.key.as_ref();
+            if key == b"xmlns" || key.starts_with(b"xmlns:") {
+                continue;
+            }
+            let name = result.resolve(key, true)?;
+            if !attributes.insert((name.namespace_uri, name.local_name)) {
+                return Err("duplicate expanded attribute name".into());
+            }
+            attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(result)
     }
 
@@ -92,7 +108,10 @@ impl NamespaceScope {
                 .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map_err(|e| e.to_string())?
                 .into_owned();
-            if prefix.as_deref() == Some("xmlns")
+            if prefix
+                .as_deref()
+                .is_some_and(|prefix| !valid_ncname(prefix))
+                || prefix.as_deref() == Some("xmlns")
                 || uri == XMLNS_NAMESPACE
                 || (prefix.as_deref() == Some("xml")) != (uri == XML_NAMESPACE)
                 || (prefix.is_some() && uri.is_empty())
@@ -154,4 +173,35 @@ fn valid_ncname(value: &str) -> bool {
                 '-' | '.' | '0'..='9' | '\u{b7}' | '\u{300}'..='\u{36f}' | '\u{203f}'..='\u{2040}'
             )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_scopes_reject_unbound_and_duplicate_expanded_attributes() {
+        for xml in [
+            r#"leaf missing:id="1""#,
+            r#"leaf xmlns:a="urn:same" xmlns:b="urn:same" a:id="1" b:id="2""#,
+            r#"leaf xmlns:bad:prefix="urn:bad""#,
+            r#"missing:leaf"#,
+            r#"leaf value="&missing;""#,
+        ] {
+            let name_len = xml.find(' ').unwrap_or(xml.len());
+            let element = BytesStart::from_content(xml, name_len);
+            assert!(NamespaceScope::default().child(&element).is_err(), "{xml}");
+        }
+    }
+
+    #[test]
+    fn child_scopes_admit_distinct_attribute_namespaces_and_qname_values() {
+        let element = BytesStart::from_content(
+            r#"leaf xmlns:a="urn:one" xmlns:b="urn:two" a:id="1" b:id="2" future="a:value""#,
+            4,
+        );
+        let scope = NamespaceScope::default().child(&element).unwrap();
+        assert!(scope.resolve(b"a:id", true).unwrap().is("urn:one", "id"));
+        assert!(scope.resolve(b"b:id", true).unwrap().is("urn:two", "id"));
+    }
 }

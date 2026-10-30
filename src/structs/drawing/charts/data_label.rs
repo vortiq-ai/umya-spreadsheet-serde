@@ -27,6 +27,7 @@ use crate::{
         driver::{
             local_name,
             skip_element,
+            try_xml_read_loop,
         },
         xlsx::SourceCacheSession,
     },
@@ -34,7 +35,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -72,7 +72,7 @@ impl DataLabel {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if self.index.explicit_value().is_none()
             || self.index.explicit_value() != previous.index.explicit_value()
         {
@@ -81,7 +81,7 @@ impl DataLabel {
             report
                 .diagnostics
                 .push("unmatched pivot data-label index".into());
-            return;
+            return Ok(());
         }
         // This owner is hidden in the projection. Omitted children
         // come from the removal-adjusted native basis; supplied typed values
@@ -140,7 +140,7 @@ impl DataLabel {
         }
         if let (Some(text), Some(old)) = (&mut self.text_properties, &previous.text_properties) {
             if text.projected_structure_matches(old) {
-                report.restored_owners += text.restore_export_parts(old);
+                report.restored_owners += text.restore_export_parts(old)?;
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -152,7 +152,7 @@ impl DataLabel {
         let (old_text, old_layout, old_shape, _) = previous.reference_role_parts();
         if let (true, Some(text)) = (incoming_text, text) {
             if let Some(old) = old_text {
-                super::chart_metadata_restoration::restore_text(text, old, report);
+                super::chart_metadata_restoration::restore_text(text, old, report)?;
             } else {
                 super::chart_metadata_restoration::discard_text_extensions(text, report);
             }
@@ -171,6 +171,7 @@ impl DataLabel {
                 super::chart_metadata_restoration::discard_shape_extensions(shape, report);
             }
         }
+        Ok(())
     }
 
     pub(crate) fn discard_extensions(&mut self, report: &mut super::RestoreReport) {
@@ -473,18 +474,19 @@ impl DataLabel {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
         if empty {
-            return result;
+            return Ok(result);
         }
         let end = e.name().into_inner().to_vec();
         let mut seen = std::collections::HashSet::new();
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let child = if session.accepts_child_namespace(e, super::extension_registry::NS_C) {
+                let child =
+                    if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
                     local_name(e.name().into_inner())
                 } else {
                     b""
@@ -493,20 +495,20 @@ impl DataLabel {
                 let mut consumed = false;
                 match child {
                     b"idx" => {
-                        if let Some(raw)=crate::reader::driver::get_attribute(e,b"val") {
+                        if let Some(raw)=crate::reader::driver::read_attribute(e,b"val")? {
                             if let Some(value)=super::xml_scalar::parse_xml_unsigned(&raw) {
                                 result.index.set_val(value);
                             } else { result.invalid_index=true; }
                         }
                     },
-                    b"extLst" => { result.extensions=Some(ExtensionList::read(reader,e,empty,session)); consumed=true; },
+                    b"extLst" => { result.extensions=Some(ExtensionList::read(reader,e,empty,session)?); consumed=true; },
                     b"delete" => result.delete = Some(XmlBoolean::read(e)),
-                    b"layout" => { let mut v=Layout::default(); v.set_attributes(reader,e,empty,session); result.layout=Some(v); consumed=true; },
-                    b"tx" => { let mut v=ChartText::default(); if !empty { v.set_attributes(reader,e,session); } result.text=Some(v); consumed=true; },
-                    b"numFmt" => { let mut v=NumberingFormat::default(); v.set_attributes(reader,e); result.numbering_format=Some(v); },
-                    b"spPr" => { let mut v=ShapeProperties::default(); if !empty { v.set_attributes_with_session(reader,e,session); } result.shape_properties=Some(v); consumed=true; },
-                    b"txPr" => { let mut v=TextProperties::default(); if !empty { v.read_with_session(reader, e, Some(session)); } result.text_properties=Some(v); consumed=true; },
-                    b"dLblPos" => { result.position=crate::drawing::get_unescaped_attribute(e,b"val").and_then(|v| DataLabelPosition::from_xml(&v)); result.invalid_position=result.position.is_none(); },
+                    b"layout" => { let mut v=Layout::default(); v.set_attributes(reader,e,empty,session)?; result.layout=Some(v); consumed=true; },
+                    b"tx" => { let mut v=ChartText::default(); if !empty { v.set_attributes(reader,e,session)?; } result.text=Some(v); consumed=true; },
+                    b"numFmt" => { let mut v=NumberingFormat::default(); v.set_attributes(reader,e)?; result.numbering_format=Some(v); },
+                    b"spPr" => { let mut v=ShapeProperties::default(); if !empty { v.set_attributes_with_session(reader,e,session)?; } result.shape_properties=Some(v); consumed=true; },
+                    b"txPr" => { let mut v=TextProperties::default(); if !empty { v.read_with_session(reader, e, Some(session))?; } result.text_properties=Some(v); consumed=true; },
+                    b"dLblPos" => { result.position=crate::reader::driver::read_attribute(e,b"val")?.and_then(|v| DataLabelPosition::from_xml(&v)); result.invalid_position=result.position.is_none(); },
                     b"showLegendKey" => result.flags.show_legend_key=Some(XmlBoolean::read(e)),
                     b"showVal" => result.flags.show_value=Some(XmlBoolean::read(e)),
                     b"showCatName" => result.flags.show_category_name=Some(XmlBoolean::read(e)),
@@ -515,21 +517,29 @@ impl DataLabel {
                     b"showBubbleSize" => result.flags.show_bubble_size=Some(XmlBoolean::read(e)),
                     b"separator" => {
                         result.separator=Some(
-                            crate::reader::driver::read_simple_text(reader,e,empty)
-                            .expect("invalid point-label separator text"));
+                            crate::reader::driver::read_simple_text(reader,e,empty)?
+                            .ok_or_else(|| crate::xml::xml_error("invalid point-label separator text"))?);
                         consumed=true;
                     },
                     _ => (),
                 }
-                if !empty && !consumed { skip_element(reader,e); }
+                if !empty && !consumed { skip_element(reader,e)?; }
             },
-            Event::End(ref e) => { if e.name().into_inner()==end.as_slice() { return result; } },
-            Event::Eof => panic!("Could not find data label end element"),
+            Event::End(ref e) => {
+                if e.name().into_inner()==end.as_slice() { return Ok(result); }
+            },
+            Event::Eof => return Err(crate::xml::xml_error("Could not find data label end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        self.write_to_as(writer, wb, "c:dLbl");
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, wb, "c:dLbl")?;
+
+        Ok(())
     }
 
     pub(crate) fn write_to_as(
@@ -537,9 +547,9 @@ impl DataLabel {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &Workbook,
         name: &str,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if self.structural_conflict().is_some() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, name, vec![], false);
         self.index.write_to(writer);
@@ -547,19 +557,19 @@ impl DataLabel {
             v.write_to(writer, "c:delete");
         } else {
             if let Some(v) = &self.layout {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
             if let Some(v) = &self.text {
-                v.write_to(writer, wb);
+                v.write_to(writer, wb)?;
             }
             if let Some(v) = &self.numbering_format {
                 v.write_to(writer);
             }
             if let Some(v) = &self.shape_properties {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
             if let Some(v) = &self.text_properties {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
             if let Some(v) = self.position {
                 write_start_tag(writer, "c:dLblPos", vec![("val", v.as_xml()).into()], true);
@@ -583,9 +593,11 @@ impl DataLabel {
             }
         }
         if let Some(v) = &self.extensions {
-            v.write_for_owner(writer, Some(wb), "dLbl", None);
+            v.write_for_owner(writer, Some(wb), "dLbl", None)?;
         }
         write_end_tag(writer, name);
+
+        Ok(())
     }
 }
 
@@ -600,7 +612,7 @@ mod tests {
             Event::Start(start) => start.into_owned(),
             _ => panic!("missing label start"),
         };
-        DataLabel::read(&mut reader, &start, false, &SourceCacheSession::deferred())
+        DataLabel::read(&mut reader, &start, false, &SourceCacheSession::deferred()).unwrap()
     }
 
     #[test]
@@ -614,7 +626,7 @@ mod tests {
         assert_eq!(label.flags.show_value.as_ref().unwrap().value(), Some(true));
         assert_eq!(label.separator.as_deref(), Some("A&B"));
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        label.write_to(&mut writer, &Workbook::default());
+        label.write_to(&mut writer, &Workbook::default()).unwrap();
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(xml.contains("<c:showVal/>"));
         assert!(xml.contains("<c:showPercent val=\"false\"/>"));
@@ -641,7 +653,9 @@ mod tests {
     fn registered_point_label_uses_its_owner_name_without_duplicating_the_body() {
         let label = parse("<c:dLbl><c:idx val=\"3\"/><c:showVal/></c:dLbl>");
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        label.write_to_as(&mut writer, &Workbook::default(), "c15:dLbl");
+        label
+            .write_to_as(&mut writer, &Workbook::default(), "c15:dLbl")
+            .unwrap();
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert_eq!(xml, "<c15:dLbl><c:idx val=\"3\"/><c:showVal/></c15:dLbl>");
     }

@@ -23,7 +23,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -250,54 +250,59 @@ impl Line3DChart {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
         self.data_labels.mark_group_absent();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)));},
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e, session);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e, session);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
-                    _ => skip_element(reader, e),
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)));},
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
                     b"dLbls" => self.data_labels.mark_empty_import(),
                     b"grouping" => {
-                        self.grouping.set_attributes(reader, e);
+                        self.grouping.set_attributes(reader, e)?;
                     }
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
                     }
                     b"axId" => {
                         let mut obj = AxisId::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.add_axis_id(obj);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"line3DChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:line3DChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:line3DChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:line3DChart
         write_start_tag(writer, "c:line3DChart", vec![], false);
 
@@ -309,11 +314,11 @@ impl Line3DChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb, SeriesFamily::Line);
+            v.write_to(writer, wb, SeriesFamily::Line)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer, wb);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:axId
         for v in &self.axis_id {
@@ -321,8 +326,10 @@ impl Line3DChart {
         }
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "line3DChart", Some(SeriesFamily::Line));
+            ext.write_for_owner(writer, Some(wb), "line3DChart", Some(SeriesFamily::Line))?;
         }
         write_end_tag(writer, "c:line3DChart");
+
+        Ok(())
     }
 }

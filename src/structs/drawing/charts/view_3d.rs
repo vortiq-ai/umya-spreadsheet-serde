@@ -19,7 +19,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -140,41 +140,42 @@ impl View3D {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        source_owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = source_owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
                 match local_name(e.name().0) {
                     b"rotX" => {
                         let mut obj = RotateX::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_rotate_x(obj);
                     }
                     b"rotY" => {
                         let mut obj = RotateY::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_rotate_y(obj);
                     }
                     b"rAngAx" => {
                         let mut obj = RightAngleAxes::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_right_angle_axes(obj);
                     }
                     b"perspective" => {
                         let mut obj = Perspective::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_perspective(obj);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"view3D" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:view3D")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:view3D")))
         );
     }
 

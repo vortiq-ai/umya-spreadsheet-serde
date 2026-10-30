@@ -19,14 +19,15 @@ use super::{
     text_properties::TextBodyParts,
 };
 use crate::{
+    XlsxError,
     drawing::Run,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::local_name,
+    try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -58,15 +59,18 @@ impl RichText {
                 .all(|(current, previous)| current.projected_structure_matches(previous))
     }
 
-    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
         if !self.projected_structure_matches(previous) {
-            return 0;
+            return Ok(0);
         }
         let mut restored = 0;
         if self.parts.is_none() {
             if let Some(parts) = &previous.parts {
                 let mut parts = parts.clone();
-                if !self.list_style.projected_values_match(&previous.list_style) {
+                if !self
+                    .list_style
+                    .projected_values_match(&previous.list_style)?
+                {
                     parts.list_style_present = true;
                 }
                 self.parts = Some(parts);
@@ -78,9 +82,9 @@ impl RichText {
             .restore_export_parts(&previous.body_properties);
         restored += self.list_style.restore_export_parts(&previous.list_style);
         for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
-            restored += current.restore_export_parts(previous);
+            restored += current.restore_export_parts(previous)?;
         }
-        restored
+        Ok(restored)
     }
 
     #[inline]
@@ -177,54 +181,81 @@ impl RichText {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(e)?;
         self.parts = Some(Box::new(TextBodyParts::default()));
-        let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
-            reader,
+        let mut body_present = false;
+        let mut list_present = false;
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                let name = if native {
-                    local_name(e.name().into_inner())
-                } else { b"" };
-                match name {
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                match local_name(e.name().as_ref()) {
                     b"p" => {
-                        let mut v = Paragraph::default();
-                        if empty {
-                            v.mark_empty_import();
-                        } else {
-                            v.read_with_session(reader, e, session);
+                        if !body_present {
+                            return Err(crate::xml::xml_error("DrawingML paragraph precedes body properties"));
                         }
-                        self.add_paragraph(v);
+                        let mut paragraph = Paragraph::default();
+                        if empty {
+                            crate::reader::driver::validate_attributes(e)?;
+                            paragraph.mark_empty_import();
+                        } else {
+                            paragraph.read_with_session(reader, e, session)?;
+                        }
+                        self.add_paragraph(paragraph);
                     }
                     b"lstStyle" => {
+                        if !body_present || list_present || !self.paragraph.is_empty() {
+                            return Err(crate::xml::xml_error("duplicate or misplaced DrawingML list style"));
+                        }
+                        list_present = true;
                         if let Some(parts) = &mut self.parts { parts.list_style_present = true; }
-                        if !empty { self.list_style.read_with_session(reader, e, session); }
-                    }
-                    b"bodyPr" => {
-                        let mut v = BodyProperties::default();
-                        v.read_with_session(reader, e, empty, session);
-                        self.set_body_properties(v);
-                    }
-                    _ => {
-                        if !empty {
-                            crate::reader::driver::skip_element(reader, e);
+                        if empty {
+                            crate::reader::driver::validate_attributes(e)?;
+                        } else {
+                            self.list_style.read_with_session(reader, e, session)?;
                         }
                     }
+                    b"bodyPr" => {
+                        if body_present || !self.paragraph.is_empty() {
+                            return Err(crate::xml::xml_error("duplicate or misplaced DrawingML body properties"));
+                        }
+                        body_present = true;
+                        let mut properties = BodyProperties::default();
+                        properties.read_with_session(reader, e, empty, session)?;
+                        self.set_body_properties(properties);
+                    }
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == end.as_slice() {
-                    return;
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => {
+                if !body_present || self.paragraph.is_empty() {
+                    return Err(crate::xml::xml_error("DrawingML text body requires body properties and a paragraph"));
                 }
+                return Ok(());
             },
-            Event::Eof => panic!("Could not find text body end element"),
+            Event::Text(ref text)
+                if !text.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+            {
+                return Err(crate::xml::xml_error("unexpected text in DrawingML text body"));
+            },
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text body")),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // c:rich
         write_start_tag(writer, "c:rich", vec![], false);
 
@@ -237,14 +268,15 @@ impl RichText {
             .as_ref()
             .is_none_or(|parts| parts.list_style_present)
         {
-            self.list_style.write_to(writer);
+            self.list_style.write_to(writer)?;
         }
 
         for content in &self.paragraph {
-            content.write_to(writer);
+            content.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:rich");
+        Ok(())
     }
 }
 
@@ -260,9 +292,9 @@ mod parity_tests {
             _ => panic!("expected rich text"),
         };
         let mut value = RichText::default();
-        value.read_with_session(&mut reader, &e, None);
+        value.read_with_session(&mut reader, &e, None).unwrap();
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        value.write_to(&mut writer);
+        value.write_to(&mut writer).unwrap();
         assert!(
             !String::from_utf8(writer.into_inner().into_inner())
                 .unwrap()
@@ -270,7 +302,7 @@ mod parity_tests {
         );
         value.list_style_mut();
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        value.write_to(&mut writer);
+        value.write_to(&mut writer).unwrap();
         assert!(
             String::from_utf8(writer.into_inner().into_inner())
                 .unwrap()

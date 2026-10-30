@@ -70,8 +70,8 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     write_worksheet_properties(&mut writer, worksheet, has_macros);
     write_dimension_and_views(&mut writer, worksheet);
     write_columns_and_rows(&mut writer, worksheet, shared_string_table, stylesheet);
-    write_worksheet_features(&mut writer, worksheet, stylesheet);
-    write_worksheet_extensions(&mut writer, worksheet);
+    write_worksheet_features(&mut writer, worksheet, stylesheet)?;
+    write_worksheet_extensions(&mut writer, worksheet)?;
 
     write_end_tag(&mut writer, "worksheet");
 
@@ -274,13 +274,13 @@ fn write_worksheet_features(
     writer: &mut InternalWriter,
     worksheet: &Worksheet,
     stylesheet: &mut Stylesheet,
-) {
+) -> Result<(), XlsxError> {
     if let Some(v) = worksheet.sheet_protection() {
         v.write_to(writer);
     }
 
     if let Some(v) = worksheet.auto_filter() {
-        v.write_to(writer);
+        v.write_to(writer)?;
     }
 
     worksheet.merge_cells_crate().write_to(writer);
@@ -293,6 +293,7 @@ fn write_worksheet_features(
     if let Some(v) = worksheet.data_validations() {
         v.write_to(writer);
     }
+    Ok(())
 }
 
 /// Writes worksheet extensions including hyperlinks, print settings, drawings,
@@ -302,11 +303,14 @@ fn write_worksheet_features(
 ///
 /// * `writer` - The XML writer to write to
 /// * `worksheet` - The worksheet containing the extensions
-fn write_worksheet_extensions(writer: &mut InternalWriter, worksheet: &Worksheet) {
+fn write_worksheet_extensions(
+    writer: &mut InternalWriter,
+    worksheet: &Worksheet,
+) -> Result<(), XlsxError> {
     let mut r_id = write_hyperlinks(writer, worksheet);
     r_id = write_print_settings(writer, worksheet, r_id);
     r_id = write_drawings(writer, worksheet, r_id);
-    write_tables_and_objects(writer, worksheet, r_id);
+    write_tables_and_objects(writer, worksheet, r_id)?;
 
     if worksheet.data_validations_2010().is_some() {
         write_start_tag(writer, "extLst", vec![], false);
@@ -315,6 +319,7 @@ fn write_worksheet_extensions(writer: &mut InternalWriter, worksheet: &Worksheet
         }
         write_end_tag(writer, "extLst");
     }
+    Ok(())
 }
 
 /// Writes rows and their contained cells to the worksheet.
@@ -502,7 +507,11 @@ fn write_drawings(writer: &mut InternalWriter, worksheet: &Worksheet, mut r_id: 
 /// * `writer` - The XML writer to write to
 /// * `worksheet` - The worksheet containing tables and objects
 /// * `r_id` - The current relationship ID
-fn write_tables_and_objects(writer: &mut InternalWriter, worksheet: &Worksheet, mut r_id: i32) {
+fn write_tables_and_objects(
+    writer: &mut InternalWriter,
+    worksheet: &Worksheet,
+    mut r_id: i32,
+) -> Result<(), XlsxError> {
     if worksheet.has_table() {
         let tables = worksheet.tables();
         write_start_tag(
@@ -519,10 +528,9 @@ fn write_tables_and_objects(writer: &mut InternalWriter, worksheet: &Worksheet, 
         write_end_tag(writer, "tableParts");
     }
 
-    let ole_id = 1000 + 25;
-    worksheet
-        .ole_objects()
-        .write_to(writer, num_traits::cast(r_id).unwrap(), ole_id);
+    let r_id = usize::try_from(r_id).map_err(crate::xml::xml_error)?;
+    worksheet.ole_objects().write_to(writer, r_id)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -703,7 +711,7 @@ mod tests {
         let mut writer = setup_test_writer();
         let worksheet = setup_test_worksheet();
 
-        write_tables_and_objects(&mut writer, &worksheet, 1);
+        write_tables_and_objects(&mut writer, &worksheet, 1).unwrap();
 
         let result = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         // Should be empty if no tables/objects

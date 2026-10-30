@@ -22,12 +22,9 @@ use super::{
     TextFontAlignmentValues,
 };
 use crate::{
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -198,100 +195,154 @@ impl TextParagraphPropertiesType {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        set_string_from_xml!(self, e, right_to_left, "rtl");
-        set_string_from_xml!(self, e, alignment, "algn");
-        set_string_from_xml!(self, e, font_alignment, "fontAlgn");
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"rtl")? {
+            self.right_to_left
+                .set_value(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"algn")? {
+            self.alignment.set_value(
+                value
+                    .parse()
+                    .map_err(|()| crate::xml::xml_error("invalid DrawingML paragraph alignment"))?,
+            );
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"fontAlgn")? {
+            self.font_alignment.set_value(
+                value
+                    .parse()
+                    .map_err(|()| crate::xml::xml_error("invalid DrawingML font alignment"))?,
+            );
+        }
         if empty {
-            return;
+            return Ok(());
         }
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let native = session
-                    .is_none_or(|session| session.accepts_child_namespace(child, NS_A));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(child, NS_A)?,
+                    None => true,
+                };
                 let name = if native {
                     crate::reader::driver::local_name(child.name().into_inner())
                 } else { b"" };
                 match name {
                     b"spcBef" => {
                         let mut value = SpaceBefore::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_space_before(value);
                     }
                     b"spcAft" => {
                         let mut value = SpaceAfter::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_space_after(value);
                     }
                     b"defRPr" => {
                         let mut value = RunProperties::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_default_run_properties(value);
                     }
-                    _ => if !empty { crate::reader::driver::skip_element(reader, child); },
+                    _ => if !empty { crate::reader::driver::skip_element(reader, child)?; },
                 }
             },
             Event::End(ref child) => {
-                if child.name().into_inner() == end.as_slice() { return; }
+                if child.name().into_inner() == end.as_slice() { return Ok(()); }
             },
-            Event::Eof => panic!("unterminated list-style paragraph properties")
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text properties"))
         );
     }
 
     #[inline]
-    pub(crate) fn write_to_default(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:defPPr");
+    pub(crate) fn write_to_default(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:defPPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl1(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl1pPr");
+    pub(crate) fn write_to_lvl1(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl1pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl2(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl2pPr");
+    pub(crate) fn write_to_lvl2(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl2pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl3(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl3pPr");
+    pub(crate) fn write_to_lvl3(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl3pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl4(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl4pPr");
+    pub(crate) fn write_to_lvl4(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl4pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl5(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl5pPr");
+    pub(crate) fn write_to_lvl5(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl5pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl6(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl6pPr");
+    pub(crate) fn write_to_lvl6(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl6pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl7(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl7pPr");
+    pub(crate) fn write_to_lvl7(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl7pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl8(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl8pPr");
+    pub(crate) fn write_to_lvl8(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl8pPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_lvl9(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:lvl9pPr");
+    pub(crate) fn write_to_lvl9(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:lvl9pPr")
     }
 
-    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, tag_name: &str) {
+    fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        tag_name: &str,
+    ) -> Result<(), XlsxError> {
         // a:lvl1pPr
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.right_to_left.has_value() {
@@ -317,9 +368,10 @@ impl TextParagraphPropertiesType {
 
         // a:defRPr
         if let Some(v) = &self.default_run_properties {
-            v.write_to_def_rpr(writer);
+            v.write_to_def_rpr(writer)?;
         }
 
         write_end_tag(writer, tag_name);
+        Ok(())
     }
 }

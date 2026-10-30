@@ -8,16 +8,9 @@ use quick_xml::{
     },
 };
 
-use super::{
-    XlsxError,
-    driver::{
-        write_end_tag,
-        write_new_line,
-        write_start_tag,
-    },
-};
 use crate::{
     helper::const_str::{
+        CHART_EX_NS,
         CHART_NS,
         IMAGE_NS,
         PKG_DRAWINGS_RELS,
@@ -26,94 +19,133 @@ use crate::{
     structs::{
         Worksheet,
         WriterManager,
+        XlsxError,
+        XlsxErrorKind,
+        drawing_parts::relative_target,
+    },
+    writer::driver::{
+        write_end_tag,
+        write_new_line,
+        write_start_tag,
     },
 };
 
+pub(crate) struct DrawingChartPart {
+    pub key:      String,
+    pub extended: bool,
+    pub target:   String,
+}
+
 pub(crate) fn write<W: io::Seek + io::Write>(
-    _worksheet: &Worksheet,
+    worksheet: &Worksheet,
     drawing_no: &str,
-    chart_no_list: &[String],
+    chart_parts: &[DrawingChartPart],
     rel_list: &[(String, String)],
-    writer_mng: &mut WriterManager<W>,
+    manager: &mut WriterManager<W>,
 ) -> Result<(), XlsxError> {
-    let mut is_write = false;
-
+    if rel_list.is_empty() {
+        if chart_parts.is_empty() {
+            return Ok(());
+        }
+        return Err(relationship_error("chart part has no drawing relationship"));
+    }
+    let owner = format!("xl/drawings/drawing{drawing_no}.xml");
     let mut writer = Writer::new(io::Cursor::new(Vec::new()));
-    // XML header
-    writer
-        .write_event(Event::Decl(BytesDecl::new(
-            "1.0",
-            Some("UTF-8"),
-            Some("yes"),
-        )))
-        .unwrap();
+    writer.write_event(Event::Decl(BytesDecl::new(
+        "1.0",
+        Some("UTF-8"),
+        Some("yes"),
+    )))?;
     write_new_line(&mut writer);
-
-    // relationships
     write_start_tag(
         &mut writer,
         "Relationships",
         vec![("xmlns", REL_NS).into()],
         false,
     );
-
-    let mut chart_numbers = chart_no_list.iter();
-    for (r_id, (key, value)) in (1..).zip(rel_list.iter()) {
-        if key == "CHART" {
-            let chart_no = chart_numbers.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "drawing chart relationship has no chart part",
-                )
-            })?;
-            is_write = write_relationship(
-                &mut writer,
-                r_id,
-                CHART_NS,
-                format!("../charts/chart{chart_no}.xml").as_str(),
-                "",
-            );
-        } else if key == "IMAGE" {
-            is_write = write_relationship(
-                &mut writer,
-                r_id,
-                IMAGE_NS,
-                format!("../media/{value}").as_str(),
-                "",
-            );
+    let mut used = vec![false; chart_parts.len()];
+    for (index, (kind, value)) in rel_list.iter().enumerate() {
+        let id = format!("rId{}", index + 1);
+        match kind.as_str() {
+            "CHART" | "CHARTEX" => {
+                let extended = kind == "CHARTEX";
+                let candidate = if value.is_empty() && !extended {
+                    chart_parts
+                        .iter()
+                        .enumerate()
+                        .position(|(position, part)| !used[position] && !part.extended)
+                } else {
+                    let mut candidates =
+                        chart_parts.iter().enumerate().filter(|(position, part)| {
+                            !used[*position] && part.extended == extended && part.key == *value
+                        });
+                    let candidate = candidates.next().map(|(position, _)| position);
+                    if candidates.next().is_some() {
+                        return Err(relationship_error("ambiguous drawing chart owner identity"));
+                    }
+                    candidate
+                }
+                .ok_or_else(|| {
+                    relationship_error("drawing chart relationship has no chart part")
+                })?;
+                used[candidate] = true;
+                let target = relative_target(&owner, &chart_parts[candidate].target)?;
+                write_relationship(
+                    &mut writer,
+                    &id,
+                    if extended { CHART_EX_NS } else { CHART_NS },
+                    &target,
+                    "",
+                );
+            }
+            "IMAGE" => {
+                write_relationship(&mut writer, &id, IMAGE_NS, &format!("../media/{value}"), "");
+            }
+            "AUX" => {
+                let edge = worksheet
+                    .drawing_parts()
+                    .and_then(|parts| parts.drawing_relationships())
+                    .and_then(|list| list.find_relationship_by_rid(value))
+                    .ok_or_else(|| relationship_error("missing drawing auxiliary relationship"))?;
+                let target = if edge.target_mode() == "External" {
+                    edge.target().to_owned()
+                } else {
+                    relative_target(&owner, edge.raw_file().file_target())?
+                };
+                write_relationship(
+                    &mut writer,
+                    &id,
+                    edge.get_type(),
+                    &target,
+                    edge.target_mode(),
+                );
+            }
+            _ => return Err(relationship_error("unknown drawing relationship kind")),
         }
     }
-    if chart_numbers.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "chart part has no drawing relationship",
-        )
-        .into());
+    if used.iter().any(|used| !*used) {
+        return Err(relationship_error("chart part has no drawing relationship"));
     }
     write_end_tag(&mut writer, "Relationships");
-
-    if is_write {
-        let file_path = format!("{PKG_DRAWINGS_RELS}{drawing_no}.xml.rels");
-        return writer_mng.add_writer(&file_path, writer);
-    }
-    Ok(())
+    manager.add_writer(&format!("{PKG_DRAWINGS_RELS}{drawing_no}.xml.rels"), writer)
 }
-
+fn relationship_error(message: &'static str) -> XlsxError {
+    XlsxError::with_message(XlsxErrorKind::Xml, message)
+}
 fn write_relationship(
     writer: &mut Writer<io::Cursor<Vec<u8>>>,
-    r_id: i32,
-    p_type: &str,
-    p_target: &str,
-    p_target_mode: &str,
-) -> bool {
-    let r_id_str = format!("rId{r_id}");
-    let mut attributes: crate::structs::AttrCollection = Vec::new();
-    attributes.push(("Id", &r_id_str).into());
-    attributes.push(("Type", p_type).into());
-    attributes.push(("Target", p_target).into());
-    if !p_target_mode.is_empty() {
-        attributes.push(("TargetMode", p_target_mode).into());
+    id: &str,
+    kind: &str,
+    target: &str,
+    mode: &str,
+) {
+    let mut attributes = vec![
+        ("Id", id).into(),
+        ("Type", kind).into(),
+        ("Target", target).into(),
+    ];
+    if !mode.is_empty() {
+        attributes.push(("TargetMode", mode).into());
     }
     write_start_tag(writer, "Relationship", attributes, true);
-    true
 }

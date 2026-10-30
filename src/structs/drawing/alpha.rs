@@ -7,10 +7,7 @@ use quick_xml::{
     events::BytesStart,
 };
 
-use crate::{
-    drawing::get_unescaped_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -39,10 +36,33 @@ impl Alpha {
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
-        _reader: &mut Reader<R>,
+        reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.set_val(get_unescaped_attribute(e, b"val").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"val")?;
+        let parsed = crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?;
+        if !(0..=100_000).contains(&parsed) {
+            return Err(crate::xml::xml_error("alpha outside 0..100000"));
+        }
+        self.set_val(value);
+        if !empty {
+            crate::structs::drawing::color_transform::consume_paint_leaf(reader, owner, session)?;
+        }
+        Ok(())
     }
 
     #[inline]

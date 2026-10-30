@@ -11,12 +11,9 @@ use quick_xml::{
 };
 
 use super::super::StyleMatrixReferenceType;
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -101,96 +98,83 @@ impl ShapeStyle {
         self.font_reference = Some(Box::new(value));
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:lnRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, false);
-                        self.set_line_reference(style_matrix_reference_type);
+        owner: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS {
+                        return Err(crate::xml::xml_error("foreign drawing style reference"));
                     }
-                    b"a:fillRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, false);
-                        self.set_fill_reference(style_matrix_reference_type);
+                    let mut value = StyleMatrixReferenceType::default();
+                    value.read_with_session(reader, child, empty, Some(session))?;
+                    match name.local_name.as_str() {
+                        "lnRef" => self.set_line_reference(value),
+                        "fillRef" => self.set_fill_reference(value),
+                        "effectRef" => self.set_effect_reference(value),
+                        "fontRef" => self.set_font_reference(value),
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported drawing style reference",
+                            ));
+                        }
                     }
-                    b"a:effectRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, false);
-                        self.set_effect_reference(style_matrix_reference_type);
-                    }
-                    b"a:fontRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, false);
-                        self.set_font_reference(style_matrix_reference_type);
-                    }
-                    _ => (),
                 }
-            },
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"a:lnRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, true);
-                        self.set_line_reference(style_matrix_reference_type);
-                    }
-                    b"a:fillRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, true);
-                        self.set_fill_reference(style_matrix_reference_type);
-                    }
-                    b"a:effectRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, true);
-                        self.set_effect_reference(style_matrix_reference_type);
-                    }
-                    b"a:fontRef" => {
-                        let mut style_matrix_reference_type = StyleMatrixReferenceType::default();
-                        style_matrix_reference_type.set_attributes(reader, e, true);
-                        self.set_font_reference(style_matrix_reference_type);
-                    }
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"xdr:style" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:style")
-        );
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing style")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // xdr:style
         write_start_tag(writer, "xdr:style", vec![], false);
 
         // a:lnRef
         if let Some(style) = &self.line_reference {
-            style.write_to(writer, "a:lnRef");
+            style.write_to(writer, "a:lnRef")?;
         }
 
         // a:fillRef
         if let Some(style) = &self.fill_reference {
-            style.write_to(writer, "a:fillRef");
+            style.write_to(writer, "a:fillRef")?;
         }
 
         // a:effectRef
         if let Some(style) = &self.effect_reference {
-            style.write_to(writer, "a:effectRef");
+            style.write_to(writer, "a:effectRef")?;
         }
 
         // a:fontRef
         if let Some(style) = &self.font_reference {
-            style.write_to(writer, "a:fontRef");
+            style.write_to(writer, "a:fontRef")?;
         }
 
         write_end_tag(writer, "xdr:style");
+        Ok(())
     }
 }

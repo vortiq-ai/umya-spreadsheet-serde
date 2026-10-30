@@ -10,7 +10,13 @@ use quick_xml::{
     },
 };
 
-use super::charts::ChartSpace;
+use super::{
+    charts::{
+        ChartSpace,
+        NamespaceScope,
+    },
+    spreadsheet::drawing_error,
+};
 use crate::{
     helper::const_str::{
         DRAWINGML_CHART_NS,
@@ -18,9 +24,8 @@ use crate::{
     },
     reader::{
         driver::{
-            get_attribute,
-            local_name,
-            xml_read_loop,
+            skip_element,
+            try_xml_read_loop,
         },
         xlsx::chart,
     },
@@ -72,29 +77,55 @@ impl GraphicData {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
         session: &crate::reader::xlsx::SourceCacheSession,
         provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
-    ) {
-        xml_read_loop!(
+    ) -> Result<Vec<String>, crate::XlsxError> {
+        let mut source_parts = Vec::new();
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = NamespaceScope::default()
+            .child(owner)
+            .map_err(drawing_error)?;
+        let end = owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
-                if local_name(e.name().into_inner()) == b"chart" {
-                    let chart_id = get_attribute(e, b"r:id").unwrap();
+            ref event @ (Event::Start(ref element) | Event::Empty(ref element)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let child_scope = scope.child(element).map_err(drawing_error)?;
+                let name = child_scope.resolve(element.name().as_ref(), false)
+                    .map_err(drawing_error)?;
+                if name.is(DRAWINGML_CHART_NS, "chart") {
+                    let mut chart_id = None;
+                    for attribute in element.attributes() {
+                        let attribute = attribute
+                            .map_err(|error| drawing_error(error.to_string()))?;
+                        if attribute.key.as_ref() == b"xmlns" || attribute.key.as_ref().starts_with(b"xmlns:") { continue; }
+                        let name = child_scope.resolve(attribute.key.as_ref(), true)
+                            .map_err(drawing_error)?;
+                        if name.is(REL_OFC_NS, "id") {
+                            if chart_id.is_some() {
+                                return Err(drawing_error("duplicate chart relationship id"));
+                            }
+                            chart_id = Some(attribute
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                                .map_err(|error| drawing_error(error.to_string()))?.into_owned());
+                        }
+                    }
+                    let chart_id = chart_id
+                        .ok_or_else(|| drawing_error("chart relationship id required"))?;
                     let relationship = drawing_relationships
-                        .unwrap()
-                        .relationship_by_rid(&chart_id);
-                    chart::read(relationship.raw_file(), &mut self.chart_space, session, provider)
-                        .expect("Could not read chart XML");
-                }
+                        .and_then(|list| list.find_relationship_by_rid(&chart_id))
+                        .ok_or_else(|| drawing_error("chart relationship not found"))?;
+                    chart::read(relationship.raw_file(), &mut self.chart_space, session, provider)?;
+                    source_parts.push(relationship.raw_file().file_target().to_owned());
+                    if !empty { crate::reader::driver::consume_empty_element(reader, element)?; }
+                } else if !empty { skip_element(reader, element)?; }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:graphicData" {
-                    return;
-                }
+            Event::End(ref element) => {
+                if element.name().as_ref() == end { return Ok(source_parts); }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:graphicData")
+            Event::Eof => return Err(drawing_error("unterminated graphicData"))
         );
     }
 

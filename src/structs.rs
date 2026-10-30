@@ -14,6 +14,28 @@ macro_rules! pub_mod_use {
 
 pub mod custom_properties;
 pub mod drawing;
+pub mod slicer;
+pub use self::slicer::*;
+pub mod filter_rule;
+pub use self::filter_rule::*;
+mod pivot_cache_hierarchy;
+pub use self::pivot_cache_hierarchy::*;
+
+mod pivot_formatting;
+pub use self::pivot_formatting::*;
+
+pub(crate) mod pivot_table_extension;
+pub use self::pivot_table_extension::*;
+
+pub(crate) mod content_types;
+
+pub(crate) mod drawing_parts;
+
+mod pivot_table_hierarchy;
+pub use self::pivot_table_hierarchy::*;
+
+mod pivot_area;
+pub use self::pivot_area::*;
 pub mod office;
 pub mod office2010;
 pub mod office2019;

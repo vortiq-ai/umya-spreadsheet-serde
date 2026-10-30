@@ -110,15 +110,16 @@ impl StringPoint {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-    ) {
-        *self = Self::read(reader, owner, false);
+    ) -> Result<(), crate::XlsxError> {
+        *self = Self::read(reader, owner, false)?;
+        Ok(())
     }
 
     pub(crate) fn read<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, None)
     }
 
@@ -127,7 +128,7 @@ impl StringPoint {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, Some(session))
     }
 
@@ -136,35 +137,47 @@ impl StringPoint {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
 
         let mut result = Self::default();
         let mut parts = StringPointParts::default();
         parts
             .index
-            .set_lexical_attribute(crate::drawing::get_unescaped_attribute(e, b"idx"));
+            .set_lexical_attribute(crate::reader::driver::read_attribute(e, b"idx")?);
         let mut values = 0;
-        parts.invalid = !children(reader, e, empty, |reader, child, empty| {
-            if !session.is_none_or(|session| {
-                session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) || local_name(child.name().into_inner()) != b"v"
-            {
-                return false;
-            }
-            values += 1;
-            match read_text(reader, child, empty) {
-                Some(value) => {
-                    result.numeric_value.set_text(value);
-                    parts.value_present = true;
-                }
-                None => parts.invalid = true,
-            }
-            true
-        }) || parts.invalid;
+        parts.invalid = !children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if !match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } || local_name(child.name().into_inner()) != b"v"
+                    {
+                        return Ok(false);
+                    }
+                    values += 1;
+                    match read_text(reader, child, empty)? {
+                        Some(value) => {
+                            result.numeric_value.set_text(value);
+                            parts.value_present = true;
+                        }
+                        None => parts.invalid = true,
+                    }
+                    true
+                })
+            },
+        )? || parts.invalid;
         parts.invalid |= values > 1;
         result.parts = Some(Box::new(parts));
-        result
+        Ok(result)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, index: u32) {

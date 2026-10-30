@@ -145,24 +145,24 @@ fn luminance_accessors_edit_only_the_last_matching_transform() {
         result
     }
     let mut old = serde_json::to_value(SystemColor::default()).unwrap();
-    old.as_object_mut().unwrap().remove("luminance_transforms");
+    old.as_object_mut().unwrap().remove("transforms");
     let mut color: SystemColor = serde_json::from_value(old).unwrap();
     assert!(color.luminance_modulation().is_none());
     assert!(color.luminance_offset().is_none());
     color.set_luminance_offset(percentage(75000));
     color.set_luminance_modulation(percentage(50000));
     let mut saved = serde_json::to_value(&color).unwrap();
-    saved["luminance_transforms"]
+    saved["transforms"]
         .as_array_mut()
         .unwrap()
-        .push(serde_json::json!({"Modulation": percentage(25000)}));
+        .push(serde_json::json!({"LuminanceModulation": "25000"}));
     let mut color: SystemColor = serde_json::from_value(saved.clone()).unwrap();
-    assert_eq!(color.luminance_modulation().unwrap().val(), 25000);
-    color.luminance_modulation_mut().unwrap().set_val(20000);
+    assert_eq!(color.luminance_modulation().unwrap(), "25000");
+    *color.luminance_modulation_mut().unwrap() = "20000".into();
     color.set_luminance_modulation(percentage(30000));
-    color.luminance_offset_mut().unwrap().set_val(60000);
+    *color.luminance_offset_mut().unwrap() = "60000".into();
     color.set_luminance_offset(percentage(65000));
-    saved["luminance_transforms"][0] = serde_json::json!({"Offset": percentage(65000)});
-    saved["luminance_transforms"][2] = serde_json::json!({"Modulation": percentage(30000)});
+    saved["transforms"][0] = serde_json::json!({"LuminanceOffset": "65000"});
+    saved["transforms"][2] = serde_json::json!({"LuminanceModulation": "30000"});
     assert_eq!(serde_json::to_value(color).unwrap(), saved);
 }

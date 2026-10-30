@@ -43,6 +43,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     structs::{
         ChartType,
@@ -53,7 +54,6 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -964,153 +964,160 @@ impl PlotArea {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
                 b"layout" => {
-                    self.layout.set_attributes(reader, e, false, session);
+                    self.layout.set_attributes(reader, e, false, session)?;
                 }
                 b"lineChart" => {
                     let mut obj = LineChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::LineChart(obj));
                 }
                 b"line3DChart" => {
                     let mut obj = Line3DChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::Line3DChart(obj));
                 }
                 b"pieChart" => {
                     let mut obj = PieChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::PieChart(obj));
                 }
                 b"pie3DChart" => {
                     let mut obj = Pie3DChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::Pie3DChart(obj));
                 }
                 b"doughnutChart" => {
                     let mut obj = DoughnutChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::DoughnutChart(obj));
                 }
                 b"scatterChart" => {
                     let mut obj = ScatterChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::ScatterChart(obj));
                 }
                 b"barChart" => {
                     let mut obj = BarChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::BarChart(obj));
                 }
                 b"bar3DChart" => {
                     let mut obj = Bar3DChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::Bar3DChart(obj));
                 }
                 b"radarChart" => {
                     let mut obj = RadarChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::RadarChart(obj));
                 }
                 b"bubbleChart" => {
                     let mut obj = BubbleChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::BubbleChart(obj));
                 }
                 b"areaChart" => {
                     let mut obj = AreaChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::AreaChart(obj));
                 }
                 b"area3DChart" => {
                     let mut obj = Area3DChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::Area3DChart(obj));
                 }
                 b"ofPieChart" => {
                     let mut obj = OfPieChart::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.push_chart_group(ChartGroup::OfPieChart(obj));
                 }
                 b"catAx" => {
                     let mut obj = CategoryAxis::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.add_category_axis(obj);
                 }
                 b"dateAx" => {
                     let mut obj = DateAxis::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.add_date_axis(obj);
                 }
                 b"valAx" => {
                     let mut obj = ValueAxis::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.add_value_axis(obj);
                 }
                 b"serAx" => {
                     let mut obj = SeriesAxis::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.add_series_axis(obj);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
-                _ => skip_element(reader, e),
+                _ => skip_element(reader, e)?,
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"plotArea" {
+                if e.name().as_ref() == owner_end {
                     self.normalize_chart_groups();
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:plotArea"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:plotArea"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:plotArea
         write_start_tag(writer, "c:plotArea", vec![], false);
 
         // c:layout
-        self.layout.write_to(writer);
+        self.layout.write_to(writer)?;
 
         for group in self.chart_groups() {
-            group.write_to(writer, wb);
+            group.write_to(writer, wb)?;
         }
 
         // c:catAx
         for v in &self.category_axis {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:dateAx
         for v in &self.date_axis {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:valAx
         for v in &self.value_axis {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:serAx
         for v in &self.series_axis {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:plotArea");
+
+        Ok(())
     }
 }
 impl AdjustmentCoordinateWithSheet for PlotArea {

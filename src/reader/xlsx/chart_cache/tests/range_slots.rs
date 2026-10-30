@@ -546,7 +546,9 @@ fn sparse_large_indices_bypass_range_slots() {
         panic!("missing reference")
     };
     let mut reference = StringReference::default();
-    reference.set_attributes(&mut reader, &root, &session);
+    reference
+        .set_attributes(&mut reader, &root, &session)
+        .unwrap();
     session.end_chart_part();
     let request = request("Sheet1!A1:A1048576");
     let streamed = HashMap::new();
@@ -581,7 +583,8 @@ fn sparse_large_indices_bypass_range_slots() {
         usize::MAX,
         usize::MAX,
         |point, scratch| slots.display(index, &mut resolver, point, scratch, &mut formats),
-    );
+    )
+    .unwrap();
     // The one sparse run costs one point and no text. Missing the far cell
     // would add a far/empty exception and text bytes instead.
     assert!(matches!(

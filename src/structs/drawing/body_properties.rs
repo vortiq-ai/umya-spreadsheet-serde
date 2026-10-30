@@ -17,16 +17,14 @@ use super::{
         Int32Value,
     },
     ShapeAutoFit,
+    TextAutoFit,
     TextWrappingValues,
 };
 use crate::{
     StringValue,
-    drawing::unescape_attribute,
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
-    reader::driver::{
-        get_attribute_value,
-        xml_read_loop,
-    },
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -47,7 +45,8 @@ pub struct BodyProperties {
     right_inset:           Int32Value,
     bottom_inset:          Int32Value,
     use_paragraph_spacing: BooleanValue,
-    shape_auto_fit:        Option<ShapeAutoFit>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    auto_fit:              Option<TextAutoFit>,
     #[cfg_attr(feature = "serde", serde(default))]
     parts:                 Option<Box<BodyPropertiesParts>>,
 }
@@ -356,7 +355,10 @@ impl BodyProperties {
     #[inline]
     #[must_use]
     pub fn shape_auto_fit(&self) -> Option<&ShapeAutoFit> {
-        self.shape_auto_fit.as_ref()
+        match self.auto_fit.as_ref() {
+            Some(TextAutoFit::Shape(value)) => Some(value),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -386,7 +388,21 @@ impl BodyProperties {
 
     #[inline]
     pub fn set_shape_auto_fit(&mut self, value: ShapeAutoFit) -> &mut BodyProperties {
-        self.shape_auto_fit = Some(value);
+        self.auto_fit = Some(TextAutoFit::Shape(value));
+        self
+    }
+
+    #[must_use]
+    pub fn auto_fit(&self) -> Option<&TextAutoFit> {
+        self.auto_fit.as_ref()
+    }
+
+    pub fn auto_fit_mut(&mut self) -> Option<&mut TextAutoFit> {
+        self.auto_fit.as_mut()
+    }
+
+    pub fn set_auto_fit(&mut self, value: Option<TextAutoFit>) -> &mut Self {
+        self.auto_fit = value;
         self
     }
 
@@ -395,8 +411,8 @@ impl BodyProperties {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        self.read_with_session(reader, e, empty_flag, None);
+    ) -> Result<(), XlsxError> {
+        self.read_with_session(reader, e, empty_flag, None)
     }
 
     pub(crate) fn read_with_session<R: std::io::BufRead>(
@@ -405,98 +421,116 @@ impl BodyProperties {
         e: &BytesStart,
         empty_flag: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        for attr in e.attributes().with_checks(false).flatten() {
-            let key = attr.key.into_inner();
-            let value = get_attribute_value(&attr).unwrap();
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        for attribute in e.attributes() {
+            let attribute = attribute.map_err(|error| crate::xml::xml_error(error.to_string()))?;
+            let key = attribute.key.as_ref();
+            let value = attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                .into_owned();
             match key {
                 b"rot" => {
-                    self.rotation.set_value_string(value);
+                    self.set_rotation(
+                        crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?,
+                    );
                 }
                 b"vertOverflow" => {
-                    self.set_vert_overflow(unescape_attribute(value));
+                    if !matches!(value.as_str(), "overflow" | "ellipsis" | "clip") {
+                        return Err(crate::xml::xml_error("invalid DrawingML vertical overflow"));
+                    }
+                    self.set_vert_overflow(value);
                 }
                 b"horzOverflow" => {
-                    self.set_horz_overflow(unescape_attribute(value));
+                    if !matches!(value.as_str(), "overflow" | "clip") {
+                        return Err(crate::xml::xml_error(
+                            "invalid DrawingML horizontal overflow",
+                        ));
+                    }
+                    self.set_horz_overflow(value);
                 }
                 b"rtlCol" => {
-                    self.set_rtl_col(unescape_attribute(value));
+                    crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?;
+                    self.set_rtl_col(value);
                 }
                 b"anchor" => {
-                    self.set_anchor(unescape_attribute(value));
+                    if !matches!(value.as_str(), "t" | "ctr" | "b" | "just" | "dist") {
+                        return Err(crate::xml::xml_error("invalid DrawingML body anchor"));
+                    }
+                    self.set_anchor(value);
                 }
                 b"vert" => {
-                    let parsed = TextVertical::read(&unescape_attribute(value));
-                    let p = self.parts.get_or_insert_with(Default::default);
-                    p.vertical = parsed;
-                    p.invalid_vertical = parsed.is_none();
+                    let parsed = TextVertical::read(&value);
+                    let parts = self.parts.get_or_insert_with(Default::default);
+                    parts.vertical = parsed;
+                    parts.invalid_vertical = parsed.is_none();
                 }
                 b"anchorCtr" => {
-                    let v = unescape_attribute(value);
-                    let parsed = match v.as_str() {
+                    let parsed = match crate::xml::trim_xml_whitespace(&value) {
                         "0" => Some(super::charts::BooleanLexeme::Zero),
                         "1" => Some(super::charts::BooleanLexeme::One),
                         "false" => Some(super::charts::BooleanLexeme::False),
                         "true" => Some(super::charts::BooleanLexeme::True),
                         _ => None,
                     };
-                    let p = self.parts.get_or_insert_with(Default::default);
-                    p.anchor_center = parsed;
-                    p.invalid_anchor_center = parsed.is_none();
+                    let parts = self.parts.get_or_insert_with(Default::default);
+                    parts.anchor_center = parsed;
+                    parts.invalid_anchor_center = parsed.is_none();
                 }
                 b"wrap" => {
-                    self.wrap.set_value_string(value);
+                    let parsed = value
+                        .parse()
+                        .map_err(|()| crate::xml::xml_error("invalid DrawingML text wrapping"))?;
+                    self.set_wrap(parsed);
                 }
-                b"lIns" => {
-                    self.left_inset.set_value_string(value);
-                }
-                b"tIns" => {
-                    self.top_inset.set_value_string(value);
-                }
-                b"rIns" => {
-                    self.right_inset.set_value_string(value);
-                }
-                b"bIns" => {
-                    self.bottom_inset.set_value_string(value);
-                }
-                b"spcFirstLastPara" => {
-                    self.use_paragraph_spacing.set_value_string(value);
-                }
-                _ => {}
+                b"lIns" => self
+                    .set_left_inset(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?),
+                b"tIns" => self
+                    .set_top_inset(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?),
+                b"rIns" => self
+                    .set_right_inset(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?),
+                b"bIns" => self.set_bottom_inset(
+                    crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?,
+                ),
+                b"spcFirstLastPara" => self.set_use_paragraph_spacing(
+                    crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?,
+                ),
+                _ => (),
             }
         }
-
         if empty_flag {
-            return;
+            return Ok(());
         }
-
-        let end = e.name().into_inner().to_vec();
-        xml_read_loop!(
-            reader,
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let native = session.is_none_or(|session| session.accepts_child_namespace(e, NS_A));
-                let name = crate::reader::driver::local_name(e.name().into_inner());
-                if native && name == b"spAutoFit" {
-                    let obj = ShapeAutoFit::default();
-                    ShapeAutoFit::set_attributes(reader, e);
-                    self.set_shape_auto_fit(obj);
+                let empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
                 }
-                if matches!(event, Event::Start(_)) {
-                    crate::reader::driver::skip_element(reader, e);
+                match crate::reader::driver::local_name(e.name().as_ref()) {
+                    b"noAutofit" | b"normAutofit" | b"spAutoFit" if self.auto_fit.is_none() => {
+                        self.auto_fit = Some(TextAutoFit::read(reader, e, empty)?);
+                    }
+                    b"noAutofit" | b"normAutofit" | b"spAutoFit" => return Err(crate::xml::xml_error("duplicate DrawingML body properties autofit")),
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == end.as_slice() {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:bodyPr"),
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML body properties")),
         );
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        let empty_flag = &self.shape_auto_fit.is_none();
+        let empty_flag = self.auto_fit.is_none();
 
         // a:bodyPr
         let mut attributes: crate::structs::AttrCollection = Vec::new();
@@ -553,11 +587,11 @@ impl BodyProperties {
             );
         }
 
-        write_start_tag(writer, "a:bodyPr", attributes, *empty_flag);
+        write_start_tag(writer, "a:bodyPr", attributes, empty_flag);
 
-        if !*empty_flag {
-            if self.shape_auto_fit.is_some() {
-                ShapeAutoFit::write_to(writer);
+        if !empty_flag {
+            if let Some(value) = &self.auto_fit {
+                value.write_to(writer);
             }
 
             write_end_tag(writer, "a:bodyPr");
@@ -578,7 +612,7 @@ mod parity_tests {
             _ => panic!("expected empty body"),
         };
         let mut body = BodyProperties::default();
-        body.set_attributes(&mut reader, &e, true);
+        body.set_attributes(&mut reader, &e, true).unwrap();
         assert_eq!(body.vertical(), Some(TextVertical::Vertical270));
         assert_eq!(body.anchor_center(), Some(true));
         let mut writer = Writer::new(Cursor::new(Vec::new()));

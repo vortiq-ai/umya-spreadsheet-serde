@@ -136,9 +136,9 @@ fn read_from_reader<R: io::BufRead>(
                 );
                 worksheet.set_row_dimension(obj);
             }
-            b"autoFilter" => {
+            _ if crate::reader::spreadsheet_xml::is_native_start(e, b"autoFilter") => {
                 let mut obj = AutoFilter::default();
-                obj.set_attributes(&mut reader, e, false);
+                obj.set_attributes(&mut reader, e, false).map_err(crate::xml::xml_error)?;
                 worksheet.set_auto_filter_obj(obj);
             }
             b"cols" => {
@@ -166,7 +166,7 @@ fn read_from_reader<R: io::BufRead>(
                 obj.set_attributes(&mut reader, e);
                 worksheet.set_data_validations_2010(obj);
             }
-            b"oleObjects" => {
+            name if crate::reader::driver::local_name(name) == b"oleObjects" => {
                 let mut obj = OleObjects::default();
                 let relationships = raw_data_of_worksheet.worksheet_relationships().ok_or_else(|| {
                     XlsxError::with_message(
@@ -174,7 +174,12 @@ fn read_from_reader<R: io::BufRead>(
                         "worksheet relationships for oleObjects",
                     )
                 })?;
-                obj.set_attributes(&mut reader, e, relationships);
+                obj.set_attributes(
+                    &mut reader,
+                    e,
+                    relationships,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )?;
                 worksheet.set_ole_objects(obj);
             }
             b"headerFooter" => {
@@ -243,9 +248,9 @@ fn read_from_reader<R: io::BufRead>(
                 );
                 worksheet.set_row_dimension(obj);
             }
-            b"autoFilter" => {
+            _ if crate::reader::spreadsheet_xml::is_native_start(e, b"autoFilter") => {
                 let mut obj = AutoFilter::default();
-                obj.set_attributes(&mut reader, e, true);
+                obj.set_attributes(&mut reader, e, true).map_err(crate::xml::xml_error)?;
                 worksheet.set_auto_filter_obj(obj);
             }
             b"pageMargins" => {

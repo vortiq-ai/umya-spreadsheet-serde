@@ -129,7 +129,7 @@ fn restoration_checks_physical_identity_without_positional_fallback() {
         .non_visual_graphic_frame_properties_mut()
         .non_visual_drawing_properties_mut()
         .set_id(0);
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.incompatible_owners, 1);
     assert_eq!(report.matched_series, 0);
     assert!(!report.diagnostics.is_empty());
@@ -155,7 +155,7 @@ fn restoration_allows_current_anchor_geometry_changes() {
         .from_marker_mut()
         .set_coordinate("Z9");
     let marker = bincode::serialize(current.two_cell_anchor().from_marker()).unwrap();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 1);
     assert_eq!(
@@ -213,7 +213,7 @@ fn matched_empty_incoming_parts_cannot_suppress_stored_ordered_series_collection
         .number_reference_mut()
         .formula_mut()
         .set_address_str("Changed!$C$4:$C$6");
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 3);
@@ -251,7 +251,7 @@ fn populated_untrusted_incoming_parts_cannot_replace_authoritative_series_collec
         .clone();
     extensions.entries[0].uri = Some("urn:untrusted".into());
     series.set_extensions(Some(extensions));
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 3);
@@ -270,7 +270,7 @@ fn supplied_untrusted_parts_cannot_resurrect_collections_removed_from_authoritat
     series.set_extensions(None);
     let expected = export_series_parts_bytes(&authoritative);
     let mut current = history_before.clone();
-    let report = current.restore_export_parts(&authoritative);
+    let report = current.restore_export_parts(&authoritative).unwrap();
     assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 0);
@@ -285,7 +285,7 @@ fn absent_authoritative_series_parts_do_not_admit_new_incoming_hidden_content() 
     current.area_chart_series_list_mut().area_chart_series_mut()[0]
         .data_points_mut()
         .resize(3, Default::default());
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(export_series_parts_bytes(&current), expected);
     assert_eq!(report.matched_series, 1);
     assert_eq!(report.restored_points, 0);
@@ -311,7 +311,7 @@ fn compatible_display_unit_replacement_recovers_the_omitted_label_and_extensions
     let mut current = previous.clone();
     current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -337,7 +337,7 @@ fn compatible_display_unit_restore_respects_label_removal_in_the_authoritative_b
     let mut current = history_before.clone();
     current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_export_parts(&authoritative);
+    current.restore_export_parts(&authoritative).unwrap();
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -375,7 +375,7 @@ fn compatible_custom_display_unit_restore_preserves_current_numeric_spelling() {
     let mut current = previous.clone();
     current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -405,7 +405,7 @@ fn compatible_default_display_unit_restores_label_without_fabricating_unit_attri
     let mut current = previous.clone();
     current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -519,7 +519,10 @@ fn null_export_slots(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(values) => {
             for (key, value) in values {
-                if matches!(key.as_str(), "parts" | "extensions" | "source") {
+                if matches!(
+                    key.as_str(),
+                    "parts" | "extensions" | "source" | "source_parts"
+                ) {
                     *value = serde_json::Value::Null;
                 } else {
                     null_export_slots(value);

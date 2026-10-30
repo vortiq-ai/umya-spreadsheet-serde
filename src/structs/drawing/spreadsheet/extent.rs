@@ -8,13 +8,7 @@ use quick_xml::{
 };
 
 use super::super::super::Int64Value;
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-    },
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -66,10 +60,22 @@ impl Extent {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         _reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, cx, "cx");
-        set_string_from_xml!(self, e, cy, "cy");
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        for (name, target) in [
+            (b"cx".as_slice(), &mut self.cx),
+            (b"cy".as_slice(), &mut self.cy),
+        ] {
+            let text = crate::reader::driver::require_attribute(owner, name)?;
+            let value = crate::xml::trim_xml_whitespace(&text)
+                .parse::<i64>()
+                .map_err(crate::xml::xml_error)?;
+            if value < 0 {
+                return Err(crate::xml::xml_error("negative drawing extent"));
+            }
+            target.set_value(value);
+        }
+        Ok(())
     }
 
     #[inline]

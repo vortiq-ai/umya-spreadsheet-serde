@@ -16,6 +16,87 @@ use umya_spreadsheet::{
 #[path = "support/chart_xml_fixture.rs"]
 pub mod fixture;
 
+fn imported_binding_chart() -> Chart {
+    let mut book = umya_spreadsheet::new_file();
+    book.sheet_mut(0).unwrap().add_chart(fixture::base_chart());
+    let imported = umya_spreadsheet::reader::xlsx::read_reader(
+        std::io::Cursor::new(fixture::write_workbook(&book)),
+        true,
+    )
+    .unwrap();
+    imported.sheet(0).unwrap().chart_collection()[0].clone()
+}
+
+fn binding_paths(chart: &Chart) -> &[String] {
+    chart
+        .two_cell_anchor()
+        .graphic_frame()
+        .unwrap()
+        .source_parts()
+}
+
+fn forged_binding_chart(chart: &Chart) -> Chart {
+    let mut value = serde_json::to_value(chart).unwrap();
+    value["two_cell_anchor"]["graphic_frame"]["source_parts"] =
+        serde_json::json!(["xl/charts/untrusted.xml"]);
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn projections_omit_package_bindings_and_restore_only_the_authoritative_owner() {
+    let previous = imported_binding_chart();
+    assert!(!binding_paths(&previous).is_empty());
+    let before = bincode::serialize(&previous).unwrap();
+    let mut projection = previous.clone();
+    projection.strip_export_parts();
+    assert!(binding_paths(&projection).is_empty());
+    let json: Chart = serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+    let binary: Chart = bincode::deserialize(&bincode::serialize(&projection).unwrap()).unwrap();
+    for incoming in [projection, json, binary] {
+        assert!(binding_paths(&incoming).is_empty());
+        let mut current = forged_binding_chart(&incoming);
+        assert_eq!(binding_paths(&current), ["xl/charts/untrusted.xml"]);
+        current.restore_export_parts(&previous).unwrap();
+        assert_eq!(binding_paths(&current), binding_paths(&previous));
+        let mut limited_basis = previous.clone();
+        limited_basis.strip_export_parts();
+        let mut current = forged_binding_chart(&incoming);
+        current.restore_export_parts(&limited_basis).unwrap();
+        assert!(binding_paths(&current).is_empty());
+    }
+    assert_eq!(bincode::serialize(&previous).unwrap(), before);
+}
+
+#[test]
+fn rejected_frame_identities_do_not_retain_untrusted_package_bindings() {
+    let previous = imported_binding_chart();
+    let mut changed = forged_binding_chart(&previous);
+    let properties = changed
+        .two_cell_anchor_mut()
+        .graphic_frame_mut()
+        .unwrap()
+        .non_visual_graphic_frame_properties_mut()
+        .non_visual_drawing_properties_mut();
+    properties.set_id(properties.id() + 1);
+    assert_eq!(
+        changed
+            .restore_export_parts(&previous)
+            .unwrap()
+            .incompatible_owners,
+        1
+    );
+    assert!(binding_paths(&changed).is_empty());
+    let mut changed = forged_binding_chart(&previous);
+    assert_eq!(
+        changed
+            .restore_export_parts(&Chart::default())
+            .unwrap()
+            .incompatible_owners,
+        1
+    );
+    assert!(binding_paths(&changed).is_empty());
+}
+
 fn chart(formulas: Vec<&str>) -> Chart {
     let mut result = Chart::default();
     result.new_chart(
@@ -71,7 +152,7 @@ fn restored_series_follow_identity_through_reordering_removal_and_creation() {
     current
         .area_chart_series_list_mut()
         .set_area_chart_series(series);
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.matched_series, 2);
     assert_eq!(report.unmatched_series, 1);
     assert_eq!(report.unmatched_previous_series, 1);
@@ -102,7 +183,7 @@ fn agent_rebuilt_all_zero_indices_use_unique_values_formula_without_position() {
     for series in current.area_chart_series_list_mut().area_chart_series_mut() {
         series.index_mut().set_val(0);
     }
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.formula_matched_series, 2);
     assert_eq!(report.index_matched_series, 0);
     assert_eq!(point_indices(&mut current, 0), [2]);
@@ -122,7 +203,7 @@ fn ambiguous_owners_are_reported_without_copying_a_neighbor_parts_collection() {
     install_points(&mut previous, 1, &[2]);
     let mut current = previous.clone();
     current.strip_export_parts();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.ambiguous_series, 2);
     assert_eq!(report.matched_series, 0);
     assert!(!report.diagnostics.is_empty());
@@ -149,7 +230,7 @@ fn hidden_label_parent_is_recreated_without_losing_duplicate_point_labels() {
             .data_labels()
             .is_none()
     );
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     let labels = current.area_chart_series_list_mut().area_chart_series_mut()[0]
         .data_labels()
         .unwrap()
@@ -176,7 +257,7 @@ fn explicit_removal_uses_changed_authoritative_basis_not_history_before_state() 
         .clear();
     let mut current = basis.clone();
     current.strip_export_parts();
-    current.restore_export_parts(&basis);
+    current.restore_export_parts(&basis).unwrap();
     assert!(point_indices(&mut current, 0).is_empty());
     assert_eq!(bincode::serialize(&history_before).unwrap(), before);
 }
@@ -190,7 +271,7 @@ fn every_imported_owner_roundtrips_projection_and_persistence_without_state_chan
     current.strip_export_parts();
     // Cross the real JSON replacement boundary, not just a native clone.
     current = serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.matched_series, 2);
     assert_eq!(report.ambiguous_series, 0);
     assert!(report.restored_owners > 20, "{report:?}");
@@ -207,7 +288,7 @@ fn changed_title_text_does_not_recreate_fields_from_the_previous_title() {
     let mut current = previous.clone();
     current.strip_export_parts();
     current.set_title("a new title");
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert!(report.incompatible_owners >= 1);
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
@@ -234,7 +315,7 @@ fn axis_reordering_restores_only_the_matching_explicit_axis_kind_and_id() {
     let mut current = previous.clone();
     current.strip_export_parts();
     current.plot_area_mut().value_axis_mut().swap(0, 1);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let axes = current.chart_space().chart().plot_area().value_axis();
     assert_eq!(axes[0].axis_id().val(), 21);
     assert_eq!(axes[1].axis_id().val(), 20);
@@ -254,7 +335,7 @@ fn current_marker_fill_and_manual_layout_values_win_over_old_supplements() {
         .replace("<c:manualLayout>", "<c:manualLayout><c:x val=\"0.75\"/>");
     let mut current = fixture::imported_chart(&edited);
     current.strip_export_parts();
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
     let exported = fixture::chart_xml(&book);
@@ -300,7 +381,7 @@ fn explicit_display_unit_replacement_does_not_recreate_the_previous_label() {
     let mut current = previous.clone();
     current.strip_export_parts();
     current.plot_area_mut().value_axis_mut()[0].set_display_units(units);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let units = current.chart_space().chart().plot_area().value_axis()[0]
         .display_units()
         .unwrap();
@@ -327,7 +408,7 @@ fn reordered_same_family_groups_restore_extensions_by_membership_not_position() 
     let previous = fixture::imported_chart(&original);
     let mut current = fixture::imported_chart(&reordered);
     current.strip_export_parts();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.matched_series, 2);
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
@@ -361,7 +442,7 @@ fn unique_empty_group_preserves_its_extension_and_label_owner_without_position_m
     let before = bincode::serialize(&previous).unwrap();
     let mut current = previous.clone();
     current.strip_export_parts();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.incompatible_owners, 0, "{report:?}");
     assert_eq!(bincode::serialize(&current).unwrap(), before);
 }
@@ -371,7 +452,7 @@ fn indistinguishable_empty_groups_are_reported_and_never_paired_by_position() {
     let previous = empty_group_chart(2);
     let mut current = previous.clone();
     current.strip_export_parts();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert!(report.incompatible_owners >= 2);
     let json = serde_json::to_string(&current).unwrap();
     assert!(!json.contains("retained empty group"));
@@ -390,7 +471,7 @@ fn replacing_the_title_text_branch_reports_incompatible_owner_without_restoring_
     let previous = fixture::imported_chart(&xml);
     let mut current = fixture::imported_chart(&edited);
     current.strip_export_parts();
-    let report = current.restore_export_parts(&previous);
+    let report = current.restore_export_parts(&previous).unwrap();
     assert!(report.incompatible_owners >= 1);
     assert!(
         report
@@ -437,7 +518,7 @@ fn supplied_pivot_collections_restore_hidden_owners_by_unique_explicit_index() {
         .chart_space_mut()
         .chart_mut()
         .set_pivot_formats(vec![indexed_pivot(Some(8)), indexed_pivot(Some(7))]);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let pivots = current.chart_space().chart().pivot_formats().unwrap();
     assert_eq!(
         pivots[0]
@@ -479,7 +560,7 @@ fn duplicate_or_missing_pivot_indices_do_not_receive_another_pivots_label() {
             .chart_space_mut()
             .chart_mut()
             .set_pivot_formats(supplied);
-        let report = current.restore_export_parts(&previous);
+        let report = current.restore_export_parts(&previous).unwrap();
         assert!(report.incompatible_owners >= 1, "{report:?}");
         let pivots = current.chart_space().chart().pivot_formats().unwrap();
         assert!(
@@ -518,7 +599,7 @@ fn absent_authoritative_point_labels_cannot_admit_hidden_client_labels() {
     label.index_mut().set_val(9);
     labels.labels_mut().push(label);
     current.area_chart_series_list_mut().area_chart_series_mut()[0].set_data_labels(labels);
-    current.restore_export_parts(&previous);
+    current.restore_export_parts(&previous).unwrap();
     let labels = current.area_chart_series_list_mut().area_chart_series_mut()[0]
         .data_labels()
         .unwrap();
@@ -539,7 +620,7 @@ fn omitted_pivots_in_supplied_empty_or_partial_collections_are_recreated_from_ba
             .chart_space_mut()
             .chart_mut()
             .set_pivot_formats(supplied);
-        let report = current.restore_export_parts(&previous);
+        let report = current.restore_export_parts(&previous).unwrap();
         let pivots = current.chart_space().chart().pivot_formats().unwrap();
         let restored: std::collections::BTreeMap<_, _> = pivots
             .iter()
@@ -585,7 +666,7 @@ fn preedited_pivot_removal_is_not_undone_by_recreating_missing_collection_owners
         .chart_space_mut()
         .chart_mut()
         .set_pivot_formats(Vec::new());
-    current.restore_export_parts(&basis);
+    current.restore_export_parts(&basis).unwrap();
     let pivots = current.chart_space().chart().pivot_formats().unwrap();
     assert_eq!(pivots.len(), 1);
     assert_eq!(pivots[0].index().val(), 8);
@@ -611,7 +692,7 @@ fn empty_supplied_pivot_collection_preserves_ambiguous_and_invalid_stored_owners
             .chart_space_mut()
             .chart_mut()
             .set_pivot_formats(Vec::new());
-        let report = current.restore_export_parts(&previous);
+        let report = current.restore_export_parts(&previous).unwrap();
         assert_eq!(
             serde_json::to_value(current.chart_space().chart()).unwrap()["parts"],
             before
@@ -625,4 +706,324 @@ fn empty_supplied_pivot_collection_preserves_ambiguous_and_invalid_stored_owners
             "two ordinary point labels and two primary pivot labels"
         );
     }
+}
+
+fn imported_nested_binding_chart() -> Chart {
+    use umya_spreadsheet::drawing::{
+        charts::ChartExSpace,
+        spreadsheet::{
+            DrawingObject,
+            ExtendedChartFrame,
+            GroupShape,
+            TwoCellAnchor,
+        },
+    };
+    let standard = imported_binding_chart()
+        .two_cell_anchor()
+        .graphic_frame()
+        .unwrap()
+        .clone();
+    let mut extended = ExtendedChartFrame::default();
+    extended
+        .frame_properties_mut()
+        .non_visual_drawing_properties_mut()
+        .set_id(17)
+        .set_name("Extended native");
+    extended.set_chart_space(
+        ChartExSpace::from_xml(include_bytes!("fixtures/extended_charts/waterfall.xml")).unwrap(),
+    );
+    let mut inner = GroupShape::default();
+    inner
+        .non_visual_group_shape_properties_mut()
+        .non_visual_drawing_properties_mut()
+        .set_id(101)
+        .set_name("Inner");
+    inner.add_object(DrawingObject::GraphicFrame(Box::new(standard)));
+    inner.add_object(DrawingObject::ExtendedFrame(Box::new(extended)));
+    let mut outer = GroupShape::default();
+    outer
+        .non_visual_group_shape_properties_mut()
+        .non_visual_drawing_properties_mut()
+        .set_id(100)
+        .set_name("Outer");
+    outer.add_object(DrawingObject::Group(Box::new(inner)));
+    let mut anchor = TwoCellAnchor::default();
+    anchor.set_group_shape(outer);
+    let mut chart = Chart::default();
+    chart.set_two_cell_anchor(anchor);
+    let mut book = umya_spreadsheet::new_file();
+    // The native waterfall fixture references these workbook-defined names.
+    // Provide the real six-point ranges (including its subtotal at index 5)
+    // so the ordinary writer resolves them instead of relying on a fallback.
+    for row in 1..=6 {
+        let sheet = book.sheet_mut(0).unwrap();
+        sheet.cell_mut((1, row)).set_value(format!("Step {row}"));
+        sheet.cell_mut((2, row)).set_value_number(row);
+    }
+    for (name, address) in [
+        ("_xlchart.v5.0", "Sheet1!$A$1:$A$6"),
+        ("_xlchart.v5.1", "Sheet1!$B$1:$B$6"),
+    ] {
+        let mut definition = umya_spreadsheet::DefinedName::default();
+        definition.set_name(name).set_address(address);
+        book.add_defined_names(definition);
+    }
+    book.sheet_mut(0).unwrap().add_chart(chart);
+    let imported = umya_spreadsheet::reader::xlsx::read_reader(
+        std::io::Cursor::new(fixture::write_workbook(&book)),
+        true,
+    )
+    .unwrap();
+    let mut chart = Chart::default();
+    chart.set_two_cell_anchor(
+        imported
+            .sheet(0)
+            .unwrap()
+            .worksheet_drawing()
+            .image_collection()[0]
+            .two_cell_anchor()
+            .unwrap()
+            .clone(),
+    );
+    chart
+}
+
+fn nested_binding_paths(chart: &Chart) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+    chart
+        .two_cell_anchor()
+        .visit_standard_frames(&mut |key, frame| {
+            result.push((
+                format!("standard:{}", key.relationship_key()),
+                frame.source_parts().to_vec(),
+            ));
+        });
+    chart
+        .two_cell_anchor()
+        .visit_extended_frames(&mut |key, frame| {
+            result.push((
+                format!("extended:{}", key.relationship_key()),
+                frame
+                    .source_part()
+                    .map(|path| vec![path.into()])
+                    .unwrap_or_default(),
+            ));
+        });
+    result
+}
+
+fn rewrite_binding_values(value: &mut serde_json::Value, forged: bool) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "source_parts" {
+                    *value = if forged {
+                        serde_json::json!(["xl/charts/forged-standard.xml"])
+                    } else {
+                        serde_json::Value::Null
+                    };
+                } else if key == "source_part" {
+                    *value = if forged {
+                        serde_json::json!("xl/charts/forged-extended.xml")
+                    } else {
+                        serde_json::Value::Null
+                    };
+                } else {
+                    rewrite_binding_values(value, forged);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                rewrite_binding_values(value, forged);
+            }
+        }
+        _ => (),
+    }
+}
+
+fn forge_nested_bindings(chart: &Chart) -> Chart {
+    let mut value = serde_json::to_value(chart).unwrap();
+    rewrite_binding_values(&mut value, true);
+    let json: Chart = serde_json::from_value(value).unwrap();
+    bincode::deserialize(&bincode::serialize(&json).unwrap()).unwrap()
+}
+
+#[test]
+fn nested_imported_bindings_strip_and_restore_without_replacing_edited_native_data() {
+    let previous = imported_nested_binding_chart();
+    let trusted = nested_binding_paths(&previous);
+    assert_eq!(trusted.len(), 2);
+    assert!(trusted.iter().all(|(_, paths)| !paths.is_empty()));
+    let before = bincode::serialize(&previous).unwrap();
+    let mut projection = previous.clone();
+    projection.strip_export_parts();
+    assert!(
+        nested_binding_paths(&projection)
+            .iter()
+            .all(|(_, paths)| paths.is_empty())
+    );
+    let json: Chart = serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+    let binary: Chart = bincode::deserialize(&bincode::serialize(&projection).unwrap()).unwrap();
+    for incoming in [projection, json, binary] {
+        assert!(
+            nested_binding_paths(&incoming)
+                .iter()
+                .all(|(_, paths)| paths.is_empty())
+        );
+        let mut current = forge_nested_bindings(&incoming);
+        current
+            .two_cell_anchor_mut()
+            .visit_standard_frames_mut(&mut |_, frame| {
+                frame
+                    .graphic_mut()
+                    .graphic_data_mut()
+                    .chart_space_mut()
+                    .editing_language_mut()
+                    .set_val("fr-FR");
+            });
+        current
+            .two_cell_anchor_mut()
+            .visit_extended_frames_mut(&mut |_, frame| {
+                frame.set_macro_name(Some("client-edit".into()))
+            });
+        let mut editable = serde_json::to_value(&current).unwrap();
+        rewrite_binding_values(&mut editable, false);
+        current.restore_export_parts(&previous).unwrap();
+        assert_eq!(nested_binding_paths(&current), trusted);
+        let mut restored = serde_json::to_value(&current).unwrap();
+        rewrite_binding_values(&mut restored, false);
+        assert_eq!(restored, editable);
+        let mut limited = previous.clone();
+        limited.strip_export_parts();
+        let mut current = forge_nested_bindings(&incoming);
+        current.restore_export_parts(&limited).unwrap();
+        assert!(
+            nested_binding_paths(&current)
+                .iter()
+                .all(|(_, paths)| paths.is_empty())
+        );
+    }
+    assert_eq!(bincode::serialize(&previous).unwrap(), before);
+}
+
+fn duplicate_nested_frames(chart: &mut Chart) {
+    use umya_spreadsheet::drawing::spreadsheet::DrawingObject;
+    let DrawingObject::Group(inner) = &mut chart
+        .two_cell_anchor_mut()
+        .group_shape_mut()
+        .unwrap()
+        .content_mut()[0]
+    else {
+        panic!("authored nested group")
+    };
+    let repeated = inner.content().to_vec();
+    for object in repeated {
+        inner.add_object(object);
+    }
+}
+
+#[test]
+fn nested_bindings_reject_duplicate_missing_changed_and_foreign_frame_identities() {
+    let previous = imported_nested_binding_chart();
+    let before = bincode::serialize(&previous).unwrap();
+    for variant in 0..7 {
+        let mut basis = previous.clone();
+        let mut current = forge_nested_bindings(&previous);
+        match variant {
+            0 => duplicate_nested_frames(&mut current),
+            1 => duplicate_nested_frames(&mut basis),
+            2 => {
+                current
+                    .two_cell_anchor_mut()
+                    .visit_standard_frames_mut(&mut |_, frame| {
+                        frame
+                            .non_visual_graphic_frame_properties_mut()
+                            .non_visual_drawing_properties_mut()
+                            .set_id(901);
+                    });
+                current
+                    .two_cell_anchor_mut()
+                    .visit_extended_frames_mut(&mut |_, frame| {
+                        frame
+                            .frame_properties_mut()
+                            .non_visual_drawing_properties_mut()
+                            .set_id(902);
+                    });
+            }
+            3 => {
+                current
+                    .two_cell_anchor_mut()
+                    .visit_standard_frames_mut(&mut |_, frame| {
+                        *frame
+                            .non_visual_graphic_frame_properties_mut()
+                            .non_visual_drawing_properties_mut() = Default::default();
+                    });
+                current
+                    .two_cell_anchor_mut()
+                    .visit_extended_frames_mut(&mut |_, frame| {
+                        *frame
+                            .frame_properties_mut()
+                            .non_visual_drawing_properties_mut() = Default::default();
+                    });
+            }
+            4 => {
+                current
+                    .two_cell_anchor_mut()
+                    .visit_standard_frames_mut(&mut |_, frame| {
+                        frame
+                            .non_visual_graphic_frame_properties_mut()
+                            .non_visual_drawing_properties_mut()
+                            .set_name("foreign-standard");
+                    });
+                current
+                    .two_cell_anchor_mut()
+                    .visit_extended_frames_mut(&mut |_, frame| {
+                        frame
+                            .frame_properties_mut()
+                            .non_visual_drawing_properties_mut()
+                            .set_name("foreign-extended");
+                    });
+            }
+            5 => {
+                let mut standard_identity = None;
+                previous
+                    .two_cell_anchor()
+                    .visit_standard_frames(&mut |_, frame| {
+                        let properties = frame
+                            .non_visual_graphic_frame_properties()
+                            .non_visual_drawing_properties();
+                        standard_identity = Some((properties.id(), properties.name().to_owned()));
+                    });
+                let (id, name) = standard_identity.unwrap();
+                current
+                    .two_cell_anchor_mut()
+                    .visit_standard_frames_mut(&mut |_, frame| {
+                        frame
+                            .non_visual_graphic_frame_properties_mut()
+                            .non_visual_drawing_properties_mut()
+                            .set_id(17)
+                            .set_name("Extended native");
+                    });
+                current
+                    .two_cell_anchor_mut()
+                    .visit_extended_frames_mut(&mut |_, frame| {
+                        frame
+                            .frame_properties_mut()
+                            .non_visual_drawing_properties_mut()
+                            .set_id(id)
+                            .set_name(&name);
+                    });
+            }
+            _ => basis = Chart::default(),
+        }
+        current.restore_export_parts(&basis).unwrap();
+        assert!(
+            nested_binding_paths(&current)
+                .iter()
+                .all(|(_, paths)| paths.is_empty()),
+            "variant {variant}"
+        );
+    }
+    assert_eq!(bincode::serialize(&previous).unwrap(), before);
 }

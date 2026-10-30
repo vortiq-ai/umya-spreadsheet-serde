@@ -26,8 +26,8 @@ use umya_spreadsheet::{
 const RANGE_ROWS: u32 = 100_000;
 
 /// Projection size, including empty export-only slots.
-const CHART_BINCODE_BYTES: usize = 683;
-const CHART_JSON_BYTES: usize = 5467;
+const CHART_BINCODE_BYTES: usize = 695;
+const CHART_JSON_BYTES: usize = 5705;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

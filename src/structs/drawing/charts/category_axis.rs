@@ -34,12 +34,12 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -69,13 +69,13 @@ impl CategoryAxis {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
+    ) -> Result<usize, crate::XlsxError> {
         let mut restored = 0;
         if let (Some(current), Some(previous)) =
             (&mut self.text_properties, &previous.text_properties)
         {
             if current.projected_structure_matches(previous) {
-                restored += current.restore_export_parts(previous);
+                restored += current.restore_export_parts(previous)?;
             } else {
                 report.incompatible_owners += 1;
                 report
@@ -83,7 +83,7 @@ impl CategoryAxis {
                     .push("replaced category-axis text body retains no old fields".into());
             }
         }
-        restored
+        Ok(restored)
     }
 
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
@@ -547,90 +547,95 @@ impl CategoryAxis {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.set_title(obj);
                 }
                 b"scaling" => {
-                    self.scaling.set_attributes(reader, e);
+                    self.scaling.set_attributes(reader, e)?;
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
                 b"txPr" => {
                     let mut obj = TextProperties::default();
-                    obj.read_with_session(reader, e, Some(session));
+                    obj.read_with_session(reader, e, Some(session))?;
                     self.set_text_properties(obj);
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes_with_session(reader, e, false, session);
+                    obj.set_attributes_with_session(reader, e, false, session)?;
                     self.set_major_gridlines(obj);
                 }
-                _ => skip_element(reader, e),
+                _ => skip_element(reader, e)?,
             },
-            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"axId" => {
-                    self.axis_id.set_attributes(reader, e);
+                    self.axis_id.set_attributes(reader, e)?;
                 }
                 b"delete" => {
-                    self.delete.set_attributes(reader, e);
+                    self.delete.set_attributes(reader, e)?;
                 }
                 b"axPos" => {
-                    self.axis_position.set_attributes(reader, e);
+                    self.axis_position.set_attributes(reader, e)?;
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes_with_session(reader, e, true, session);
+                    obj.set_attributes_with_session(reader, e, true, session)?;
                     self.set_major_gridlines(obj);
                 }
                 b"majorTickMark" => {
-                    self.major_tick_mark.set_attributes(reader, e);
+                    self.major_tick_mark.set_attributes(reader, e)?;
                 }
                 b"minorTickMark" => {
-                    self.minor_tick_mark.set_attributes(reader, e);
+                    self.minor_tick_mark.set_attributes(reader, e)?;
                 }
                 b"tickLblPos" => {
-                    self.tick_label_position.set_attributes(reader, e);
+                    self.tick_label_position.set_attributes(reader, e)?;
                 }
                 b"crossAx" => {
-                    self.crossing_axis.set_attributes(reader, e);
+                    self.crossing_axis.set_attributes(reader, e)?;
                 }
                 b"crosses" => {
-                    self.crosses.set_attributes(reader, e);
+                    self.crosses.set_attributes(reader, e)?;
                 }
                 b"auto" => {
-                    self.auto_labeled.set_attributes(reader, e);
+                    self.auto_labeled.set_attributes(reader, e)?;
                 }
                 b"lblAlgn" => {
-                    self.label_alignment.set_attributes(reader, e);
+                    self.label_alignment.set_attributes(reader, e)?;
                 }
                 b"lblOffset" => {
-                    self.label_offset.set_attributes(reader, e);
+                    self.label_offset.set_attributes(reader, e)?;
                 }
                 b"noMultiLvlLbl" => {
-                    self.no_multi_level_labels.set_attributes(reader, e);
+                    self.no_multi_level_labels.set_attributes(reader, e)?;
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"catAx" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:catAx"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:catAx"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:catAx
         write_start_tag(writer, "c:catAx", vec![], false);
 
@@ -648,12 +653,12 @@ impl CategoryAxis {
 
         // c:title
         if let Some(v) = &self.title {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:majorGridlines
         if let Some(v) = &self.major_gridlines {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:majorTickMark
@@ -667,12 +672,12 @@ impl CategoryAxis {
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:txPr
         if let Some(v) = &self.text_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:crossAx
@@ -694,5 +699,7 @@ impl CategoryAxis {
         self.no_multi_level_labels.write_to(writer);
 
         write_end_tag(writer, "c:catAx");
+
+        Ok(())
     }
 }

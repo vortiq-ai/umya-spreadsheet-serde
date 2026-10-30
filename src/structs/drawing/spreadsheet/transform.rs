@@ -17,11 +17,6 @@ use super::super::{
 use crate::{
     BooleanValue,
     Int32Value,
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -156,32 +151,73 @@ impl Transform {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, rotation, "rot");
-        set_string_from_xml!(self, e, horizontal_flip, "flipH");
-        set_string_from_xml!(self, e, vertical_flip, "flipV");
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, owner, false, None)
+    }
 
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"a:off" => {
-                        self.offset.set_attributes(reader, e);
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"rot")? {
+            self.set_rotation(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"flipH")? {
+            self.set_horizontal_flip(
+                crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?,
+            );
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"flipV")? {
+            self.set_vertical_flip(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri == crate::helper::const_str::DRAWINGML_MAIN_NS {
+                        match name.local_name.as_str() {
+                            "off" => self
+                                .offset
+                                .read_with_session(reader, child, empty, session)?,
+                            "ext" => self
+                                .extents
+                                .read_with_session(reader, child, empty, session)?,
+                            _ => {
+                                return Err(crate::xml::xml_error(
+                                    "unsupported drawing transform child",
+                                ));
+                            }
+                        }
+                    } else if !empty {
+                        crate::reader::driver::skip_element(reader, child)?;
                     }
-                    b"a:ext" => {
-                        self.extents.set_attributes(reader, e);
-                    }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if matches!(e.name().into_inner(), b"xdr:xfrm" | b"xfrm") {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:xfrm")
-        );
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing transform")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

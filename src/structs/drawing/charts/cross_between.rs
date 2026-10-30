@@ -11,10 +11,7 @@ use super::{
     super::super::EnumValue,
     CrossBetweenValues,
 };
-use crate::{
-    reader::driver::get_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -42,8 +39,12 @@ impl CrossBetween {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        self.val
+            .set_value(crate::reader::driver::require_enum_attribute::<
+                CrossBetweenValues,
+            >(e, b"val")?);
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

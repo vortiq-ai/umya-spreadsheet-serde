@@ -285,7 +285,9 @@ fn chart_summary(xml: &[u8]) -> ExportSummary {
             event @ (Event::Text(..) | Event::CData(..) | Event::GeneralRef(..)) => {
                 if let Some((_, value)) = &mut text {
                     value.push_str(
-                        &crate::reader::driver::decode_xml_character_event(&event).unwrap(),
+                        &crate::reader::driver::decode_xml_character_event(&event)
+                            .unwrap()
+                            .unwrap(),
                     );
                 }
             }
@@ -352,7 +354,7 @@ fn global_legacy_prefix_wins_real_tight_budget_across_charts_and_fresh_sheets() 
         let mut session = SourceCacheSession::immediate();
         let mut provider = lazy_provider();
         reset_chart_part_buffer_observation();
-        capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider).unwrap();
         assert_eq!(
             &*session.capture_formulas.borrow(),
             &["Missing!$B$1", "Missing!$A$1"]
@@ -457,7 +459,7 @@ fn actual_deferred_provider_releases_parts_and_finishes_after_both_global_phases
     book.chart_source_cache_report_mut().kept_points = MAX_SOURCE_CACHE_POINTS - 2;
     let mut provider = lazy_provider();
     reset_chart_part_buffer_observation();
-    capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider);
+    capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider).unwrap();
     assert_eq!(
         &*session.capture_formulas.borrow(),
         &["Missing!$B$1", "Missing!$A$1"]
@@ -486,7 +488,7 @@ fn deferred_string_leaf_without_source_still_receives_one_callback() {
     let mut session = SourceCacheSession::immediate();
     let mut provider = lazy_provider();
     reset_chart_part_buffer_observation();
-    capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider);
+    capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider).unwrap();
     assert_eq!(
         &*session.capture_formulas.borrow(),
         &["Missing!$B$1", "Missing!$A$1"]
@@ -506,7 +508,7 @@ fn no_deferred_leaf_preserves_single_pass_provider_lifecycle() {
     let mut session = SourceCacheSession::immediate();
     let mut provider = lazy_provider();
     reset_chart_part_buffer_observation();
-    capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+    capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
     assert_eq!(&*session.capture_formulas.borrow(), &["Missing!$B$1"]);
     assert_eq!(chart_part_buffer_observation().lazy_sheet_boundaries, 1);
 }

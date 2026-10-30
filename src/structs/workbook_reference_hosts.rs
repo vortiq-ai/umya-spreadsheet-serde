@@ -46,6 +46,7 @@ use crate::{
 const SHEET_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const C15_NS: &str = "http://schemas.microsoft.com/office/drawing/2012/chart";
+const CX_NS: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
 
 fn error(message: impl Into<String>) -> XlsxError {
     XlsxError::with_message(XlsxErrorKind::Xml, message.into())
@@ -126,9 +127,10 @@ fn scan_part(
                                 .is_some_and(|(_, uri, local)| uri == SHEET_NS && local == "c")
                     }
                     PartKind::Chart => {
-                        (name.namespace_uri == CHART_NS || name.namespace_uri == C15_NS)
+                        matches!(name.namespace_uri.as_str(), CHART_NS | C15_NS | CX_NS)
                             && (name.local_name == "f"
-                                || (name.namespace_uri == C15_NS && name.local_name == "sqref"))
+                                || (name.namespace_uri == C15_NS && name.local_name == "sqref")
+                                || (name.namespace_uri == CX_NS && name.local_name == "nf"))
                     }
                 };
                 if target {
@@ -142,7 +144,7 @@ fn scan_part(
                     {
                         return Ok(true);
                     }
-                    let text = read_simple_text(&mut reader, element, false)
+                    let text = read_simple_text(&mut reader, element, false)?
                         .ok_or_else(|| error("invalid reference text in raw metadata"))?;
                     if matches!(kind, PartKind::Chart) && name.local_name == "sqref" {
                         let mut sequence = ReferenceSequence::default();
@@ -222,8 +224,10 @@ pub(super) fn discover(
         let mut dependent = false;
         for rels in raw.relationships_list() {
             for relationship in rels.relationship_list() {
-                if relationship.get_type() == crate::helper::const_str::CHART_NS
-                    && relationship.target_mode() != "External"
+                if matches!(
+                    relationship.get_type(),
+                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS
+                ) && relationship.target_mode() != "External"
                     && scan_part(
                         &part_bytes(relationship.raw_file())?,
                         sheet.name(),
@@ -452,8 +456,15 @@ mod tests {
         let mut two = TwoCellAnchor::default();
         two.set_graphic_frame(frame.clone());
         let mut image_anchor = OneCellAnchor::default();
-        image_anchor.set_graphic_frame(frame);
-        image_anchor.set_group_shape(GroupShape::default());
+        let mut group = GroupShape::default();
+        group
+            .non_visual_group_shape_properties_mut()
+            .non_visual_drawing_properties_mut()
+            .set_id(9001);
+        group.add_object(crate::drawing::spreadsheet::DrawingObject::GraphicFrame(
+            Box::new(frame),
+        ));
+        image_anchor.set_group_shape(group);
         let mut image = Image::default();
         image.set_one_cell_anchor(image_anchor);
         let mut ordinary_image = Image::default();
@@ -557,5 +568,409 @@ mod tests {
             reread.sheet(2).unwrap().cell((1, 1)).unwrap().value(),
             "keep"
         );
+    }
+
+    fn native_chart_space(formula: &str, numeric: bool) -> crate::drawing::charts::ChartExSpace {
+        let numeric = if numeric {
+            "<cx:numDim type=\"val\"><cx:f>Target!$B$1:$B$3</cx:f></cx:numDim>"
+        } else {
+            ""
+        };
+        let xml = format!(
+            "<cx:chartSpace xmlns:cx=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"><cx:chartData><cx:data id=\"1\"><cx:strDim type=\"cat\"><cx:f>{formula}</cx:f><cx:nf>Target!$D$1</cx:nf></cx:strDim>{numeric}</cx:data></cx:chartData><cx:chart><cx:plotArea><cx:plotAreaRegion><cx:series layoutId=\"waterfall\"><cx:dataId val=\"1\"/></cx:series></cx:plotAreaRegion></cx:plotArea></cx:chart></cx:chartSpace>"
+        );
+        crate::drawing::charts::ChartExSpace::from_xml(xml.as_bytes()).unwrap()
+    }
+
+    fn native_chart_book() -> Workbook {
+        let mut book = crate::new_file();
+        book.set_sheet_name(0, "Target").unwrap();
+        book.new_sheet("Host").unwrap();
+        book.new_sheet("Unrelated").unwrap();
+        for (row, label) in [(1, "A"), (2, "B"), (3, "C")] {
+            book.sheet_mut(0)
+                .unwrap()
+                .cell_mut((1, row))
+                .set_value(label);
+            book.sheet_mut(0)
+                .unwrap()
+                .cell_mut((2, row))
+                .set_value_number(row);
+        }
+        book.sheet_mut(0).unwrap().cell_mut("D1").set_value("Title");
+        book.sheet_mut(2).unwrap().cell_mut("A1").set_value("Keep");
+        let chart = crate::drawing::spreadsheet::ExtendedChart::new(
+            Default::default(),
+            native_chart_space("Target!$A$1:$A$3", true),
+        );
+        book.sheet_mut(1)
+            .unwrap()
+            .worksheet_drawing_mut()
+            .add_extended_chart(chart);
+        book
+    }
+
+    fn saved_native_book(book: &Workbook, eager: bool) -> Workbook {
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(book, &mut Cursor::new(&mut bytes)).unwrap();
+        crate::reader::xlsx::read_reader(Cursor::new(bytes), eager).unwrap()
+    }
+
+    fn native_formulas(book: &Workbook, host: usize) -> Vec<String> {
+        let mut formulas = Vec::new();
+        book.sheet(host)
+            .unwrap()
+            .worksheet_drawing()
+            .visit_extended_spaces(&mut |space| {
+                space.visit_formulas(&mut |formula| formulas.push(formula.address_str()));
+            });
+        formulas
+    }
+
+    #[test]
+    fn native_chart_discovery_finds_aliased_value_and_name_formulas() {
+        let edit = ChartReferenceEdit::InsertRows {
+            sheet: "Target".into(),
+            at:    1,
+            count: 1,
+        };
+        let prepared = PreparedReferenceEdit::new(&edit).unwrap();
+        for element in ["f", "nf"] {
+            for namespace in [
+                "xmlns:e=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"",
+                "xmlns=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"",
+            ] {
+                let prefix = if namespace.starts_with("xmlns:e") {
+                    "e:"
+                } else {
+                    ""
+                };
+                let xml = format!(
+                    "<{prefix}chartSpace \
+                     {namespace}><{prefix}{element}>Target!$A$1</{prefix}{element}></\
+                     {prefix}chartSpace>"
+                );
+                assert!(
+                    scan_part(xml.as_bytes(), "Host", &prepared, PartKind::Chart).unwrap(),
+                    "{xml}"
+                );
+            }
+        }
+        let foreign =
+            b"<x:chartSpace xmlns:x=\"urn:foreign\"><x:f>Target!$A$1</x:f></x:chartSpace>";
+        assert!(!scan_part(foreign, "Host", &prepared, PartKind::Chart).unwrap());
+    }
+
+    #[test]
+    fn native_chart_discovery_keeps_unrelated_worksheets_lazy() {
+        let book = saved_native_book(&native_chart_book(), false);
+        let edit = ChartReferenceEdit::InsertRows {
+            sheet: "Target".into(),
+            at:    1,
+            count: 1,
+        };
+        assert_eq!(discover(&book, &["Target"], &edit).unwrap(), vec![0, 1]);
+        assert!(book.sheet(0).is_err());
+        assert!(book.sheet(1).is_err());
+        assert!(book.sheet(2).is_err());
+    }
+
+    #[test]
+    fn native_chart_structural_edits_visit_each_formula_once_and_roundtrip() {
+        for eager in [true, false] {
+            let mut book = saved_native_book(&native_chart_book(), eager);
+            book.insert_new_row("Target", 1, 1);
+            assert_eq!(
+                native_formulas(&book, 1),
+                ["Target!$A$2:$A$4", "Target!$D$2", "Target!$B$2:$B$4"]
+            );
+            book.insert_new_column("Target", "A", 1);
+            assert_eq!(
+                native_formulas(&book, 1),
+                ["Target!$B$2:$B$4", "Target!$E$2", "Target!$C$2:$C$4"]
+            );
+            book.remove_row("Target", 1, 1);
+            assert_eq!(
+                native_formulas(&book, 1),
+                ["Target!$B$1:$B$3", "Target!$E$1", "Target!$C$1:$C$3"]
+            );
+            book.remove_column("Target", "A", 1);
+            assert_eq!(
+                native_formulas(&book, 1),
+                ["Target!$A$1:$A$3", "Target!$D$1", "Target!$B$1:$B$3"]
+            );
+            if !eager {
+                assert!(book.sheet(2).is_err());
+            }
+            let reread = saved_native_book(&book, true);
+            assert_eq!(native_formulas(&reread, 1), native_formulas(&book, 1));
+            assert_eq!(reread.sheet(2).unwrap().value("A1"), "Keep");
+        }
+    }
+
+    #[test]
+    fn native_chart_sheet_rename_and_delete_edit_qualified_formulas() {
+        for eager in [true, false] {
+            let mut book = saved_native_book(&native_chart_book(), eager);
+            book.set_sheet_name(0, "Bob's Data").unwrap();
+            assert_eq!(
+                native_formulas(&book, 1),
+                [
+                    "'Bob''s Data'!$A$1:$A$3",
+                    "'Bob''s Data'!$D$1",
+                    "'Bob''s Data'!$B$1:$B$3"
+                ]
+            );
+            if !eager {
+                assert!(book.sheet(2).is_err());
+            }
+            let reread = saved_native_book(&book, true);
+            assert_eq!(native_formulas(&reread, 1), native_formulas(&book, 1));
+            book.remove_sheet_by_name("Bob's Data").unwrap();
+            assert_eq!(native_formulas(&book, 0), ["#REF!", "#REF!", "#REF!"]);
+        }
+    }
+
+    #[test]
+    fn native_chart_deleting_a_local_name_uses_the_workbook_fallback() {
+        use crate::drawing::charts::{
+            ChartExDataResolver,
+            ChartExStringReference,
+            WorkbookChartExResolver,
+        };
+        for eager in [true, false] {
+            let mut source = native_chart_book();
+            let mut local = crate::DefinedName::default();
+            local
+                .set_name("Sales")
+                .set_address("Target!$A$1:$A$3")
+                .set_local_sheet_id(0);
+            source.sheet_mut(0).unwrap().add_defined_names(local);
+            let mut global = crate::DefinedName::default();
+            global.set_name("Sales").set_address("Unrelated!$A$1");
+            source.add_defined_names(global);
+            let mut space = native_chart_space("Target!Sales", false);
+            space.visit_formulas_mut(&mut |formula| {
+                if formula.address_str() == "Target!$D$1" {
+                    formula.set_string_value("Unrelated!$A$1");
+                }
+            });
+            source
+                .sheet_mut(1)
+                .unwrap()
+                .worksheet_drawing_mut()
+                .extended_charts_mut()[0]
+                .frame_mut()
+                .set_chart_space(space);
+            let mut book = saved_native_book(&source, eager);
+            book.remove_sheet_by_name("Target").unwrap();
+            assert_eq!(native_formulas(&book, 0), ["[0]!Sales", "Unrelated!$A$1"]);
+            let space =
+                book.sheet(0).unwrap().worksheet_drawing().extended_charts()[0].chart_space();
+            let crate::drawing::charts::ChartExDimension::String(dimension) =
+                &space.data().unwrap().data[0].dimensions[0]
+            else {
+                panic!("string dimension")
+            };
+            let crate::drawing::charts::ChartExDimensionSource::Reference(reference) =
+                &dimension.source
+            else {
+                panic!("reference source")
+            };
+            let reference: &ChartExStringReference = reference;
+            let mut resolver = WorkbookChartExResolver::new(&book);
+            let values = resolver.string_levels("Host", reference).unwrap();
+            assert_eq!(values[0].points[0].value, "Keep");
+            if !eager {
+                assert!(
+                    book.sheet(1).is_err(),
+                    "unrelated source can be resolved without materialization"
+                );
+            }
+            let reread = saved_native_book(&book, true);
+            assert_eq!(native_formulas(&reread, 0), ["[0]!Sales", "Unrelated!$A$1"]);
+        }
+    }
+
+    fn native_string_reference(
+        book: &Workbook,
+        chart: usize,
+    ) -> &crate::drawing::charts::ChartExStringReference {
+        let space =
+            book.sheet(1).unwrap().worksheet_drawing().extended_charts()[chart].chart_space();
+        let crate::drawing::charts::ChartExDimension::String(dimension) =
+            &space.data().unwrap().data[0].dimensions[0]
+        else {
+            panic!("string dimension")
+        };
+        let crate::drawing::charts::ChartExDimensionSource::Reference(reference) =
+            &dimension.source
+        else {
+            panic!("reference dimension")
+        };
+        reference
+    }
+
+    #[test]
+    fn native_chart_edits_invalidate_only_the_changed_source_cache() {
+        use std::io::Write;
+
+        use crate::drawing::charts::{
+            ChartExDataResolver,
+            WorkbookChartExResolver,
+        };
+        let mut source = native_chart_book();
+        let mut unchanged = native_chart_space("Unrelated!$A$1", false);
+        unchanged.visit_formulas_mut(&mut |formula| {
+            if formula.address_str() == "Target!$D$1" {
+                formula.set_string_value("Unrelated!$A$1");
+            }
+        });
+        source
+            .sheet_mut(1)
+            .unwrap()
+            .worksheet_drawing_mut()
+            .add_extended_chart(crate::drawing::spreadsheet::ExtendedChart::new(
+                Default::default(),
+                unchanged,
+            ));
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&source, &mut Cursor::new(&mut bytes)).unwrap();
+        let mut input = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..input.len() {
+            let mut part = input.by_index(index).unwrap();
+            let name = part.name().unwrap().to_string();
+            let mut bytes = Vec::new();
+            part.read_to_end(&mut bytes).unwrap();
+            if name.starts_with("xl/charts/chart") && name.ends_with(".xml") {
+                bytes = String::from_utf8(bytes)
+                    .unwrap()
+                    .replace(
+                        "<cx:pt idx=\"0\">A</cx:pt>",
+                        "<cx:pt idx=\"0\">Imported A</cx:pt>",
+                    )
+                    .replace(
+                        "<cx:pt idx=\"0\">Keep</cx:pt>",
+                        "<cx:pt idx=\"0\">Imported Keep</cx:pt>",
+                    )
+                    .into_bytes();
+            }
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&bytes).unwrap();
+        }
+        let mut book = crate::reader::xlsx::read_reader(output.finish().unwrap(), true).unwrap();
+        assert!(native_string_reference(&book, 0).source_cache().is_some());
+        assert!(native_string_reference(&book, 1).source_cache().is_some());
+        book.insert_new_row("Target", 1, 1);
+        assert!(native_string_reference(&book, 0).source_cache().is_none());
+        assert!(native_string_reference(&book, 1).source_cache().is_some());
+        let mut resolver = WorkbookChartExResolver::new(&book);
+        assert_eq!(
+            resolver
+                .string_levels("Host", native_string_reference(&book, 0))
+                .unwrap()[0]
+                .points[0]
+                .value,
+            "A"
+        );
+        assert_eq!(
+            resolver
+                .string_levels("Host", native_string_reference(&book, 1))
+                .unwrap()[0]
+                .points[0]
+                .value,
+            "Imported Keep"
+        );
+    }
+
+    #[test]
+    fn native_chart_compatibility_fallback_references_are_edited_with_the_active_chart() {
+        use crate::drawing::spreadsheet::{
+            DrawingObject,
+            ExtendedChartCompatibility,
+        };
+        let mut source = native_chart_book();
+        let mut fallback = Chart::default();
+        fallback.new_chart(
+            &ChartType::LineChart,
+            Default::default(),
+            Default::default(),
+            vec!["Target!$B$1:$B$3"],
+        );
+        let mut frame = fallback.two_cell_anchor().graphic_frame().unwrap().clone();
+        frame
+            .non_visual_graphic_frame_properties_mut()
+            .non_visual_drawing_properties_mut()
+            .set_id(7);
+        source
+            .sheet_mut(1)
+            .unwrap()
+            .worksheet_drawing_mut()
+            .extended_charts_mut()[0]
+            .set_compatibility(Some(ExtendedChartCompatibility {
+                required_namespaces: vec![(
+                    "cx".into(),
+                    "http://schemas.microsoft.com/office/drawing/2014/chartex".into(),
+                )],
+                fallback: Some(Box::new(DrawingObject::GraphicFrame(Box::new(frame)))),
+                fallback_present: true,
+                ..Default::default()
+            }));
+        for eager in [true, false] {
+            let mut book = saved_native_book(&source, eager);
+            book.insert_new_row("Target", 1, 1);
+            let mut formulas = Vec::new();
+            book.sheet(1)
+                .unwrap()
+                .worksheet_drawing()
+                .visit_standard_frames(&mut |_, frame| {
+                    crate::drawing::charts::chart_reference_roles::visit_ref(
+                        frame.graphic().graphic_data().chart_space(),
+                        &mut |_, target| formulas.push(target.formula().address_str()),
+                    );
+                });
+            assert_eq!(formulas, ["Target!$B$2:$B$4"]);
+            let reread = saved_native_book(&book, true);
+            let mut after = Vec::new();
+            reread
+                .sheet(1)
+                .unwrap()
+                .worksheet_drawing()
+                .visit_standard_frames(&mut |_, frame| {
+                    crate::drawing::charts::chart_reference_roles::visit_ref(
+                        frame.graphic().graphic_data().chart_space(),
+                        &mut |_, target| after.push(target.formula().address_str()),
+                    );
+                });
+            assert_eq!(after, formulas);
+            if !eager {
+                assert!(book.sheet(2).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn native_chart_deleted_sources_roundtrip_with_explicit_error_formulas() {
+        for delete_sheet in [true, false] {
+            let mut book = saved_native_book(&native_chart_book(), true);
+            let host = if delete_sheet {
+                book.remove_sheet_by_name("Target").unwrap();
+                0
+            } else {
+                book.remove_row("Target", 1, 3);
+                1
+            };
+            let expected = if delete_sheet {
+                "#REF!"
+            } else {
+                "Target!#REF!"
+            };
+            assert_eq!(native_formulas(&book, host), [expected; 3]);
+            let reread = saved_native_book(&book, true);
+            assert_eq!(native_formulas(&reread, host), [expected; 3]);
+        }
     }
 }

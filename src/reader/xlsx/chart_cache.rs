@@ -28,14 +28,15 @@ use crate::{
         number_format::PreparedFormats,
     },
     reader::driver::{
-        attribute_u32,
         local_name,
+        try_attribute_u32,
     },
     structs::{
         CacheDisplay,
         Cell,
         Cells,
         Workbook,
+        XlsxError,
         drawing::charts::{
             DenseSummary,
             IndexRun,
@@ -49,7 +50,6 @@ use crate::{
             StringReference,
             chart_reference_roles::ReferenceCachePhase,
             literal_text,
-            parse_point_count,
             read_point_borrowed,
             visit_deferred_indices,
             visit_string_references,
@@ -221,6 +221,8 @@ struct ChartPart {
     data:   Option<Box<[u8]>>,
 }
 
+type MemoizedChartPartVisitor<'a> = dyn FnMut(&[u8], &mut DenseMemo) -> Result<(), XlsxError> + 'a;
+
 pub(crate) trait ChartPartProvider {
     fn add_pending(&mut self, pending: HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>);
 
@@ -228,17 +230,17 @@ pub(crate) trait ChartPartProvider {
         &mut self,
         target: &str,
         session: &SourceCacheSession,
-        visit: &mut dyn FnMut(Option<&[u8]>),
-    ) {
-        self.with_memoized_part(target, session, &mut |data, _| visit(data));
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), XlsxError>,
+    ) -> Result<(), XlsxError> {
+        self.with_memoized_part(target, session, &mut |data, _| visit(data))
     }
 
     fn with_memoized_part(
         &mut self,
         target: &str,
         session: &SourceCacheSession,
-        visit: &mut dyn FnMut(Option<&[u8]>, &mut DenseMemo),
-    );
+        visit: &mut MemoizedChartPartVisitor<'_>,
+    ) -> Result<(), XlsxError>;
 
     fn finish_sheet(&mut self, session: &SourceCacheSession);
 
@@ -295,37 +297,68 @@ impl ChartPartProvider for LazyChartPartProvider {
         &mut self,
         target: &str,
         session: &SourceCacheSession,
-        visit: &mut dyn FnMut(Option<&[u8]>, &mut DenseMemo),
-    ) {
+        visit: &mut MemoizedChartPartVisitor<'_>,
+    ) -> Result<(), XlsxError> {
         let part = session.part_for(target);
+        #[cfg(test)]
+        {
+            self.expected_part = None;
+        }
+        if self.current.as_ref().map(|(current, _)| *current) != Some(part) {
+            self.release_current(session);
+            let data = if let Some(data) = session.take_part(part) {
+                Vec::from(data)
+            } else {
+                let pending = self.pending.remove(target).ok_or_else(|| {
+                    XlsxError::with_message(
+                        crate::XlsxErrorKind::NotFound,
+                        format!("missing required chart part: {target}"),
+                    )
+                })?;
+                if pending.0.is_empty() {
+                    let loaded = (|| {
+                        let source_file = pending.1.as_deref().ok_or_else(|| {
+                            XlsxError::with_message(
+                                crate::XlsxErrorKind::NotFound,
+                                format!("required chart part bytes unavailable: {target}"),
+                            )
+                        })?;
+                        let mut raw = crate::structs::raw::RawFile::default();
+                        raw.set_file_target(target).set_source_file(source_file);
+                        raw.load_file_data_from_source()?;
+                        Ok::<_, XlsxError>(raw.take_file_data())
+                    })();
+                    match loaded {
+                        Ok(data) => {
+                            #[cfg(test)]
+                            if pending.1.is_some() {
+                                observe_lazy_source_read(&data);
+                            }
+                            data
+                        }
+                        Err(error) => {
+                            #[cfg(test)]
+                            if pending.1.is_some() {
+                                observe_lazy_source_read(&[]);
+                            }
+                            self.pending.insert(target.into(), pending);
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    pending.0
+                }
+            };
+            self.current = Some((part, data));
+        }
         #[cfg(test)]
         {
             self.expected_part = Some(part);
         }
-        if self.current.as_ref().map(|(current, _)| *current) != Some(part) {
-            self.release_current(session);
-            let data = session.take_part(part).map_or_else(
-                || {
-                    let (data, source_file) = self.pending.remove(target).unwrap_or_default();
-                    if data.is_empty() {
-                        let data = crate::structs::raw::RawFile::read_from_source_or_empty(
-                            target,
-                            source_file.as_deref(),
-                        );
-                        #[cfg(test)]
-                        if source_file.is_some() {
-                            observe_lazy_source_read(&data);
-                        }
-                        data
-                    } else {
-                        data
-                    }
-                },
-                Vec::from,
-            );
-            self.current = Some((part, data));
-        }
-        visit(Some(&self.current.as_ref().unwrap().1), &mut self.memo);
+        let (_, data) = self.current.as_ref().ok_or_else(|| {
+            crate::xml::xml_error("chart provider did not acquire the required part")
+        })?;
+        visit(data, &mut self.memo)
     }
 
     fn finish_sheet(&mut self, session: &SourceCacheSession) {
@@ -348,7 +381,7 @@ impl ChartPartProvider for LazyChartPartProvider {
 
 pub(crate) struct EagerChartPartProvider<'a, R> {
     archive: &'a mut zip::read::ZipArchive<R>,
-    current: Option<(String, PartBuffer, bool)>,
+    current: Option<(String, PartBuffer)>,
     memo:    DenseMemo,
 }
 
@@ -366,28 +399,29 @@ impl<'a, R: std::io::Read + std::io::Seek> EagerChartPartProvider<'a, R> {
         self.current = None;
     }
 
-    fn read_part(&mut self, target: &str) {
+    fn read_part(&mut self, target: &str) -> Result<(), XlsxError> {
         self.release_current();
         let mut data = Vec::new();
-        let Ok(mut entry) = crate::reader::driver::zip_by_name(self.archive, target) else {
-            self.current = Some((target.into(), PartBuffer::new(data), false));
-            #[cfg(test)]
-            observe_eager_part_acquire(&self.current.as_ref().unwrap().1, false);
-            return;
-        };
-        let reservation =
-            usize::try_from(entry.size().min(isize::MAX as u64)).unwrap_or(usize::MAX);
-        let _ = data.try_reserve_exact(reservation);
-        let succeeded = std::io::Read::read_to_end(&mut entry, &mut data).is_ok();
-        if !succeeded {
+        let read = (|| {
+            let mut entry = crate::reader::driver::zip_by_name(self.archive, target)?;
+            let reservation =
+                usize::try_from(entry.size().min(isize::MAX as u64)).unwrap_or(usize::MAX);
+            let _ = data.try_reserve_exact(reservation);
+            std::io::Read::read_to_end(&mut entry, &mut data)?;
+            Ok::<_, XlsxError>(())
+        })();
+        if let Err(error) = read {
             data.clear();
+            #[cfg(test)]
+            observe_eager_part_acquire(&PartBuffer::new(data), false);
+            return Err(error);
         }
-        self.current = Some((target.into(), PartBuffer::new(data), succeeded));
+        self.current = Some((target.into(), PartBuffer::new(data)));
         #[cfg(test)]
-        {
-            let (_, data, succeeded) = self.current.as_ref().unwrap();
-            observe_eager_part_acquire(data, *succeeded);
+        if let Some((_, data)) = &self.current {
+            observe_eager_part_acquire(data, true);
         }
+        Ok(())
     }
 }
 
@@ -404,13 +438,15 @@ impl<R: std::io::Read + std::io::Seek> ChartPartProvider for EagerChartPartProvi
         &mut self,
         target: &str,
         _session: &SourceCacheSession,
-        visit: &mut dyn FnMut(Option<&[u8]>, &mut DenseMemo),
-    ) {
-        if self.current.as_ref().map(|(current, ..)| current.as_str()) != Some(target) {
-            self.read_part(target);
+        visit: &mut MemoizedChartPartVisitor<'_>,
+    ) -> Result<(), XlsxError> {
+        if self.current.as_ref().map(|(current, _)| current.as_str()) != Some(target) {
+            self.read_part(target)?;
         }
-        let (_, data, succeeded) = self.current.as_ref().unwrap();
-        visit(succeeded.then_some(data.data.as_slice()), &mut self.memo);
+        let (_, data) = self.current.as_ref().ok_or_else(|| {
+            crate::xml::xml_error("chart provider did not acquire the required part")
+        })?;
+        visit(&data.data, &mut self.memo)
     }
 
     fn finish_sheet(&mut self, _session: &SourceCacheSession) {
@@ -776,7 +812,7 @@ fn dense_shape(
     }
 }
 
-fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
+fn deferred_shape(data: &[u8], remaining_points: usize) -> Result<CacheShape, XlsxError> {
     #[cfg(test)]
     note_work(|counts| counts.shape_scans += 1);
     let mut shape = CacheShape {
@@ -798,10 +834,12 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
     let mut skipped = Vec::new();
     loop {
         buffer.clear();
-        match reader.read_event_into(&mut buffer).unwrap() {
+        match reader.read_event_into(&mut buffer)? {
             Event::Start(e) => match local_name(e.name().into_inner()) {
                 b"pt" => {
-                    if let Some(index) = attribute_u32(&e, b"idx") {
+                    if let Some(index) = try_attribute_u32(&e, b"idx")
+                        .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                    {
                         ascending &= previous.is_none_or(|prior| prior < index);
                         shape.record_index(index, &mut count, &mut previous);
                         if shape.run_charge > remaining_points {
@@ -811,14 +849,19 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
                         }
                     }
                     skipped.clear();
-                    reader.read_to_end_into(e.name(), &mut skipped).unwrap();
+                    reader.read_to_end_into(e.name(), &mut skipped)?;
                 }
-                b"ptCount" => shape.point_count = parse_point_count(&e),
+                b"ptCount" => {
+                    shape.point_count = try_attribute_u32(&e, b"val")
+                        .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+                }
                 _ => (),
             },
             Event::Empty(e) => match local_name(e.name().into_inner()) {
                 b"pt" => {
-                    if let Some(index) = attribute_u32(&e, b"idx") {
+                    if let Some(index) = try_attribute_u32(&e, b"idx")
+                        .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                    {
                         ascending &= previous.is_none_or(|prior| prior < index);
                         shape.record_index(index, &mut count, &mut previous);
                         if shape.run_charge > remaining_points {
@@ -828,7 +871,10 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
                         }
                     }
                 }
-                b"ptCount" => shape.point_count = parse_point_count(&e),
+                b"ptCount" => {
+                    shape.point_count = try_attribute_u32(&e, b"val")
+                        .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+                }
                 b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache" => break,
                 _ => (),
             },
@@ -840,7 +886,11 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
             {
                 break;
             }
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+            Event::Eof => {
+                return Err(crate::xml::xml_error(
+                    "Error: Could not find c:strCache end element",
+                ));
+            }
             _ => (),
         }
     }
@@ -865,9 +915,9 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> CacheShape {
             if !seen.insert(index) {
                 shape.repeated.insert(index);
             }
-        });
+        })?;
     }
-    shape
+    Ok(shape)
 }
 
 fn reduce_deferred_cache<'a>(
@@ -878,14 +928,15 @@ fn reduce_deferred_cache<'a>(
     remaining_points: usize,
     remaining_text_bytes: usize,
     display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
-) -> DeferredReduction {
+) -> Result<DeferredReduction, XlsxError> {
     let budget = ReplayBudget {
         expected_points,
         retain_shape,
         points: remaining_points,
         text: remaining_text_bytes,
     };
-    reduce_cache(data, source, &budget, display, false).unwrap()
+    reduce_cache(data, source, &budget, display, false)?
+        .ok_or_else(|| crate::xml::xml_error("canonical chart cache scan was not completed"))
 }
 
 fn reduce_cache<'a>(
@@ -894,7 +945,7 @@ fn reduce_cache<'a>(
     budget: &ReplayBudget,
     mut display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
     strict: bool,
-) -> Option<DeferredReduction> {
+) -> Result<Option<DeferredReduction>, XlsxError> {
     let ReplayBudget {
         expected_points,
         retain_shape,
@@ -903,8 +954,13 @@ fn reduce_cache<'a>(
     } = *budget;
     let mut shape = match source.summary {
         Some(summary) => dense_shape(summary, remaining_points),
-        None if strict => strict::shape(data, remaining_points)?,
-        None => deferred_shape(data, remaining_points),
+        None if strict => {
+            let Some(shape) = strict::shape(data, remaining_points) else {
+                return Ok(None);
+            };
+            shape
+        }
+        None => deferred_shape(data, remaining_points)?,
     };
     let mut points = shape.run_charge;
     let mut text_bytes: usize = 0;
@@ -913,7 +969,10 @@ fn reduce_cache<'a>(
     #[cfg(test)]
     let mut exception_rejection_backing = None;
     let mut bytes = if strict {
-        Some(strict::ByteCache::new(data)?)
+        let Some(bytes) = strict::ByteCache::new(data) else {
+            return Ok(None);
+        };
+        Some(bytes)
     } else {
         None
     };
@@ -928,20 +987,22 @@ fn reduce_cache<'a>(
     let mut decoded = String::new();
     loop {
         let point = if let Some(bytes) = &mut bytes {
-            match bytes.next().ok()? {
+            let Ok(point) = bytes.next() else {
+                return Ok(None);
+            };
+            match point {
                 Some((index, raw)) => {
                     #[cfg(test)]
                     note_work(|counts| counts.kept_values += 1);
                     let value = if raw.contains('&') {
-                        // Invalid entities restart to preserve the old panic.
-                        // Valid entities use the original text decoder.
+                        // Non-canonical values use the full XML reader.
                         if !crate::helper::utils::references_are_valid(raw) {
-                            return None;
+                            return Ok(None);
                         }
-                        crate::helper::utils::unescape_xml_text_into(
+                        crate::helper::utils::try_unescape_xml_text_into(
                             &quick_xml::events::BytesText::from_escaped(raw),
                             &mut decoded,
-                        );
+                        )?;
                         decoded.as_str()
                     } else {
                         raw
@@ -953,15 +1014,18 @@ fn reduce_cache<'a>(
         } else {
             let (reader, buffer, scratch) = fallback.as_mut().unwrap();
             buffer.clear();
-            let event = reader.read_event_into(buffer).unwrap();
+            let event = reader.read_event_into(buffer)?;
             let point = match event {
                 Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
-                    let index = attribute_u32(&e, b"idx");
-                    let value = read_point_borrowed(reader, scratch);
+                    let index = try_attribute_u32(&e, b"idx")
+                        .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+                    let value = read_point_borrowed(reader, scratch)?;
                     index.map(|index| (index, value))
                 }
                 Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
-                    attribute_u32(&e, b"idx").map(|index| (index, None))
+                    try_attribute_u32(&e, b"idx")
+                        .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                        .map(|index| (index, None))
                 }
                 Event::Empty(e)
                     if matches!(
@@ -979,7 +1043,11 @@ fn reduce_cache<'a>(
                 {
                     break;
                 }
-                Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "Error: Could not find c:strCache end element",
+                    ));
+                }
                 _ => None,
             };
             point
@@ -1029,9 +1097,9 @@ fn reduce_cache<'a>(
         && expected_points == shape.point_count.map(u64::from)
         && points == 0
     {
-        return Some(DeferredReduction::Reduced);
+        return Ok(Some(DeferredReduction::Reduced));
     }
-    Some(DeferredReduction::Candidate {
+    Ok(Some(DeferredReduction::Candidate {
         source: (!counting).then(|| {
             SourceCache::from_reduced(
                 source.formula.clone(),
@@ -1047,7 +1115,7 @@ fn reduce_cache<'a>(
             shape:     shape.shape_backing,
             exception: exception_rejection_backing,
         },
-    })
+    }))
 }
 
 struct ReplayBudget {
@@ -1064,7 +1132,7 @@ fn replay_with_memo<'a>(
     budget: &ReplayBudget,
     class: MemoClass,
     display: impl FnMut(u32, &mut String) -> Option<CacheDisplay<'a>>,
-) -> Option<DeferredReduction> {
+) -> Result<DeferredReduction, XlsxError> {
     if let Some(reused) = memo.lookup(
         part,
         source,
@@ -1073,14 +1141,13 @@ fn replay_with_memo<'a>(
         budget.points,
         budget.text,
     ) {
-        return Some(reused);
+        return Ok(reused);
     }
     let Some(data) = source.range().and_then(|range| part.get(range)) else {
-        debug_assert!(false, "invalid deferred chart cache span");
-        return None;
+        return Err(crate::xml::xml_error("invalid deferred chart cache span"));
     };
     let mut display = display;
-    let reduction = match reduce_cache(data, source, budget, &mut display, true) {
+    let reduction = match reduce_cache(data, source, budget, &mut display, true)? {
         Some(reduction) => {
             #[cfg(test)]
             strict::note_scan(true);
@@ -1097,11 +1164,11 @@ fn replay_with_memo<'a>(
                 budget.points,
                 budget.text,
                 display,
-            )
+            )?
         }
     };
     memo.retain(source, budget.retain_shape, class, &reduction);
-    Some(reduction)
+    Ok(reduction)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1114,6 +1181,7 @@ enum SourceCacheSessionMode {
 /// order for admission. References retain guarded placeholders meanwhile.
 #[derive(Clone)]
 pub(crate) struct SourceCacheSession {
+    content_types: std::sync::Arc<crate::structs::content_types::PackageContentTypes>,
     mode:                         SourceCacheSessionMode,
     descriptors:                  Rc<RefCell<HashMap<usize, DeferredSource>>>,
     parts:                        Rc<RefCell<Vec<ChartPart>>>,
@@ -1140,14 +1208,33 @@ impl Drop for ExtensionScopeGuard {
         self.scopes.borrow_mut().pop();
     }
 }
+pub(crate) struct ChartPartGuard {
+    current_part:        Rc<StateCell<Option<usize>>>,
+    chart_namespaces:    Rc<RefCell<Option<crate::drawing::charts::ChartNamespaces>>>,
+    extension_scopes:    Rc<RefCell<Vec<crate::drawing::charts::NamespaceScope>>>,
+    previous_part:       Option<usize>,
+    previous_namespaces: Option<crate::drawing::charts::ChartNamespaces>,
+    previous_scopes:     Vec<crate::drawing::charts::NamespaceScope>,
+}
+
+impl Drop for ChartPartGuard {
+    fn drop(&mut self) {
+        *self.extension_scopes.borrow_mut() = std::mem::take(&mut self.previous_scopes);
+        *self.chart_namespaces.borrow_mut() = self.previous_namespaces.take();
+        self.current_part.set(self.previous_part);
+    }
+}
+
 impl SourceCacheSession {
     pub(crate) fn for_sheet(&self) -> Self {
         let mut sheet = Self::deferred();
         sheet.mode = self.mode;
+        sheet.content_types = std::sync::Arc::clone(&self.content_types);
         sheet
     }
 
-    pub(crate) fn commit_sheet(&self, sheet: &Self) {
+    pub(crate) fn commit_sheet(&self, sheet: &Self) -> Vec<(String, Box<[u8]>)> {
+        let mut previous_parts = Vec::new();
         let part_indices: Vec<_> = sheet
             .parts
             .borrow_mut()
@@ -1155,6 +1242,9 @@ impl SourceCacheSession {
             .map(|part| {
                 let index = self.part_for(&part.target);
                 if let Some(data) = part.data {
+                    if let Some(previous) = self.take_part(index) {
+                        previous_parts.push((part.target, previous));
+                    }
                     self.store_part(index, data);
                 }
                 index
@@ -1168,6 +1258,14 @@ impl SourceCacheSession {
         self.registered_keys
             .borrow_mut()
             .extend(sheet.registered_keys.borrow_mut().drain(..));
+        previous_parts
+    }
+
+    pub(crate) fn restore_parts(&self, previous: Vec<(String, Box<[u8]>)>) {
+        for (target, data) in previous {
+            let index = self.part_for(&target);
+            self.store_part(index, data);
+        }
     }
 
     /// The original chart part root supplies the genuine inherited bindings.
@@ -1175,19 +1273,20 @@ impl SourceCacheSession {
     pub(crate) fn enter_chart_root(
         &self,
         e: &quick_xml::events::BytesStart,
-    ) -> ExtensionScopeGuard {
+    ) -> Result<ExtensionScopeGuard, XlsxError> {
         let scope = crate::drawing::charts::NamespaceScope::default()
             .child(e)
-            .expect("valid chart root namespace declarations");
+            .map_err(crate::xml::xml_error)?;
         let name = scope
             .resolve(e.name().into_inner(), false)
-            .expect("bound chart root QName");
-        assert!(
-            name.namespace_uri == "http://schemas.openxmlformats.org/drawingml/2006/chart"
-                && name.local_name == "chartSpace",
-            "invalid chart root expanded name"
-        );
-        self.push_extension_scope(scope)
+            .map_err(crate::xml::xml_error)?;
+        if !name.is(
+            "http://schemas.openxmlformats.org/drawingml/2006/chart",
+            "chartSpace",
+        ) {
+            return Err(crate::xml::xml_error("invalid chart root expanded name"));
+        }
+        Ok(self.push_extension_scope(scope))
     }
 
     pub(crate) fn push_extension_scope(
@@ -1200,31 +1299,44 @@ impl SourceCacheSession {
         }
     }
 
+    pub(crate) fn current_namespace_scope(&self) -> Option<crate::drawing::charts::NamespaceScope> {
+        self.extension_scopes.borrow().last().cloned()
+    }
+
     pub(crate) fn enter_child_scope(
         &self,
         e: &quick_xml::events::BytesStart,
-    ) -> Option<ExtensionScopeGuard> {
-        let scope = self.extension_scopes.borrow().last().cloned()?;
-        Some(self.push_extension_scope(scope.child(e).expect("valid chart namespace declaration")))
+    ) -> Result<Option<ExtensionScopeGuard>, XlsxError> {
+        let Some(scope) = self.extension_scopes.borrow().last().cloned() else {
+            return Ok(None);
+        };
+        let child = scope.child(e).map_err(crate::xml::xml_error)?;
+        child
+            .resolve(e.name().as_ref(), false)
+            .map_err(crate::xml::xml_error)?;
+        Ok(Some(self.push_extension_scope(child)))
     }
 
     pub(crate) fn accepts_child_namespace(
         &self,
         e: &quick_xml::events::BytesStart,
         namespace: &str,
-    ) -> bool {
+    ) -> Result<bool, XlsxError> {
         let scopes = self.extension_scopes.borrow();
-        scopes.last().is_none_or(|scope| {
-            scope
-                .child(e)
-                .and_then(|scope| scope.resolve(e.name().into_inner(), false))
-                .is_ok_and(|name| name.namespace_uri == namespace)
-        })
+        let Some(scope) = scopes.last() else {
+            return Ok(true);
+        };
+        let name = scope
+            .child(e)
+            .and_then(|scope| scope.resolve(e.name().as_ref(), false))
+            .map_err(crate::xml::xml_error)?;
+        Ok(name.namespace_uri == namespace)
     }
 
     pub(crate) fn deferred() -> Self {
         Self {
             mode:                                      SourceCacheSessionMode::Deferred,
+            content_types:                             std::sync::Arc::default(),
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
@@ -1249,6 +1361,7 @@ impl SourceCacheSession {
     pub(crate) fn immediate() -> Self {
         Self {
             mode:                                      SourceCacheSessionMode::Immediate,
+            content_types:                             std::sync::Arc::default(),
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
@@ -1272,6 +1385,7 @@ impl SourceCacheSession {
     pub(crate) fn immediate_subsession(&self) -> Self {
         Self {
             mode:                                      SourceCacheSessionMode::Immediate,
+            content_types:                             std::sync::Arc::clone(&self.content_types),
             descriptors:                               Rc::clone(&self.descriptors),
             parts:                                     Rc::clone(&self.parts),
             current_part:                              Rc::clone(&self.current_part),
@@ -1290,6 +1404,17 @@ impl SourceCacheSession {
             #[cfg(test)]
             rejection_backing:                         Rc::clone(&self.rejection_backing),
         }
+    }
+
+    pub(crate) fn set_content_types(
+        &mut self,
+        types: std::sync::Arc<crate::structs::content_types::PackageContentTypes>,
+    ) {
+        self.content_types = types;
+    }
+
+    pub(crate) fn content_type(&self, part: &str) -> Option<&str> {
+        self.content_types.get(part)
     }
 
     pub(crate) fn is_deferred(&self) -> bool {
@@ -1312,6 +1437,19 @@ impl SourceCacheSession {
         self.chart_namespaces.borrow().as_ref()?.get(offset, e)
     }
 
+    pub(crate) fn enter_chart_part(&self, target: &str) -> ChartPartGuard {
+        let current = self.is_deferred().then(|| self.part_for(target));
+        ChartPartGuard {
+            current_part:        Rc::clone(&self.current_part),
+            chart_namespaces:    Rc::clone(&self.chart_namespaces),
+            extension_scopes:    Rc::clone(&self.extension_scopes),
+            previous_part:       self.current_part.replace(current),
+            previous_namespaces: self.chart_namespaces.borrow_mut().take(),
+            previous_scopes:     std::mem::take(&mut *self.extension_scopes.borrow_mut()),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_chart_part(&self, target: &str) {
         if !self.is_deferred() {
             return;
@@ -1319,6 +1457,7 @@ impl SourceCacheSession {
         self.current_part.set(Some(self.part_for(target)));
     }
 
+    #[cfg(test)]
     pub(crate) fn end_chart_part(&self) {
         self.chart_namespaces.borrow_mut().take();
         self.extension_scopes.borrow_mut().clear();
@@ -1441,27 +1580,51 @@ impl SourceCacheSession {
         &self,
         drawing: &mut crate::drawing::spreadsheet::WorksheetDrawing,
         provider: &mut dyn ChartPartProvider,
-    ) {
+    ) -> Result<(), XlsxError> {
         #[cfg(test)]
         let _observation = crate::drawing::charts::DeferredHydrationSourceBoxObservation::begin();
+        let mut result = Ok(());
         visit_image_frames(drawing, &mut |reference| {
-            if reference.string_cache().source().is_none() {
-                return;
-            }
-            if let Some(source) = self.take(reference) {
-                if let Some(source) = self.materialize_with_provider(&source, provider) {
-                    self.replace(reference, source);
-                } else {
-                    self.clear(reference);
-                }
-            } else {
-                debug_assert!(
-                    false,
-                    "missing deferred image chart source cache descriptor"
-                );
-                self.clear(reference);
+            if result.is_ok() {
+                result = self.hydrate_reference(reference, provider);
             }
         });
+        result
+    }
+
+    pub(crate) fn hydrate_ole_anchor(
+        &self,
+        anchor: &mut crate::drawing::spreadsheet::TwoCellAnchor,
+        provider: &mut dyn ChartPartProvider,
+    ) -> Result<(), XlsxError> {
+        let mut result = Ok(());
+        anchor.visit_standard_frames_mut(&mut |_, frame| {
+            visit_string_references(
+                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                &mut |_, reference| {
+                    if result.is_ok() {
+                        result = self.hydrate_reference(reference, provider);
+                    }
+                },
+            );
+        });
+        result
+    }
+
+    fn hydrate_reference(
+        &self,
+        reference: &mut StringReference,
+        provider: &mut dyn ChartPartProvider,
+    ) -> Result<(), XlsxError> {
+        if !reference.string_cache().source_is_deferred() {
+            return Ok(());
+        }
+        let source = self.take(reference).ok_or_else(|| {
+            crate::xml::xml_error("missing deferred chart source cache descriptor")
+        })?;
+        let source = self.materialize_with_provider(&source, provider)?;
+        self.replace(reference, source);
+        Ok(())
     }
 
     fn take(&self, reference: &mut StringReference) -> Option<DeferredSource> {
@@ -1470,13 +1633,13 @@ impl SourceCacheSession {
     }
 
     #[cfg(test)]
-    fn materialize(&self, source: DeferredSource) -> SourceCache {
+    fn materialize(&self, source: DeferredSource) -> Result<SourceCache, XlsxError> {
         let parts = self.parts.borrow();
         let data = parts
             .get(source.part)
             .and_then(|part| part.data.as_deref())
             .and_then(|part| source.range().and_then(|range| part.get(range)))
-            .unwrap_or_default();
+            .ok_or_else(|| crate::xml::xml_error("invalid deferred chart cache span"))?;
         crate::drawing::charts::materialize_deferred_cache(data, source.formula)
     }
 
@@ -1484,42 +1647,49 @@ impl SourceCacheSession {
         &self,
         source: &DeferredSource,
         provider: &mut dyn ChartPartProvider,
-    ) -> Option<SourceCache> {
+    ) -> Result<SourceCache, XlsxError> {
+        let target = self
+            .part_target(source.part)
+            .ok_or_else(|| crate::xml::xml_error("missing deferred chart cache part"))?;
         let mut materialized = None;
-        if let Some(target) = self.part_target(source.part) {
-            provider.with_part(&target, self, &mut |part| {
-                let Some(part) = part else {
-                    return;
-                };
-                let data = source.range().and_then(|range| part.get(range));
-                let Some(data) = data else {
-                    return;
-                };
-                materialized = Some(crate::drawing::charts::materialize_deferred_cache(
-                    data,
-                    source.formula.clone(),
-                ));
-            });
-        }
-        materialized
+        provider.with_part(&target, self, &mut |part| {
+            let data = source
+                .range()
+                .and_then(|range| part.get(range))
+                .ok_or_else(|| crate::xml::xml_error("invalid deferred chart cache span"))?;
+            materialized = Some(crate::drawing::charts::materialize_deferred_cache(
+                data,
+                source.formula.clone(),
+            )?);
+            Ok(())
+        })?;
+        materialized.ok_or_else(|| {
+            crate::xml::xml_error("chart provider did not visit required deferred cache part")
+        })
     }
 
     fn with_deferred_indices(
         &self,
         reference: &StringReference,
         mut visit: impl FnMut(u32),
-    ) -> Option<()> {
-        let key = reference.string_cache().source_key()?;
+    ) -> Result<Option<()>, XlsxError> {
+        let Some(key) = reference.string_cache().source_key() else {
+            return Ok(None);
+        };
         let descriptors = self.descriptors.borrow();
-        let source = descriptors.get(&key)?;
+        let Some(source) = descriptors.get(&key) else {
+            return Ok(None);
+        };
         let parts = self.parts.borrow();
-        let data = parts
-            .get(source.part)?
-            .data
-            .as_deref()?
-            .get(source.range()?)?;
-        visit_deferred_indices(data, &mut visit);
-        Some(())
+        let Some(data) = parts
+            .get(source.part)
+            .and_then(|part| part.data.as_deref())
+            .and_then(|part| source.range().and_then(|range| part.get(range)))
+        else {
+            return Ok(None);
+        };
+        visit_deferred_indices(data, &mut visit)?;
+        Ok(Some(()))
     }
 
     fn clear(&self, reference: &mut StringReference) {
@@ -1614,9 +1784,9 @@ pub(crate) fn capture_chart_source_caches(
     fresh: &[usize],
     session: &mut SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
-) {
+) -> Result<(), XlsxError> {
     if fresh.is_empty() {
-        return;
+        return Ok(());
     }
     let names: HashMap<String, usize> = book
         .sheet_collection_no_check()
@@ -1642,34 +1812,42 @@ pub(crate) fn capture_chart_source_caches(
     let mut wanted: HashMap<usize, HashSet<Coordinate>> = HashMap::new();
     if classes.iter().any(|class| class & RAW_SHEET != 0) {
         for index in fresh {
+            let mut scan: Result<(), XlsxError> = Ok(());
             visit_drawing(
                 book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut(),
                 &mut |reference| {
-                    let request = Request::new(reference, &names);
-                    if let Some(index) = request
-                        .sheet
-                        .filter(|&index| classes[index] & RAW_SHEET != 0)
-                    {
-                        let mut stepper = request.range.as_ref().map(IndexedRange::stepper);
-                        let mut add_point = |point| {
-                            if let Some(coordinate) = stepper
-                                .as_mut()
-                                .and_then(|stepper| stepper.coordinate(point))
-                            {
-                                wanted.entry(index).or_default().insert(coordinate);
-                            }
-                        };
-                        if session
-                            .with_deferred_indices(reference, &mut add_point)
-                            .is_none()
+                    if scan.is_err() {
+                        return;
+                    }
+                    scan = (|| {
+                        let request = Request::new(reference, &names);
+                        if let Some(index) = request
+                            .sheet
+                            .filter(|&index| classes[index] & RAW_SHEET != 0)
                         {
-                            if let Some(source) = reference.string_cache().source() {
-                                source.indices().for_each(add_point);
+                            let mut stepper = request.range.as_ref().map(IndexedRange::stepper);
+                            let mut add_point = |point| {
+                                if let Some(coordinate) = stepper
+                                    .as_mut()
+                                    .and_then(|stepper| stepper.coordinate(point))
+                                {
+                                    wanted.entry(index).or_default().insert(coordinate);
+                                }
+                            };
+                            if session
+                                .with_deferred_indices(reference, &mut add_point)?
+                                .is_none()
+                            {
+                                if let Some(source) = reference.string_cache().source() {
+                                    source.indices().for_each(add_point);
+                                }
                             }
                         }
-                    }
+                        Ok(())
+                    })();
                 },
             );
+            scan?;
         }
     }
     #[cfg(test)]
@@ -1679,7 +1857,9 @@ pub(crate) fn capture_chart_source_caches(
     let mut streamed: HashMap<usize, HashMap<Coordinate, String>> = HashMap::new();
     if !wanted.is_empty() {
         let strings = book.shared_string_table();
-        let strings = strings.read().unwrap();
+        let strings = strings
+            .read()
+            .map_err(|error| crate::xml::xml_error(error.to_string()))?;
         for (index, coordinates) in wanted {
             let mut values = HashMap::new();
             let read = super::worksheet::read_cells_stream(
@@ -1716,89 +1896,93 @@ pub(crate) fn capture_chart_source_caches(
             );
             let mut slots = RangeSlots::default();
             let read_book: &Workbook = book;
+            let mut captured: Result<(), XlsxError> = Ok(());
             has_deferred |= visit_drawing_in_phase(&mut drawing, phase, &mut |reference| {
-                let request = Request::new(reference, &names);
-                #[cfg(test)]
-                if session.drop_next_capture_descriptor.replace(false) {
-                    if let Some(key) = reference.string_cache().source_key() {
-                        session.descriptors.borrow_mut().remove(&key);
-                    }
-                }
-                #[cfg(test)]
-                session
-                    .capture_formulas
-                    .borrow_mut()
-                    .push(reference.formula().address_str());
-                let source = session.take_for_capture(reference);
-                let Some(source) = source else {
-                    return;
-                };
-                let earlier = request
-                    .sheet
-                    .is_some_and(|index| classes[index] & (RAW_SHEET | FRESH_SHEET) == 0);
-                if earlier {
-                    report.reduced_caches += 1;
-                    report.dropped_caches += 1;
+                if captured.is_err() {
                     return;
                 }
-                let retain_shape = request
-                    .sheet
-                    .is_some_and(|index| classes[index] & RAW_SHEET != 0);
-                let slot = match &source {
-                    CapturedSource::Deferred(source) => {
-                        slots.cover_source(source, &request, read_book, &classes, &streamed)
-                    }
-                    CapturedSource::Parsed(_) => None,
-                };
-                let mut resolver = request.resolve(read_book, &classes, &streamed);
-                let remaining_points = MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points);
-                let remaining_text =
-                    MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes);
-                let reduced = match source {
-                    CapturedSource::Parsed(source) => {
-                        match source.reduce_borrowed(
-                            request.expected_points(),
-                            retain_shape,
-                            |point, scratch| {
-                                slots.display(slot, &mut resolver, point, scratch, &mut formats)
-                            },
-                        ) {
-                            Some(cache) => {
-                                let points = cache.stored_points();
-                                let text_bytes = cache.stored_text_bytes();
-                                DeferredReduction::Candidate {
-                                    source: (points <= remaining_points
-                                        && text_bytes <= remaining_text)
-                                        .then_some(cache),
-                                    points,
-                                    text_bytes,
-                                    #[cfg(test)]
-                                    rejection_backing: RejectionBacking::default(),
-                                }
-                            }
-                            None => DeferredReduction::Reduced,
+                captured = (|| {
+                    let request = Request::new(reference, &names);
+                    #[cfg(test)]
+                    if session.drop_next_capture_descriptor.replace(false) {
+                        if let Some(key) = reference.string_cache().source_key() {
+                            session.descriptors.borrow_mut().remove(&key);
                         }
                     }
-                    CapturedSource::Deferred(mut source) => {
-                        let Some(target) = session.part_target(source.part) else {
-                            debug_assert!(false, "invalid deferred chart cache span");
-                            return;
-                        };
-                        let mut reduced = None;
-                        let class = (
-                            request.sheet,
-                            request.sheet.map_or(0, |index| classes[index]),
-                            resolver.classification(),
-                        );
-                        let budget = ReplayBudget {
-                            expected_points: request.expected_points(),
-                            retain_shape,
-                            points: remaining_points,
-                            text: remaining_text,
-                        };
-                        provider.with_memoized_part(&target, session, &mut |part, memo| {
-                            if let Some(part) = part {
-                                reduced = replay_with_memo(
+                    #[cfg(test)]
+                    session
+                        .capture_formulas
+                        .borrow_mut()
+                        .push(reference.formula().address_str());
+                    let source = session.take_for_capture(reference);
+                    let Some(source) = source else {
+                        return Ok(());
+                    };
+                    let earlier = request
+                        .sheet
+                        .is_some_and(|index| classes[index] & (RAW_SHEET | FRESH_SHEET) == 0);
+                    if earlier {
+                        report.reduced_caches += 1;
+                        report.dropped_caches += 1;
+                        return Ok(());
+                    }
+                    let retain_shape = request
+                        .sheet
+                        .is_some_and(|index| classes[index] & RAW_SHEET != 0);
+                    let slot = match &source {
+                        CapturedSource::Deferred(source) => {
+                            slots.cover_source(source, &request, read_book, &classes, &streamed)
+                        }
+                        CapturedSource::Parsed(_) => None,
+                    };
+                    let mut resolver = request.resolve(read_book, &classes, &streamed);
+                    let remaining_points =
+                        MAX_SOURCE_CACHE_POINTS.saturating_sub(report.kept_points);
+                    let remaining_text =
+                        MAX_SOURCE_CACHE_TEXT_BYTES.saturating_sub(report.kept_text_bytes);
+                    let reduced = match source {
+                        CapturedSource::Parsed(source) => {
+                            match source.reduce_borrowed(
+                                request.expected_points(),
+                                retain_shape,
+                                |point, scratch| {
+                                    slots.display(slot, &mut resolver, point, scratch, &mut formats)
+                                },
+                            ) {
+                                Some(cache) => {
+                                    let points = cache.stored_points();
+                                    let text_bytes = cache.stored_text_bytes();
+                                    DeferredReduction::Candidate {
+                                        source: (points <= remaining_points
+                                            && text_bytes <= remaining_text)
+                                            .then_some(cache),
+                                        points,
+                                        text_bytes,
+                                        #[cfg(test)]
+                                        rejection_backing: RejectionBacking::default(),
+                                    }
+                                }
+                                None => DeferredReduction::Reduced,
+                            }
+                        }
+                        CapturedSource::Deferred(mut source) => {
+                            let target = session.part_target(source.part).ok_or_else(|| {
+                                crate::xml::xml_error("invalid deferred chart cache span")
+                            })?;
+                            let mut reduced = None;
+                            let class = (
+                                request.sheet,
+                                request.sheet.map_or(0, |index| classes[index]),
+                                resolver.classification(),
+                            );
+                            let budget = ReplayBudget {
+                                expected_points: request.expected_points(),
+                                retain_shape,
+                                points: remaining_points,
+                                text: remaining_text,
+                            };
+                            provider.with_memoized_part(&target, session, &mut |part, memo| {
+                                reduced = Some(replay_with_memo(
                                     part,
                                     memo,
                                     &mut source,
@@ -1813,52 +1997,58 @@ pub(crate) fn capture_chart_source_caches(
                                             &mut formats,
                                         )
                                     },
-                                );
+                                )?);
+                                Ok(())
+                            })?;
+                            let reduced = reduced.ok_or_else(|| {
+                                crate::xml::xml_error(
+                                    "chart provider did not visit required cache replay part",
+                                )
+                            })?;
+                            #[cfg(test)]
+                            {
+                                *session.rejection_backing.borrow_mut() =
+                                    reduced.rejection_backing();
                             }
-                        });
-                        let Some(reduced) = reduced else {
-                            return;
-                        };
-                        #[cfg(test)]
-                        {
-                            *session.rejection_backing.borrow_mut() = reduced.rejection_backing();
+                            reduced
                         }
-                        reduced
+                    };
+                    match reduced {
+                        DeferredReduction::Reduced => {
+                            report.reduced_caches += 1;
+                            report.dropped_caches += 1;
+                        }
+                        DeferredReduction::Candidate {
+                            source: Some(cache),
+                            points,
+                            text_bytes,
+                            ..
+                        } => {
+                            report.kept_caches += 1;
+                            report.kept_points += points;
+                            report.kept_text_bytes += text_bytes;
+                            session.replace(reference, cache);
+                        }
+                        DeferredReduction::Candidate {
+                            source: None,
+                            points,
+                            text_bytes,
+                            ..
+                        } => {
+                            report.dropped_caches += 1;
+                            report.over_cap_caches += 1;
+                            report.over_cap_points = report.over_cap_points.saturating_add(points);
+                            report.over_cap_text_bytes =
+                                report.over_cap_text_bytes.saturating_add(text_bytes);
+                        }
                     }
-                };
-                match reduced {
-                    DeferredReduction::Reduced => {
-                        report.reduced_caches += 1;
-                        report.dropped_caches += 1;
-                    }
-                    DeferredReduction::Candidate {
-                        source: Some(cache),
-                        points,
-                        text_bytes,
-                        ..
-                    } => {
-                        report.kept_caches += 1;
-                        report.kept_points += points;
-                        report.kept_text_bytes += text_bytes;
-                        session.replace(reference, cache);
-                    }
-                    DeferredReduction::Candidate {
-                        source: None,
-                        points,
-                        text_bytes,
-                        ..
-                    } => {
-                        report.dropped_caches += 1;
-                        report.over_cap_caches += 1;
-                        report.over_cap_points = report.over_cap_points.saturating_add(points);
-                        report.over_cap_text_bytes =
-                            report.over_cap_text_bytes.saturating_add(text_bytes);
-                    }
-                }
+                    Ok(())
+                })();
             });
             drop(slots);
             *book.sheet_collection_unchecked_mut()[*index].worksheet_drawing_mut() = drawing;
             provider.finish_sheet(session);
+            captured?;
         }
     }
     // Deferred descriptors remain guarded between phases. Audit the complete
@@ -1871,6 +2061,8 @@ pub(crate) fn capture_chart_source_caches(
         *worksheet.worksheet_drawing_mut() = drawing;
     }
     *book.chart_source_cache_report_mut() = report;
+    crate::drawing::charts::chart_ex_values::capture_imported_caches(book, fresh);
+    Ok(())
 }
 
 /// Visits, in a fixed order, every string reference of the charts of a
@@ -1890,30 +2082,34 @@ fn visit_drawing_in_phase(
     visit: &mut dyn FnMut(&mut StringReference),
 ) -> bool {
     let mut deferred = false;
-    for chart in drawing.chart_collection_mut() {
-        deferred |= visit_string_references_in_phase(
-            chart.chart_space_mut(),
-            phase,
-            &mut |_, reference| {
-                visit(reference);
-            },
-        );
-    }
-    for anchor in drawing.one_cell_anchor_collection_mut() {
-        if let Some(frame) = anchor.graphic_frame_mut() {
-            deferred |= visit_string_references_in_phase(
-                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
-                phase,
-                &mut |_, reference| visit(reference),
-            );
-        }
-    }
-    for frame in drawing.graphic_frame_collection_mut() {
+    let mut frame = |_, frame: &mut crate::drawing::spreadsheet::GraphicFrame| {
         deferred |= visit_string_references_in_phase(
             frame.graphic_mut().graphic_data_mut().chart_space_mut(),
             phase,
             &mut |_, reference| visit(reference),
         );
+    };
+    for chart in drawing.chart_collection_mut() {
+        chart
+            .two_cell_anchor_mut()
+            .visit_standard_frames_mut(&mut frame);
+    }
+    for anchor in drawing.one_cell_anchor_collection_mut() {
+        anchor.visit_standard_frames_mut(&mut frame);
+    }
+    for anchor in drawing.two_cell_anchor_collection_mut() {
+        anchor.visit_standard_frames_mut(&mut frame);
+    }
+    for anchor in drawing.absolute_anchors_mut() {
+        if let Some(content) = anchor.content_mut() {
+            content.visit_standard_frames_mut(
+                &crate::drawing::spreadsheet::DrawingFrameKey::primary(content.id()),
+                &mut frame,
+            );
+        }
+    }
+    for chart in drawing.extended_charts_mut() {
+        chart.visit_standard_frames_mut(&mut frame);
     }
     deferred
 }
@@ -1925,14 +2121,13 @@ fn visit_image_frames(
     visit: &mut dyn FnMut(&mut StringReference),
 ) {
     for image in drawing.image_collection_mut() {
-        if let Some(frame) = image
-            .one_cell_anchor_mut()
-            .and_then(|anchor| anchor.graphic_frame_mut())
-        {
-            visit_string_references(
-                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
-                &mut |_, reference| visit(reference),
-            );
+        if let Some(anchor) = image.one_cell_anchor_mut() {
+            anchor.visit_standard_frames_mut(&mut |_, frame| {
+                visit_string_references(
+                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                    &mut |_, reference| visit(reference),
+                );
+            });
         }
     }
 }
@@ -1951,12 +2146,13 @@ fn audit_surviving_sources(
     visit_drawing(drawing, &mut audit);
     visit_image_frames(drawing, &mut audit);
     for ole in ole_objects.ole_object_mut() {
-        if let Some(frame) = ole.two_cell_anchor_mut().graphic_frame_mut() {
-            visit_string_references(
-                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
-                &mut |_, reference| audit(reference),
-            );
-        }
+        ole.two_cell_anchor_mut()
+            .visit_standard_frames_mut(&mut |_, frame| {
+                visit_string_references(
+                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                    &mut |_, reference| audit(reference),
+                );
+            });
     }
 }
 
@@ -2077,6 +2273,13 @@ impl<'a> DisplayResolver<'a> {
 
 #[cfg(test)]
 mod tests {
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_owned(),
+        }
+    }
+
     #[cfg(feature = "serde")]
     mod cache_admission_order;
     mod prepared_formats;
@@ -2156,9 +2359,12 @@ mod tests {
             ("visited.xml".into(), (b"visited".to_vec(), None)),
             ("pending.xml".into(), (b"pending".to_vec(), None)),
         ]));
-        provider.with_part("visited.xml", &session, &mut |data| {
-            assert_eq!(data, Some(b"visited".as_slice()));
-        });
+        provider
+            .with_part("visited.xml", &session, &mut |data| {
+                assert_eq!(data, b"visited".as_slice());
+                Ok(())
+            })
+            .unwrap();
         provider.finish_sheet(&session);
         assert_eq!(
             provider.recover_part("visited.xml", &session).as_deref(),
@@ -2196,7 +2402,9 @@ mod tests {
             panic!("missing string reference");
         };
         let mut reference = StringReference::default();
-        reference.set_attributes(&mut reader, &root, session);
+        reference
+            .set_attributes(&mut reader, &root, session)
+            .unwrap();
         session.end_chart_part();
         reference
     }
@@ -2238,15 +2446,21 @@ mod tests {
                 crate::drawing::charts::DeferredHydrationSourceBoxObservation::count(),
                 0
             );
-            let source = book
+            let group = book
                 .sheet(0)
                 .unwrap()
                 .worksheet_drawing()
                 .image_collection()[0]
                 .one_cell_anchor()
                 .unwrap()
-                .graphic_frame()
-                .unwrap()
+                .group_shape()
+                .unwrap();
+            let crate::drawing::spreadsheet::DrawingObject::GraphicFrame(frame) =
+                &group.content()[0]
+            else {
+                panic!("group must contain the native chart frame");
+            };
+            let source = frame
                 .graphic()
                 .graphic_data()
                 .chart_space()
@@ -2300,7 +2514,7 @@ mod tests {
         let CapturedSource::Deferred(admitted) = admitted else {
             panic!("deferred source was materialized");
         };
-        session.replace(&mut reference, session.materialize(admitted));
+        session.replace(&mut reference, session.materialize(admitted).unwrap());
 
         let key = reference.string_cache().source_key().unwrap();
         assert!(!session.descriptors.borrow().contains_key(&key));
@@ -2316,13 +2530,14 @@ mod tests {
             &[0],
             &mut unaffected_session,
             &mut unaffected_provider,
-        );
+        )
+        .unwrap();
 
         let (mut book, mut session) = materialize_descriptor_loss();
         session.arm_descriptor_loss();
         let mut provider = lazy_provider();
         let failure = catch_unwind(AssertUnwindSafe(|| {
-            capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+            capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         }))
         .expect_err("the armed deferred session must lose its own descriptor");
         assert!(session.descriptor_loss_was_consumed());
@@ -2347,20 +2562,21 @@ mod tests {
             crate::reader::xlsx::read_reader(Cursor::new(grouped_one_cell_audit_package()), true)
                 .unwrap();
         audit_sheet(&mut image);
-        poison_first_reference(
-            image
-                .sheet_mut(0)
-                .unwrap()
-                .worksheet_drawing_mut()
-                .image_collection_mut()[0]
-                .one_cell_anchor_mut()
-                .unwrap()
-                .graphic_frame_mut()
-                .unwrap()
-                .graphic_mut()
-                .graphic_data_mut()
-                .chart_space_mut(),
-        );
+        let group = image
+            .sheet_mut(0)
+            .unwrap()
+            .worksheet_drawing_mut()
+            .image_collection_mut()[0]
+            .one_cell_anchor_mut()
+            .unwrap()
+            .group_shape_mut()
+            .unwrap();
+        let crate::drawing::spreadsheet::DrawingObject::GraphicFrame(frame) =
+            &mut group.content_mut()[0]
+        else {
+            panic!("group must contain the native chart frame");
+        };
+        poison_first_reference(frame.graphic_mut().graphic_data_mut().chart_space_mut());
         assert!(catch_unwind(AssertUnwindSafe(|| audit_sheet(&mut image))).is_err());
 
         let mut ole =
@@ -2376,6 +2592,45 @@ mod tests {
                 .chart_space_mut(),
         );
         assert!(catch_unwind(AssertUnwindSafe(|| audit_sheet(&mut ole))).is_err());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn unwrapped_ole_chart_sources_materialize_before_audit() {
+        let input = rewrite_package_part(&ole_audit_package(), "xl/drawings/drawing1.xml", |xml| {
+            let root = xml.find("<xdr:wsDr").unwrap();
+            let root_end = root + xml[root..].find('>').unwrap() + 1;
+            let start = xml.find("<xdr:twoCellAnchor").unwrap();
+            let end = start
+                + xml[start..].find("</xdr:twoCellAnchor>").unwrap()
+                + "</xdr:twoCellAnchor>".len();
+            format!("{}{}</xdr:wsDr>", &xml[..root_end], &xml[start..end])
+        });
+        for eager in [false, true] {
+            let mut book = crate::reader::xlsx::read_reader(Cursor::new(&input), eager).unwrap();
+            book.try_read_sheet(0).unwrap();
+            audit_sheet(&mut book);
+            let frame = book
+                .sheet_mut(0)
+                .unwrap()
+                .ole_objects_mut()
+                .ole_object_mut()[0]
+                .two_cell_anchor_mut()
+                .graphic_frame_mut()
+                .unwrap();
+            let mut sources = 0;
+            visit_string_references(
+                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                &mut |_, reference| {
+                    let source = reference.string_cache().source().unwrap();
+                    assert_eq!(source.formula(), "Sheet1!$A$1");
+                    assert_eq!(source.point_count(), Some(1));
+                    assert!(!reference.string_cache().source_is_deferred());
+                    sources += 1;
+                },
+            );
+            assert_eq!(sources, 1);
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -2412,7 +2667,7 @@ mod tests {
         let (mut book, mut session) = materialize_descriptor_loss();
         session.arm_descriptor_loss();
         let mut provider = lazy_provider();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         assert!(session.descriptor_loss_was_consumed());
         let reference = book.sheet(0).unwrap().chart_collection()[0]
             .chart_space()
@@ -2581,13 +2836,13 @@ mod tests {
                 let start = xml.find("<xdr:to>").unwrap();
                 let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
                 format!(
-                    "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" \
-                     \\
-                 name=\"Group \\
-                 1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp>{}",
+                    "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr \
+                     id=\"9001\" name=\"Group \
+                     1\"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr/>{}",
                     &xml[..start],
                     &xml[end..]
                 )
+                .replace("</xdr:graphicFrame>", "</xdr:graphicFrame></xdr:grpSp>")
                 .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
             },
         )
@@ -2620,7 +2875,7 @@ mod tests {
             &mut provider,
         )
         .unwrap();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         (book, session)
     }
 
@@ -2777,7 +3032,7 @@ mod tests {
             &mut provider,
         )
         .unwrap();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         let wanted = session.wanted_coordinates().unwrap();
         assert_eq!(wanted.len(), 1);
         assert_eq!(wanted[&1], HashSet::from([(1, 1)]));
@@ -2882,7 +3137,7 @@ mod tests {
             &mut provider,
         )
         .unwrap();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         assert_eq!(session.capture_formulas(), ["Sheet1!$B$1", "Sheet1!$A$1"]);
         let report = book.chart_source_cache_report();
         assert_eq!(
@@ -2945,42 +3200,50 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn unreadable_chart_parts_discard_partial_bytes() {
-        fn corrupt_chart_crc(bytes: &[u8]) -> Vec<u8> {
-            let mut corrupt = bytes.to_vec();
-            let mut offset = 0;
-            while offset + 46 <= corrupt.len() {
-                if corrupt[offset..].starts_with(b"PK\x01\x02") {
-                    let name_len =
-                        u16::from_le_bytes([corrupt[offset + 28], corrupt[offset + 29]]) as usize;
-                    let extra_len =
-                        u16::from_le_bytes([corrupt[offset + 30], corrupt[offset + 31]]) as usize;
-                    let comment_len =
-                        u16::from_le_bytes([corrupt[offset + 32], corrupt[offset + 33]]) as usize;
-                    let name_start = offset + 46;
-                    let name_end = name_start + name_len;
-                    if corrupt[name_start..name_end] == *b"xl/charts/chart1.xml" {
-                        corrupt[offset + 16..offset + 20].copy_from_slice(&0u32.to_le_bytes());
-                        return corrupt;
-                    }
-                    offset = name_end + extra_len + comment_len;
-                } else {
-                    offset += 1;
+    fn corrupt_chart_crc(bytes: &[u8]) -> Vec<u8> {
+        let mut corrupt = bytes.to_vec();
+        let mut offset = 0;
+        while offset + 46 <= corrupt.len() {
+            if corrupt[offset..].starts_with(b"PK\x01\x02") {
+                let name_len =
+                    u16::from_le_bytes([corrupt[offset + 28], corrupt[offset + 29]]) as usize;
+                let extra_len =
+                    u16::from_le_bytes([corrupt[offset + 30], corrupt[offset + 31]]) as usize;
+                let comment_len =
+                    u16::from_le_bytes([corrupt[offset + 32], corrupt[offset + 33]]) as usize;
+                let name_start = offset + 46;
+                let name_end = name_start + name_len;
+                if corrupt[name_start..name_end] == *b"xl/charts/chart1.xml" {
+                    corrupt[offset + 16..offset + 20].copy_from_slice(&0u32.to_le_bytes());
+                    return corrupt;
                 }
+                offset = name_end + extra_len + comment_len;
+            } else {
+                offset += 1;
             }
-            panic!("chart entry was not found in the ZIP directory");
         }
+        panic!("chart entry was not found in the ZIP directory");
+    }
 
-        let bytes = corrupt_chart_crc(&deferred_cache_package(
+    #[test]
+    fn unreadable_chart_parts_return_errors_and_release_partial_buffers() {
+        let valid = deferred_cache_package(
             "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>A</c:v></c:pt></c:strCache>",
-        ));
+        );
+        let bytes = corrupt_chart_crc(&valid);
         reset_chart_part_buffer_observation();
-        crate::reader::xlsx::read_reader(Cursor::new(&bytes), true).unwrap();
-        assert!(chart_part_buffer_observation().failed_reads_have_no_buffer);
+        let eager = catch_unwind(|| crate::reader::xlsx::read_reader(Cursor::new(&bytes), true));
+        let error = eager.expect("CRC errors must not panic").unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::XlsxErrorKind::Io | crate::XlsxErrorKind::Zip
+        ));
+        let observation = chart_part_buffer_observation();
+        assert!(observation.failed_reads_have_no_buffer);
+        assert_eq!(observation.eager_live, 0);
 
         let path = std::env::temp_dir().join(format!(
-            "umya-chart-part-observation-{}-{}.xlsx",
+            "umya-chart-transport-{}-{}.xlsx",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2990,11 +3253,123 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         reset_chart_part_buffer_observation();
         let mut lazy = crate::reader::xlsx::lazy_read(&path).unwrap();
-        lazy.sheet_mut(0).unwrap();
-        std::fs::remove_file(path).unwrap();
+        let original = raw_payloads(&lazy, 0);
+        let report = report_of(&lazy);
+        for _ in 0..2 {
+            let read = catch_unwind(AssertUnwindSafe(|| lazy.try_read_sheet(0).map(|_| ())));
+            let error = read.expect("CRC errors must not panic").unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                crate::XlsxErrorKind::Io | crate::XlsxErrorKind::Zip
+            ));
+            assert!(!lazy.sheet_collection_no_check()[0].is_deserialized());
+            assert_eq!(raw_payloads(&lazy, 0), original);
+            assert_eq!(report_of(&lazy), report);
+        }
         let observation = chart_part_buffer_observation();
         assert!(observation.lazy_source_reads_have_no_buffer);
         assert!(observation.lazy_pending_parts_are_exact);
+        std::fs::write(&path, &valid).unwrap();
+        lazy.try_read_sheet(0).unwrap();
+        assert!(lazy.sheet_collection_no_check()[0].is_deserialized());
+        assert_eq!(lazy.chart_source_cache_report().kept_caches, 1);
+        std::fs::remove_file(path).unwrap();
+        assert!(crate::reader::xlsx::read_reader(Cursor::new(valid), true).is_ok());
+    }
+
+    #[test]
+    fn missing_required_chart_parts_return_errors_without_committing_raw_sheets() {
+        let valid = deferred_cache_package("<c:strCache/>");
+        let mut archive = zip::ZipArchive::new(Cursor::new(valid)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().unwrap().into_owned();
+            if name == "xl/charts/chart1.xml" {
+                continue;
+            }
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            output
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&data).unwrap();
+        }
+        let source = output.finish().unwrap().into_inner();
+        let eager = catch_unwind(|| crate::reader::xlsx::read_reader(Cursor::new(&source), true));
+        assert!(eager.expect("missing chart must not panic").is_err());
+        let mut lazy = crate::reader::xlsx::read_reader(Cursor::new(source), false).unwrap();
+        let original = raw_payloads(&lazy, 0);
+        let report = report_of(&lazy);
+        for _ in 0..2 {
+            let read = catch_unwind(AssertUnwindSafe(|| lazy.try_read_sheet(0).map(|_| ())));
+            assert!(read.expect("missing chart must not panic").is_err());
+            assert!(!lazy.sheet_collection_no_check()[0].is_deserialized());
+            assert_eq!(raw_payloads(&lazy, 0), original);
+            assert_eq!(report_of(&lazy), report);
+        }
+    }
+
+    #[test]
+    fn chart_source_io_errors_restore_visited_siblings_and_allow_repair() {
+        let bytes = merged_title_capture_package();
+        let path = std::env::temp_dir().join(format!(
+            "umya-chart-source-{}-{}.xlsx",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let missing = path.with_extension("missing");
+        let mut book = crate::reader::xlsx::lazy_read(&path).unwrap();
+        let mut raw = book.sheet_collection_unchecked_mut()[0].take_raw_data_of_worksheet();
+        let mut changed = false;
+        for list in raw.relationships_list_mut() {
+            for edge in list.relationship_list_mut() {
+                if edge.raw_file().file_target() == "xl/charts/chart2.xml" {
+                    // Leave chart1 resident, but require chart2 to reacquire
+                    // its bytes through the source-backed
+                    // lazy transport path.
+                    edge.raw_file_mut().file_data_mut().clear();
+                    edge.raw_file_mut().set_source_file(&missing);
+                    changed = true;
+                }
+            }
+        }
+        assert!(changed);
+        book.sheet_collection_unchecked_mut()[0].set_raw_data_of_worksheet(raw);
+        let original = raw_payloads(&book, 0);
+        let report = report_of(&book);
+        reset_chart_part_buffer_observation();
+        for _ in 0..2 {
+            let result = catch_unwind(AssertUnwindSafe(|| book.try_read_sheet(0).map(|_| ())));
+            let error = result
+                .expect("source I/O errors must not panic")
+                .unwrap_err();
+            assert_eq!(error.kind(), crate::XlsxErrorKind::Io);
+            assert!(!book.sheet_collection_no_check()[0].is_deserialized());
+            assert_eq!(raw_payloads(&book, 0), original);
+            assert_eq!(report_of(&book), report);
+            let failed_part = book.sheet_collection_no_check()[0]
+                .raw_data_of_worksheet()
+                .relationships_list()
+                .iter()
+                .flat_map(|list| list.relationship_list())
+                .map(|edge| edge.raw_file())
+                .find(|file| file.file_target() == "xl/charts/chart2.xml")
+                .unwrap();
+            assert_eq!(failed_part.source_file(), Some(missing.as_path()));
+        }
+        let observation = chart_part_buffer_observation();
+        assert!(observation.lazy_pending_parts_are_exact);
+        std::fs::write(&missing, &bytes).unwrap();
+        book.try_read_sheet(0).unwrap();
+        assert!(book.sheet_collection_no_check()[0].is_deserialized());
+        assert_eq!(book.chart_source_cache_report().kept_caches, 2);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(missing).unwrap();
     }
 
     fn merged_title_capture_package() -> Vec<u8> {
@@ -3101,12 +3476,13 @@ mod tests {
                 let start = xml.find("<xdr:to>").unwrap();
                 let end = start + xml[start..].find("</xdr:to>").unwrap() + "</xdr:to>".len();
                 format!(
-                    "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id=\"1\" \
-                     name=\"Group \
-                     1\"/><xdr:cNvGrpSpPr/><xdr:nvPr/></xdr:nvGrpSpPr><xdr:grpSpPr/></xdr:grpSp>{}",
+                    "{}<xdr:ext cx=\"1\" cy=\"1\"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr \
+                     id=\"9001\" name=\"Group \
+                     1\"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr/>{}",
                     &xml[..start],
                     &xml[end..]
                 )
+                .replace("</xdr:graphicFrame>", "</xdr:graphicFrame></xdr:grpSp>")
                 .replace("xdr:twoCellAnchor", "xdr:oneCellAnchor")
             },
         )
@@ -3136,8 +3512,14 @@ mod tests {
             .two_cell_anchor()
             .clone();
         let mut object = OleObject::default();
+        object.set_shape_id(4501);
         object.set_object_extension("bin");
         object.set_object_data([0]);
+        object
+            .embedded_object_properties_mut()
+            .image_mut()
+            .set_image_name("OLE.png")
+            .set_image_data(include_bytes!("../../../images/sample1.png"));
         object.set_two_cell_anchor(anchor);
         book.sheet_mut(0)
             .unwrap()
@@ -3146,7 +3528,10 @@ mod tests {
         let mut bytes = Vec::new();
         crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
         rewrite_package_part(&bytes, "xl/drawings/drawing1.xml", |xml| {
-            let start = xml.find("<xdr:twoCellAnchor>").unwrap();
+            let identity = xml.find("spid=\"_x0000_s4501\"").unwrap();
+            let start = xml[..identity].rfind("<xdr:twoCellAnchor").unwrap();
+            let root = xml.find("<xdr:wsDr").unwrap();
+            let root_end = root + xml[root..].find('>').unwrap() + 1;
             let end = start
                 + xml[start..].find("</xdr:twoCellAnchor>").unwrap()
                 + "</xdr:twoCellAnchor>".len();
@@ -3154,7 +3539,7 @@ mod tests {
             let drawing_end = xml.find("</xdr:wsDr>").unwrap();
             format!(
                 "{}<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"><mc:Choice xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" Requires=\"a14\">{anchor}</mc:Choice></mc:AlternateContent>{}",
-                &xml[..start],
+                &xml[..root_end],
                 &xml[drawing_end..]
             )
         })
@@ -3198,7 +3583,7 @@ mod tests {
         book.sheet_collection_unchecked_mut()[0].add_chart(chart);
         let mut session = SourceCacheSession::immediate();
         let mut provider = lazy_provider();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         let chart = &book.sheet_collection_no_check()[0].chart_collection()[0];
         let reference = chart
             .chart_space()
@@ -3260,7 +3645,9 @@ mod tests {
         };
         let mut reference = StringReference::default();
         let session = SourceCacheSession::immediate();
-        reference.set_attributes(&mut reader, &root, &session);
+        reference
+            .set_attributes(&mut reader, &root, &session)
+            .unwrap();
         let mut category = CategoryAxisData::default();
         category.set_string_reference(reference);
         let mut chart = Chart::default();
@@ -3315,7 +3702,7 @@ mod tests {
         );
         let mut session = SourceCacheSession::immediate();
         let mut provider = lazy_provider();
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         let drawing = book.sheet_collection_no_check()[0].worksheet_drawing();
         assert_eq!(drawing.chart_collection().len(), 1);
         assert_eq!(drawing.one_cell_anchor_collection().len(), 1);
@@ -3482,26 +3869,17 @@ mod tests {
         .unwrap();
         let parsed = crate::drawing::charts::work_counts();
         book.chart_source_cache_report_mut().kept_points = kept_points_before;
-        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+        capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider).unwrap();
         (book, session, parsed, crate::drawing::charts::work_counts())
     }
 
-    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        match payload.downcast::<String>() {
-            Ok(message) => *message,
-            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_string(),
-        }
-    }
-
-    fn unwrap_message(error: &dyn std::fmt::Debug) -> String {
-        format!("called `Result::unwrap()` on an `Err` value: {error:?}")
-    }
-
     fn read_failure(bytes: Vec<u8>) -> String {
-        use std::panic::catch_unwind as unwind;
         let outcome =
-            unwind(|| crate::reader::xlsx::read_reader(Cursor::new(bytes), true).map(|_| ()));
-        panic_message(outcome.expect_err("the read should fail"))
+            catch_unwind(|| crate::reader::xlsx::read_reader(Cursor::new(bytes), true).map(|_| ()))
+                .expect("fallible workbook read must not panic");
+        let error = outcome.expect_err("the read should fail");
+        assert_eq!(error.kind(), crate::XlsxErrorKind::Xml);
+        error.message().expect("decoder error message").to_owned()
     }
 
     /// Replaces the first occurrence of `from` in a package part by `to`.
@@ -3783,7 +4161,7 @@ mod tests {
             assert_eq!(reference.cached_value(), cached, "{name}: cached name");
             if let Some(summary) = descriptor_summary(&session, &reference) {
                 let span = descriptor_span(&session, &reference);
-                let scanned = deferred_shape(&span, usize::MAX);
+                let scanned = deferred_shape(&span, usize::MAX).unwrap();
                 let dense = dense_shape(summary, usize::MAX);
                 assert_eq!(scanned.point_count, dense.point_count, "{name}: count");
                 assert_eq!(scanned.run_charge, dense.run_charge, "{name}: charge");
@@ -3857,7 +4235,9 @@ mod tests {
         );
         assert_eq!(
             read_failure(deferred_cache_package(cache)),
-            unwrap_message(&quick_xml::escape::unescape("&bogus;").unwrap_err())
+            quick_xml::escape::unescape("&bogus;")
+                .unwrap_err()
+                .to_string()
         );
     }
 
@@ -3877,9 +4257,10 @@ mod tests {
         );
         assert_eq!(
             read_failure(bytes),
-            unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+            quick_xml::encoding::EncodingError::Utf8(
                 std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err()
-            ))
+            )
+            .to_string()
         );
     }
 
@@ -3894,16 +4275,17 @@ mod tests {
             reader.read_event_into(&mut buffer).unwrap(),
             Event::Start(_)
         ));
-        use std::panic::{
-            AssertUnwindSafe as Safe,
-            catch_unwind as unwind,
-        };
-        let outcome = unwind(Safe(|| {
-            crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, "F".into()).0
-        }));
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, "F".into())
+        }))
+        .expect("fallible cache read must not panic");
+        let error = outcome.expect_err("invalid UTF-8 point index must fail");
+        assert_eq!(error.kind(), crate::XlsxErrorKind::Xml);
         assert_eq!(
-            panic_message(outcome.expect_err("the read should fail")),
-            unwrap_message(&String::from_utf8(vec![0xFF]).unwrap_err())
+            error.message().expect("attribute conversion error"),
+            std::str::from_utf8(std::hint::black_box(b"\xFF"))
+                .unwrap_err()
+                .to_string()
         );
     }
 
@@ -4083,6 +4465,7 @@ mod tests {
         let formula = String::from("Sheet1!$A$1");
         let ((name, _, summary), seen) = crate::test_alloc::observe(|| {
             crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, formula)
+                .unwrap()
         });
         assert_eq!(name.as_deref(), Some("V00000"));
         assert_eq!(
@@ -4115,6 +4498,7 @@ mod tests {
         let formula = String::from("Sheet1!$A$1");
         let ((name, _, summary), seen) = crate::test_alloc::observe(|| {
             crate::drawing::charts::StringCache::set_deferred_attributes(&mut reader, formula)
+                .unwrap()
         });
         assert_eq!(name.as_deref(), Some("A&BB<C"));
         assert_eq!(
@@ -4138,7 +4522,7 @@ mod tests {
     fn shape_scan_allocates_only_its_runs() {
         let cache = labeled_cache((0..POINTS).map(|index| index * 2), POINTS as usize);
         let (shape, seen) =
-            crate::test_alloc::observe(|| deferred_shape(cache.as_bytes(), usize::MAX));
+            crate::test_alloc::observe(|| deferred_shape(cache.as_bytes(), usize::MAX).unwrap());
         assert_eq!(shape.index_runs.as_ref().unwrap().len(), POINTS as usize);
         assert_eq!(shape.run_charge, POINTS as usize);
         // Event and skip buffers, the runs, the point count text, parser state.
@@ -4154,7 +4538,7 @@ mod tests {
         let cache = labeled_cache((0..POINTS).rev(), POINTS as usize);
         let mut visited = 0u32;
         let ((), seen) = crate::test_alloc::observe(|| {
-            visit_deferred_indices(cache.as_bytes(), |_| visited += 1);
+            visit_deferred_indices(cache.as_bytes(), |_| visited += 1).unwrap();
         });
         assert_eq!(visited, POINTS);
         // Event and skip buffers, parser state.
@@ -4266,6 +4650,7 @@ mod tests {
                             budget.text,
                             display,
                         )
+                        .unwrap()
                     }
                 });
                 assert_eq!(
@@ -4319,6 +4704,7 @@ mod tests {
                 usize::MAX,
                 |index, _| Some(CacheDisplay::Borrowed(&displays[index as usize])),
             )
+            .unwrap()
         });
         let DeferredReduction::Candidate {
             source: Some(kept),
@@ -4406,6 +4792,7 @@ mod tests {
                     usize::MAX,
                     |index, scratch| resolver.display(index, scratch, &mut formats),
                 )
+                .unwrap()
             });
             assert!(matches!(reduced, DeferredReduction::Reduced), "{code:?}");
             // Four <=32-byte buffers (outer events, point events, raw text,
@@ -4462,6 +4849,7 @@ mod tests {
                     }))
                 },
             )
+            .unwrap()
         });
         assert!(matches!(reduced, DeferredReduction::Reduced));
         // Raw text needs <1536 bytes plus its closing tag, capacity <=3072.
@@ -4558,7 +4946,9 @@ mod tests {
                     match reader.read_event_into(&mut buffer).unwrap() {
                         Event::Start(root) if local_name(root.name().into_inner()) == b"strRef" => {
                             let mut reference = StringReference::default();
-                            reference.set_attributes(&mut reader, &root, &session);
+                            reference
+                                .set_attributes(&mut reader, &root, &session)
+                                .unwrap();
                             book.sheet_mut(0)
                                 .unwrap()
                                 .add_chart(chart_with_reference(reference));
@@ -4570,7 +4960,8 @@ mod tests {
                 session.end_chart_part();
                 let mut provider = lazy_provider();
                 let fresh = if raw { vec![0] } else { vec![0, 1] };
-                capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider);
+                capture_chart_source_caches(&mut book, &fresh, &mut session, &mut provider)
+                    .unwrap();
                 let mut sources = Vec::new();
                 for chart in book.sheet_collection_no_check()[0].chart_collection() {
                     visit_string_references(
@@ -4719,7 +5110,8 @@ mod tests {
                         .unwrap()
                         .add_chart(chart_with_reference(reference));
                     let mut provider = lazy_provider();
-                    capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider);
+                    capture_chart_source_caches(&mut book, &[0], &mut session, &mut provider)
+                        .unwrap();
                     let source = category_source(&book)
                         .unwrap_or_else(|| panic!("{mode}: raw source shape missing"));
                     assert_eq!(source.formula(), "Data!A1:A2", "{mode}");
@@ -4763,6 +5155,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chart_part_providers_propagate_visitor_errors_and_recover_owned_bytes() {
+        let session = SourceCacheSession::deferred();
+        let bytes = b"required chart bytes";
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("part.xml", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+        let mut archive = zip::ZipArchive::new(writer.finish().unwrap()).unwrap();
+        let mut eager = EagerChartPartProvider::new(&mut archive);
+        let mut lazy = LazyChartPartProvider::new(HashMap::from([(
+            "part.xml".into(),
+            (bytes.to_vec(), None),
+        )]));
+        let providers: [&mut dyn ChartPartProvider; 2] = [&mut eager, &mut lazy];
+        for provider in providers {
+            let error = provider
+                .with_part("part.xml", &session, &mut |data| {
+                    assert_eq!(data, bytes);
+                    Err(crate::xml::xml_error("visitor rejected chart"))
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), crate::XlsxErrorKind::Xml);
+            provider
+                .with_memoized_part("part.xml", &session, &mut |data, _| {
+                    assert_eq!(data, bytes);
+                    Ok(())
+                })
+                .unwrap();
+            provider.finish_sheet(&session);
+        }
+        assert!(eager.current.is_none());
+        assert!(lazy.current.is_none());
+        assert_eq!(
+            lazy.recover_part("part.xml", &session).as_deref(),
+            Some(bytes.as_slice())
+        );
+    }
+
     // ZIP CRC failure and a shortened compressed stream can leave partial
     // output in read_to_end; the production provider must publish no bytes.
     #[test]
@@ -4781,9 +5213,8 @@ mod tests {
         let good = writer.finish().unwrap().into_inner();
         let mut archive = zip::ZipArchive::new(Cursor::new(&good)).unwrap();
         let mut provider = EagerChartPartProvider::new(&mut archive);
-        provider.read_part("part.xml");
-        let (_, buffer, succeeded) = provider.current.as_ref().unwrap();
-        assert!(succeeded);
+        provider.read_part("part.xml").unwrap();
+        let (_, buffer) = provider.current.as_ref().unwrap();
         assert_eq!(
             buffer.data,
             "<c:strCache>data</c:strCache>".repeat(100).as_bytes()
@@ -4803,16 +5234,288 @@ mod tests {
             }
             let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
             let mut provider = EagerChartPartProvider::new(&mut archive);
-            provider.read_part("part.xml");
-            let (_, buffer, succeeded) = provider.current.as_ref().unwrap();
-            assert!(!succeeded, "truncated={truncate}");
-            assert!(buffer.data.is_empty());
+            assert!(
+                provider.read_part("part.xml").is_err(),
+                "truncated={truncate}"
+            );
+            assert!(provider.current.is_none());
+            assert!(chart_part_buffer_observation().failed_reads_have_no_buffer);
             let mut visited = false;
-            provider.with_part("part.xml", &SourceCacheSession::deferred(), &mut |data| {
-                assert!(data.is_none());
-                visited = true;
-            });
-            assert!(visited);
+            let result =
+                provider.with_part("part.xml", &SourceCacheSession::deferred(), &mut |_| {
+                    visited = true;
+                    Ok(())
+                });
+            assert!(result.is_err());
+            assert!(!visited, "failed transport must not publish partial bytes");
+            assert!(provider.current.is_none());
         }
+    }
+
+    fn raw_payloads(book: &Workbook, index: usize) -> Vec<(String, Vec<u8>)> {
+        let raw = book.sheet_collection_no_check()[index].raw_data_of_worksheet();
+        std::iter::once(raw.worksheet_file())
+            .chain(
+                raw.relationships_list()
+                    .iter()
+                    .flat_map(|list| list.relationship_list().iter().map(|edge| edge.raw_file())),
+            )
+            .map(|file| (file.file_target().to_owned(), file.file_data().to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn malformed_chart_caches_return_errors_without_committing_lazy_sheets() {
+        let valid = "<c:strCache><c:ptCount val=\"2\"/><c:pt \
+                     idx=\"0\"><c:v>first</c:v></c:pt><c:pt \
+                     idx=\"1\"><c:v>marker</c:v></c:pt></c:strCache>";
+        let base = deferred_cache_package(valid);
+        let cases = [
+            rewrite_package_bytes(&base, "xl/charts/chart1.xml", b"marker", b"&bogus;"),
+            rewrite_package_bytes(&base, "xl/charts/chart1.xml", b"marker", b"a\xFFb"),
+            rewrite_package_bytes(
+                &base,
+                "xl/charts/chart1.xml",
+                b"marker",
+                b"<![CDATA[unclosed",
+            ),
+            rewrite_package_bytes(&base, "xl/charts/chart1.xml", b"</c:strCache>", b""),
+        ];
+        for (case, bytes) in cases.iter().enumerate() {
+            let eager = catch_unwind(|| crate::reader::xlsx::read_reader(Cursor::new(bytes), true));
+            assert!(eager.is_ok(), "case {case}: eager read panicked");
+            assert!(
+                eager.unwrap().is_err(),
+                "case {case}: eager read accepted malformed cache"
+            );
+            let mut lazy = crate::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+            let original = raw_payloads(&lazy, 0);
+            let report = report_of(&lazy);
+            for attempt in 0..2 {
+                let read = catch_unwind(AssertUnwindSafe(|| lazy.try_read_sheet(0).map(|_| ())));
+                assert!(
+                    read.is_ok(),
+                    "case {case}, attempt {attempt}: lazy read panicked"
+                );
+                assert!(
+                    read.unwrap().is_err(),
+                    "case {case}, attempt {attempt}: lazy read accepted malformed cache"
+                );
+                assert!(!lazy.sheet_collection_no_check()[0].is_deserialized());
+                assert_eq!(raw_payloads(&lazy, 0), original);
+                assert_eq!(report_of(&lazy), report);
+            }
+        }
+        assert!(
+            crate::reader::xlsx::read_reader(Cursor::new(base), true)
+                .unwrap()
+                .sheet_collection_no_check()[0]
+                .is_deserialized()
+        );
+    }
+
+    #[test]
+    fn late_cache_capture_errors_restore_raw_payloads_before_retry() {
+        let xml = "<c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>Original \
+                   label</c:v></c:pt></c:strCache>";
+        let bytes = deferred_cache_package(xml);
+        let mut book = crate::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+        let original = raw_payloads(&book, 0);
+        let report = report_of(&book);
+        let strings = book.shared_string_table();
+        let styles = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        session.set_content_types(book.package_content_types());
+        let mut provider = lazy_provider();
+        let transaction = crate::reader::xlsx::prepare_worksheet_materialization(
+            &mut book.sheet_collection_unchecked_mut()[0],
+            &strings,
+            &styles,
+            &mut session,
+            &mut provider,
+        )
+        .unwrap()
+        .unwrap();
+        {
+            let mut descriptors = session.descriptors.borrow_mut();
+            let source = descriptors
+                .values_mut()
+                .next()
+                .expect("captured reference descriptor");
+            source.summary = None;
+            source.end -= 1;
+        }
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            crate::reader::xlsx::finish_worksheet_materializations(
+                &mut book,
+                vec![(0, transaction)],
+                &mut session,
+                &mut provider,
+            )
+        }))
+        .expect("fallible cache capture must not panic");
+        assert!(result.is_err());
+        assert!(!book.sheet_collection_no_check()[0].is_deserialized());
+        assert_eq!(raw_payloads(&book, 0), original);
+        assert_eq!(report_of(&book), report);
+        book.try_read_sheet(0).unwrap();
+        assert!(book.sheet_collection_no_check()[0].is_deserialized());
+        assert_eq!(book.chart_source_cache_report().kept_caches, 1);
+    }
+
+    #[test]
+    fn chart_part_guards_restore_parent_drawing_scopes_on_success_and_error() {
+        use crate::drawing::charts::{
+            ChartSpace,
+            NamespaceScope,
+        };
+        let package = descriptor_loss_package();
+        let mut archive = zip::ZipArchive::new(Cursor::new(package)).unwrap();
+        let mut chart = Vec::new();
+        archive
+            .by_name("xl/charts/chart1.xml")
+            .unwrap()
+            .read_to_end(&mut chart)
+            .unwrap();
+        let parent_xml = b"<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:extLst/></c:chartSpace>";
+        let boundary = b"<c:extLst/>";
+        let offset = parent_xml
+            .windows(boundary.len())
+            .position(|window| window == boundary)
+            .unwrap()
+            + boundary.len();
+        for failed in [false, true] {
+            let session = SourceCacheSession::deferred();
+            let _outer_part = session.enter_chart_part("outer.xml");
+            session
+                .prepare_chart_namespaces(parent_xml, "outer.xml")
+                .unwrap();
+            let root = quick_xml::events::BytesStart::from_content(
+                "d:wsDr xmlns:d=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\"", 6,
+            );
+            let scope = NamespaceScope::default().child(&root).unwrap();
+            let _parent_scope = session.push_extension_scope(scope);
+            let previous_part = session.current_part.get();
+            let child = session.immediate_subsession();
+            let data = if failed {
+                chart[..chart.len() - 1].to_vec()
+            } else {
+                chart.clone()
+            };
+            let mut provider =
+                LazyChartPartProvider::new(HashMap::from([("inner.xml".to_owned(), (data, None))]));
+            let mut file = crate::structs::raw::RawFile::default();
+            file.set_file_target("inner.xml");
+            let mut value = ChartSpace::default();
+            let result = crate::reader::xlsx::chart::read(&file, &mut value, &child, &mut provider);
+            assert_eq!(result.is_err(), failed);
+            assert_eq!(session.current_part.get(), previous_part);
+            assert_eq!(session.extension_scopes.borrow().len(), 1);
+            assert!(
+                session
+                    .accepts_child_namespace(
+                        &quick_xml::events::BytesStart::new("d:sp"),
+                        crate::helper::const_str::SHEET_DRAWING_NS
+                    )
+                    .unwrap()
+            );
+            let context = session
+                .extension_context(
+                    offset as u64,
+                    &quick_xml::events::BytesStart::new("c:extLst"),
+                )
+                .expect("outer namespace index restored");
+            assert_eq!(context.chart_part, "outer.xml");
+            provider.finish_sheet(&child);
+        }
+    }
+
+    #[test]
+    fn late_cache_errors_restore_shared_part_donors_in_reverse_commit_order() {
+        let bytes = rewrite_package_part(
+            &two_sheet_chart_part_package(),
+            "xl/drawings/_rels/drawing2.xml.rels",
+            |xml| xml.replace("chart2.xml", "chart1.xml"),
+        );
+        let mut book = crate::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+        let original = [raw_payloads(&book, 0), raw_payloads(&book, 1)];
+        let report = report_of(&book);
+        let strings = book.shared_string_table();
+        let styles = book.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        session.set_content_types(book.package_content_types());
+        let mut provider = lazy_provider();
+        let mut staged = Vec::new();
+        for index in 0..2 {
+            let transaction = crate::reader::xlsx::prepare_worksheet_materialization(
+                &mut book.sheet_collection_unchecked_mut()[index],
+                &strings,
+                &styles,
+                &mut session,
+                &mut provider,
+            )
+            .unwrap()
+            .unwrap();
+            staged.push((index, transaction));
+        }
+        {
+            let mut descriptors = session.descriptors.borrow_mut();
+            let source = descriptors
+                .values_mut()
+                .next()
+                .expect("shared chart cache descriptor");
+            source.summary = None;
+            source.end -= 1;
+        }
+        let result = crate::reader::xlsx::finish_worksheet_materializations(
+            &mut book,
+            staged,
+            &mut session,
+            &mut provider,
+        );
+        assert!(result.is_err());
+        for (index, original) in original.iter().enumerate() {
+            assert!(!book.sheet_collection_no_check()[index].is_deserialized());
+            assert_eq!(&raw_payloads(&book, index), original);
+        }
+        assert_eq!(report_of(&book), report);
+        book.try_read_sheet_collection().unwrap();
+        assert!(
+            book.sheet_collection_no_check()
+                .iter()
+                .all(|sheet| sheet.is_deserialized())
+        );
+    }
+
+    #[test]
+    fn hydration_keeps_immediate_parsed_sources_without_deferred_descriptors() {
+        let session = SourceCacheSession::immediate();
+        let xml = "<c:strRef xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:f>Sheet1!A1</c:f><c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>Original label</c:v></c:pt></c:strCache></c:strRef>";
+        let reference = deferred_reference(&session, xml);
+        assert!(!reference.string_cache().source_is_deferred());
+        let expected = facts_of(reference.string_cache().source().unwrap());
+        let chart = chart_with_reference(reference);
+        let frame = chart.two_cell_anchor().graphic_frame().unwrap().clone();
+        let mut anchor = crate::drawing::spreadsheet::OneCellAnchor::default();
+        anchor.set_graphic_frame(frame);
+        let mut image = crate::Image::default();
+        image.set_one_cell_anchor(anchor);
+        let mut drawing = crate::drawing::spreadsheet::WorksheetDrawing::default();
+        drawing.add_image(image);
+        assert!(session.descriptors.borrow().is_empty());
+        session
+            .hydrate_image_frames(&mut drawing, &mut lazy_provider())
+            .unwrap();
+        let mut sources = Vec::new();
+        visit_image_frames(&mut drawing, &mut |reference| {
+            sources.push(facts_of(
+                reference
+                    .string_cache()
+                    .source()
+                    .expect("parsed source retained"),
+            ));
+        });
+        assert_eq!(sources, [expected]);
+        assert!(session.descriptors.borrow().is_empty());
     }
 }

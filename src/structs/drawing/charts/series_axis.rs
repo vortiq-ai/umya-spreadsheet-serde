@@ -27,7 +27,7 @@ use crate::{
     Workbook,
     reader::driver::{
         local_name,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -360,72 +360,77 @@ impl SeriesAxis {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
                     b"scaling" => {
-                        self.scaling.set_attributes(reader, e);
+                        self.scaling.set_attributes(reader, e)?;
                     }
                     b"title" => {
                         let mut obj = Title::default();
-                        obj.set_attributes(reader, e, session);
+                        obj.set_attributes(reader, e, session)?;
                         self.set_title(obj);
                     }
                     b"majorGridlines" => {
                         let mut obj = MajorGridlines::default();
-                        obj.set_attributes_with_session(reader, e, false, session);
+                        obj.set_attributes_with_session(reader, e, false, session)?;
                         self.set_major_gridlines(obj);
                     }
                     _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
                     b"axId" => {
-                        self.axis_id.set_attributes(reader, e);
+                        self.axis_id.set_attributes(reader, e)?;
                     }
                     b"delete" => {
-                        self.delete.set_attributes(reader, e);
+                        self.delete.set_attributes(reader, e)?;
                     }
                     b"axPos" => {
-                        self.axis_position.set_attributes(reader, e);
+                        self.axis_position.set_attributes(reader, e)?;
                     }
                     b"majorGridlines" => {
                         let mut obj = MajorGridlines::default();
-                        obj.set_attributes_with_session(reader, e, true, session);
+                        obj.set_attributes_with_session(reader, e, true, session)?;
                         self.set_major_gridlines(obj);
                     }
                     b"majorTickMark" => {
-                        self.major_tick_mark.set_attributes(reader, e);
+                        self.major_tick_mark.set_attributes(reader, e)?;
                     }
                     b"minorTickMark" => {
-                        self.minor_tick_mark.set_attributes(reader, e);
+                        self.minor_tick_mark.set_attributes(reader, e)?;
                     }
                     b"tickLblPos" => {
-                        self.tick_label_position.set_attributes(reader, e);
+                        self.tick_label_position.set_attributes(reader, e)?;
                     }
                     b"crossAx" => {
-                        self.crossing_axis.set_attributes(reader, e);
+                        self.crossing_axis.set_attributes(reader, e)?;
                     }
                     b"crosses" => {
-                        self.crosses.set_attributes(reader, e);
+                        self.crosses.set_attributes(reader, e)?;
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"serAx" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:serAx")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:serAx")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:serAx
         write_start_tag(writer, "c:serAx", vec![], false);
 
@@ -443,12 +448,12 @@ impl SeriesAxis {
 
         // c:majorGridlines
         if let Some(v) = &self.major_gridlines {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:title
         if let Some(v) = &self.title {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:majorTickMark
@@ -467,5 +472,7 @@ impl SeriesAxis {
         self.crosses.write_to(writer);
 
         write_end_tag(writer, "c:serAx");
+
+        Ok(())
     }
 }

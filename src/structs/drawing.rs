@@ -120,6 +120,12 @@ pub use self::end_connection::*;
 mod linear_gradient_fill;
 pub use self::linear_gradient_fill::*;
 
+mod path_gradient_fill;
+pub use self::path_gradient_fill::*;
+
+mod color_transform;
+pub use self::color_transform::*;
+
 mod tile_flip_values;
 pub use self::tile_flip_values::*;
 
@@ -171,8 +177,8 @@ pub use self::preset_material_type_values::*;
 mod text_wrapping_values;
 pub use self::text_wrapping_values::*;
 
-mod shape_auto_fit;
-pub use self::shape_auto_fit::*;
+mod text_auto_fit;
+pub use self::text_auto_fit::*;
 
 mod text_alignment_type_values;
 pub use self::text_alignment_type_values::*;
@@ -270,6 +276,15 @@ pub use self::blip_fill::*;
 mod group_shape_locks;
 pub use self::group_shape_locks::*;
 
+mod shape_locks;
+pub use self::shape_locks::*;
+
+mod connector_locks;
+pub use self::connector_locks::*;
+
+mod graphic_frame_locks;
+pub use self::graphic_frame_locks::*;
+
 mod text_paragraph_properties_type;
 pub use self::text_paragraph_properties_type::*;
 
@@ -290,3 +305,11 @@ pub use self::point_2d_type::*;
 
 mod black_white_mode_values;
 pub use self::black_white_mode_values::*;
+
+mod line_end;
+pub use self::line_end::LineEndProperties;
+
+mod hsl_color;
+pub use self::hsl_color::HslColor;
+mod rgb_color_model_percentage;
+pub use self::rgb_color_model_percentage::RgbColorModelPercentage;

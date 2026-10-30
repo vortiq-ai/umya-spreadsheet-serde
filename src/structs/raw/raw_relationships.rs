@@ -180,7 +180,7 @@ impl RawRelationships {
                         base_path,
                         source_file,
                         defer_chart_data,
-                    );
+                    )?;
                     self.add_relationship_list(obj);
                 }
             },

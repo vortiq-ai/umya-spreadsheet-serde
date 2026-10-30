@@ -9,7 +9,7 @@ use quick_xml::{
 
 use super::super::super::Int32Value;
 use crate::{
-    reader::driver::get_attribute,
+    XlsxError,
     writer::driver::write_start_tag,
 };
 
@@ -41,10 +41,22 @@ impl SpacingPercent {
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
-        _reader: &mut Reader<R>,
+        reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+        empty: bool,
+    ) -> Result<(), XlsxError> {
+        let raw = crate::reader::driver::require_attribute(e, b"val")?;
+        let value = crate::xml::parse_i32(&raw).map_err(crate::xml::xml_error)?;
+        if !(0..=13_200_000).contains(&value) {
+            return Err(crate::xml::xml_error(
+                "DrawingML spacing percent is outside its schema range",
+            ));
+        }
+        if !empty {
+            crate::reader::driver::consume_empty_element(reader, e)?;
+        }
+        self.set_val(value);
+        Ok(())
     }
 
     #[inline]

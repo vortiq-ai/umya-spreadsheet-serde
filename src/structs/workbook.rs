@@ -21,8 +21,8 @@ use crate::{
     reader::xlsx::{
         LazyChartPartProvider,
         SourceCacheSession,
-        capture_chart_source_caches,
-        raw_to_deserialize_by_worksheet,
+        finish_worksheet_materializations,
+        prepare_worksheet_materialization,
     },
     structs::{
         Address,
@@ -58,7 +58,7 @@ pub struct Workbook {
     stylesheet:               Stylesheet,
     shared_string_table:      Arc<RwLock<SharedStringTable>>,
     workbook_view:            WorkbookView,
-    backup_context_types:     Vec<(Box<str>, Box<str>)>,
+    package_content_types:    Arc<super::content_types::PackageContentTypes>,
     pivot_caches:             Vec<(Box<str>, Box<str>, Box<str>)>,
     workbook_protection:      Option<Box<WorkbookProtection>>,
     defined_names:            Vec<DefinedName>,
@@ -1112,25 +1112,29 @@ impl Workbook {
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
         let mut session = SourceCacheSession::deferred();
+        session.set_content_types(self.package_content_types());
         let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
-        let mut deserialized = Vec::new();
+        let mut staged = Vec::new();
         let mut result = Ok(());
         for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
             if !worksheet.is_deserialized() {
-                if let Err(error) = raw_to_deserialize_by_worksheet(
+                match prepare_worksheet_materialization(
                     worksheet,
                     &shared_string_table,
                     &stylesheet,
                     &mut session,
                     &mut provider,
                 ) {
-                    result = Err(error);
-                    break;
+                    Ok(Some(transaction)) => staged.push((index, transaction)),
+                    Ok(None) => (),
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
                 }
-                deserialized.push(index);
             }
         }
-        capture_chart_source_caches(self, &deserialized, &mut session, &mut provider);
+        finish_worksheet_materializations(self, staged, &mut session, &mut provider)?;
         result?;
         Ok(self)
     }
@@ -1162,15 +1166,23 @@ impl Workbook {
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
         let mut session = SourceCacheSession::deferred();
+        session.set_content_types(self.package_content_types());
         let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
-        raw_to_deserialize_by_worksheet(
+        let staged = prepare_worksheet_materialization(
             &mut self.work_sheet_collection[index],
             &shared_string_table,
             &stylesheet,
             &mut session,
             &mut provider,
         )?;
-        capture_chart_source_caches(self, &[index], &mut session, &mut provider);
+        if let Some(staged) = staged {
+            finish_worksheet_materializations(
+                self,
+                vec![(index, staged)],
+                &mut session,
+                &mut provider,
+            )?;
+        }
         Ok(self)
     }
 
@@ -1353,9 +1365,17 @@ impl Workbook {
     /// # Return value
     /// * `Result<&mut Worksheet, XlsxError>` - OK:added work sheet. Err:Error.
     #[inline]
-    pub fn add_sheet(&mut self, value: Worksheet) -> Result<&mut Worksheet, XlsxError> {
+    pub fn add_sheet(&mut self, mut value: Worksheet) -> Result<&mut Worksheet, XlsxError> {
         let title = value.name();
         self.check_sheet_name(title, None)?;
+        if value.sheet_id().is_empty()
+            || self
+                .work_sheet_collection
+                .iter()
+                .any(|sheet| sheet.sheet_id() == value.sheet_id())
+        {
+            value.set_sheet_id(self.next_sheet_id()?);
+        }
         self.work_sheet_collection.push(value);
         Ok(self.work_sheet_collection.last_mut().unwrap())
     }
@@ -1366,6 +1386,10 @@ impl Workbook {
     #[inline]
     pub(crate) fn take_all_sheets(&mut self) -> Vec<Worksheet> {
         std::mem::take(&mut self.work_sheet_collection)
+    }
+
+    pub(crate) fn replace_sheet_collection(&mut self, sheets: Vec<Worksheet>) -> Vec<Worksheet> {
+        std::mem::replace(&mut self.work_sheet_collection, sheets)
     }
 
     /// Remove Work Sheet.
@@ -1481,8 +1505,27 @@ impl Workbook {
     ) -> Result<&mut Worksheet, XlsxError> {
         let v = sheet_title.into();
         self.check_sheet_name(&v, None)?;
-        let sheet_id = (self.work_sheet_collection.len() + 1).to_string();
+        let sheet_id = self.next_sheet_id()?;
         Ok(Workbook::add_new_sheet_crate(self, sheet_id, v.clone()))
+    }
+
+    fn next_sheet_id(&self) -> Result<String, XlsxError> {
+        let ids = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| {
+                sheet.sheet_id().parse::<u32>().map_err(|_| {
+                    XlsxError::with_message(XlsxErrorKind::InvalidArgument, "invalid worksheet id")
+                })
+            })
+            .collect::<Result<std::collections::HashSet<_>, _>>()?;
+        let mut id = 1u32;
+        while ids.contains(&id) {
+            id = id.checked_add(1).ok_or_else(|| {
+                XlsxError::with_message(XlsxErrorKind::InvalidArgument, "worksheet ids exhausted")
+            })?;
+        }
+        Ok(id.to_string())
     }
 
     /// (This method is crate only.)
@@ -1608,9 +1651,20 @@ impl Workbook {
             .any(Worksheet::has_defined_names)
     }
 
+    pub(crate) fn package_content_types(&self) -> Arc<super::content_types::PackageContentTypes> {
+        Arc::clone(&self.package_content_types)
+    }
+
+    pub(crate) fn set_package_content_types(
+        &mut self,
+        value: super::content_types::PackageContentTypes,
+    ) {
+        self.package_content_types = Arc::new(value);
+    }
+
     #[inline]
     pub(crate) fn backup_context_types(&self) -> &[(Box<str>, Box<str>)] {
-        &self.backup_context_types
+        self.package_content_types.overrides()
     }
 
     #[inline]
@@ -1624,11 +1678,7 @@ impl Workbook {
         &mut self,
         value: impl Into<Vec<(String, String)>>,
     ) -> &mut Self {
-        self.backup_context_types = value
-            .into()
-            .into_iter()
-            .map(|(a, b)| (a.into_boxed_str(), b.into_boxed_str()))
-            .collect();
+        Arc::make_mut(&mut self.package_content_types).set_overrides(value.into());
         self
     }
 
@@ -2029,5 +2079,42 @@ mod full_calc_on_load_tests {
                     .unwrap_or("")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sheet_identity_tests {
+    use std::io::Cursor;
+
+    #[test]
+    fn sheet_ids_survive_export_reordering_and_new_sheet_allocation() {
+        let mut book = crate::new_file();
+        book.work_sheet_collection[0].set_sheet_id("17");
+        book.new_sheet("Second").unwrap().set_sheet_id("2");
+        assert_eq!(book.new_sheet("Third").unwrap().sheet_id(), "1");
+        book.work_sheet_collection.swap(0, 1);
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut bytes).unwrap();
+        for eager in [true, false] {
+            let restored = crate::reader::xlsx::read_reader(Cursor::new(&bytes), eager).unwrap();
+            assert_eq!(
+                restored
+                    .sheet_collection_no_check()
+                    .iter()
+                    .map(|s| (s.name(), s.sheet_id()))
+                    .collect::<Vec<_>>(),
+                vec![("Second", "2"), ("Sheet1", "17"), ("Third", "1")]
+            );
+        }
+    }
+
+    #[test]
+    fn cloned_sheets_get_a_distinct_id_without_renumbering_the_source() {
+        let mut book = crate::new_file();
+        let mut copy = book.sheet(0).unwrap().clone();
+        copy.set_name("Copy");
+        book.add_sheet(copy).unwrap();
+        assert_eq!(book.sheet(0).unwrap().sheet_id(), "1");
+        assert_eq!(book.sheet(1).unwrap().sheet_id(), "2");
     }
 }

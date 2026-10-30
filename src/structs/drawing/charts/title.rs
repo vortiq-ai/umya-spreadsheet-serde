@@ -21,12 +21,12 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -183,61 +183,65 @@ impl Title {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(owner)?;
         let end = owner.name().into_inner().to_vec();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
                 b"tx" => {
                     let mut obj = ChartText::default();
-                    obj.set_attributes(reader, e, session);
+                    obj.set_attributes(reader, e, session)?;
                     self.set_chart_text(obj);
                 }
                 b"layout" => {
                     let mut obj = Layout::default();
-                    obj.set_attributes(reader, e, false, session);
+                    obj.set_attributes(reader, e, false, session)?;
                     self.set_layout(obj);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
-                _ => skip_element(reader, e),
+                _ => skip_element(reader, e)?,
             },
-            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().0)}else{b""} {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
                 b"overlay" => {
-                    self.overlay.set_attributes(reader, e);
+                    self.overlay.set_attributes(reader, e)?;
                 }
                 b"layout" => {
                     let mut obj = Layout::default();
-                    obj.set_attributes(reader, e, true, session);
+                    obj.set_attributes(reader, e, true, session)?;
                     self.set_layout(obj);
                 }
                 _ => (),
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == end.as_slice() {
-                    return;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:title"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:title"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:title
         write_start_tag(writer, "c:title", vec![], false);
 
         // c:tx
         if let Some(v) = &self.chart_text {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:layout
         if let Some(v) = &self.layout {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:overlay
@@ -245,9 +249,11 @@ impl Title {
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:title");
+
+        Ok(())
     }
 }

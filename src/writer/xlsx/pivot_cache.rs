@@ -23,8 +23,8 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 ) -> Result<Vec<String>, XlsxError> {
     let mut pivot_cache_no_list = Vec::<String>::new();
     for pivot_table in worksheet.pivot_tables() {
-        let (find, no) = writer_mng
-            .get_pivot_cache_no(pivot_table.pivot_cache_definition().hash_code().as_str());
+        let hash = pivot_table.pivot_cache_definition().hash_code()?;
+        let (find, no) = writer_mng.get_pivot_cache_no(&hash);
         if find {
             continue;
         }
@@ -41,7 +41,7 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         write_new_line(&mut writer);
 
         // Write pivot cache definition
-        pivot_table.pivot_cache_definition().write_to(&mut writer);
+        pivot_table.pivot_cache_definition().write_to(&mut writer)?;
         writer_mng.add_file_at_pivot_cache(writer, no)?;
 
         // Write pivot cache records if available (preserved from template)

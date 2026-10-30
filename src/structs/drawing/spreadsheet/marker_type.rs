@@ -146,53 +146,67 @@ impl MarkerType {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        let mut buf = Vec::new();
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => match e.name().into_inner() {
-                    b"xdr:col" | b"col" => {
-                        let mut buf = Vec::new();
-                        let text = crate::helper::utils::unescape_xml_text(
-                            &reader.read_text_into(e.name(), &mut buf).unwrap(),
-                        );
-                        self.col = text.parse::<u32>().unwrap();
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::SHEET_DRAWING_NS
+                        || !seen.insert(name.local_name.clone())
+                    {
+                        return Err(crate::xml::xml_error(
+                            "foreign or duplicate drawing marker scalar",
+                        ));
                     }
-                    b"xdr:colOff" | b"colOff" => {
-                        let mut buf = Vec::new();
-                        let text = crate::helper::utils::unescape_xml_text(
-                            &reader.read_text_into(e.name(), &mut buf).unwrap(),
-                        );
-                        self.col_off = text.parse::<i32>().unwrap();
+                    let text = crate::reader::driver::read_simple_text(reader, child, empty)?
+                        .ok_or_else(|| {
+                            crate::xml::xml_error("invalid drawing marker scalar text")
+                        })?;
+                    match name.local_name.as_str() {
+                        "col" => {
+                            self.col =
+                                crate::xml::parse_u32(&text).map_err(crate::xml::xml_error)?;
+                        }
+                        "colOff" => {
+                            self.col_off =
+                                crate::xml::parse_i32(&text).map_err(crate::xml::xml_error)?;
+                        }
+                        "row" => {
+                            self.row =
+                                crate::xml::parse_u32(&text).map_err(crate::xml::xml_error)?;
+                        }
+                        "rowOff" => {
+                            self.row_off =
+                                crate::xml::parse_i32(&text).map_err(crate::xml::xml_error)?;
+                        }
+                        _ => {
+                            return Err(crate::xml::xml_error("unsupported drawing marker scalar"));
+                        }
                     }
-                    b"xdr:row" | b"row" => {
-                        let mut buf = Vec::new();
-                        let text = crate::helper::utils::unescape_xml_text(
-                            &reader.read_text_into(e.name(), &mut buf).unwrap(),
-                        );
-                        self.row = text.parse::<u32>().unwrap();
-                    }
-                    b"xdr:rowOff" | b"rowOff" => {
-                        let mut buf = Vec::new();
-                        let text = crate::helper::utils::unescape_xml_text(
-                            &reader.read_text_into(e.name(), &mut buf).unwrap(),
-                        );
-                        self.row_off = text.parse::<i32>().unwrap();
-                    }
-                    _ => (),
-                },
-                Ok(Event::End(ref e)) => match e.name().into_inner() {
-                    b"xdr:from" | b"from" | b"xdr:to" | b"to" => return,
-                    _ => (),
-                },
-                Ok(Event::Eof) => {
-                    panic!("Error: Could not find {} end element", "xdr:from,xdr:to")
                 }
-                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if seen.len() != 4 {
+                        return Err(crate::xml::xml_error(
+                            "drawing marker requires four coordinates",
+                        ));
+                    }
+                    return Ok(());
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing marker")),
                 _ => (),
             }
-            buf.clear();
+            buffer.clear();
         }
     }
 

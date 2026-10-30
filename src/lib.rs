@@ -242,6 +242,7 @@ mod test_alloc;
 pub mod traits;
 mod version;
 pub mod writer;
+pub(crate) mod xml;
 
 #[allow(unused_imports)]
 pub use version::*;

@@ -62,6 +62,8 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     write_end_tag(&mut writer, "o:shapelayout");
 
     let mut id = 1000 + 25;
+    let ole_ids = worksheet.ole_objects().resolved_shape_ids()?;
+    let reserved_ids: std::collections::HashSet<_> = ole_ids.iter().copied().collect();
 
     // ole_object
     if worksheet.has_ole_objects() {
@@ -172,10 +174,10 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 
         write_end_tag(&mut writer, "v:shapetype");
 
-        for ole_object in worksheet.ole_objects().ole_object() {
-            // v:shape
-            ole_object.shape().write_to(&mut writer, id, &mut rel_list);
-            id += 1;
+        for (ole_object, shape_id) in worksheet.ole_objects().ole_object().iter().zip(ole_ids) {
+            ole_object
+                .shape()
+                .write_to(&mut writer, shape_id, &mut rel_list);
         }
     }
 
@@ -216,6 +218,9 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         write_end_tag(&mut writer, "v:shapetype");
 
         for comment in worksheet.comments() {
+            while reserved_ids.contains(&id) {
+                id += 1;
+            }
             // v:shape
             comment.shape().write_to(&mut writer, id, &mut rel_list);
             id += 1;

@@ -95,21 +95,21 @@ fn chartex_root_is_not_imported_as_an_ordinary_chart() {
 }
 
 #[test]
-#[should_panic(expected = "invalid chart root expanded name")]
 fn wrong_root_in_ordinary_chart_namespace_remains_invalid() {
     let bytes = package_with_chart_part(|_| {
         r#"<c:notChartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"></c:notChartSpace>"#.to_owned()
     });
-    let _ = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true);
+    let error = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap_err();
+    assert_eq!(error.kind(), umya_spreadsheet::XlsxErrorKind::Xml);
 }
 
 #[test]
-#[should_panic(expected = "undeclared chart namespace prefix")]
 fn unbound_chart_root_prefix_remains_invalid() {
     let bytes = package_with_chart_part(|_| {
         r#"<c:chartSpace><c:date1904 val="1"/></c:chartSpace>"#.to_owned()
     });
-    let _ = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true);
+    let error = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap_err();
+    assert_eq!(error.kind(), umya_spreadsheet::XlsxErrorKind::Xml);
 }
 
 #[test]

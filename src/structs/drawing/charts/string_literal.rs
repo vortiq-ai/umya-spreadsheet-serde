@@ -53,8 +53,9 @@ impl StringLiteral {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        *self = Self::read_with_session(reader, e, false, session);
+    ) -> Result<(), crate::XlsxError> {
+        *self = Self::read_with_session(reader, e, false, session)?;
+        Ok(())
     }
 
     #[must_use]
@@ -134,15 +135,16 @@ impl StringLiteral {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-    ) {
-        *self = Self::read(reader, owner, false);
+    ) -> Result<(), crate::XlsxError> {
+        *self = Self::read(reader, owner, false)?;
+        Ok(())
     }
 
     pub(crate) fn read<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, None)
     }
 
@@ -151,7 +153,7 @@ impl StringLiteral {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, e, empty, Some(session))
     }
 
@@ -160,51 +162,70 @@ impl StringLiteral {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Self {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
 
         let mut result = Self::default();
         let mut parts = StringLiteralParts::default();
         let mut counts = 0;
-        parts.invalid = !children(reader, e, empty, |reader, child, empty| {
-            match if session.is_none_or(|session| {
-                session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                local_name(child.name().into_inner())
-            } else {
-                b""
-            } {
-                b"extLst" if session.is_some() => {
-                    parts.extensions = Some(Box::new(super::ExtensionList::read(
-                        reader,
-                        child,
-                        empty,
-                        session.expect("checked session"),
-                    )));
-                }
-                b"pt" => result.string_point_list.push(match session {
-                    Some(session) => StringPoint::read_with_session(reader, child, empty, session),
-                    None => StringPoint::read(reader, child, empty),
-                }),
-                b"ptCount" => {
-                    counts += 1;
-                    parts.point_count = Some(XmlUnsignedInt::read(child));
-                    if !empty {
-                        crate::reader::driver::skip_element(reader, child);
+        parts.invalid = !children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    match if match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } {
+                        local_name(child.name().into_inner())
+                    } else {
+                        b""
+                    } {
+                        b"extLst" if session.is_some() => {
+                            parts.extensions = Some(Box::new(super::ExtensionList::read(
+                                reader,
+                                child,
+                                empty,
+                                session.ok_or_else(|| {
+                                    crate::xml::xml_error("missing chart session")
+                                })?,
+                            )?));
+                        }
+                        b"pt" => result.string_point_list.push(match session {
+                            Some(session) => {
+                                StringPoint::read_with_session(reader, child, empty, session)?
+                            }
+                            None => StringPoint::read(reader, child, empty)?,
+                        }),
+                        b"ptCount" => {
+                            counts += 1;
+                            parts.point_count = Some(XmlUnsignedInt::read(child));
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                        _ => return Ok(false),
                     }
-                }
-                _ => return false,
-            }
-            true
-        });
+                    true
+                })
+            },
+        )?;
         parts.invalid |= counts > 1;
         result.parts = Some(Box::new(parts));
-        result
+        Ok(result)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         // c:strLit
         write_start_tag(writer, "c:strLit", vec![], false);
@@ -225,8 +246,10 @@ impl StringLiteral {
         }
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, None, "strLit", None);
+            ext.write_for_owner(writer, None, "strLit", None)?;
         }
         write_end_tag(writer, "c:strLit");
+
+        Ok(())
     }
 }

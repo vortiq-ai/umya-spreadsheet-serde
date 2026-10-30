@@ -8,10 +8,7 @@ use quick_xml::{
 
 use super::Formula;
 use crate::{
-    reader::driver::{
-        get_attribute,
-        local_name,
-    },
+    reader::driver::local_name,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -93,8 +90,9 @@ impl MultiLevelStringReference {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-    ) {
-        self.read_common(reader, owner, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_common(reader, owner, None)?;
+        Ok(())
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
@@ -102,8 +100,9 @@ impl MultiLevelStringReference {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_common(reader, e, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_common(reader, e, Some(session))?;
+        Ok(())
     }
 
     fn read_common<R: std::io::BufRead>(
@@ -111,61 +110,81 @@ impl MultiLevelStringReference {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        let complete =
-            super::numeric_data::children(
-                reader,
-                e,
-                false,
-                |reader, child, empty| match if session.is_none_or(|session| {
-                    session.accepts_child_namespace(child, super::extension_registry::NS_C)
-                }) {
-                    local_name(child.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"f" => {
-                        if empty {
-                            self.formula.set_address_str("");
-                        } else {
-                            self.formula.set_attributes(reader, child);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
+            reader,
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    match if match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } {
+                        local_name(child.name().into_inner())
+                    } else {
+                        b""
+                    } {
+                        b"f" => {
+                            if empty {
+                                self.formula.set_address_str("");
+                            } else {
+                                self.formula.set_attributes(reader, child)?;
+                            }
+                            true
                         }
-                        true
-                    }
-                    b"multiLvlStrCache" => {
-                        let mut cache = MultiLevelStringCache::default();
-                        if !empty {
-                            cache.set_attributes(reader, child, session);
+                        b"multiLvlStrCache" => {
+                            let mut cache = MultiLevelStringCache::default();
+                            if !empty {
+                                cache.set_attributes(reader, child, session)?;
+                            }
+                            self.cache = Some(cache);
+                            true
                         }
-                        self.cache = Some(cache);
-                        true
+                        b"extLst" if session.is_some() => {
+                            self.set_extensions(Some(super::ExtensionList::read(
+                                reader,
+                                child,
+                                empty,
+                                session.ok_or_else(|| {
+                                    crate::xml::xml_error("missing chart session")
+                                })?,
+                            )?));
+                            true
+                        }
+                        _ => false,
                     }
-                    b"extLst" if session.is_some() => {
-                        self.set_extensions(Some(super::ExtensionList::read(
-                            reader,
-                            child,
-                            empty,
-                            session.expect("checked session"),
-                        )));
-                        true
-                    }
-                    _ => false,
-                },
-            );
-        assert!(complete, "Could not read multi-level string reference");
+                })
+            },
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level string reference",
+            ));
+        }
+        Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(writer, "c:multiLvlStrRef", vec![], false);
         self.formula.write_to(writer);
         if let Some(cache) = &self.cache {
             cache.write_to(writer);
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, None, "multiLvlStrRef", None);
+            ext.write_for_owner(writer, None, "multiLvlStrRef", None)?;
         }
         write_end_tag(writer, "c:multiLvlStrRef");
+
+        Ok(())
     }
 }
 
@@ -202,31 +221,56 @@ impl MultiLevelStringCache {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        let complete = super::numeric_data::children(reader, e, false, |reader, child, empty| {
-            if session.is_some_and(|session| {
-                !session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                return false;
-            }
-            match local_name(child.name().into_inner()) {
-                b"ptCount" => {
-                    self.point_count = get_attribute(child, b"val").map(|value| {
-                        super::xml_scalar::parse_xml_unsigned(&value)
-                            .expect("invalid multi-level cache count")
-                    });
-                    false
-                }
-                b"lvl" => {
-                    self.levels
-                        .push(Self::read_level(reader, child, empty, session));
-                    true
-                }
-                _ => false,
-            }
-        });
-        assert!(complete, "Could not read multi-level string cache");
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
+            reader,
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if match session {
+                        Some(session) => !session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => false,
+                    } {
+                        return Ok(false);
+                    }
+                    match local_name(child.name().into_inner()) {
+                        b"ptCount" => {
+                            self.point_count =
+                                crate::reader::driver::read_attribute(child, b"val")?
+                                    .map(|value| {
+                                        super::xml_scalar::parse_xml_unsigned(&value).ok_or_else(
+                                            || {
+                                                crate::xml::xml_error(
+                                                    "invalid multi-level cache count",
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .transpose()?;
+                            false
+                        }
+                        b"lvl" => {
+                            self.levels
+                                .push(Self::read_level(reader, child, empty, session)?);
+                            true
+                        }
+                        _ => false,
+                    }
+                })
+            },
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level string cache",
+            ));
+        }
+        Ok(())
     }
 
     fn read_level<R: std::io::BufRead>(
@@ -234,30 +278,48 @@ impl MultiLevelStringCache {
         e: &BytesStart,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Vec<MultiLevelStringPoint> {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<Vec<MultiLevelStringPoint>, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut points = Vec::new();
-        let complete = super::numeric_data::children(reader, e, empty, |reader, child, empty| {
-            if session.is_some_and(|session| {
-                !session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                return false;
-            }
-            if local_name(child.name().into_inner()) != b"pt" || empty {
-                return false;
-            }
-            let mut point = MultiLevelStringPoint {
-                index: get_attribute(child, b"idx")
-                    .and_then(|value| super::xml_scalar::parse_xml_unsigned(&value))
-                    .expect("invalid multi-level cache point index"),
-                ..Default::default()
-            };
-            point.read_value(reader, child, session);
-            points.push(point);
-            true
-        });
-        assert!(complete, "Could not read multi-level cache level");
-        points
+        let complete = super::numeric_data::children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if match session {
+                        Some(session) => !session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => false,
+                    } {
+                        return Ok(false);
+                    }
+                    if local_name(child.name().into_inner()) != b"pt" || empty {
+                        return Ok(false);
+                    }
+                    let mut point = MultiLevelStringPoint {
+                        index: crate::reader::driver::read_attribute(child, b"idx")?
+                            .and_then(|value| super::xml_scalar::parse_xml_unsigned(&value))
+                            .ok_or_else(|| {
+                                crate::xml::xml_error("invalid multi-level cache point index")
+                            })?,
+                        ..Default::default()
+                    };
+                    point.read_value(reader, child, session)?;
+                    points.push(point);
+                    true
+                })
+            },
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level cache level",
+            ));
+        }
+        Ok(points)
     }
 
     fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -323,22 +385,41 @@ impl MultiLevelStringPoint {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        let complete = super::numeric_data::children(reader, e, false, |reader, child, empty| {
-            if session.is_some_and(|session| {
-                !session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                return false;
-            }
-            if local_name(child.name().into_inner()) != b"v" {
-                return false;
-            }
-            self.value = super::numeric_data::read_text(reader, child, empty)
-                .expect("invalid multi-level cache string value");
-            true
-        });
-        assert!(complete, "Could not read multi-level cache point");
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
+            reader,
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if match session {
+                        Some(session) => !session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => false,
+                    } {
+                        return Ok(false);
+                    }
+                    if local_name(child.name().into_inner()) != b"v" {
+                        return Ok(false);
+                    }
+                    self.value =
+                        super::numeric_data::read_text(reader, child, empty)?.ok_or_else(|| {
+                            crate::xml::xml_error("invalid multi-level cache string value")
+                        })?;
+                    true
+                })
+            },
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level cache point",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -362,7 +443,9 @@ mod tests {
         };
         let mut categories = CategoryAxisData::default();
         let session = SourceCacheSession::immediate();
-        categories.set_attributes(&mut reader, &e, &session);
+        categories
+            .set_attributes(&mut reader, &e, &session)
+            .unwrap();
         categories
     }
 
@@ -388,7 +471,9 @@ mod tests {
             assert!(cache.levels()[2].is_empty());
 
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            categories.write_to(&mut writer, &crate::new_file());
+            categories
+                .write_to(&mut writer, &crate::new_file())
+                .unwrap();
             let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
             assert!(output.contains("<c:multiLvlStrRef>"));
             assert!(!output.contains("<c:strRef>"));
@@ -411,7 +496,9 @@ mod tests {
         assert_eq!(reference.formula().address_str(), "Sheet1!$A$1:$B$2");
         assert!(reference.cache().is_none());
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        categories.write_to(&mut writer, &crate::new_file());
+        categories
+            .write_to(&mut writer, &crate::new_file())
+            .unwrap();
         let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(!output.contains("multiLvlStrCache"));
     }
@@ -432,7 +519,9 @@ mod tests {
         assert_eq!(cache.levels()[0][0].value(), "");
 
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        categories.write_to(&mut writer, &crate::new_file());
+        categories
+            .write_to(&mut writer, &crate::new_file())
+            .unwrap();
         let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(!output.contains("ptCount"));
         let readback = parse(&output);

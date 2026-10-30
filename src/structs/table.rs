@@ -23,8 +23,22 @@ pub struct Table {
     totals_row_count: UInt32Value,
     #[cfg_attr(feature = "serde", serde(default))]
     auto_filter:      AutoFilter,
+    #[cfg_attr(feature = "serde", serde(default))]
+    id:               Option<u32>,
 }
 impl Table {
+    #[inline]
+    #[must_use]
+    pub fn id(&self) -> Option<u32> {
+        self.id
+    }
+
+    #[inline]
+    pub fn set_id(&mut self, id: u32) -> &mut Self {
+        self.id = Some(id);
+        self
+    }
+
     #[inline]
     pub fn new<T>(name: &str, area: (T, T)) -> Self
     where
@@ -44,6 +58,7 @@ impl Table {
             totals_row_shown: BooleanValue::default(),
             totals_row_count: UInt32Value::default(),
             auto_filter,
+            id: None,
         }
     }
 
@@ -120,7 +135,8 @@ impl Table {
         let coord_beg = Self::cell_coord_to_coord(area.0);
         let coord_end = Self::cell_coord_to_coord(area.1);
         if self.auto_filter.range().range() == format!("{}:{}", self.area.0, self.area.1) {
-            self.auto_filter.set_range(format!("{coord_beg}:{coord_end}"));
+            self.auto_filter
+                .set_range(format!("{coord_beg}:{coord_end}"));
         }
         self.area = (coord_beg, coord_end);
     }
@@ -293,8 +309,22 @@ pub struct TableColumn {
     totals_row_label:          StringValue,
     totals_row_function:       EnumValue<TotalsRowFunctionValues>,
     calculated_column_formula: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    id:                        Option<u32>,
 }
 impl TableColumn {
+    #[inline]
+    #[must_use]
+    pub fn id(&self) -> Option<u32> {
+        self.id
+    }
+
+    #[inline]
+    pub fn set_id(&mut self, id: u32) -> &mut Self {
+        self.id = Some(id);
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn new(name: &str) -> Self {
@@ -303,6 +333,7 @@ impl TableColumn {
             totals_row_label:          StringValue::default(),
             totals_row_function:       EnumValue::default(),
             calculated_column_formula: None,
+            id:                        None,
         }
     }
 

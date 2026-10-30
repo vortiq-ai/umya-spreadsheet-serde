@@ -69,13 +69,18 @@ pub(super) fn record_supplied_extension(present: bool, path: &str, report: &mut 
     }
 }
 
-pub(crate) fn restore_space(current: &mut ChartSpace, previous: &ChartSpace) -> RestoreReport {
+pub(crate) fn restore_space(
+    current: &mut ChartSpace,
+    previous: &ChartSpace,
+) -> Result<RestoreReport, crate::XlsxError> {
     // Incoming caches never become authoritative, even if their guard matches.
     super::clear_source_caches(current);
     let mut report = RestoreReport::default();
-    let (chart, shape) = current.reference_role_parts_mut();
-    let (old_chart, old_shape) = previous.reference_role_parts();
-    let restored = chart.restore_export_parts(old_chart, &mut report);
+    let restored = current.restore_export_parts(previous, &mut report);
+    report.restored_owners += restored;
+    let (chart, shape, _) = current.reference_role_parts_mut();
+    let (old_chart, old_shape, _) = previous.reference_role_parts();
+    let restored = chart.restore_export_parts(old_chart, &mut report)?;
     report.restored_owners += restored;
     let fields = chart.reference_role_parts_mut();
     let old = old_chart.reference_role_parts();
@@ -85,74 +90,92 @@ pub(crate) fn restore_space(current: &mut ChartSpace, previous: &ChartSpace) -> 
         restore_title,
         discard_title_extensions,
         &mut report,
-    );
-    restore_plot(fields.plot, old.plot, &mut report);
-    report.restored_owners += fields.legend.restore_export_parts(old.legend);
+    )?;
+    restore_plot(fields.plot, old.plot, &mut report)?;
+    report.restored_owners += fields.legend.restore_export_parts(old.legend)?;
     let (layout, legend_shape) = fields.legend.reference_role_parts_mut();
     let (old_layout, old_legend_shape) = old.legend.reference_role_parts();
     paired(
         layout,
         old_layout,
-        restore_layout,
+        |current, previous, report| {
+            restore_layout(current, previous, report);
+            Ok(())
+        },
         discard_layout_extensions,
         &mut report,
-    );
+    )?;
     paired(
         legend_shape,
         old_legend_shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         &mut report,
-    );
+    )?;
     paired(
         shape,
         old_shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         &mut report,
-    );
+    )?;
     paired(
         fields.floor.and_then(|wall| wall.shape_properties_mut()),
         old.floor.and_then(|wall| wall.shape_properties()),
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         &mut report,
-    );
+    )?;
     paired(
         fields
             .side_wall
             .and_then(|wall| wall.shape_properties_mut()),
         old.side_wall.and_then(|wall| wall.shape_properties()),
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         &mut report,
-    );
+    )?;
     paired(
         fields
             .back_wall
             .and_then(|wall| wall.shape_properties_mut()),
         old.back_wall.and_then(|wall| wall.shape_properties()),
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         &mut report,
-    );
+    )?;
     super::chart_reference_roles::visit_ref(current, &mut |_, target| {
         if let ReferenceTargetRef::String(reference) = target {
             report.restored_caches += usize::from(reference.string_cache().source().is_some());
         }
     });
-    report
+    Ok(report)
 }
 
 fn paired<T>(
     current: Option<&mut T>,
     previous: Option<&T>,
-    restore: impl FnOnce(&mut T, &T, &mut RestoreReport),
+    restore: impl FnOnce(&mut T, &T, &mut RestoreReport) -> Result<(), crate::XlsxError>,
     discard: fn(&mut T, &mut RestoreReport),
     report: &mut RestoreReport,
-) {
+) -> Result<(), crate::XlsxError> {
     match (current, previous) {
-        (Some(current), Some(previous)) => restore(current, previous, report),
+        (Some(current), Some(previous)) => restore(current, previous, report)?,
         (None, None) => {}
         (Some(current), None) => {
             report.added_owners += 1;
@@ -160,9 +183,14 @@ fn paired<T>(
         }
         (None, Some(_)) => report.removed_owners += 1,
     }
+    Ok(())
 }
 
-fn restore_title(current: &mut Title, previous: &Title, report: &mut RestoreReport) {
+fn restore_title(
+    current: &mut Title,
+    previous: &Title,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
     let (text, shape, layout) = current.reference_role_parts_mut();
     let (old_text, old_shape, old_layout) = previous.reference_role_parts();
     paired(
@@ -171,28 +199,35 @@ fn restore_title(current: &mut Title, previous: &Title, report: &mut RestoreRepo
         restore_text,
         discard_text_extensions,
         report,
-    );
+    )?;
     paired(
         shape,
         old_shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         report,
-    );
+    )?;
     paired(
         layout,
         old_layout,
-        restore_layout,
+        |current, previous, report| {
+            restore_layout(current, previous, report);
+            Ok(())
+        },
         discard_layout_extensions,
         report,
-    );
+    )?;
+    Ok(())
 }
 
 pub(super) fn restore_text(
     current: &mut ChartText,
     previous: &ChartText,
     report: &mut RestoreReport,
-) {
+) -> Result<(), crate::XlsxError> {
     let branch = |text: &ChartText| {
         (
             text.rich_text().is_some(),
@@ -206,11 +241,11 @@ pub(super) fn restore_text(
         report
             .diagnostics
             .push("incompatible chart text branch replacement".into());
-        return;
+        return Ok(());
     }
     if let (Some(text), Some(old)) = (current.rich_text_mut(), previous.rich_text()) {
         if text.projected_structure_matches(old) {
-            report.restored_owners += text.restore_export_parts(old);
+            report.restored_owners += text.restore_export_parts(old)?;
         } else {
             report.incompatible_owners += 1;
             report
@@ -223,6 +258,7 @@ pub(super) fn restore_text(
     {
         restore_string_reference(reference, old, report);
     }
+    Ok(())
 }
 
 fn restore_string_reference(
@@ -272,7 +308,11 @@ pub(super) fn restore_shape(
     report.restored_owners += current.restore_export_parts(previous);
 }
 
-pub(super) fn restore_marker(current: &mut Marker, previous: &Marker, report: &mut RestoreReport) {
+pub(super) fn restore_marker(
+    current: &mut Marker,
+    previous: &Marker,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
     record_supplied_extension(current.reference_role_parts().1.is_some(), "marker", report);
     report.restored_owners += current.restore_export_parts(previous);
     let (shape, _) = current.reference_role_parts_mut();
@@ -280,10 +320,14 @@ pub(super) fn restore_marker(current: &mut Marker, previous: &Marker, report: &m
     paired(
         shape,
         old_shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         report,
-    );
+    )?;
+    Ok(())
 }
 
 pub(super) fn restore_layout(current: &mut Layout, previous: &Layout, report: &mut RestoreReport) {
@@ -299,7 +343,11 @@ pub(super) fn restore_layout(current: &mut Layout, previous: &Layout, report: &m
     }
 }
 
-fn restore_labels(current: &mut DataLabels, previous: &DataLabels, report: &mut RestoreReport) {
+fn restore_labels(
+    current: &mut DataLabels,
+    previous: &DataLabels,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
     if previous.parts_for_restoration_present() {
         record_supplied_extension(current.reference_role_parts().3.is_some(), "dLbls", report);
     } else {
@@ -312,18 +360,19 @@ fn restore_labels(current: &mut DataLabels, previous: &DataLabels, report: &mut 
     {
         report.incompatible_owners += 1;
     }
-    let restored = current.restore_export_parts(previous);
+    let restored = current.restore_export_parts(previous)?;
     report.restored_owners += restored;
     if restored != 0 {
         report.restored_labels += previous.labels().len();
     }
+    Ok(())
 }
 
 fn restore_series(
     current: &mut AreaChartSeries,
     previous: &AreaChartSeries,
     report: &mut RestoreReport,
-) {
+) -> Result<(), crate::XlsxError> {
     let restored = current.restore_export_parts(previous);
     report.restored_owners += restored;
     if restored != 0 {
@@ -355,7 +404,7 @@ fn restore_series(
             restore_labels,
             discard_label_owner,
             report,
-        );
+        )?;
     }
     let fields = current.reference_role_parts_mut();
     let old = previous.reference_role_parts();
@@ -365,21 +414,24 @@ fn restore_series(
         restore_text,
         discard_text_extensions,
         report,
-    );
+    )?;
     paired(
         fields.shape,
         old.shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         report,
-    );
+    )?;
     paired(
         fields.marker,
         old.marker,
         restore_marker,
         discard_marker_extensions,
         report,
-    );
+    )?;
     if let Some(category) = fields.category {
         if let Some(old) = old.category {
             let (string, number, multi, literal) = category.reference_role_parts_mut();
@@ -387,10 +439,13 @@ fn restore_series(
             paired(
                 string,
                 old_string,
-                restore_string_reference,
+                |current, previous, report| {
+                    restore_string_reference(current, previous, report);
+                    Ok(())
+                },
                 discard_string_reference_extensions,
                 report,
-            );
+            )?;
             if let Some(reference) = number {
                 if let Some(old) = old_number {
                     restore_number_reference(reference, old, report);
@@ -433,6 +488,7 @@ fn restore_series(
     numeric_reference!(fields.xvalues, old.xvalues);
     numeric_reference!(fields.yvalues, old.yvalues);
     numeric_reference!(fields.bubble, old.bubble);
+    Ok(())
 }
 
 // These are occurrence parents: nested references leave with their owner and
@@ -626,7 +682,11 @@ fn discard_axis_extensions(current: AxisPartsMut<'_>, report: &mut RestoreReport
     }
 }
 
-fn restore_plot(current: &mut PlotArea, previous: &PlotArea, report: &mut RestoreReport) {
+fn restore_plot(
+    current: &mut PlotArea,
+    previous: &PlotArea,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
     let correspondence = match_series(current, previous);
     report.unmatched_previous_series += correspondence.unmatched_previous.len();
     let old_groups: Vec<_> = previous.chart_groups().collect();
@@ -658,13 +718,13 @@ fn restore_plot(current: &mut PlotArea, previous: &PlotArea, report: &mut Restor
             );
             for (position, axis) in current.$write().iter_mut().enumerate() {
                 if let Some(old_position) = positions[position] {
-                    $(let restored = axis.$restore(&old[old_position], report);
+                    $(let restored = axis.$restore(&old[old_position], report)?;
                     report.restored_owners += restored;)?
                     restore_axis(
                         axis.reference_role_parts_mut(),
                         &old[old_position].reference_role_parts(),
                         report,
-                    );
+                    )?;
                 } else {
                     $(axis.$discard(report);)?
                     discard_axis_extensions(axis.reference_role_parts_mut(), report);
@@ -692,10 +752,13 @@ fn restore_plot(current: &mut PlotArea, previous: &PlotArea, report: &mut Restor
     paired(
         fields.shape,
         old.shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         report,
-    );
+    )?;
     for (group_position, mut group) in fields.groups.into_iter().enumerate() {
         if let Some(old_position) = groups[group_position] {
             record_supplied_extension(
@@ -726,7 +789,7 @@ fn restore_plot(current: &mut PlotArea, previous: &PlotArea, report: &mut Restor
                 restore_labels,
                 discard_label_owner,
                 report,
-            );
+            )?;
         } else if let Some(labels) = fields.labels {
             discard_unmatched_labels(labels, &format!("group:{group_position}"), report);
         }
@@ -744,7 +807,7 @@ fn restore_plot(current: &mut PlotArea, previous: &PlotArea, report: &mut Restor
                     let old = &old_groups[old_position.group]
                         .into_reference_role_parts()
                         .series[old_position.series];
-                    restore_series(series, old, report);
+                    restore_series(series, old, report)?;
                     if families[group_position] != old_groups[old_position.group].series_family() {
                         let removed = series.remove_parts_not_allowed_in(families[group_position]);
                         report.removed_incompatible_parts += removed.len();
@@ -773,6 +836,7 @@ fn restore_plot(current: &mut PlotArea, previous: &PlotArea, report: &mut Restor
             }
         }
     }
+    Ok(())
 }
 
 fn unique_axis_matches(
@@ -805,21 +869,28 @@ fn unique_axis_matches(
         .collect()
 }
 
-fn restore_axis(current: AxisPartsMut<'_>, previous: &AxisParts<'_>, report: &mut RestoreReport) {
+fn restore_axis(
+    current: AxisPartsMut<'_>,
+    previous: &AxisParts<'_>,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
     paired(
         current.title,
         previous.title,
         restore_title,
         discard_title_extensions,
         report,
-    );
+    )?;
     paired(
         current.shape,
         previous.shape,
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         report,
-    );
+    )?;
     paired(
         current
             .gridlines
@@ -827,10 +898,14 @@ fn restore_axis(current: AxisPartsMut<'_>, previous: &AxisParts<'_>, report: &mu
         previous
             .gridlines
             .and_then(|lines| lines.shape_properties()),
-        restore_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
         discard_shape_extensions,
         report,
-    );
+    )?;
+    Ok(())
 }
 
 fn match_groups(

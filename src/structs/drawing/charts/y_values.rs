@@ -52,8 +52,9 @@ impl YValues {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-    ) {
-        self.read_common(reader, owner, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_common(reader, owner, None)?;
+        Ok(())
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
@@ -61,8 +62,9 @@ impl YValues {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_common(reader, e, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_common(reader, e, Some(session))?;
+        Ok(())
     }
 
     fn read_common<R: std::io::BufRead>(
@@ -70,32 +72,51 @@ impl YValues {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        let complete = super::numeric_data::children(reader, e, false, |reader, child, empty| {
-            if !super::numeric_data::is_native_numeric_reference(child, session) {
-                return false;
-            }
-            if !empty {
-                match session {
-                    Some(session) => self
-                        .number_reference
-                        .set_attributes_with_session(reader, child, session),
-                    None => self.number_reference.set_attributes(reader, child),
-                }
-            }
-            true
-        });
-        assert!(complete, "Could not read numeric data source");
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
+            reader,
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if !super::numeric_data::is_native_numeric_reference(child, session)? {
+                        return Ok(false);
+                    }
+                    if !empty {
+                        match session {
+                            Some(session) => self
+                                .number_reference
+                                .set_attributes_with_session(reader, child, session)?,
+                            None => self.number_reference.set_attributes(reader, child)?,
+                        }
+                    }
+                    true
+                })
+            },
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error("Could not read numeric data source"));
+        }
+        Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:yVal
         write_start_tag(writer, "c:yVal", vec![], false);
 
         // c:numRef
-        self.number_reference.write_to(writer, wb);
+        self.number_reference.write_to(writer, wb)?;
 
         write_end_tag(writer, "c:yVal");
+
+        Ok(())
     }
 }

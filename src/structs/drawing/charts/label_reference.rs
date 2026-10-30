@@ -99,7 +99,7 @@ impl SeriesDataLabelsRange {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         let mut result = Self::default();
         if !empty {
             let (formula, cache, ordered) = result.reference.read_named_with(
@@ -107,11 +107,11 @@ impl SeriesDataLabelsRange {
                 e,
                 session,
                 b"dlblRangeCache",
-                |_, _, _, _| {
+                |_, _, _, _| -> Result<bool, crate::XlsxError> {
                     result.validation = ReferenceValidation::Invalid;
-                    false
+                    Ok(false)
                 },
-            );
+            )?;
             if !ordered {
                 result.validation = ReferenceValidation::Invalid;
             }
@@ -121,7 +121,7 @@ impl SeriesDataLabelsRange {
                 result.validation = ReferenceValidation::TooMany;
             }
         }
-        result
+        Ok(result)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
@@ -214,7 +214,7 @@ impl DataLabelFieldEntry {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         let mut result = Self::default();
         if !empty {
             let mut guids = 0;
@@ -223,27 +223,27 @@ impl DataLabelFieldEntry {
                 e,
                 session,
                 b"dlblFieldTableCache",
-                |reader, child, empty, counts| {
+                |reader, child, empty, counts| -> Result<bool, crate::XlsxError> {
                     if counts.0 > 0 || counts.1 > 0 {
                         result.validation = ReferenceValidation::Invalid;
                     }
-                    if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)
+                    if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)?
                         || local_name(child.name().into_inner()) != b"txfldGUID"
                     {
                         result.validation = ReferenceValidation::Invalid;
-                        return false;
+                        return Ok(false);
                     }
                     guids += 1;
-                    match read_text(reader, child, empty) {
+                    match read_text(reader, child, empty)? {
                         Some(value) => {
                             result.field_guid = value;
                             result.guid_present = true;
                         }
                         None => result.validation = ReferenceValidation::Invalid,
                     }
-                    true
+                    Ok(true)
                 },
-            );
+            )?;
             if !ordered {
                 result.validation = ReferenceValidation::Invalid;
             }
@@ -253,7 +253,7 @@ impl DataLabelFieldEntry {
                 result.validation = ReferenceValidation::Invalid;
             }
         }
-        result
+        Ok(result)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
@@ -307,21 +307,28 @@ impl DataLabelFieldTable {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
-        result.invalid = !children(reader, e, empty, |reader, child, empty| {
-            if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)
-                || local_name(child.name().into_inner()) != b"dlblFTEntry"
-            {
-                return false;
-            }
-            result
-                .entries
-                .push(DataLabelFieldEntry::read(reader, child, empty, session));
-            true
-        });
-        result
+        result.invalid = !children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if !session.accepts_child_namespace(child, super::extension_registry::NS_C15)?
+                        || local_name(child.name().into_inner()) != b"dlblFTEntry"
+                    {
+                        return Ok(false);
+                    }
+                    result
+                        .entries
+                        .push(DataLabelFieldEntry::read(reader, child, empty, session)?);
+                    true
+                })
+            },
+        )?;
+        Ok(result)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {

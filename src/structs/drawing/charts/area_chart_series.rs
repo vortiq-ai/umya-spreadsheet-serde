@@ -39,13 +39,13 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -642,21 +642,22 @@ impl AreaChartSeries {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 // Each modeled child owns its subtree; unknown future parts are
                 // skipped whole so nested names cannot overwrite the
                 // series fields.
                 let is_empty_element = matches!(n, Event::Empty(_));
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C) {local_name(e.name().into_inner())} else {b""} {
-                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty_element,session)));},
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().into_inner())} else {b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty_element,session)?));},
                 b"errBars" => {
                         self.error_bars_mut().push(ErrorBars::read_with_session(
                             reader,e,is_empty_element,session,
-                        ));
+                        )?);
                     }
                     b"trendline" => {
                         self.trendlines_mut().push(Trendline::read(
@@ -664,29 +665,29 @@ impl AreaChartSeries {
                             e,
                             is_empty_element,
                             session,
-                        ));
+                        )?);
                     }
                     b"dPt" => {
                         self.data_points_mut()
                             .push(DataPoint::read_with_session(reader, e, is_empty_element,
-                                session));
+                                session)?);
                     }
                     b"tx" => {
                         let mut obj = ChartText::default();
                         if !is_empty_element {
-                            obj.set_attributes(reader, e, session);
+                            obj.set_attributes(reader, e, session)?;
                         }
                         self.set_chart_text(obj);
                     }
                     b"marker" => {
                         let mut obj = Marker::default();
-                        obj.set_attributes_with_session(reader, e, is_empty_element, session);
+                        obj.set_attributes_with_session(reader, e, is_empty_element, session)?;
                         self.set_marker(obj);
                     }
                     b"spPr" => {
                         let mut obj = ShapeProperties::default();
                         if !is_empty_element {
-                            obj.set_attributes_with_session(reader, e, session);
+                            obj.set_attributes_with_session(reader, e, session)?;
                         }
                         self.set_shape_properties(obj);
                     }
@@ -694,7 +695,7 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = CategoryAxisData::default();
-                            obj.set_attributes(reader, e, session);
+                            obj.set_attributes(reader, e, session)?;
                             self.set_category_axis_data(obj);
                         }
                     }
@@ -702,7 +703,7 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = Values::default();
-                            obj.set_attributes_with_session(reader, e, session);
+                            obj.set_attributes_with_session(reader, e, session)?;
                             self.set_values(obj);
                         }
                     }
@@ -710,7 +711,7 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = XValues::default();
-                            obj.set_attributes_with_session(reader, e, session);
+                            obj.set_attributes_with_session(reader, e, session)?;
                             self.set_x_values(obj);
                         }
                     }
@@ -718,13 +719,13 @@ impl AreaChartSeries {
                         // `continue` here would skip the loop's `buf.clear()`.
                         if !is_empty_element {
                             let mut obj = YValues::default();
-                            obj.set_attributes_with_session(reader, e, session);
+                            obj.set_attributes_with_session(reader, e, session)?;
                             self.set_y_values(obj);
                         }
                     }
                     b"bubbleSize" => {
                         let mut obj = BubbleSize::default();
-                        obj.set_attributes_with_session(reader, e, session);
+                        obj.set_attributes_with_session(reader, e, session)?;
                         self.set_bubble_size(obj);
                     }
                     b"dLbls" => {
@@ -732,49 +733,49 @@ impl AreaChartSeries {
                         if is_empty_element {
                             obj.mark_empty_import();
                         } else {
-                            obj.set_attributes(reader, e, session);
+                            obj.set_attributes(reader, e, session)?;
                         }
                         self.set_data_labels(obj);
                     }
                     b"idx" => {
-                        self.index.set_attributes(reader, e);
+                        self.index.set_attributes(reader, e)?;
                     }
                     b"order" => {
-                        self.order.set_attributes(reader, e);
+                        self.order.set_attributes(reader, e)?;
                     }
                     b"explosion" => {
                         let mut obj = Explosion::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_explosion(obj);
                     }
                     b"invertIfNegative" => {
                         let mut obj = InvertIfNegative::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_invert_if_negative(obj);
                     }
                     b"bubble3D" => {
                         let mut obj = Bubble3D::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_bubble_3d(obj);
                     }
                     b"smooth" => {
                         let mut obj = Smooth::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_smooth(obj);
                     }
                     _ => {
                         if !is_empty_element {
-                            skip_element(reader, e);
+                            skip_element(reader, e)?;
                         }
                     }
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"ser" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:ser"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:ser"))),
         );
     }
 
@@ -970,8 +971,10 @@ impl AreaChartSeries {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &Workbook,
         family: SeriesFamily,
-    ) {
-        self.write_to_as(writer, wb, family, "c:ser");
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, wb, family, "c:ser")?;
+
+        Ok(())
     }
 
     pub(crate) fn write_to_as(
@@ -980,7 +983,7 @@ impl AreaChartSeries {
         wb: &Workbook,
         family: SeriesFamily,
         name: &str,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(writer, name, vec![], false);
 
         // c:idx
@@ -991,12 +994,12 @@ impl AreaChartSeries {
 
         // c:tx
         if let Some(v) = &self.chart_text {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:explosion
@@ -1023,22 +1026,22 @@ impl AreaChartSeries {
             .as_ref()
             .filter(|_| family.allows(SeriesPartKind::Marker))
         {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // Every supported family permits ordered point overrides before labels.
         for point in self.data_points() {
-            point.write_to(writer);
+            point.write_to(writer)?;
         }
 
         // c:dLbls
         if let Some(v) = &self.data_labels {
-            v.write_to_present(writer, wb);
+            v.write_to_present(writer, wb)?;
         }
 
         if family.allows(SeriesPartKind::Trendlines) {
             for trendline in self.trendlines() {
-                trendline.write_to(writer, wb);
+                trendline.write_to(writer, wb)?;
             }
         }
 
@@ -1047,7 +1050,7 @@ impl AreaChartSeries {
             .iter()
             .take(super::error_bars::error_bar_limit(family))
         {
-            bars.write_to(writer, wb);
+            bars.write_to(writer, wb)?;
         }
 
         // c:cat
@@ -1056,7 +1059,7 @@ impl AreaChartSeries {
             .as_ref()
             .filter(|_| family.allows(SeriesPartKind::Categories))
         {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:val
@@ -1065,7 +1068,7 @@ impl AreaChartSeries {
             .as_ref()
             .filter(|_| family.allows(SeriesPartKind::Values))
         {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:xVal
@@ -1074,7 +1077,7 @@ impl AreaChartSeries {
             .as_ref()
             .filter(|_| family.allows(SeriesPartKind::XValues))
         {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:yVal
@@ -1083,7 +1086,7 @@ impl AreaChartSeries {
             .as_ref()
             .filter(|_| family.allows(SeriesPartKind::YValues))
         {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:bubbleSize
@@ -1092,7 +1095,7 @@ impl AreaChartSeries {
             .as_ref()
             .filter(|_| family.allows(SeriesPartKind::BubbleSize))
         {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:bubble3D
@@ -1114,8 +1117,10 @@ impl AreaChartSeries {
         }
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "ser", Some(family));
+            ext.write_for_owner(writer, Some(wb), "ser", Some(family))?;
         }
         write_end_tag(writer, name);
+
+        Ok(())
     }
 }

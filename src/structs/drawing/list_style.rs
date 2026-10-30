@@ -18,8 +18,9 @@ use super::{
     TextParagraphPropertiesType,
 };
 use crate::{
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS as NS_A,
-    reader::driver::xml_read_loop,
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -57,15 +58,15 @@ impl ListStyle {
         restored
     }
 
-    pub(crate) fn projected_values_match(&self, previous: &Self) -> bool {
-        let bytes = |value: &Self| {
+    pub(crate) fn projected_values_match(&self, previous: &Self) -> Result<bool, XlsxError> {
+        let bytes = |value: &Self| -> Result<Vec<u8>, XlsxError> {
             let mut value = value.clone();
             value.strip_export_parts();
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            value.write_to(&mut writer);
-            writer.into_inner().into_inner()
+            value.write_to(&mut writer)?;
+            Ok(writer.into_inner().into_inner())
         };
-        bytes(self) == bytes(previous)
+        Ok(bytes(self)? == bytes(previous)?)
     }
 
     #[inline]
@@ -492,8 +493,8 @@ impl ListStyle {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.read_with_session(reader, e, None);
+    ) -> Result<(), XlsxError> {
+        self.read_with_session(reader, e, None)
     }
 
     pub(crate) fn read_with_session<R: std::io::BufRead>(
@@ -501,85 +502,88 @@ impl ListStyle {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(e)?;
         let end = e.name().into_inner().to_vec();
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
                 let empty = matches!(event, Event::Empty(_));
-                let native = session
-                    .is_none_or(|session| session.accepts_child_namespace(child, NS_A));
-                let name = if native {
-                    crate::reader::driver::local_name(child.name().into_inner())
-                } else { b"" };
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(child, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, child)?; }
+                    continue;
+                }
+                let name = crate::reader::driver::local_name(child.name().into_inner());
                 match name {
                     b"effectLst" => {
                         let mut value = EffectList::default();
-                        match session {
-                            Some(session) => {
-                                value.set_attributes_with_session(reader, child, empty, session);
-                            }
-                            None => value.set_attributes(reader, child, empty),
-                        }
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_effect_list(value);
                     }
                     b"defPPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_default_paragraph_properties(value);
                     }
                     b"lvl1pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level1_paragraph_properties(value);
                     }
                     b"lvl2pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level2_paragraph_properties(value);
                     }
                     b"lvl3pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level3_paragraph_properties(value);
                     }
                     b"lvl4pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level4_paragraph_properties(value);
                     }
                     b"lvl5pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level5_paragraph_properties(value);
                     }
                     b"lvl6pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level6_paragraph_properties(value);
                     }
                     b"lvl7pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level7_paragraph_properties(value);
                     }
                     b"lvl8pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level8_paragraph_properties(value);
                     }
                     b"lvl9pPr" => {
                         let mut value = TextParagraphPropertiesType::default();
-                        value.read_with_session(reader, child, empty, session);
+                        value.read_with_session(reader, child, empty, session)?;
                         self.set_level9_paragraph_properties(value);
                     }
-                    _ => if !empty { crate::reader::driver::skip_element(reader, child); },
+                    _ => if !empty { crate::reader::driver::skip_element(reader, child)?; },
                 }
             },
             Event::End(ref child) => {
-                if child.name().into_inner() == end.as_slice() { return; }
+                if child.name().into_inner() == end.as_slice() { return Ok(()); }
             },
-            Event::Eof => panic!("unterminated list style")
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text properties"))
         );
     }
 
@@ -588,63 +592,64 @@ impl ListStyle {
         self.effect_list.is_none() && self.text_paragraph_properties_type.is_empty()
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // a:lstStyle
         let is_empty = self.is_empty();
         write_start_tag(writer, "a:lstStyle", vec![], is_empty);
 
         // a:defPPr
         if let Some(v) = &self.text_paragraph_properties_type.get("def") {
-            v.write_to_default(writer);
+            v.write_to_default(writer)?;
         }
 
         // a:lvl1pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv1") {
-            v.write_to_lvl1(writer);
+            v.write_to_lvl1(writer)?;
         }
 
         // a:lvl2pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv2") {
-            v.write_to_lvl2(writer);
+            v.write_to_lvl2(writer)?;
         }
 
         // a:lvl3pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv3") {
-            v.write_to_lvl3(writer);
+            v.write_to_lvl3(writer)?;
         }
 
         // a:lvl4pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv4") {
-            v.write_to_lvl4(writer);
+            v.write_to_lvl4(writer)?;
         }
 
         // a:lvl5pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv5") {
-            v.write_to_lvl5(writer);
+            v.write_to_lvl5(writer)?;
         }
 
         // a:lvl6pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv6") {
-            v.write_to_lvl6(writer);
+            v.write_to_lvl6(writer)?;
         }
 
         // a:lvl7pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv7") {
-            v.write_to_lvl7(writer);
+            v.write_to_lvl7(writer)?;
         }
 
         // a:lvl8pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv8") {
-            v.write_to_lvl8(writer);
+            v.write_to_lvl8(writer)?;
         }
 
         // a:lvl9pPr
         if let Some(v) = &self.text_paragraph_properties_type.get("lv9") {
-            v.write_to_lvl9(writer);
+            v.write_to_lvl9(writer)?;
         }
 
         if !is_empty {
             write_end_tag(writer, "a:lstStyle");
         }
+        Ok(())
     }
 }

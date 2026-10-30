@@ -8,6 +8,7 @@ use quick_xml::{
 use crate::{
     drawing::get_unescaped_attribute,
     writer::driver::write_start_tag,
+    xml::trim_xml_whitespace,
 };
 /// The four XML boolean spellings, retained independently of their semantic
 /// value.
@@ -34,11 +35,6 @@ impl BooleanLexeme {
         }
     }
 }
-/// Trim only XML Schema whitespace, not unrelated Unicode spacing characters.
-pub(crate) fn trim_xml_whitespace(value: &str) -> &str {
-    value.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
-}
-
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct XmlBoolean {
@@ -138,48 +134,6 @@ pub(crate) fn parse_xml_unsigned(value: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// XML Schema double lexical grammar is narrower than Rust's float parser.
-pub(crate) fn parse_xml_double(value: &str) -> Option<f64> {
-    let value = trim_xml_whitespace(value);
-    match value {
-        "INF" => return Some(f64::INFINITY),
-        "-INF" => return Some(f64::NEG_INFINITY),
-        "NaN" => return Some(f64::NAN),
-        _ => (),
-    }
-    let unsigned = value
-        .strip_prefix('+')
-        .or_else(|| value.strip_prefix('-'))
-        .unwrap_or(value);
-    let mut exponent_split = unsigned.split(['e', 'E']);
-    let mantissa = exponent_split.next()?;
-    if let Some(exponent) = exponent_split.next() {
-        let digits = exponent
-            .strip_prefix('+')
-            .or_else(|| exponent.strip_prefix('-'))
-            .unwrap_or(exponent);
-        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-    }
-    if exponent_split.next().is_some() {
-        return None;
-    }
-    let mut dot_split = mantissa.split('.');
-    let whole = dot_split.next()?;
-    let fraction = dot_split.next().unwrap_or("");
-    if dot_split.next().is_some()
-        || (whole.is_empty() && fraction.is_empty())
-        || !whole
-            .bytes()
-            .chain(fraction.bytes())
-            .all(|c| c.is_ascii_digit())
-    {
-        return None;
-    }
-    value.parse().ok()
-}
-
 /// A newly modeled point index retains its one authoritative XML attribute.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -239,8 +193,11 @@ impl XmlDouble {
         self.attribute.as_deref()
     }
 
+    #[must_use]
     pub fn value(&self) -> Option<f64> {
-        self.attribute.as_deref().and_then(parse_xml_double)
+        self.attribute
+            .as_deref()
+            .and_then(|value| crate::xml::parse_double(value).ok())
     }
 
     pub fn set_value(&mut self, value: f64) -> &mut Self {

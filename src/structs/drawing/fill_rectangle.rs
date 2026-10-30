@@ -1,4 +1,3 @@
-// a:fillRect
 use std::io::Cursor;
 
 use quick_xml::{
@@ -7,95 +6,66 @@ use quick_xml::{
     events::BytesStart,
 };
 
-use crate::writer::driver::write_start_tag;
+use super::SourceRectangle;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct FillRectangle {
-    bottom: usize,
-    left:   usize,
-    right:  usize,
-    top:    usize,
+    rectangle: SourceRectangle,
 }
+
 impl FillRectangle {
-    #[inline]
     #[must_use]
-    pub fn bottom(&self) -> usize {
-        self.bottom
+    pub fn bottom(&self) -> Option<&str> {
+        self.rectangle.b()
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use bottom()")]
-    pub fn get_bottom(&self) -> usize {
-        self.bottom()
+    pub fn left(&self) -> Option<&str> {
+        self.rectangle.l()
     }
 
-    #[inline]
-    pub fn set_bottom(&mut self, value: usize) {
-        self.bottom = value;
-    }
-
-    #[inline]
     #[must_use]
-    pub fn left(&self) -> usize {
-        self.left
+    pub fn right(&self) -> Option<&str> {
+        self.rectangle.r()
     }
 
-    #[inline]
     #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use left()")]
-    pub fn get_left(&self) -> usize {
-        self.left()
+    pub fn top(&self) -> Option<&str> {
+        self.rectangle.t()
     }
 
-    #[inline]
-    pub fn set_left(&mut self, value: usize) {
-        self.left = value;
+    pub fn set_bottom<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_b(value);
     }
 
-    #[inline]
-    #[must_use]
-    pub fn right(&self) -> usize {
-        self.right
+    pub fn set_left<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_l(value);
     }
 
-    #[inline]
-    #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use right()")]
-    pub fn get_right(&self) -> usize {
-        self.right()
+    pub fn set_right<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_r(value);
     }
 
-    #[inline]
-    pub fn set_right(&mut self, value: usize) {
-        self.right = value;
+    pub fn set_top<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_t(value);
     }
 
-    #[inline]
-    #[must_use]
-    pub fn top(&self) -> usize {
-        self.top
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        self.rectangle
+            .read_with_session(reader, owner, empty, session)
     }
 
-    #[inline]
-    #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use top()")]
-    pub fn get_top(&self) -> usize {
-        self.top()
-    }
-
-    #[inline]
-    pub fn set_top(&mut self, value: usize) {
-        self.top = value;
-    }
-
-    #[inline]
-    pub(crate) fn set_attributes<R: std::io::BufRead>(_reader: &mut Reader<R>, _e: &BytesStart) {}
-
-    #[inline]
-    pub(crate) fn write_to(writer: &mut Writer<Cursor<Vec<u8>>>) {
-        // a:fillRect
-        write_start_tag(writer, "a:fillRect", vec![], true);
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.rectangle.write_to_as(writer, "a:fillRect")
     }
 }

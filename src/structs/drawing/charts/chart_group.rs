@@ -216,22 +216,28 @@ impl<'a> ChartGroupRef<'a> {
         }
     }
 
-    pub(crate) fn write_to(self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         match self {
-            Self::LineChart(chart) => chart.write_to(writer, wb),
-            Self::Line3DChart(chart) => chart.write_to(writer, wb),
-            Self::PieChart(chart) => chart.write_to(writer, wb),
-            Self::Pie3DChart(chart) => chart.write_to(writer, wb),
-            Self::DoughnutChart(chart) => chart.write_to(writer, wb),
-            Self::ScatterChart(chart) => chart.write_to(writer, wb),
-            Self::BarChart(chart) => chart.write_to(writer, wb),
-            Self::Bar3DChart(chart) => chart.write_to(writer, wb),
-            Self::RadarChart(chart) => chart.write_to(writer, wb),
-            Self::BubbleChart(chart) => chart.write_to(writer, wb),
-            Self::AreaChart(chart) => chart.write_to(writer, wb),
-            Self::Area3DChart(chart) => chart.write_to(writer, wb),
-            Self::OfPieChart(chart) => chart.write_to(writer, wb),
+            Self::LineChart(chart) => chart.write_to(writer, wb)?,
+            Self::Line3DChart(chart) => chart.write_to(writer, wb)?,
+            Self::PieChart(chart) => chart.write_to(writer, wb)?,
+            Self::Pie3DChart(chart) => chart.write_to(writer, wb)?,
+            Self::DoughnutChart(chart) => chart.write_to(writer, wb)?,
+            Self::ScatterChart(chart) => chart.write_to(writer, wb)?,
+            Self::BarChart(chart) => chart.write_to(writer, wb)?,
+            Self::Bar3DChart(chart) => chart.write_to(writer, wb)?,
+            Self::RadarChart(chart) => chart.write_to(writer, wb)?,
+            Self::BubbleChart(chart) => chart.write_to(writer, wb)?,
+            Self::AreaChart(chart) => chart.write_to(writer, wb)?,
+            Self::Area3DChart(chart) => chart.write_to(writer, wb)?,
+            Self::OfPieChart(chart) => chart.write_to(writer, wb)?,
         }
+
+        Ok(())
     }
 }
 

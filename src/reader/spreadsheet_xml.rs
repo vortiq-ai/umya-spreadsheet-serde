@@ -21,6 +21,7 @@ use quick_xml::{
     },
     name::{
         Namespace,
+        PrefixDeclaration,
         QName,
         ResolveResult,
     },
@@ -38,23 +39,65 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 pub(crate) struct SpreadsheetXml<R> {
-    reader:   NsReader<R>,
-    scratch:  Vec<u8>,
-    output:   Vec<u8>,
-    consumed: usize,
-    finished: bool,
+    reader:       NsReader<R>,
+    scratch:      Vec<u8>,
+    output:       Vec<u8>,
+    consumed:     usize,
+    finished:     bool,
+    native_depth: usize,
 }
 
 impl<R: BufRead> SpreadsheetXml<R> {
     pub(crate) fn new(source: R) -> Self {
         Self {
-            reader:   NsReader::from_reader(source),
-            scratch:  Vec::new(),
-            output:   Vec::new(),
-            consumed: 0,
-            finished: false,
+            reader:       NsReader::from_reader(source),
+            scratch:      Vec::new(),
+            output:       Vec::new(),
+            consumed:     0,
+            finished:     false,
+            native_depth: 0,
         }
     }
+}
+
+fn is_native_owner<R>(reader: &NsReader<R>, element: &BytesStart<'_>) -> bool {
+    let (namespace, local) = reader.resolver().resolve_element(element.name());
+    matches!(namespace, ResolveResult::Bound(Namespace(uri)) if uri == SHEET_MAIN_NS.as_bytes())
+        && matches!(local.as_ref(), b"oleObjects" | b"autoFilter")
+}
+
+pub(crate) fn is_native_start(element: &BytesStart<'_>, local: &[u8]) -> bool {
+    if element.local_name().as_ref() != local {
+        return false;
+    }
+    crate::drawing::charts::NamespaceScope::default()
+        .child(element)
+        .and_then(|scope| scope.resolve(element.name().as_ref(), false))
+        .is_ok_and(|name| name.namespace_uri == SHEET_MAIN_NS)
+}
+
+// Native subtree readers resolve qualified names themselves. Give their root
+// the source bindings, not the legacy adapter's rewritten names/attributes.
+fn native_start<R>(
+    reader: &NsReader<R>,
+    element: &BytesStart<'_>,
+) -> io::Result<BytesStart<'static>> {
+    let mut result = element.to_owned();
+    result.clear_attributes();
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| invalid(error.to_string()))?;
+        if attribute.key.as_namespace_binding().is_none() {
+            result.push_attribute(attribute);
+        }
+    }
+    for (prefix, namespace) in reader.resolver().bindings() {
+        let key = match prefix {
+            PrefixDeclaration::Default => b"xmlns".to_vec(),
+            PrefixDeclaration::Named(prefix) => [b"xmlns:", prefix].concat(),
+        };
+        result.push_attribute((key.as_slice(), namespace.as_ref()));
+    }
+    Ok(result)
 }
 
 fn canonical_name<R>(reader: &NsReader<R>, name: QName<'_>) -> io::Result<Option<Vec<u8>>> {
@@ -191,6 +234,22 @@ impl<R: BufRead> BufRead for SpreadsheetXml<R> {
                 .read_event_into(&mut self.scratch)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             let event = match event {
+                Event::Start(element) if self.native_depth > 0 => {
+                    self.native_depth += 1;
+                    Event::Start(element)
+                }
+                Event::Start(element) if is_native_owner(&self.reader, &element) => {
+                    self.native_depth = 1;
+                    Event::Start(native_start(&self.reader, &element)?)
+                }
+                Event::Empty(element) if self.native_depth > 0 => Event::Empty(element),
+                Event::Empty(element) if is_native_owner(&self.reader, &element) => {
+                    Event::Empty(native_start(&self.reader, &element)?)
+                }
+                Event::End(element) if self.native_depth > 0 => {
+                    self.native_depth -= 1;
+                    Event::End(element)
+                }
                 Event::Start(element) => Event::Start(canonical_start(&self.reader, &element)?),
                 Event::Empty(element) => Event::Empty(canonical_start(&self.reader, &element)?),
                 Event::End(element) => match canonical_name(&self.reader, element.name())? {
@@ -233,6 +292,167 @@ impl<R: BufRead> Read for SpreadsheetXml<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_filter_retains_inherited_bindings_and_rejects_source_marker() {
+        for prefix in ["", "s:"] {
+            let xml = format!(
+                r#"<worksheet xmlns="{SHEET_MAIN_NS}" xmlns:s="{SHEET_MAIN_NS}" xmlns:rev="http://schemas.microsoft.com/office/spreadsheetml/2014/revision"><{prefix}autoFilter ref="A1:B5" rev:uid="native-uid"><{prefix}filterColumn colId="0"><{prefix}filters><{prefix}filter val="A"/></{prefix}filters></{prefix}filterColumn></{prefix}autoFilter><sheetData/></worksheet>"#
+            );
+            let mut reader = quick_xml::Reader::from_reader(SpreadsheetXml::new(xml.as_bytes()));
+            let mut buffer = Vec::new();
+            let mut found = false;
+            let mut resumed = false;
+            loop {
+                match reader.read_event_into(&mut buffer).unwrap() {
+                    Event::Start(owner) if is_native_start(&owner, b"autoFilter") => {
+                        let mut filter = crate::AutoFilter::default();
+                        filter.set_attributes(&mut reader, &owner, false).unwrap();
+                        assert_eq!(filter.filter_columns().len(), 1);
+                        assert!(
+                            String::from_utf8_lossy(&filter.to_xml().unwrap())
+                                .contains("native-uid")
+                        );
+                        found = true;
+                    }
+                    Event::Empty(owner) if owner.name().as_ref() == b"sheetData" => resumed = true,
+                    Event::Eof => break,
+                    _ => (),
+                }
+                buffer.clear();
+            }
+            assert!(found && resumed);
+        }
+        let xml = format!(
+            r#"<worksheet xmlns="{SHEET_MAIN_NS}"><autoFilter ref="A1:B5" __umya_resolved_attributes="1"/></worksheet>"#
+        );
+        let mut reader = quick_xml::Reader::from_reader(SpreadsheetXml::new(xml.as_bytes()));
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer).unwrap() {
+                Event::Empty(owner) if is_native_start(&owner, b"autoFilter") => {
+                    assert!(
+                        crate::AutoFilter::default()
+                            .set_attributes(&mut reader, &owner, true)
+                            .is_err()
+                    );
+                    break;
+                }
+                Event::Eof => panic!("native filter not found"),
+                _ => (),
+            }
+            buffer.clear();
+        }
+    }
+
+    #[test]
+    fn native_ole_subtree_retains_inherited_namespaces_and_attributes() {
+        use crate::{
+            drawing::charts::{
+                NamespaceScope,
+                OpaqueElement,
+            },
+            helper::const_str::{
+                MC_NS,
+                REL_OFC_NS,
+                SHEET_MS_MAIN_NS,
+            },
+        };
+
+        let xml = format!(
+            r#"<s:worksheet xmlns:s="{SHEET_MAIN_NS}" xmlns:compat="{MC_NS}" xmlns:next="{SHEET_MS_MAIN_NS}" xmlns:rel="{REL_OFC_NS}" xmlns:custom="urn:custom"><s:oleObjects><compat:AlternateContent><compat:Choice Requires="next"><s:oleObject shapeId="4501" rel:id="rId1" custom:kind="next:Value"/></compat:Choice><compat:Fallback><s:oleObject xmlns:rel="urn:foreign" shapeId="4501" rel:id="not-a-relationship"/></compat:Fallback></compat:AlternateContent></s:oleObjects><s:sheetData/></s:worksheet>"#
+        );
+        let mut reader = quick_xml::Reader::from_reader(SpreadsheetXml::new(xml.as_bytes()));
+        let mut buffer = Vec::new();
+        let mut captured = None;
+        let mut resumed = false;
+        loop {
+            match reader.read_event_into(&mut buffer).unwrap() {
+                Event::Start(owner) if owner.local_name().as_ref() == b"oleObjects" => {
+                    captured = Some(
+                        OpaqueElement::read(&mut reader, &owner, false, &NamespaceScope::default())
+                            .unwrap(),
+                    );
+                }
+                Event::Empty(owner) if owner.name().as_ref() == b"sheetData" => resumed = true,
+                Event::Eof => break,
+                _ => (),
+            }
+            buffer.clear();
+        }
+        let owner = captured.unwrap();
+        assert!(owner.name.is(SHEET_MAIN_NS, "oleObjects"));
+        let compatibility = crate::xml::direct_children(&owner).unwrap().remove(0);
+        assert!(compatibility.name.is(MC_NS, "AlternateContent"));
+        let branches = crate::xml::direct_children(&compatibility).unwrap();
+        let choice = &branches[0];
+        let bindings = NamespaceScope::with_bindings(choice.namespaces.clone());
+        assert_eq!(
+            bindings
+                .resolve(b"next:Value", false)
+                .unwrap()
+                .namespace_uri,
+            SHEET_MS_MAIN_NS
+        );
+        let primary = crate::xml::direct_children(choice).unwrap().remove(0);
+        assert_eq!(
+            crate::xml::attribute(&primary, REL_OFC_NS, "id").unwrap(),
+            Some("rId1")
+        );
+        assert_eq!(
+            crate::xml::attribute(&primary, "urn:custom", "kind").unwrap(),
+            Some("next:Value")
+        );
+        let fallback = crate::xml::direct_children(&branches[1]).unwrap().remove(0);
+        assert_eq!(
+            crate::xml::attribute(&fallback, "urn:foreign", "id").unwrap(),
+            Some("not-a-relationship")
+        );
+        assert!(
+            crate::xml::attribute(&fallback, REL_OFC_NS, "id")
+                .unwrap()
+                .is_none()
+        );
+        assert!(resumed);
+    }
+
+    #[test]
+    fn native_ole_subtree_rejects_undeclared_prefixes() {
+        use crate::drawing::charts::{
+            NamespaceScope,
+            OpaqueElement,
+        };
+
+        for child in [
+            "<missing:AlternateContent/>",
+            "<oleObject missing:id=\"rId1\"/>",
+        ] {
+            let xml = format!(
+                r#"<worksheet xmlns="{SHEET_MAIN_NS}"><oleObjects>{child}</oleObjects></worksheet>"#,
+            );
+            let mut reader = quick_xml::Reader::from_reader(SpreadsheetXml::new(xml.as_bytes()));
+            let mut buffer = Vec::new();
+            let mut rejected = false;
+            loop {
+                match reader.read_event_into(&mut buffer).unwrap() {
+                    Event::Start(owner) if owner.local_name().as_ref() == b"oleObjects" => {
+                        rejected = OpaqueElement::read(
+                            &mut reader,
+                            &owner,
+                            false,
+                            &NamespaceScope::default(),
+                        )
+                        .is_err();
+                        break;
+                    }
+                    Event::Eof => break,
+                    _ => (),
+                }
+                buffer.clear();
+            }
+            assert!(rejected, "undeclared prefix accepted in {child}");
+        }
+    }
 
     #[test]
     fn nested_prefix_rebinding_preserves_foreign_names_and_text() {

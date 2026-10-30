@@ -55,17 +55,21 @@ impl HeightMode {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         self.val = EnumValue::default();
         self.parts = None;
-        if let Some(value) = crate::drawing::get_unescaped_attribute(e, b"val") {
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"val")? {
             if matches!(value.as_str(), "edge" | "factor") {
-                self.val.set_value_string(value);
+                self.val
+                    .set_value(crate::reader::driver::require_enum_attribute::<
+                        LayoutModeValues,
+                    >(e, b"val")?);
                 self.parts = None;
             } else {
                 self.parts = Some(Box::new(super::ScalarLexeme { attribute: value }));
             }
         }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

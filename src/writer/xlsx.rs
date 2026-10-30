@@ -59,7 +59,7 @@ fn validate_chart_exports(wb: &Workbook) -> Result<(), XlsxError> {
         let mut chart_index = 0;
         let mut failure = None;
         sheet.visit_chart_spaces(&mut |space| {
-            let conflicts = space.chart().export_conflicts();
+            let conflicts = space.export_conflicts(wb);
             if !conflicts.is_empty() && failure.is_none() {
                 failure = Some(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -86,6 +86,9 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
     validate_chart_exports(wb)?;
     let arv = zip::ZipWriter::new(writer);
     let mut writer_manager = WriterManager::new(arv);
+    writer_manager.reserve_table_ids(wb)?;
+    writer_manager.reserve_drawing_parts(wb);
+
     {
         writer_manager.set_is_light(is_light);
 
@@ -139,24 +142,14 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
                     return Ok(());
                 }
 
-                // Add charts
-                let mut chart_spaces = Vec::new();
-                if worksheet.has_drawing_object() {
-                    worksheet.visit_chart_spaces(&mut |space| chart_spaces.push(space));
-                }
-                let chart_no_list: Result<Vec<String>, XlsxError> = chart_spaces
-                    .into_iter()
-                    .map(|space| chart::write(space, wb, &mut writer_manager))
-                    .collect();
-
-                let chart_no_list = chart_no_list?;
+                let chart_parts = chart::write_parts(worksheet, wb, &mut writer_manager, &[])?;
 
                 // Add drawing and its relationships
                 let (drawing_no, rel_list) = drawing::write(worksheet, &mut writer_manager)?;
                 drawing_rels::write(
                     worksheet,
                     &drawing_no,
-                    &chart_no_list,
+                    &chart_parts,
                     &rel_list,
                     &mut writer_manager,
                 )?;
@@ -183,6 +176,7 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
 
                 // Add Media
                 media::write(worksheet, &mut writer_manager)?;
+                drawing::write_dependencies(worksheet, &mut writer_manager)?;
 
                 // Add printer settings
                 let printer_settings_no = worksheet

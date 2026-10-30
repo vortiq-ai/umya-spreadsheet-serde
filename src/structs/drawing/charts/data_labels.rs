@@ -31,7 +31,7 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -121,7 +121,10 @@ impl DataLabels {
         }
     }
 
-    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+    pub(crate) fn restore_export_parts(
+        &mut self,
+        previous: &Self,
+    ) -> Result<usize, crate::XlsxError> {
         if previous.parts.is_none() {
             self.discard_untrusted_point_labels();
         }
@@ -198,9 +201,9 @@ impl DataLabels {
         if let (Some(current), Some(previous)) =
             (&mut self.text_properties, &previous.text_properties)
         {
-            restored += current.restore_export_parts(previous);
+            restored += current.restore_export_parts(previous)?;
         }
-        restored
+        Ok(restored)
     }
 
     pub(crate) fn reference_role_parts(
@@ -831,19 +834,20 @@ impl DataLabels {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         self.parts = Some(Box::new(DataLabelsParts {
             owner_present: Some(true),
             ..DataLabelsParts::default()
         }));
         let end = e.name().into_inner().to_vec();
         let mut seen = std::collections::HashSet::new();
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                let child = if session.accepts_child_namespace(e, super::extension_registry::NS_C) {
+                let child =
+                    if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
                     local_name(e.name().into_inner())
                 } else {
                     b""
@@ -858,34 +862,34 @@ impl DataLabels {
                 match child {
                     b"extLst" => {
                         self.parts_mut().extensions=
-                            Some(ExtensionList::read(reader,e,empty,session));
+                            Some(ExtensionList::read(reader,e,empty,session)?);
                         consumed=true;
                     },
                     b"dLbl" => {
-                        let v=DataLabel::read(reader,e,empty,session);
+                        let v=DataLabel::read(reader,e,empty,session)?;
                         self.parts_mut().labels.push(v);
                         consumed=true;
                     },
                     b"delete" => self.parts_mut().delete=Some(XmlBoolean::read(e)),
                     b"numFmt" => {
                         let mut v=NumberingFormat::default();
-                        v.set_attributes(reader,e);
+                        v.set_attributes(reader,e)?;
                         self.parts_mut().numbering_format=Some(v);
                     },
                     b"spPr" => {
                         let mut v=ShapeProperties::default();
-                        if !empty { v.set_attributes_with_session(reader,e,session); }
+                        if !empty { v.set_attributes_with_session(reader,e,session)?; }
                         self.parts_mut().shape_properties=Some(v);
                         consumed=true;
                     },
                     b"txPr" => {
                         let mut v=TextProperties::default();
-                        if !empty { v.read_with_session(reader, e, Some(session)); }
+                        if !empty { v.read_with_session(reader, e, Some(session))?; }
                         self.text_properties=Some(v);
                         consumed=true;
                     },
                     b"dLblPos" => {
-                        let v=crate::drawing::get_unescaped_attribute(e,b"val")
+                        let v=crate::reader::driver::read_attribute(e,b"val")?
                             .and_then(|v| DataLabelPosition::from_xml(&v));
                         let p=self.parts_mut();
                         p.position=v;
@@ -893,13 +897,13 @@ impl DataLabels {
                     },
                     b"leaderLines" => {
                         self.parts_mut().leader_lines=
-                            Some(ChartLines::read(reader,e,empty,session));
+                            Some(ChartLines::read(reader,e,empty,session)?);
                         consumed=true;
                     },
                     b"separator" => {
                         self.parts_mut().separator=Some(
-                            crate::reader::driver::read_simple_text(reader,e,empty)
-                            .expect("invalid label-group separator text"));
+                            crate::reader::driver::read_simple_text(reader,e,empty)?
+                            .ok_or_else(|| crate::xml::xml_error("invalid label-group separator text"))?);
                         consumed=true;
                     },
                     child @ (b"showLegendKey" | b"showVal" | b"showCatName" | b"showSerName"
@@ -938,23 +942,31 @@ impl DataLabels {
                     },
                     _ => (),
                 }
-                if !empty && !consumed { skip_element(reader,e); }
+                if !empty && !consumed { skip_element(reader,e)?; }
             },
-            Event::End(ref e) => { if e.name().into_inner()==end.as_slice() { return; } },
-            Event::Eof => panic!("Could not find data labels end element"),
+            Event::End(ref e) => { if e.name().into_inner()==end.as_slice() { return Ok(()); } },
+            Event::Eof => return Err(crate::xml::xml_error("Could not find data labels end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &crate::Workbook) {
-        self.write_with_owner(writer, wb, false);
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &crate::Workbook,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_with_owner(writer, wb, false)?;
+
+        Ok(())
     }
 
     pub(crate) fn write_to_present(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &crate::Workbook,
-    ) {
-        self.write_with_owner(writer, wb, true);
+    ) -> Result<(), crate::XlsxError> {
+        self.write_with_owner(writer, wb, true)?;
+
+        Ok(())
     }
 
     fn write_with_owner(
@@ -962,20 +974,20 @@ impl DataLabels {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &crate::Workbook,
         force_present: bool,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if !force_present
             && self
                 .parts
                 .as_ref()
                 .is_some_and(|p| p.owner_present == Some(false) && !self.has_explicit_content(p))
         {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c:dLbls", vec![], false);
         if let Some(p) = &self.parts {
             for v in &p.labels {
                 if v.structural_conflict().is_none() {
-                    v.write_to(writer, wb);
+                    v.write_to(writer, wb)?;
                 }
             }
             if let Some(v) = &p.delete {
@@ -987,7 +999,7 @@ impl DataLabels {
                     v.write_to(writer);
                 }
                 if let Some(v) = &p.shape_properties {
-                    v.write_to(writer);
+                    v.write_to(writer)?;
                 }
                 if let Some(v) = self.text_properties.as_ref().filter(|v| {
                     !v.paragraph().is_empty()
@@ -996,7 +1008,7 @@ impl DataLabels {
                             .iter()
                             .all(super::super::paragraph::Paragraph::supplemental_content_valid)
                 }) {
-                    v.write_to(writer);
+                    v.write_to(writer)?;
                 }
                 if let Some(v) = p.position {
                     write_start_tag(writer, "c:dLblPos", vec![("val", v.as_xml()).into()], true);
@@ -1050,7 +1062,7 @@ impl DataLabels {
                     write_flag(writer, p, 6, "c:showLeaderLines", v.val(), true);
                 }
                 if let Some(v) = &p.leader_lines {
-                    v.write_to(writer);
+                    v.write_to(writer)?;
                 }
             }
         } else {
@@ -1061,7 +1073,7 @@ impl DataLabels {
                         .iter()
                         .all(super::super::paragraph::Paragraph::supplemental_content_valid)
             }) {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
             self.show_legend_key.write_to(writer);
             self.show_value.write_to(writer);
@@ -1074,9 +1086,11 @@ impl DataLabels {
             }
         }
         if let Some(v) = self.extensions() {
-            v.write_for_owner(writer, Some(wb), "dLbls", None);
+            v.write_for_owner(writer, Some(wb), "dLbls", None)?;
         }
         write_end_tag(writer, "c:dLbls");
+
+        Ok(())
     }
 }
 fn write_flag(
@@ -1124,16 +1138,20 @@ mod parity_tests {
             _ => panic!("expected labels"),
         };
         let mut labels = DataLabels::default();
-        labels.set_attributes(
-            &mut reader,
-            &e,
-            &crate::reader::xlsx::SourceCacheSession::deferred(),
-        );
+        labels
+            .set_attributes(
+                &mut reader,
+                &e,
+                &crate::reader::xlsx::SourceCacheSession::deferred(),
+            )
+            .unwrap();
         labels
     }
     fn xml(value: &DataLabels) -> String {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        value.write_to(&mut writer, &crate::Workbook::default());
+        value
+            .write_to(&mut writer, &crate::Workbook::default())
+            .unwrap();
         String::from_utf8(writer.into_inner().into_inner()).unwrap()
     }
     #[test]
@@ -1159,7 +1177,7 @@ mod parity_tests {
         let mut current = previous.clone();
         let _projection = current.projection_parts_mut();
         assert!(current.parts.is_none());
-        assert_eq!(current.restore_export_parts(&previous), 1);
+        assert_eq!(current.restore_export_parts(&previous).unwrap(), 1);
         assert_eq!(xml(&current), xml(&previous));
         assert_eq!(current.labels().len(), 2);
         #[cfg(feature = "serde")]
@@ -1175,7 +1193,7 @@ mod parity_tests {
         let mut current = previous.clone();
         let _projection = current.projection_parts_mut();
         current.show_value_mut().set_val(true);
-        current.restore_export_parts(&previous);
+        current.restore_export_parts(&previous).unwrap();
         assert_eq!(
             xml(&current),
             "<c:dLbls><c:showVal val=\"1\"/><c:showCatName val=\"true\"/></c:dLbls>"
@@ -1189,7 +1207,7 @@ mod parity_tests {
         let _projection = current.projection_parts_mut();
         #[allow(deprecated)]
         current.get_show_value_mut().set_val(false);
-        current.restore_export_parts(&previous);
+        current.restore_export_parts(&previous).unwrap();
         assert_eq!(
             xml(&current),
             "<c:dLbls><c:showVal val=\"0\"/><c:showCatName val=\"true\"/></c:dLbls>"
@@ -1285,7 +1303,9 @@ mod parity_tests {
         labels.mark_group_absent();
         assert!(xml(&labels).is_empty());
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        labels.write_to_present(&mut writer, &crate::Workbook::default());
+        labels
+            .write_to_present(&mut writer, &crate::Workbook::default())
+            .unwrap();
         assert_eq!(
             String::from_utf8(writer.into_inner().into_inner()).unwrap(),
             "<c:dLbls></c:dLbls>"

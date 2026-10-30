@@ -13,6 +13,7 @@ use quick_xml::{
 use super::{
     Bevel,
     GradientFill,
+    LineEndProperties,
     Miter,
     NoFill,
     PenAlignmentValues,
@@ -23,15 +24,7 @@ use super::{
 };
 use crate::{
     StringValue,
-    drawing::{
-        SystemColor,
-        get_unescaped_attribute,
-    },
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
+    drawing::SystemColor,
     structs::{
         EnumValue,
         UInt32Value,
@@ -50,6 +43,7 @@ pub struct Outline {
     compound_line_type: StringValue,
     solid_fill:         Option<Box<SolidFill>>,
     gradient_fill:      Option<Box<GradientFill>>,
+    head_end:           Option<Box<LineEndProperties>>,
     tail_end:           Option<Box<TailEnd>>,
     no_fill:            Option<NoFill>,
     bevel:              Option<Box<Bevel>>,
@@ -175,6 +169,20 @@ impl Outline {
     #[inline]
     pub fn set_gradient_fill(&mut self, value: GradientFill) -> &mut Self {
         self.gradient_fill = Some(Box::new(value));
+        self
+    }
+
+    #[must_use]
+    pub fn head_end(&self) -> Option<&LineEndProperties> {
+        self.head_end.as_deref()
+    }
+
+    pub fn head_end_mut(&mut self) -> Option<&mut LineEndProperties> {
+        self.head_end.as_deref_mut()
+    }
+
+    pub fn set_head_end(&mut self, value: LineEndProperties) -> &mut Self {
+        self.head_end = Some(Box::new(value));
         self
     }
 
@@ -409,8 +417,8 @@ impl Outline {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.set_attributes_impl(reader, e, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
@@ -418,113 +426,138 @@ impl Outline {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.set_attributes_impl(reader, e, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, Some(session))
     }
 
-    fn set_attributes_impl<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart<'_>,
+        empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
-        if let Some(v) = get_attribute(e, b"w") {
-            self.set_width(v.parse::<u32>().unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"w")? {
+            self.set_width(crate::xml::parse_u32(&value).map_err(crate::xml::xml_error)?);
         }
-
-        if let Some(v) = get_unescaped_attribute(e, b"cap") {
-            self.set_cap_type(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"cap")? {
+            self.set_cap_type(value);
         }
-
-        if let Some(v) = get_unescaped_attribute(e, b"cmpd") {
-            self.set_compound_line_type(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"cmpd")? {
+            self.set_compound_line_type(value);
         }
-
-        set_string_from_xml!(self, e, alignment, "algn");
-
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                let native = session.is_none_or(|session| {
-                    session.accepts_child_namespace(
-                        e,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )
-                });
-                match if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"solidFill" => {
-                        let mut solid_fill = SolidFill::default();
-                        if let Some(session) = session {
-                            solid_fill.read_attributes_with_session(reader, e, is_empty, session);
-                        } else {
-                            solid_fill.read_attributes(reader, e, is_empty);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"algn")? {
+            self.alignment.set_value(
+                value
+                    .parse::<PenAlignmentValues>()
+                    .map_err(|()| crate::xml::xml_error("invalid DrawingML enumeration"))?,
+            );
+        }
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
                         }
-                        self.set_solid_fill(solid_fill);
+                        continue;
                     }
-                    b"gradFill" => {
-                        let mut obj = GradientFill::default();
-                        if let Some(session) = session {
-                            obj.read_attributes_with_session(reader, e, is_empty, session);
-                        } else {
-                            obj.read_attributes(reader, e, is_empty);
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"solidFill" => {
+                            let mut value = SolidFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_solid_fill(value);
                         }
-                        self.set_gradient_fill(obj);
+                        b"gradFill" => {
+                            let mut value = GradientFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_gradient_fill(value);
+                        }
+                        b"headEnd" => {
+                            if self.head_end.is_some() {
+                                return Err(crate::xml::xml_error("duplicate DrawingML head end"));
+                            }
+                            let mut value = LineEndProperties::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_head_end(value);
+                        }
+                        b"tailEnd" => {
+                            if self.tail_end.is_some() {
+                                return Err(crate::xml::xml_error("duplicate DrawingML tail end"));
+                            }
+                            let mut value = TailEnd::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_tail_end(value);
+                        }
+                        b"miter" => {
+                            let mut value = Miter::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_miter(value);
+                        }
+                        b"prstDash" => {
+                            let mut value = PresetDash::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_preset_dash(value);
+                        }
+                        b"sysClr" => {
+                            let mut value = SystemColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_system_color(value);
+                        }
+                        b"noFill" => {
+                            NoFill::set_attributes(reader, child, child_empty)?;
+                            self.set_no_fill(NoFill::default());
+                        }
+                        b"bevel" => {
+                            Bevel::set_attributes(reader, child, child_empty)?;
+                            self.set_bevel(Bevel::default());
+                        }
+                        b"round" => {
+                            Round::set_attributes(reader, child, child_empty)?;
+                            self.set_round(Round::default());
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    b"tailEnd" => {
-                        let mut obj = TailEnd::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_tail_end(obj);
-                    }
-                    b"noFill" => {
-                        let obj = NoFill::default();
-                        NoFill::set_attributes(reader, e, is_empty);
-                        self.set_no_fill(obj);
-                    }
-                    b"bevel" => {
-                        let obj = Bevel::default();
-                        Bevel::set_attributes(reader, e, is_empty);
-                        self.set_bevel(obj);
-                    }
-                    b"miter" => {
-                        let mut obj = Miter::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_miter(obj);
-                    }
-                    b"prstDash" => {
-                        let mut obj = PresetDash::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_preset_dash(obj);
-                    }
-                    b"round" => {
-                        let obj = Round::default();
-                        Round::set_attributes(reader, e, is_empty);
-                        self.set_round(obj);
-                    }
-                    b"sysClr" => {
-                        let mut obj = SystemColor::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_system_color(obj);
-                    }
-                    _ => { if !is_empty { crate::reader::driver::skip_element(reader,e); } },
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().as_ref()==end_name.as_slice() {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:ln")
-        );
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // a:ln
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         let width = self.width.value_string();
@@ -544,12 +577,12 @@ impl Outline {
 
         // a:solidFill
         if let Some(v) = &self.solid_fill {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:gradFill
         if let Some(v) = &self.gradient_fill {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // CT_LineProperties: fill, dash, join, head/tail ends.
@@ -568,10 +601,14 @@ impl Outline {
         if let Some(v) = &self.miter {
             v.write_to(writer);
         }
+        if let Some(v) = &self.head_end {
+            v.write_to_as(writer, "a:headEnd")?;
+        }
         if let Some(v) = &self.tail_end {
-            v.write_to(writer);
+            v.write_to_as(writer, "a:tailEnd")?;
         }
 
         write_end_tag(writer, "a:ln");
+        Ok(())
     }
 }

@@ -124,11 +124,15 @@ impl NumberReference {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         // Existing callers keep source format-code handling. The policy is
         // explicit only for new roles; no new numeric cache storage is added.
-        let (parsed, _) = self.read_status(reader, e, false, NumericSourceCachePolicy::Read, None);
-        assert!(parsed, "Could not read numeric reference");
+        let (parsed, _) =
+            self.read_status(reader, e, false, NumericSourceCachePolicy::Read, None)?;
+        if !(parsed) {
+            return Err(crate::xml::xml_error("Could not read numeric reference"));
+        }
+        Ok(())
     }
 
     pub(crate) fn read_with_policy<R: std::io::BufRead>(
@@ -137,9 +141,9 @@ impl NumberReference {
         e: &BytesStart,
         empty: bool,
         policy: NumericSourceCachePolicy,
-    ) -> bool {
-        let (parsed, valid) = self.read_status(reader, e, empty, policy, None);
-        parsed && valid
+    ) -> Result<bool, crate::XlsxError> {
+        let (parsed, valid) = self.read_status(reader, e, empty, policy, None)?;
+        Ok(parsed && valid)
     }
 
     pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
@@ -147,15 +151,18 @@ impl NumberReference {
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         let (parsed, _) = self.read_status(
             reader,
             e,
             false,
             NumericSourceCachePolicy::Read,
             Some(session),
-        );
-        assert!(parsed, "Could not read numeric reference");
+        )?;
+        if !(parsed) {
+            return Err(crate::xml::xml_error("Could not read numeric reference"));
+        }
+        Ok(())
     }
 
     pub(crate) fn read_with_policy_session<R: std::io::BufRead>(
@@ -165,14 +172,14 @@ impl NumberReference {
         empty: bool,
         policy: NumericSourceCachePolicy,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> bool {
-        let (parsed, valid) = self.read_status(reader, e, empty, policy, Some(session));
-        parsed && valid
+    ) -> Result<bool, crate::XlsxError> {
+        let (parsed, valid) = self.read_status(reader, e, empty, policy, Some(session))?;
+        Ok(parsed && valid)
     }
 
-    // Parsing completion is distinct from new-role schema validity. Historical
-    // readers panic on malformed XML, but keep their complete missing/duplicate
-    // formula behavior rather than acquiring a new validation policy.
+    // Parsing completion is distinct from formula-count validity. The default
+    // reader preserves complete missing/duplicate formula behavior; policy
+    // readers also report whether exactly one formula was present.
     fn read_status<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -180,51 +187,69 @@ impl NumberReference {
         empty: bool,
         policy: NumericSourceCachePolicy,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> (bool, bool) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(bool, bool), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut formulas = 0usize;
         let mut valid = true;
-        let complete = children(reader, e, empty, |reader, child, empty| {
-            match if session.is_none_or(|session| {
-                session.accepts_child_namespace(child, super::extension_registry::NS_C)
-            }) {
-                local_name(child.name().into_inner())
-            } else {
-                b""
-            } {
-                b"extLst" if session.is_some() => {
-                    self.set_extensions(Some(super::ExtensionList::read(
-                        reader,
-                        child,
-                        empty,
-                        session.expect("checked session"),
-                    )));
-                    true
-                }
-                b"f" => {
-                    formulas += 1;
-                    if empty {
-                        self.formula.set_address_str("");
+        let complete = children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    match if match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } {
+                        local_name(child.name().into_inner())
                     } else {
-                        valid &= self.formula.try_set_attributes(reader, child);
+                        b""
+                    } {
+                        b"extLst" if session.is_some() => {
+                            self.set_extensions(Some(super::ExtensionList::read(
+                                reader,
+                                child,
+                                empty,
+                                session.ok_or_else(|| {
+                                    crate::xml::xml_error("missing chart session")
+                                })?,
+                            )?));
+                            true
+                        }
+                        b"f" => {
+                            formulas += 1;
+                            if empty {
+                                self.formula.set_address_str("");
+                            } else {
+                                valid &= self.formula.try_set_attributes(reader, child)?;
+                            }
+                            true
+                        }
+                        b"numCache" if matches!(policy, NumericSourceCachePolicy::Read) => {
+                            if !empty {
+                                self.numbering_cache.set_attributes(reader, child)?;
+                            }
+                            true
+                        }
+                        // SkipSourceCache consumes the entire source cache through the
+                        // shared direct-child loop. Descendants cannot become formulas.
+                        _ => false,
                     }
-                    true
-                }
-                b"numCache" if matches!(policy, NumericSourceCachePolicy::Read) => {
-                    if !empty {
-                        self.numbering_cache.set_attributes(reader, child);
-                    }
-                    true
-                }
-                // SkipSourceCache consumes the entire source cache through the
-                // shared direct-child loop. Descendants cannot become formulas.
-                _ => false,
-            }
-        });
-        (complete && valid, formulas == 1)
+                })
+            },
+        )?;
+        Ok((complete && valid, formulas == 1))
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:numRef
         write_start_tag(writer, "c:numRef", vec![], false);
 
@@ -236,9 +261,11 @@ impl NumberReference {
             .write_to(writer, self.formula().address(), wb);
 
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, Some(wb), "numRef", None);
+            ext.write_for_owner(writer, Some(wb), "numRef", None)?;
         }
         write_end_tag(writer, "c:numRef");
+
+        Ok(())
     }
 }
 

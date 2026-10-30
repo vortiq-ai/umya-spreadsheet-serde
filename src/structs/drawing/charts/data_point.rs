@@ -18,12 +18,12 @@ use crate::{
     reader::driver::{
         local_name,
         skip_element,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -191,7 +191,10 @@ impl DataPoint {
         self
     }
 
-    pub(crate) fn read<R: std::io::BufRead>(reader: &mut Reader<R>, empty: bool) -> Self {
+    pub(crate) fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        empty: bool,
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, empty, None, None)
     }
 
@@ -200,7 +203,7 @@ impl DataPoint {
         e: &quick_xml::events::BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         Self::read_common(reader, empty, Some(session), Some(e))
     }
 
@@ -209,34 +212,36 @@ impl DataPoint {
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
         owner: Option<&quick_xml::events::BytesStart>,
-    ) -> Self {
+    ) -> Result<Self, crate::XlsxError> {
         let _scope_guard = session
             .zip(owner)
-            .and_then(|(session, e)| session.enter_child_scope(e));
+            .map(|(session, e)| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let end = owner.map(|e| e.name().into_inner().to_vec());
         let mut result = Self::default();
         if empty {
-            return result;
+            return Ok(result);
         }
-        xml_read_loop!(reader,
+        try_xml_read_loop!(reader,
             ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let empty = matches!(event, Event::Empty(_));
                 let mut consumed = false;
-                match if session.is_none_or(|session|session.accepts_child_namespace(e,super::extension_registry::NS_C)){local_name(e.name().into_inner())}else{b""} {
-                    b"extLst" if session.is_some()=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session.expect("checked session"))));consumed=true;},
+                match if match session { Some(session) => session.accepts_child_namespace(e,super::extension_registry::NS_C)?, None => true }{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst" if session.is_some()=>{result.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session.ok_or_else(|| crate::xml::xml_error("missing chart session"))?)?));consumed=true;},
                     b"idx" => { result.index=XmlUnsignedInt::read(e); },
                     b"invertIfNegative" => { result.invert_if_negative=Some(XmlBoolean::read(e)); },
                     b"bubble3D" => { result.bubble_3d=Some(XmlBoolean::read(e)); },
-                    b"explosion" => { let mut value=Explosion::default(); value.set_attributes(reader,e); result.explosion=Some(value); },
-                    b"marker" => { let mut value=Marker::default(); match session{Some(session)=>value.set_attributes_with_session(reader,e,empty,session),None=>value.set_attributes(reader,e,empty)} result.marker=Some(value); consumed=true; },
-                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session{Some(session)=>value.set_attributes_with_session(reader,e,session),None=>value.set_attributes(reader,e)} } result.shape_properties=Some(value); consumed=true; },
-                    b"pictureOptions" => { result.picture_options=Some(PictureOptions::read(reader,e,empty,session)); consumed=true; },
+                    b"explosion" => { let mut value=Explosion::default(); value.set_attributes(reader,e)?; result.explosion=Some(value); },
+                    b"marker" => { let mut value=Marker::default(); match session{Some(session)=>value.set_attributes_with_session(reader,e,empty,session)?,None=>value.set_attributes(reader,e,empty)?} result.marker=Some(value); consumed=true; },
+                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session{Some(session)=>value.set_attributes_with_session(reader,e,session)?,None=>value.set_attributes(reader,e)?} } result.shape_properties=Some(value); consumed=true; },
+                    b"pictureOptions" => { result.picture_options=Some(PictureOptions::read(reader,e,empty,session)?); consumed=true; },
                     _ => (),
                 }
-                if !empty && !consumed { skip_element(reader,e); }
+                if !empty && !consumed { skip_element(reader,e)?; }
             },
-            Event::End(ref e) => { if end.as_ref().map_or_else(||local_name(e.name().into_inner())==b"dPt",|name|e.name().into_inner()==name.as_slice()) { return result; } },
-            Event::Eof => panic!("Could not find dPt end element"),
+            Event::End(ref e) => { if end.as_ref().map_or_else(||local_name(e.name().into_inner())==b"dPt",|name|e.name().into_inner()==name.as_slice()) { return Ok(result); } },
+            Event::Eof => return Err(crate::xml::xml_error("Could not find dPt end element".to_string())),
         );
     }
 
@@ -263,9 +268,12 @@ impl DataPoint {
                 .is_none_or(PictureOptions::is_valid)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if !self.structural_is_valid() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, "c:dPt", vec![], false);
         self.index.write_to(writer);
@@ -273,7 +281,7 @@ impl DataPoint {
             v.write_to(writer, "c:invertIfNegative");
         }
         if let Some(v) = &self.marker {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(v) = &self.bubble_3d {
             v.write_to(writer, "c:bubble3D");
@@ -282,14 +290,16 @@ impl DataPoint {
             v.write_to(writer);
         }
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
         if let Some(v) = &self.picture_options {
             v.write_to(writer);
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, None, "dPt", None);
+            ext.write_for_owner(writer, None, "dPt", None)?;
         }
         write_end_tag(writer, "c:dPt");
+
+        Ok(())
     }
 }

@@ -25,6 +25,7 @@ use crate::{
         driver::{
             local_name,
             skip_element,
+            try_xml_read_loop,
         },
         xlsx::SourceCacheSession,
     },
@@ -32,26 +33,31 @@ use crate::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 // Match XML's element-only whitespace using the same decoding and entity
 // unescape primitives as the shared simple-text reader.
-pub(crate) fn body_event_is_whitespace(event: &Event<'_>) -> bool {
-    let value = crate::reader::driver::decode_xml_character_event(event);
-    value.is_some_and(|v| v.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n')))
+pub(crate) fn body_event_is_whitespace(event: &Event<'_>) -> Result<bool, crate::XlsxError> {
+    let value = crate::reader::driver::decode_xml_character_event(event)?;
+    Ok(value.is_some_and(|v| v.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))))
 }
 
-pub(crate) fn scalar_body_is_empty<R: std::io::BufRead>(r: &mut Reader<R>, e: &BytesStart) -> bool {
-    let end = e.name().into_inner().to_vec();
+pub(crate) fn scalar_body_is_empty<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    owner: &BytesStart,
+) -> Result<bool, crate::XlsxError> {
+    let end = owner.name().as_ref().to_vec();
     let mut valid = true;
-    xml_read_loop!(r,
-        Event::Start(ref child) => { valid = false; skip_element(r, child); },
+    try_xml_read_loop!(reader,
+        Event::Start(ref child) => { valid = false; skip_element(reader, child)?; },
         Event::Empty(_) => { valid = false; },
-        ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => { if
-            !body_event_is_whitespace(event) { valid = false; } },
-        Event::End(ref child) => if child.name().into_inner() == end.as_slice() { return valid },
-        Event::Eof => return false
+        ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+            if !body_event_is_whitespace(event)? { valid = false; }
+        },
+        Event::End(ref child) => {
+            if child.name().as_ref() == end.as_slice() { return Ok(valid); }
+        },
+        Event::Eof => return Err(crate::xml::xml_error("unterminated chart scalar"))
     );
 }
 
@@ -135,17 +141,17 @@ impl ValueAxisParts {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
+    ) -> Result<usize, crate::XlsxError> {
         let mut restored = 0;
         match (&mut self.display_units, &previous.display_units) {
             (Some(current), Some(previous)) => {
                 let compatible = current.compatible_unit(previous);
-                restored += current.restore_export_parts(previous, report);
+                restored += current.restore_export_parts(previous, report)?;
                 if !compatible {
                     for units in &mut self.extra_display_units {
                         units.discard_extensions(report);
                     }
-                    return restored;
+                    return Ok(restored);
                 }
             }
             (None, Some(previous)) => {
@@ -160,12 +166,12 @@ impl ValueAxisParts {
                 for units in &mut self.extra_display_units {
                     units.discard_extensions(report);
                 }
-                return restored;
+                return Ok(restored);
             }
         }
         self.extra_display_units
             .clone_from(&previous.extra_display_units);
-        restored + self.extra_display_units.len()
+        Ok(restored + self.extra_display_units.len())
     }
 
     pub(crate) fn reference_role_parts(&self) -> (Option<&DisplayUnits>, &[DisplayUnits]) {
@@ -306,19 +312,19 @@ impl DisplayUnits {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
+    ) -> Result<usize, crate::XlsxError> {
         if !self.compatible_unit(previous) {
             self.discard_extensions(report);
             report.incompatible_owners += 1;
             report.diagnostics.push(
                 "incompatible explicit display-unit replacement retains its current state".into(),
             );
-            return 0;
+            return Ok(0);
         }
         let mut restored = 0;
         match (&mut self.label, &previous.label) {
             (Some(current), Some(previous)) => {
-                restored += current.restore_export_parts(previous, report);
+                restored += current.restore_export_parts(previous, report)?;
             }
             (None, Some(previous)) => {
                 self.label = Some(previous.clone());
@@ -347,11 +353,11 @@ impl DisplayUnits {
         self.extra_labels.clone_from(&previous.extra_labels);
         self.extra_extensions.clone_from(&previous.extra_extensions);
         self.invalid_scalar_body = previous.invalid_scalar_body;
-        restored
+        Ok(restored
             + usize::from(self.extensions.is_some())
             + self.extra_labels.len()
             + self.extra_units.len()
-            + self.extra_extensions.len()
+            + self.extra_extensions.len())
     }
 
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::UnitsParts<'_> {
@@ -488,21 +494,21 @@ impl DisplayUnits {
         e: &BytesStart,
         empty: bool,
         s: &SourceCacheSession,
-    ) {
-        let _scope = s.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope = s.enter_child_scope(e)?;
         if empty {
-            return;
+            return Ok(());
         }
         let end = e.name().into_inner().to_vec();
         let mut selected = false;
         let mut last_rank = 0;
-        xml_read_loop!(r,
+        try_xml_read_loop!(r,
             ref event @ (Event::Start(ref c) | Event::Empty(ref c)) => {
                 let child_empty = matches!(event, Event::Empty(_));
-                if !s.accepts_child_namespace(c, "http://schemas.openxmlformats.org/drawingml/2006/chart") {
+                if !s.accepts_child_namespace(c, "http://schemas.openxmlformats.org/drawingml/2006/chart")? {
                     self.conflicts.push(DisplayUnitsConflict::UnknownChild(
                         String::from_utf8_lossy(c.name().into_inner()).into_owned()));
-                    if !child_empty { skip_element(r, c); }
+                    if !child_empty { skip_element(r, c)?; }
                     continue;
                 }
                 match local_name(c.name().into_inner()) {
@@ -513,14 +519,14 @@ impl DisplayUnits {
                         if selected { self.conflicts.push(DisplayUnitsConflict::DuplicateChoice)
                             ; self.extra_units.push(unit); }
                         else { self.unit = unit; selected = true; }
-                        if !child_empty && !scalar_body_is_empty(r, c) {
+                        if !child_empty && !scalar_body_is_empty(r, c)? {
                             self.invalid_scalar_body = true; self.conflicts.push(
                             DisplayUnitsConflict::InvalidScalarBody); }
                     }
                     b"builtInUnit" => {
                         if last_rank > 1 { self.conflicts.push(DisplayUnitsConflict::ChildOrder); }
                         last_rank = last_rank.max(1);
-                        let unit = match crate::drawing::get_unescaped_attribute(c, b"val") {
+                        let unit = match crate::reader::driver::read_attribute(c, b"val")? {
                                 None => DisplayUnit::BuiltIn(ScalarElement::default()),
                                 Some(raw) => match BuiltInUnit::parse(&raw) {
                                     Some(value) => { let mut scalar = ScalarElement::default();
@@ -532,7 +538,7 @@ impl DisplayUnits {
                         if selected { self.conflicts.push(DisplayUnitsConflict::DuplicateChoice)
                             ; self.extra_units.push(unit); }
                         else { self.unit = unit; selected = true; }
-                        if !child_empty && !scalar_body_is_empty(r, c) {
+                        if !child_empty && !scalar_body_is_empty(r, c)? {
                             self.invalid_scalar_body = true; self.conflicts.push(
                             DisplayUnitsConflict::InvalidScalarBody); }
                     }
@@ -541,7 +547,7 @@ impl DisplayUnits {
                             DisplayUnitsConflict::ChildOrder); }
                         last_rank = last_rank.max(2);
                         let mut value = DisplayUnitsLabel::default(); value.set_attributes(r, c,
-                             child_empty, s);
+                             child_empty, s)?;
                         if !value.is_valid() { self.conflicts.push(
                             DisplayUnitsConflict::InvalidLabel); }
                         if self.label.is_some() { self.conflicts.push(
@@ -552,7 +558,7 @@ impl DisplayUnits {
                     b"extLst" => {
                         if !selected { self.conflicts.push(DisplayUnitsConflict::ChildOrder); }
                         last_rank = last_rank.max(3);
-                        let ext = ExtensionList::read(r, c, child_empty, s);
+                        let ext = ExtensionList::read(r, c, child_empty, s)?;
                         if self.extensions.is_some() { self.conflicts.push(
                             DisplayUnitsConflict::DuplicateExtensions);
                             self.extra_extensions.push(ext); }
@@ -560,19 +566,23 @@ impl DisplayUnits {
                     }
                     _ => { self.conflicts.push(DisplayUnitsConflict::UnknownChild(
                         String::from_utf8_lossy(local_name(c.name().into_inner())).into_owned())
-                        ); if !child_empty { skip_element(r, c); } }
+                        ); if !child_empty { skip_element(r, c)?; } }
                 }
             },
             ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
-                if !body_event_is_whitespace(event) { self.invalid_scalar_body = true;
+                if !body_event_is_whitespace(event)? { self.invalid_scalar_body = true;
                     self.conflicts.push(DisplayUnitsConflict::InvalidBodyText); }
             },
-            Event::End(ref c) => if c.name().into_inner() == end.as_slice() { return },
-            Event::Eof => panic!("unterminated c:dispUnits")
+            Event::End(ref c) => if c.name().into_inner() == end.as_slice() { return Ok(()) },
+            Event::Eof => return Err(crate::xml::xml_error("unterminated c:dispUnits".to_string()))
         );
     }
 
-    pub(crate) fn write_to(&self, w: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        w: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(w, "c:dispUnits", vec![], false);
         match &self.unit {
             DisplayUnit::Custom(v) => v.write_to(w, "c:custUnit"),
@@ -589,12 +599,14 @@ impl DisplayUnits {
             DisplayUnit::InvalidChoice => {}
         }
         if let Some(v) = &self.label {
-            v.write_to(w, wb);
+            v.write_to(w, wb)?;
         }
         if let Some(v) = &self.extensions {
-            v.write_for_owner(w, Some(wb), "dispUnits", None);
+            v.write_for_owner(w, Some(wb), "dispUnits", None)?;
         }
         write_end_tag(w, "c:dispUnits");
+
+        Ok(())
     }
 }
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -697,7 +709,7 @@ impl DisplayUnitsLabel {
         &mut self,
         previous: &Self,
         report: &mut super::RestoreReport,
-    ) -> usize {
+    ) -> Result<usize, crate::XlsxError> {
         let mut restored = 0;
         match (&mut self.layout, &previous.layout) {
             (Some(current), Some(previous)) => {
@@ -715,7 +727,7 @@ impl DisplayUnitsLabel {
         }
         match (&mut self.text, &previous.text) {
             (Some(current), Some(previous)) => {
-                super::chart_metadata_restoration::restore_text(current, previous, report);
+                super::chart_metadata_restoration::restore_text(current, previous, report)?;
             }
             (None, Some(previous)) => {
                 self.text = Some(previous.clone());
@@ -744,7 +756,7 @@ impl DisplayUnitsLabel {
         match (&mut self.text_properties, &previous.text_properties) {
             (Some(current), Some(previous)) => {
                 if current.projected_structure_matches(previous) {
-                    restored += current.restore_export_parts(previous);
+                    restored += current.restore_export_parts(previous)?;
                 } else {
                     report.incompatible_owners += 1;
                     report
@@ -761,7 +773,7 @@ impl DisplayUnitsLabel {
         }
         self.valid = previous.valid;
         self.extra_children.clone_from(&previous.extra_children);
-        restored + self.extra_children.len()
+        Ok(restored + self.extra_children.len())
     }
 
     pub(crate) fn reference_role_parts(
@@ -899,55 +911,61 @@ impl DisplayUnitsLabel {
         e: &BytesStart,
         empty: bool,
         s: &SourceCacheSession,
-    ) {
-        let _scope = s.enter_child_scope(e);
+    ) -> Result<(), crate::XlsxError> {
+        let _scope = s.enter_child_scope(e)?;
         if empty {
-            return;
+            return Ok(());
         }
         let end = e.name().into_inner().to_vec();
         let mut order = 0;
         let mut position = 0u32;
-        xml_read_loop!(r, ref event @ (Event::Start(ref c)|Event::Empty(ref c))=>{
+        try_xml_read_loop!(r, ref event @ (Event::Start(ref c)|Event::Empty(ref c))=>{
             let ce=matches!(event,Event::Empty(_));
-            let current = position; position = position.checked_add(1).expect("display label child count overflow");
-            if !s.accepts_child_namespace(c,"http://schemas.openxmlformats.org/drawingml/2006/chart") { self.valid=false; if !ce { skip_element(r,c); } continue; }
+            let current = position; position = position.checked_add(1).ok_or_else(|| crate::xml::xml_error("display label child count overflow"))?;
+            if !s.accepts_child_namespace(c,"http://schemas.openxmlformats.org/drawingml/2006/chart")? { self.valid=false; if !ce { skip_element(r,c)?; } continue; }
             let name=local_name(c.name().into_inner());
             let rank=match name { b"layout"=>1,b"tx"=>2,b"spPr"=>3,b"txPr"=>4,_=>0 };
-            if rank==0 { self.valid=false; if !ce { skip_element(r,c); } continue; }
+            if rank==0 { self.valid=false; if !ce { skip_element(r,c)?; } continue; }
             let extra = rank<=order;
             if extra { self.valid=false; }
             order=order.max(rank);
             match name {
-                b"layout"=>{let mut v=Layout::default();v.set_attributes(r,c,ce,s);if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,child:DisplayLabelChild::Layout(v)})}else{self.layout=Some(v)}},
-                b"tx"=>{let mut v=ChartText::default();if !ce{v.set_attributes(r,c,s)}
+                b"layout"=>{let mut v=Layout::default();v.set_attributes(r,c,ce,s)?;if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,child:DisplayLabelChild::Layout(v)})}else{self.layout=Some(v)}},
+                b"tx"=>{let mut v=ChartText::default();if !ce{v.set_attributes(r,c,s)?}
                     if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,
                         child:DisplayLabelChild::Text(v)});}else{self.text=Some(v)}},
-                b"spPr"=>{let mut v=ShapeProperties::default();if !ce{v.set_attributes_with_session(r,c,s)}
+                b"spPr"=>{let mut v=ShapeProperties::default();if !ce{v.set_attributes_with_session(r,c,s)?}
                     if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,
                         child:DisplayLabelChild::Shape(Box::new(v))});}else{
                         self.shape_properties=Some(v);}},
-                b"txPr"=>{let mut v=TextProperties::default();if !ce{v.read_with_session(r, c, Some(s))}
+                b"txPr"=>{let mut v=TextProperties::default();if !ce{v.read_with_session(r, c, Some(s))?}
                     if extra {self.extra_children.push(DisplayLabelOccurrence{position:current,
                         child:DisplayLabelChild::TextProperties(v)});}else{
                         self.text_properties=Some(v);}},_=>unreachable!()
             }
-        },ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => { if !body_event_is_whitespace(event) { self.valid=false; } },Event::End(ref c)=>if c.name().into_inner()==end.as_slice(){return},Event::Eof=>panic!("unterminated c:dispUnitsLbl"));
+        },ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => { if !body_event_is_whitespace(event)? { self.valid=false; } },Event::End(ref c)=>if c.name().into_inner()==end.as_slice(){return Ok(())},Event::Eof=>return Err(crate::xml::xml_error("unterminated c:dispUnitsLbl".to_string())));
     }
 
-    pub(crate) fn write_to(&self, w: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        w: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(w, "c:dispUnitsLbl", vec![], false);
         if let Some(v) = &self.layout {
-            v.write_to(w);
+            v.write_to(w)?;
         }
         if let Some(v) = &self.text {
-            v.write_to(w, wb);
+            v.write_to(w, wb)?;
         }
         if let Some(v) = &self.shape_properties {
-            v.write_to(w);
+            v.write_to(w)?;
         }
         if let Some(v) = &self.text_properties {
-            v.write_to(w);
+            v.write_to(w)?;
         }
         write_end_tag(w, "c:dispUnitsLbl");
+
+        Ok(())
     }
 }

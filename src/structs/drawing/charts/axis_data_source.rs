@@ -76,53 +76,61 @@ impl AxisDataSource {
         e: &BytesStart,
         empty: bool,
         session: &SourceCacheSession,
-    ) -> Self {
-        let _scope_guard = session.enter_child_scope(e);
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         let mut result = Self::default();
-        result.invalid = !children(reader, e, empty, |reader, child, empty| {
-            let value =
-                match if session.accepts_child_namespace(child, super::extension_registry::NS_C) {
-                    local_name(child.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"multiLvlStrRef" => {
-                        let mut v = MultiLevelStringReference::default();
-                        if !empty {
-                            v.set_attributes_with_session(reader, child, session);
+        result.invalid = !children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    let value = match if session
+                        .accepts_child_namespace(child, super::extension_registry::NS_C)?
+                    {
+                        local_name(child.name().into_inner())
+                    } else {
+                        b""
+                    } {
+                        b"multiLvlStrRef" => {
+                            let mut v = MultiLevelStringReference::default();
+                            if !empty {
+                                v.set_attributes_with_session(reader, child, session)?;
+                            }
+                            AxisDataSourceChoice::MultiLevelStringReference(Box::new(v))
                         }
-                        AxisDataSourceChoice::MultiLevelStringReference(Box::new(v))
-                    }
-                    b"numRef" => {
-                        let mut v = NumberReference::default();
-                        result.invalid |= !v.read_with_policy_session(
-                            reader,
-                            child,
-                            empty,
-                            NumericSourceCachePolicy::SkipSourceCache,
-                            session,
-                        );
-                        AxisDataSourceChoice::NumberReference(Box::new(v))
-                    }
-                    b"numLit" => AxisDataSourceChoice::NumericLiteral(Box::new(
-                        NumericData::read_with_session(reader, child, empty, session),
-                    )),
-                    b"strRef" => {
-                        let mut v = StringReference::default();
-                        if !empty {
-                            v.set_attributes(reader, child, session);
+                        b"numRef" => {
+                            let mut v = NumberReference::default();
+                            result.invalid |= !v.read_with_policy_session(
+                                reader,
+                                child,
+                                empty,
+                                NumericSourceCachePolicy::SkipSourceCache,
+                                session,
+                            )?;
+                            AxisDataSourceChoice::NumberReference(Box::new(v))
                         }
-                        AxisDataSourceChoice::StringReference(Box::new(v))
-                    }
-                    b"strLit" => AxisDataSourceChoice::StringLiteral(Box::new(
-                        StringLiteral::read_with_session(reader, child, empty, session),
-                    )),
-                    _ => return false,
-                };
-            result.choices.push(value);
-            true
-        }) || result.invalid;
-        result
+                        b"numLit" => AxisDataSourceChoice::NumericLiteral(Box::new(
+                            NumericData::read_with_session(reader, child, empty, session)?,
+                        )),
+                        b"strRef" => {
+                            let mut v = StringReference::default();
+                            if !empty {
+                                v.set_attributes(reader, child, session)?;
+                            }
+                            AxisDataSourceChoice::StringReference(Box::new(v))
+                        }
+                        b"strLit" => AxisDataSourceChoice::StringLiteral(Box::new(
+                            StringLiteral::read_with_session(reader, child, empty, session)?,
+                        )),
+                        _ => return Ok(false),
+                    };
+                    result.choices.push(value);
+                    true
+                })
+            },
+        )? || result.invalid;
+        Ok(result)
     }
 
     pub(crate) fn write_to_as(
@@ -130,20 +138,22 @@ impl AxisDataSource {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &Workbook,
         name: &str,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
-            return;
+            return Ok(());
         }
         write_start_tag(writer, name, vec![], false);
         for value in &self.choices {
             match value {
-                AxisDataSourceChoice::MultiLevelStringReference(v) => v.write_to(writer),
-                AxisDataSourceChoice::NumberReference(v) => v.write_to(writer, wb),
-                AxisDataSourceChoice::NumericLiteral(v) => v.write_to(writer),
-                AxisDataSourceChoice::StringReference(v) => v.write_to(writer, wb),
-                AxisDataSourceChoice::StringLiteral(v) => v.write_to(writer),
+                AxisDataSourceChoice::MultiLevelStringReference(v) => v.write_to(writer)?,
+                AxisDataSourceChoice::NumberReference(v) => v.write_to(writer, wb)?,
+                AxisDataSourceChoice::NumericLiteral(v) => v.write_to(writer)?,
+                AxisDataSourceChoice::StringReference(v) => v.write_to(writer, wb)?,
+                AxisDataSourceChoice::StringLiteral(v) => v.write_to(writer)?,
             }
         }
         write_end_tag(writer, name);
+
+        Ok(())
     }
 }

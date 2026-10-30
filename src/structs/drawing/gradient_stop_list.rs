@@ -11,12 +11,9 @@ use quick_xml::{
 };
 
 use super::GradientStop;
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -70,8 +67,8 @@ impl GradientStopList {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty: bool,
-    ) {
-        self.read_attributes_impl(reader, e, empty, None);
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, None)
     }
 
     pub(crate) fn read_attributes_with_session<R: std::io::BufRead>(
@@ -80,69 +77,103 @@ impl GradientStopList {
         e: &BytesStart,
         empty: bool,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        self.read_attributes_impl(reader, e, empty, Some(session));
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, Some(session))
     }
 
-    fn read_attributes_impl<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart<'_>,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) {
-        let _scope_guard = session.and_then(|session| session.enter_child_scope(e));
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+
         if empty {
-            return;
+            return Err(crate::xml::xml_error(
+                "gradient stop list requires at least two stops",
+            ));
         }
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
-                    ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
-                        let empty=matches!(event,Event::Empty(_));
-                let native = session.is_none_or(|session| {
-                    session.accepts_child_namespace(
-                        e,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )
-                });
-                match if native {
-                    crate::reader::driver::local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-        b"gs" => {
-            let mut value = GradientStop::default();
-            if let Some(session) = session {
-                value.read_attributes_with_session(reader, e, empty, session);
-            } else {
-                value.read_attributes(reader, e, empty);
-            }
-            self.add_gradient_stop(value);
-        },
-                            _=> { if !empty { crate::reader::driver::skip_element(reader,e); } },
+        let initial_len = self.gradient_stop.len();
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
                         }
-                    },
-                    Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
+                        continue;
                     }
-                },
-                    Event::Eof => panic!("Could not find drawing owner end element"),
-                );
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"gs" => {
+                            let mut value = GradientStop::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.add_gradient_stop(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
+                }
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => {
+                    return if self.gradient_stop.len() - initial_len >= 2 {
+                        Ok(())
+                    } else {
+                        Err(crate::xml::xml_error(
+                            "gradient stop list requires at least two stops",
+                        ))
+                    };
+                }
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if self.gradient_stop.is_empty() {
-            return;
+            return Ok(());
+        }
+        if self.gradient_stop.len() < 2 {
+            return Err(crate::xml::xml_error(
+                "gradient stop list requires at least two stops",
+            ));
         }
         // a:gsLst
         write_start_tag(writer, "a:gsLst", vec![], false);
 
         // a:gs
         for v in &self.gradient_stop {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:gsLst");
+        Ok(())
     }
 }

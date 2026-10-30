@@ -1,49 +1,71 @@
-// a:tileRect
 use std::io::Cursor;
 
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::write_start_tag,
-};
+use super::SourceRectangle;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
-pub struct TileRectangle {}
-impl TileRectangle {
-    #[inline]
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        reader: &mut Reader<R>,
-        e: &BytesStart,
-        empty_flag: bool,
-    ) {
-        if empty_flag {
-            return;
-        }
+pub struct TileRectangle {
+    rectangle: SourceRectangle,
+}
 
-        let end_name = e.name().as_ref().to_vec();
-        xml_read_loop!(reader,
-            Event::Start(ref child) => { crate::reader::driver::skip_element(reader,child); },
-            Event::End(ref end) => {
-                    if end.name().as_ref() == end_name.as_slice() {
-                        return;
-                    }
-                },
-            Event::Eof => panic!("Could not find drawing leaf end element"),
-        );
+impl TileRectangle {
+    #[must_use]
+    pub fn bottom(&self) -> Option<&str> {
+        self.rectangle.b()
     }
 
-    #[inline]
-    pub(crate) fn write_to(writer: &mut Writer<Cursor<Vec<u8>>>) {
-        // a:tileRect
-        write_start_tag(writer, "a:tileRect", vec![], true);
+    #[must_use]
+    pub fn left(&self) -> Option<&str> {
+        self.rectangle.l()
+    }
+
+    #[must_use]
+    pub fn right(&self) -> Option<&str> {
+        self.rectangle.r()
+    }
+
+    #[must_use]
+    pub fn top(&self) -> Option<&str> {
+        self.rectangle.t()
+    }
+
+    pub fn set_bottom<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_b(value);
+    }
+
+    pub fn set_left<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_l(value);
+    }
+
+    pub fn set_right<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_r(value);
+    }
+
+    pub fn set_top<S: Into<String>>(&mut self, value: S) {
+        self.rectangle.set_t(value);
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        self.rectangle
+            .read_with_session(reader, owner, empty, session)
+    }
+
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.rectangle.write_to_as(writer, "a:tileRect")
     }
 }

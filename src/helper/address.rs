@@ -18,8 +18,13 @@ pub fn split_address(address: &str) -> (&str, &str) {
 /// Split a qualifier without losing literal quotes.
 /// Consumers unescape apostrophes.
 pub(crate) fn split_reference_address(address: &str) -> (&str, &str) {
-    let (sheet, range) = match address.strip_suffix("!#REF!") {
-        Some(sheet) => (sheet, "#REF!"),
+    let error_start = address.rfind('#').filter(|&start| {
+        (start == 0 || address.as_bytes()[start - 1] == b'!')
+            && address[start..].parse::<crate::CellErrorType>().is_ok()
+    });
+    let (sheet, range) = match error_start {
+        Some(0) => ("", address),
+        Some(start) => (&address[..start - 1], &address[start..]),
         None => address.rsplit_once('!').unwrap_or(("", address)),
     };
     let sheet = sheet
@@ -351,4 +356,15 @@ fn reference_address_preserves_literal_quotes_and_escaped_apostrophes() {
     assert_eq!(split_reference_address("A1"), ("", "A1"));
     // Keep the existing public splitter's lexical contract.
     assert_eq!(split_address("'\"Data\"'!A1"), ("Data", "A1"));
+}
+
+#[test]
+fn reference_address_keeps_complete_excel_errors() {
+    for error in [
+        "#DIV/0!", "#N/A", "#NAME?", "#NULL!", "#NUM!", "#REF!", "#VALUE!", "#DATA!",
+    ] {
+        assert_eq!(split_reference_address(error), ("", error));
+        let qualified = format!("'Bob''s Data'!{error}");
+        assert_eq!(split_reference_address(&qualified), ("Bob''s Data", error));
+    }
 }

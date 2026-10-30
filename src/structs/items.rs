@@ -1,17 +1,9 @@
 // items
 use std::io::Cursor;
 
-use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
-};
+use quick_xml::Writer;
 
 use crate::{
-    reader::driver::xml_read_loop,
     structs::Item,
     writer::driver::{
         write_end_tag,
@@ -55,28 +47,33 @@ impl Items {
         self
     }
 
-    #[inline]
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"item" {
-                    let mut obj = Item::default();
-                    obj.set_attributes(reader, e);
-                    self.add_list_mut(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"items" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "items")
-        );
+    pub(crate) fn from_element(
+        node: &crate::drawing::charts::OpaqueElement,
+    ) -> Result<Self, String> {
+        use crate::xml::{
+            attributes,
+            direct_children,
+            expect,
+            unsigned,
+        };
+        expect(
+            node,
+            "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+            "items",
+        )?;
+        attributes(
+            node,
+            &["count"],
+            &[(crate::helper::const_str::MC_NS, "Ignorable")],
+        )?;
+        let mut result = Self::default();
+        for child in direct_children(node)? {
+            result.list.push(Item::from_element(&child)?);
+        }
+        if unsigned(node, "count")?.is_some_and(|count| count as usize != result.list.len()) {
+            return Err("pivot item count mismatch".into());
+        }
+        Ok(result)
     }
 
     #[inline]

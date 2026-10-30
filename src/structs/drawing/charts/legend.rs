@@ -17,12 +17,14 @@ use super::{
     TextProperties,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -36,11 +38,16 @@ pub struct Legend {
 }
 
 impl Legend {
-    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
-        match (&mut self.text_properties, &previous.text_properties) {
-            (Some(current), Some(previous)) => current.restore_export_parts(previous),
-            _ => 0,
-        }
+    pub(crate) fn restore_export_parts(
+        &mut self,
+        previous: &Self,
+    ) -> Result<usize, crate::XlsxError> {
+        Ok(
+            match (&mut self.text_properties, &previous.text_properties) {
+                (Some(current), Some(previous)) => current.restore_export_parts(previous)?,
+                _ => 0,
+            },
+        )
     }
 
     pub(crate) fn reference_role_parts(&self) -> (Option<&Layout>, Option<&ShapeProperties>) {
@@ -195,52 +202,56 @@ impl Legend {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
-    ) {
-        let _scope_guard = session.enter_child_scope(owner);
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"layout" => {
                     let mut obj = Layout::default();
-                    obj.set_attributes(reader, e, false, session);
+                    obj.set_attributes(reader, e, false, session)?;
                     self.set_layout(obj);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes_with_session(reader, e, session);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
                 b"txPr" => {
                     let mut obj = TextProperties::default();
-                    obj.read_with_session(reader, e, Some(session));
+                    obj.read_with_session(reader, e, Some(session))?;
                     self.set_text_properties(obj);
                 }
                 _ => (),
             },
-            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C){local_name(e.name().into_inner())}else{b""} {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"legendPos" => {
-                    self.legend_position.set_attributes(reader, e);
+                    self.legend_position.set_attributes(reader, e)?;
                 }
                 b"layout" => {
                     let mut obj = Layout::default();
-                    obj.set_attributes(reader, e, true, session);
+                    obj.set_attributes(reader, e, true, session)?;
                     self.set_layout(obj);
                 }
                 b"overlay" => {
-                    self.overlay.set_attributes(reader, e);
+                    self.overlay.set_attributes(reader, e)?;
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if  local_name(e.name().into_inner()) == b"legend" {
-                    return;
+                if  e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:legend"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:legend"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // c:legend
         write_start_tag(writer, "c:legend", vec![], false);
 
@@ -249,7 +260,7 @@ impl Legend {
 
         // c:layout
         if let Some(v) = &self.layout {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:overlay
@@ -257,14 +268,16 @@ impl Legend {
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:txPr
         if let Some(v) = &self.text_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:legend");
+
+        Ok(())
     }
 }

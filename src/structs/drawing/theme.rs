@@ -33,11 +33,8 @@ use super::{
     ThemeElements,
 };
 use crate::{
+    XlsxError,
     helper::const_str::DRAWINGML_MAIN_NS,
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -56,24 +53,62 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Parse a theme part and keep its text, so that writing the theme
-    /// unchanged reproduces the part exactly.
-    #[must_use]
-    pub fn from_xml(xml: &str) -> Self {
+    /// Parse a theme part and preserve its original XML while it remains
+    /// unchanged.
+    pub fn from_xml(xml: &str) -> Result<Self, XlsxError> {
+        Self::read_xml(xml, true)
+    }
+
+    pub(crate) fn read_xml(xml: &str, retain_source: bool) -> Result<Self, XlsxError> {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
-        let mut theme = Theme::default();
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"a:theme" {
-                    theme.set_attributes(&mut reader, e);
+        let session = crate::reader::xlsx::SourceCacheSession::deferred();
+        loop {
+            match reader.read_event()? {
+                Event::Start(root) => {
+                    let scope = super::charts::NamespaceScope::default()
+                        .child(&root)
+                        .map_err(crate::xml::xml_error)?;
+                    let name = scope
+                        .resolve(root.name().as_ref(), false)
+                        .map_err(crate::xml::xml_error)?;
+                    if !name.is(DRAWINGML_MAIN_NS, "theme") {
+                        return Err(crate::xml::xml_error(
+                            "invalid Theme root namespace or name",
+                        ));
+                    }
+                    let _scope = session.push_extension_scope(scope);
+                    let mut theme = Self::default();
+                    theme.read_with_session(&mut reader, &root, false, Some(&session))?;
+                    loop {
+                        match reader.read_event()? {
+                            Event::Eof => {
+                                if retain_source {
+                                    theme.source_xml = Some(xml.to_owned());
+                                }
+                                return Ok(theme);
+                            }
+                            Event::Comment(_) | Event::PI(_) => (),
+                            Event::Text(ref text)
+                                if text
+                                    .iter()
+                                    .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                            _ => return Err(crate::xml::xml_error("content after Theme root")),
+                        }
+                    }
                 }
-            },
-            Event::Eof => break,
-        );
-        theme.source_xml = Some(xml.to_string());
-        theme
+                Event::Decl(_) | Event::Comment(_) | Event::PI(_) => (),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                _ => {
+                    return Err(crate::xml::xml_error(
+                        "Theme document requires a theme root",
+                    ));
+                }
+            }
+        }
     }
 
     /// The part as it was read, while the theme is unchanged.
@@ -263,7 +298,7 @@ impl Theme {
         gradient_fill.set_rotate_with_shape(true);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(0);
+        gradient_stop.position = "0".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut lum_mod = PercentageType::default();
@@ -281,7 +316,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(50_000);
+        gradient_stop.position = "50000".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut lum_mod = PercentageType::default();
@@ -299,7 +334,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(100_000);
+        gradient_stop.position = "100000".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut lum_mod = PercentageType::default();
@@ -330,7 +365,7 @@ impl Theme {
         gradient_fill.set_rotate_with_shape(true);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(0);
+        gradient_stop.position = "0".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut tint = PositiveFixedPercentageType::default();
@@ -348,7 +383,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(50_000);
+        gradient_stop.position = "50000".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut sat_mod = PercentageType::default();
@@ -366,7 +401,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(100_000);
+        gradient_stop.position = "100000".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut shade = PositiveFixedPercentageType::default();
@@ -533,7 +568,7 @@ impl Theme {
         gradient_fill.set_rotate_with_shape(true);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(0);
+        gradient_stop.position = "0".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut tint = PositiveFixedPercentageType::default();
@@ -554,7 +589,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(50_000);
+        gradient_stop.position = "50000".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut tint = PositiveFixedPercentageType::default();
@@ -575,7 +610,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.set_position(100_000);
+        gradient_stop.position = "100000".into();
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut shade = PositiveFixedPercentageType::default();
@@ -607,32 +642,84 @@ impl Theme {
         Self::default_value()
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        if let Some(v) = get_attribute(e, b"name") {
-            self.name.set_value(v);
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(owner)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"name")? {
+            self.name.set_value(value);
         }
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"a:themeElements" {
-                    self.theme_elements.set_attributes(reader, e);
+        if empty {
+            return Err(crate::xml::xml_error("Theme owner requires child content"));
+        }
+        let mut seen = 0u32;
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => {
+                            session.accepts_child_namespace(child, DRAWINGML_MAIN_NS)?
+                        }
+                        None => true,
+                    };
+                    if !native {
+                        return Err(crate::xml::xml_error("foreign Theme child"));
+                    }
+                    crate::reader::driver::validate_attributes(child)?;
+                    match crate::reader::driver::local_name(child.name().as_ref()) {
+                        b"themeElements" => {
+                            if seen & 1 != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1;
+                            self.theme_elements.read_with_session(
+                                reader,
+                                child,
+                                child_empty,
+                                session,
+                            )?;
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:theme" {
-                    return
+                Event::End(ref child) if child.name().as_ref() == end.as_slice() => {
+                    if seen & 1 != 1 {
+                        return Err(crate::xml::xml_error(
+                            "Theme owner is missing required children",
+                        ));
+                    }
+                    return Ok(());
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:theme")
-        );
+                Event::Text(ref text)
+                    if !text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+                {
+                    return Err(crate::xml::xml_error("unexpected text in Theme container"));
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated Theme owner")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // a:theme
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         attributes.push(("xmlns:a", DRAWINGML_MAIN_NS).into());
@@ -642,7 +729,7 @@ impl Theme {
         write_start_tag(writer, "a:theme", attributes, false);
 
         // a:themeElements
-        self.theme_elements.write_to(writer);
+        self.theme_elements.write_to(writer)?;
 
         // a:objectDefaults
         write_start_tag(writer, "a:objectDefaults", vec![], true);
@@ -651,5 +738,6 @@ impl Theme {
         write_start_tag(writer, "a:extraClrSchemeLst", vec![], true);
 
         write_end_tag(writer, "a:theme");
+        Ok(())
     }
 }

@@ -1666,10 +1666,24 @@ fn issue_188_2() {
 #[test]
 fn issue_189() {
     let path = std::path::Path::new("./tests/test_files/issue_189.xlsx");
-    let mut book = reader::xlsx::read(path).unwrap();
+    let book = reader::xlsx::read(path).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    assert!(sheet.ole_objects().ole_object().is_empty());
+    let anchors = sheet.worksheet_drawing().two_cell_anchor_collection();
+    assert_eq!(anchors.len(), 1);
+    assert!(anchors[0].is_alternate_content());
+    assert_eq!(
+        anchors[0]
+            .shape()
+            .unwrap()
+            .non_visual_shape_properties()
+            .non_visual_drawing_properties()
+            .id(),
+        1025
+    );
 
     let path = std::path::Path::new("./tests/result_files/issue_189.xlsx");
-    let _unused = writer::xlsx::write(&book, path);
+    writer::xlsx::write(&book, path).unwrap();
 }
 
 #[test]
@@ -1785,7 +1799,8 @@ fn issue_184() {
         .font()
         .unwrap()
         .color()
-        .argb_with_theme(theme);
+        .argb_with_theme(theme)
+        .unwrap();
     assert_eq!(color, "A78570");
 }
 
@@ -1844,9 +1859,23 @@ fn issue_210() {
 #[test]
 fn issue_208() {
     let path = std::path::Path::new("./tests/test_files/issue_208.xlsx");
-    let mut book = reader::xlsx::read(path).unwrap();
+    let book = reader::xlsx::read(path).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    assert!(sheet.ole_objects().ole_object().is_empty());
+    let anchors = sheet.worksheet_drawing().two_cell_anchor_collection();
+    assert_eq!(anchors.len(), 1);
+    assert!(anchors[0].is_alternate_content());
+    assert_eq!(
+        anchors[0]
+            .shape()
+            .unwrap()
+            .non_visual_shape_properties()
+            .non_visual_drawing_properties()
+            .id(),
+        1025
+    );
     let path = std::path::Path::new("./tests/result_files/issue_208.xlsx");
-    let _unused = writer::xlsx::write(&book, path);
+    writer::xlsx::write(&book, path).unwrap();
 }
 
 #[test]
@@ -1894,7 +1923,8 @@ fn issue_184_2() {
             .style()
             .background_color()
             .unwrap()
-            .argb_with_theme(book.theme());
+            .argb_with_theme(book.theme())
+            .unwrap();
         assert_eq!(color, result);
     }
 }
@@ -2997,8 +3027,11 @@ fn overflow_formula_eval_test_data() {
 
 #[test]
 fn missing_attr_64450() {
+    // The original package has an externalLinkPath Relationship with no Id
+    // or Target. Required relationship fields must not be synthesized.
     let path = std::path::Path::new("./tests/test_files/64450.xlsx");
-    let _book = umya_spreadsheet::reader::xlsx::read(path).unwrap();
+    let error = umya_spreadsheet::reader::xlsx::read(path).unwrap_err();
+    assert!(error.to_string().contains("missing relationship attribute"));
 }
 
 #[test]

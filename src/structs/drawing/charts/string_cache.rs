@@ -9,6 +9,8 @@ use std::{
     io::Cursor,
 };
 
+use crate::reader::driver::try_xml_read_loop;
+
 #[cfg(test)]
 thread_local! {
     static OBSERVE_DEFERRED_HYDRATION_SOURCE_BOXES: StateCell<bool> =
@@ -87,6 +89,7 @@ use quick_xml::{
     Writer,
     events::{
         BytesStart,
+        BytesText,
         Event,
     },
 };
@@ -101,18 +104,14 @@ use crate::{
     helper::{
         address::unescape_sheet_name,
         utils::{
-            unescape_xml_text,
-            unescape_xml_text_into,
-            validate_xml_text,
+            try_unescape_xml_text,
+            try_unescape_xml_text_into,
+            try_validate_xml_text,
         },
     },
     reader::driver::{
-        attribute_str,
-        attribute_u32,
-        get_attribute,
         local_name,
         try_attribute_u32,
-        xml_read_loop,
     },
     structs::{
         Cells,
@@ -384,7 +383,7 @@ impl StringCache {
     pub(crate) fn set_deferred_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         formula: String,
-    ) -> (Option<String>, Self, Option<DenseSummary>) {
+    ) -> Result<(Option<String>, Self, Option<DenseSummary>), crate::XlsxError> {
         Self::read_deferred_named(reader, formula, b"strCache", false)
     }
 
@@ -393,20 +392,25 @@ impl StringCache {
         formula: String,
         end: &[u8],
         exact: bool,
-    ) -> (Option<String>, Self, Option<DenseSummary>) {
+    ) -> Result<(Option<String>, Self, Option<DenseSummary>), crate::XlsxError> {
         let mut cached_value = None;
         let mut proof = DenseProof::default();
         let mut scratch = PointScratch::default();
         let mut buffer = Vec::new();
         loop {
             buffer.clear();
-            match reader.read_event_into(&mut buffer).unwrap() {
+            match reader.read_event_into(&mut buffer)? {
                 Event::Start(e) => match local_name(e.name().into_inner()) {
                     b"pt" => {
-                        let index = attribute_str(&e, b"idx");
-                        let zero = index.as_deref() == Some("0");
-                        proof.point(index.as_deref().and_then(|index| index.parse().ok()));
-                        let point = read_point_into(reader, &mut scratch, zero);
+                        let raw_index = crate::reader::driver::raw_attribute(&e, b"idx");
+                        let index = raw_index
+                            .as_deref()
+                            .map(std::str::from_utf8)
+                            .transpose()
+                            .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+                        let zero = index == Some("0");
+                        proof.point(index.and_then(|index| index.parse().ok()));
+                        let point = read_point_into(reader, &mut scratch, zero)?;
                         proof.broken |= !point.flat;
                         if zero {
                             cached_value = Some(point.value.unwrap_or_default());
@@ -432,9 +436,14 @@ impl StringCache {
                         local_name(e.name().into_inner()) == end
                     } =>
                 {
-                    return (cached_value, Self::empty_source(formula), proof.finish());
+                    return Ok((cached_value, Self::empty_source(formula), proof.finish()));
                 }
-                Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(format!(
+                        "Error: Could not find {} end element",
+                        "c:strCache"
+                    )));
+                }
                 _ => (),
             }
         }
@@ -446,10 +455,10 @@ impl StringCache {
         reader: &mut Reader<R>,
         owner: &BytesStart,
         formula: String,
-    ) -> (Option<String>, Self) {
+    ) -> Result<(Option<String>, Self), crate::XlsxError> {
         let (cached_value, source) =
-            Self::read_source_named(reader, formula, owner.name().into_inner(), true);
-        (
+            Self::read_source_named(reader, formula, owner.name().into_inner(), true)?;
+        Ok((
             cached_value,
             Self {
                 source: Some({
@@ -458,13 +467,13 @@ impl StringCache {
                     Box::new(source)
                 }),
             },
-        )
+        ))
     }
 
     pub(crate) fn read_source_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         formula: String,
-    ) -> (Option<String>, SourceCache) {
+    ) -> Result<(Option<String>, SourceCache), crate::XlsxError> {
         Self::read_source_named(reader, formula, b"strCache", false)
     }
 
@@ -473,19 +482,19 @@ impl StringCache {
         formula: String,
         end: &[u8],
         exact: bool,
-    ) -> (Option<String>, SourceCache) {
+    ) -> Result<(Option<String>, SourceCache), crate::XlsxError> {
         let mut cached_value = None;
         let mut point_count = None;
         let mut points = Vec::new();
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => match local_name(e.name().into_inner()) {
                 b"ptCount" => {
-                    point_count = parse_point_count(e);
+                    point_count = parse_point_count(e)?;
                 }
                 b"pt" => {
-                    let index = get_attribute(e, b"idx");
-                    let value = read_point_value(reader);
+                    let index = crate::reader::driver::read_attribute(e, b"idx")?;
+                    let value = read_point_value(reader)?;
                     if index.as_deref() == Some("0") {
                         cached_value = Some(value.clone().unwrap_or_default());
                     }
@@ -497,11 +506,11 @@ impl StringCache {
             },
             Event::Empty(ref e) => match local_name(e.name().into_inner()) {
                 b"ptCount" => {
-                    point_count = parse_point_count(e);
+                    point_count = parse_point_count(e)?;
                 }
                 b"pt" => {
                     if let Some(index) =
-                        get_attribute(e, b"idx").and_then(|index| index.parse().ok())
+                        crate::reader::driver::read_attribute(e, b"idx")?.and_then(|index| index.parse().ok())
                     {
                         points.push((index, None));
                     }
@@ -512,10 +521,10 @@ impl StringCache {
                 if if exact { e.name().into_inner() == end } else {
                     local_name(e.name().into_inner()) == end } {
                     let source = SourceCache::as_read(formula, point_count, points);
-                    return (cached_value, source);
+                    return Ok((cached_value, source));
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:strCache")))
         );
     }
 
@@ -642,19 +651,21 @@ impl StringCache {
     }
 }
 
-pub(crate) fn parse_point_count(e: &BytesStart) -> Option<u32> {
-    get_attribute(e, b"val").and_then(|value| value.parse().ok())
+pub(crate) fn parse_point_count(e: &BytesStart) -> Result<Option<u32>, crate::XlsxError> {
+    try_attribute_u32(e, b"val").map_err(|error| crate::xml::xml_error(error.to_string()))
 }
 
 /// Reads the `c:v` of a `c:pt` up to its end tag: `None` when it has none.
-pub(crate) fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> Option<String> {
+pub(crate) fn read_point_value<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+) -> Result<Option<String>, crate::XlsxError> {
     let mut value = None;
-    xml_read_loop!(
+    try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
             if local_name(e.name().into_inner()) == b"v" {
                 let mut text = NumericValue::default();
-                text.set_attributes(reader, e);
+                text.set_attributes(reader, e)?;
                 value = Some(text.text().to_string());
             }
         },
@@ -665,10 +676,10 @@ pub(crate) fn read_point_value<R: std::io::BufRead>(reader: &mut Reader<R>) -> O
         },
         Event::End(ref e) => {
             if local_name(e.name().0) == b"pt" {
-                return value;
+                return Ok(value);
             }
         },
-        Event::Eof => panic!("Error: Could not find {} end element", "c:pt")
+        Event::Eof => return Err(crate::xml::xml_error("unterminated chart point"))
     );
 }
 
@@ -745,7 +756,7 @@ pub(crate) fn read_point_into<R: std::io::BufRead>(
     reader: &mut Reader<R>,
     scratch: &mut PointScratch,
     keep: bool,
-) -> PointRead {
+) -> Result<PointRead, crate::XlsxError> {
     let mut value = None;
     let flat = scan_point(reader, &mut scratch.events, &mut scratch.text, |text| {
         if keep {
@@ -753,15 +764,16 @@ pub(crate) fn read_point_into<R: std::io::BufRead>(
                 Some(text) => {
                     #[cfg(test)]
                     note_work(|counts| counts.kept_values += 1);
-                    unescape_xml_text(text)
+                    try_unescape_xml_text(text)?
                 }
                 None => String::new(),
             });
         } else if let Some(text) = text {
-            validate_xml_text(text);
+            try_validate_xml_text(text)?;
         }
-    });
-    PointRead { value, flat }
+        Ok(())
+    })?;
+    Ok(PointRead { value, flat })
 }
 
 /// Borrows the final value until the next point. Each earlier value is still
@@ -769,7 +781,7 @@ pub(crate) fn read_point_into<R: std::io::BufRead>(
 pub(crate) fn read_point_borrowed<'a, R: std::io::BufRead>(
     reader: &mut Reader<R>,
     scratch: &'a mut PointScratch,
-) -> Option<&'a str> {
+) -> Result<Option<&'a str>, crate::XlsxError> {
     let mut present = false;
     let mut raw_len = None;
     scan_point(reader, &mut scratch.events, &mut scratch.text, |text| {
@@ -778,15 +790,20 @@ pub(crate) fn read_point_borrowed<'a, R: std::io::BufRead>(
             Some(text) => {
                 #[cfg(test)]
                 note_work(|counts| counts.kept_values += 1);
-                (!unescape_xml_text_into(text, &mut scratch.decoded)).then_some(text.len())
+                (!try_unescape_xml_text_into(text, &mut scratch.decoded)?).then_some(text.len())
             }
             None => Some(0),
         };
-    });
-    present.then(|| match raw_len {
-        Some(len) => std::str::from_utf8(&scratch.text[..len]).unwrap(),
+        Ok(())
+    })?;
+    if !present {
+        return Ok(None);
+    }
+    Ok(Some(match raw_len {
+        Some(len) => std::str::from_utf8(&scratch.text[..len])
+            .map_err(|error| crate::xml::xml_error(error.to_string()))?,
         None => scratch.decoded.as_str(),
-    })
+    }))
 }
 
 /// The common point grammar for retained, discarded and borrowed values.
@@ -794,39 +811,34 @@ fn scan_point<R: std::io::BufRead>(
     reader: &mut Reader<R>,
     events: &mut Vec<u8>,
     text_buffer: &mut Vec<u8>,
-    mut value: impl FnMut(Option<&quick_xml::events::BytesText<'_>>),
-) -> bool {
+    mut value: impl FnMut(Option<&BytesText<'_>>) -> Result<(), crate::XlsxError>,
+) -> Result<bool, crate::XlsxError> {
     let mut flat = true;
     loop {
         events.clear();
-        let event = match reader.read_event_into(events) {
-            Ok(event) => event,
-            Err(e) => panic!("Error at position {}: {e:?}", reader.buffer_position()),
-        };
-        match event {
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"v" {
-                    // `read_text_into` appends to its buffer.
+        match reader.read_event_into(events)? {
+            Event::Start(ref element) => {
+                if local_name(element.name().as_ref()) == b"v" {
                     text_buffer.clear();
-                    let text = reader.read_text_into(e.name(), text_buffer).unwrap();
-                    value(Some(&text));
+                    let text = reader.read_text_into(element.name(), text_buffer)?;
+                    value(Some(&text))?;
                 } else {
                     flat = false;
                 }
             }
-            Event::Empty(ref e) => {
-                if local_name(e.name().into_inner()) == b"v" {
-                    value(None);
+            Event::Empty(ref element) => {
+                if local_name(element.name().as_ref()) == b"v" {
+                    value(None)?;
                 } else {
                     flat = false;
                 }
             }
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"pt" {
-                    return flat;
+            Event::End(ref element) => {
+                if local_name(element.name().as_ref()) == b"pt" {
+                    return Ok(flat);
                 }
             }
-            Event::Eof => panic!("Error: Could not find {} end element", "c:pt"),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated chart point")),
             _ => (),
         }
     }
@@ -834,7 +846,10 @@ fn scan_point<R: std::io::BufRead>(
 
 /// Visit the indices from a complete `c:strCache` XML element without
 /// materializing its points. This is also the lazy raw-sheet request scanner.
-pub(crate) fn visit_deferred_indices(data: &[u8], mut visit: impl FnMut(u32)) {
+pub(crate) fn visit_deferred_indices(
+    data: &[u8],
+    mut visit: impl FnMut(u32),
+) -> Result<(), crate::XlsxError> {
     let mut reader = Reader::from_reader(Cursor::new(data));
     reader.config_mut().trim_text(true);
     #[cfg(test)]
@@ -843,22 +858,35 @@ pub(crate) fn visit_deferred_indices(data: &[u8], mut visit: impl FnMut(u32)) {
     let mut skipped = Vec::new();
     loop {
         buffer.clear();
-        match reader.read_event_into(&mut buffer).unwrap() {
+        match reader.read_event_into(&mut buffer)? {
             Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
-                if let Some(index) = attribute_u32(&e, b"idx") {
+                if let Some(index) = try_attribute_u32(&e, b"idx")
+                    .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                {
                     visit(index);
                 }
                 skipped.clear();
-                reader.read_to_end_into(e.name(), &mut skipped).unwrap();
+                reader.read_to_end_into(e.name(), &mut skipped)?;
             }
             Event::Empty(e) if local_name(e.name().into_inner()) == b"pt" => {
-                if let Some(index) = attribute_u32(&e, b"idx") {
+                if let Some(index) = try_attribute_u32(&e, b"idx")
+                    .map_err(|error| crate::xml::xml_error(error.to_string()))?
+                {
                     visit(index);
                 }
             }
-            Event::Empty(e) if is_string_cache_name(local_name(e.name().into_inner())) => return,
-            Event::End(e) if is_string_cache_name(local_name(e.name().into_inner())) => return,
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strCache"),
+            Event::Empty(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
+                return Ok(());
+            }
+            Event::End(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
+                return Ok(());
+            }
+            Event::Eof => {
+                return Err(crate::xml::xml_error(format!(
+                    "Error: Could not find {} end element",
+                    "c:strCache"
+                )));
+            }
             _ => (),
         }
     }
@@ -867,26 +895,34 @@ pub(crate) fn visit_deferred_indices(data: &[u8], mut visit: impl FnMut(u32)) {
 /// The two non-canonical image carriers retain the parser's existing,
 /// unreduced representation. They are deliberately outside deferred
 /// admission and report accounting.
-pub(crate) fn materialize_deferred_cache(data: &[u8], formula: String) -> SourceCache {
+pub(crate) fn materialize_deferred_cache(
+    data: &[u8],
+    formula: String,
+) -> Result<SourceCache, crate::XlsxError> {
     let mut reader = Reader::from_reader(Cursor::new(data));
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     loop {
         buffer.clear();
-        match reader.read_event_into(&mut buffer).unwrap() {
+        match reader.read_event_into(&mut buffer)? {
             Event::Start(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
-                return StringCache::read_source_named(
+                return Ok(StringCache::read_source_named(
                     &mut reader,
                     formula,
                     e.name().into_inner(),
                     true,
-                )
-                .1;
+                )?
+                .1);
             }
             Event::Empty(e) if is_string_cache_name(local_name(e.name().into_inner())) => {
-                return SourceCache::as_read(formula, None, Vec::new());
+                return Ok(SourceCache::as_read(formula, None, Vec::new()));
             }
-            Event::Eof => panic!("Error: Could not find {} start element", "c:strCache"),
+            Event::Eof => {
+                return Err(crate::xml::xml_error(format!(
+                    "Error: Could not find {} start element",
+                    "c:strCache"
+                )));
+            }
             _ => (),
         }
     }
@@ -922,7 +958,7 @@ mod tests {
         };
         let mut reference = StringReference::default();
         let session = SourceCacheSession::immediate();
-        reference.set_attributes(&mut reader, &e, &session);
+        reference.set_attributes(&mut reader, &e, &session).unwrap();
         reference
     }
 
@@ -967,8 +1003,25 @@ mod tests {
         }
     }
 
-    fn unwrap_message(error: &dyn std::fmt::Debug) -> String {
-        format!("called `Result::unwrap()` on an `Err` value: {error:?}")
+    fn error_message(error: &dyn std::fmt::Display) -> String {
+        crate::xml::xml_error(error.to_string()).to_string()
+    }
+
+    fn missing_end(name: &str) -> String {
+        crate::XlsxError::from(quick_xml::Error::IllFormed(
+            quick_xml::errors::IllFormedError::MissingEndTag(name.into()),
+        ))
+        .to_string()
+    }
+
+    fn mismatched_end(found: &str) -> String {
+        crate::XlsxError::from(quick_xml::Error::IllFormed(
+            quick_xml::errors::IllFormedError::MismatchedEndTag {
+                expected: "c:pt".into(),
+                found:    found.into(),
+            },
+        ))
+        .to_string()
     }
 
     /// A reader positioned just after the start tag of the first element.
@@ -983,13 +1036,23 @@ mod tests {
         reader
     }
 
-    fn catch<T>(operation: impl FnOnce() -> T) -> Result<T, String> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).map_err(panic_message)
+    fn catch<T>(operation: impl FnOnce() -> Result<T, crate::XlsxError>) -> Result<T, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+            .unwrap_or_else(|payload| {
+                panic!(
+                    "parser panicked instead of returning an error: {}",
+                    panic_message(payload)
+                )
+            })
+            .map_err(|error| {
+                assert_eq!(error.kind(), crate::XlsxErrorKind::Xml);
+                error.to_string()
+            })
     }
 
     enum Expect {
         Value(Option<&'static str>),
-        Panic(String),
+        Error(String),
     }
 
     #[test]
@@ -1005,7 +1068,7 @@ mod tests {
             let xml = format!("<c:pt><c:v>{inner}</c:v></c:pt>");
             for trim in [false, true] {
                 assert_eq!(
-                    read_point_value(&mut after_start(xml.as_bytes(), trim)),
+                    read_point_value(&mut after_start(xml.as_bytes(), trim)).unwrap(),
                     Some(expected.to_owned())
                 );
                 assert_eq!(
@@ -1014,6 +1077,7 @@ mod tests {
                         &mut PointScratch::default(),
                         true
                     )
+                    .unwrap()
                     .value,
                     Some(expected.to_owned())
                 );
@@ -1021,7 +1085,8 @@ mod tests {
                     read_point_borrowed(
                         &mut after_start(xml.as_bytes(), trim),
                         &mut PointScratch::default()
-                    ),
+                    )
+                    .unwrap(),
                     Some(expected)
                 );
                 assert_eq!(
@@ -1030,6 +1095,7 @@ mod tests {
                         &mut PointScratch::default(),
                         false
                     )
+                    .unwrap()
                     .value,
                     None
                 );
@@ -1044,7 +1110,7 @@ mod tests {
             &b"<c:pt><c:v><![CDATA[&AMP;]]>&bogus;</c:v></c:pt>"[..],
             &b"<c:pt><c:v><![CDATA[valid]]>&bogus;</c:v><c:v>ok</c:v></c:pt>"[..],
         ] {
-            let expected = Err(unwrap_message(
+            let expected = Err(error_message(
                 &quick_xml::escape::unescape("&bogus;").unwrap_err(),
             ));
             assert_eq!(
@@ -1057,7 +1123,7 @@ mod tests {
                     &mut PointScratch::default(),
                     true
                 )
-                .value),
+                .map(|point| point.value)),
                 expected
             );
             assert_eq!(
@@ -1065,7 +1131,7 @@ mod tests {
                     &mut after_start(xml, false),
                     &mut PointScratch::default()
                 )
-                .map(str::to_owned)),
+                .map(|value| value.map(str::to_owned))),
                 expected
             );
             assert_eq!(
@@ -1074,12 +1140,12 @@ mod tests {
                     &mut PointScratch::default(),
                     false
                 )
-                .value),
+                .map(|point| point.value)),
                 expected
             );
         }
         let raw = std::hint::black_box(b"<![CDATA[a\xFFb]]>");
-        let expected = Err(unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+        let expected = Err(error_message(&quick_xml::encoding::EncodingError::Utf8(
             std::str::from_utf8(raw).unwrap_err(),
         )));
         let xml = b"<c:pt><c:v><![CDATA[a\xFFb]]></c:v></c:pt>";
@@ -1093,7 +1159,7 @@ mod tests {
                 &mut PointScratch::default(),
                 true
             )
-            .value),
+            .map(|point| point.value)),
             expected
         );
         assert_eq!(
@@ -1101,7 +1167,7 @@ mod tests {
                 &mut after_start(xml, false),
                 &mut PointScratch::default()
             )
-            .map(str::to_owned)),
+            .map(|value| value.map(str::to_owned))),
             expected
         );
         assert_eq!(
@@ -1110,7 +1176,7 @@ mod tests {
                 &mut PointScratch::default(),
                 false
             )
-            .value),
+            .map(|point| point.value)),
             expected
         );
     }
@@ -1138,7 +1204,7 @@ mod tests {
             (
                 "invalid earlier value still fails",
                 b"<c:pt idx=\"0\"><c:v>&bogus;</c:v><c:v>ok</c:v></c:pt>".to_vec(),
-                Expect::Panic(unwrap_message(
+                Expect::Error(error_message(
                     &quick_xml::escape::unescape("&bogus;").unwrap_err(),
                 )),
             ),
@@ -1202,21 +1268,21 @@ mod tests {
             (
                 "invalid entity",
                 b"<c:pt idx=\"0\"><c:v>&bogus;</c:v></c:pt>".to_vec(),
-                Expect::Panic(unwrap_message(
+                Expect::Error(error_message(
                     &quick_xml::escape::unescape("&bogus;").unwrap_err(),
                 )),
             ),
             (
                 "invalid utf-8",
                 b"<c:pt idx=\"0\"><c:v>a\xFFb</c:v></c:pt>".to_vec(),
-                Expect::Panic(unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+                Expect::Error(error_message(&quick_xml::encoding::EncodingError::Utf8(
                     std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err(),
                 ))),
             ),
             (
                 "point truncated after its value",
                 b"<c:pt idx=\"0\"><c:v>a</c:v>".to_vec(),
-                Expect::Panic("Error: Could not find c:pt end element".into()),
+                Expect::Error(crate::xml::xml_error("unterminated chart point").to_string()),
             ),
         ];
         for (name, xml, expect) in cases {
@@ -1227,7 +1293,7 @@ mod tests {
                     &mut PointScratch::default(),
                     true,
                 )
-                .value
+                .map(|point| point.value)
             });
             let discarded = catch(|| {
                 read_point_into(
@@ -1235,7 +1301,7 @@ mod tests {
                     &mut PointScratch::default(),
                     false,
                 )
-                .value
+                .map(|point| point.value)
             });
             match expect {
                 Expect::Value(value) => {
@@ -1247,7 +1313,7 @@ mod tests {
                     assert_eq!(kept, old, "{name}: kept value");
                     assert_eq!(discarded, Ok(None), "{name}: discarded value");
                 }
-                Expect::Panic(message) => {
+                Expect::Error(message) => {
                     assert_eq!(old, Err(message.clone()), "{name}: retained reader");
                     assert_eq!(kept, old, "{name}: kept failure");
                     assert_eq!(discarded, old.map(|_| None), "{name}: discarded failure");
@@ -1260,37 +1326,30 @@ mod tests {
                     &mut PointScratch::default(),
                     true,
                 )
-                .value
+                .map(|point| point.value)
             });
             assert_eq!(trimmed_new, trimmed_old, "{name}: trimming reader");
         }
     }
 
-    // Failures of the point reader and of the value reader keep their exact
-    // messages. Positions are byte offsets after the offending tag: the
-    // points are 14 bytes of start tag, 5 of `<c:v>`, 1 of text and 6 of
-    // `</c:v>` (26), followed by the 6-byte `</c:z>` (32) or 7-byte
-    // `</x:pt>` (33). A value cut off by the end of input misses the end tag
-    // of its own `c:v`.
+    // Retained and scratch readers report the same malformed XML causes.
     #[test]
     fn point_value_decoder_keeps_event_and_value_failures() {
         for (name, xml, message) in [
             (
                 "value never closed",
                 &b"<c:pt idx=\"0\"><c:v>abc"[..],
-                "called `Result::unwrap()` on an `Err` value: IllFormed(MissingEndTag(\"c:v\"))",
+                missing_end("c:v"),
             ),
             (
                 "unmatched end event",
                 &b"<c:pt idx=\"0\"><c:v>a</c:v></c:z>"[..],
-                "Error at position 32: IllFormed(MismatchedEndTag { expected: \"c:pt\", found: \
-                 \"c:z\" })",
+                mismatched_end("c:z"),
             ),
             (
                 "mismatched point end",
                 &b"<c:pt idx=\"0\"><c:v>a</c:v></x:pt>"[..],
-                "Error at position 33: IllFormed(MismatchedEndTag { expected: \"c:pt\", found: \
-                 \"x:pt\" })",
+                mismatched_end("x:pt"),
             ),
         ] {
             let old = catch(|| read_point_value(&mut after_start(xml, false)));
@@ -1300,7 +1359,7 @@ mod tests {
                     &mut PointScratch::default(),
                     true,
                 )
-                .value
+                .map(|point| point.value)
             });
             assert_eq!(old, Err(message.to_string()), "{name}: retained reader");
             assert_eq!(new, Err(message.to_string()), "{name}: point decoder");
@@ -1332,6 +1391,7 @@ mod tests {
                 Event::Start(e) if local_name(e.name().into_inner()) == b"pt" => {
                     values.push(
                         read_point_into(&mut reader, &mut scratch, true)
+                            .unwrap()
                             .value
                             .unwrap(),
                     );
@@ -1461,45 +1521,39 @@ mod tests {
             let xml = format!("<c:pt>{inner}</c:pt>");
             let actual = catch(|| {
                 read_point_borrowed(&mut after_start(xml.as_bytes(), true), &mut scratch)
-                    .map(str::to_owned)
+                    .map(|value| value.map(str::to_owned))
             });
             assert_eq!(actual, Ok(expected.map(str::to_owned)), "{inner}");
         }
         for (xml, message) in [
             (
                 &b"<c:pt><c:v>&AMP;</c:v></c:pt>"[..],
-                unwrap_message(&quick_xml::escape::unescape("&AMP;").unwrap_err()),
+                error_message(&quick_xml::escape::unescape("&AMP;").unwrap_err()),
             ),
             (
                 &b"<c:pt><c:v>a</c:v>"[..],
-                "Error: Could not find c:pt end element".to_string(),
+                crate::xml::xml_error("unterminated chart point").to_string(),
             ),
             (
                 &b"<c:pt><c:v>&bogus;</c:v><c:v>ok</c:v></c:pt>"[..],
-                unwrap_message(&quick_xml::escape::unescape("&bogus;").unwrap_err()),
+                error_message(&quick_xml::escape::unescape("&bogus;").unwrap_err()),
             ),
             (
                 &b"<c:pt><c:v>a\xFFb</c:v></c:pt>"[..],
-                unwrap_message(&quick_xml::encoding::EncodingError::Utf8(
+                error_message(&quick_xml::encoding::EncodingError::Utf8(
                     std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err(),
                 )),
             ),
             (
                 &b"<c:pt idx=\"0\"><c:v>a</c:v></c:z>"[..],
-                "Error at position 32: IllFormed(MismatchedEndTag { expected: \"c:pt\", found: \
-                 \"c:z\" })"
-                    .to_string(),
+                mismatched_end("c:z"),
             ),
-            (
-                &b"<c:pt><c:v>abc"[..],
-                "called `Result::unwrap()` on an `Err` value: IllFormed(MissingEndTag(\"c:v\"))"
-                    .to_string(),
-            ),
+            (&b"<c:pt><c:v>abc"[..], missing_end("c:v")),
         ] {
             assert_eq!(
                 catch(
                     || read_point_borrowed(&mut after_start(xml, false), &mut scratch)
-                        .map(str::to_owned)
+                        .map(|value| value.map(str::to_owned))
                 ),
                 Err(message)
             );
