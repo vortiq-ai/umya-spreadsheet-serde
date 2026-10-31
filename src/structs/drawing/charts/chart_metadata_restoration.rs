@@ -13,6 +13,7 @@ use super::{
     PlotArea,
     ShapeProperties,
     Title,
+    UpDownBars,
     chart_reference_roles::{
         AxisParts,
         AxisPartsMut,
@@ -23,6 +24,10 @@ use super::{
         SeriesMatch,
         SeriesPosition,
         match_series,
+    },
+    group_lines::{
+        GroupLines,
+        GroupLinesMut,
     },
 };
 
@@ -703,6 +708,142 @@ fn discard_axis_extensions(current: AxisPartsMut<'_>, report: &mut RestoreReport
     }
 }
 
+fn restore_shape_pair(
+    current: Option<&mut ShapeProperties>,
+    previous: Option<&ShapeProperties>,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
+    paired(
+        current,
+        previous,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
+        discard_shape_extensions,
+        report,
+    )
+}
+
+fn restore_up_down_bars(
+    current: &mut UpDownBars,
+    previous: &UpDownBars,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
+    record_supplied_extension(current.extensions().is_some(), "upDownBars", report);
+    report.restored_owners += current.restore_export_parts(previous);
+    restore_shape_pair(
+        current
+            .up_bars_mut()
+            .and_then(|bars| bars.shape_properties_mut()),
+        previous.up_bars().and_then(|bars| bars.shape_properties()),
+        report,
+    )?;
+    restore_shape_pair(
+        current
+            .down_bars_mut()
+            .and_then(|bars| bars.shape_properties_mut()),
+        previous
+            .down_bars()
+            .and_then(|bars| bars.shape_properties()),
+        report,
+    )
+}
+
+/// Restores the hidden parts of a matched group's lines, up/down bars and
+/// band formats. An element the edited chart no longer has stays removed.
+fn restore_group_lines(
+    current: GroupLinesMut<'_>,
+    previous: GroupLines<'_>,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
+    for (current, previous) in [
+        (current.drop_lines, previous.drop_lines),
+        (current.hi_low_lines, previous.hi_low_lines),
+    ] {
+        restore_shape_pair(
+            current.and_then(|lines| lines.shape_properties_mut()),
+            previous.and_then(|lines| lines.shape_properties()),
+            report,
+        )?;
+    }
+    match (current.up_down_bars, previous.up_down_bars) {
+        (Some(current), Some(previous)) => restore_up_down_bars(current, previous, report)?,
+        (Some(current), None) => {
+            report.added_owners += 1;
+            discard_up_down_bars(current, report);
+        }
+        (None, Some(_)) => report.removed_owners += 1,
+        (None, None) => {}
+    }
+    let positions = unique_axis_matches(
+        current
+            .band_formats
+            .iter()
+            .map(|band| band.index().explicit_value()),
+        previous
+            .band_formats
+            .iter()
+            .map(|band| band.index().explicit_value()),
+    );
+    for (position, band) in current.band_formats.iter_mut().enumerate() {
+        if let Some(old_position) = positions[position] {
+            restore_shape_pair(
+                band.shape_properties_mut(),
+                previous.band_formats[old_position].shape_properties(),
+                report,
+            )?;
+        } else {
+            if let Some(shape) = band.shape_properties_mut() {
+                discard_shape_extensions(shape, report);
+            }
+            report.incompatible_owners += 1;
+            report
+                .diagnostics
+                .push(format!("unmatched or ambiguous band format:{position}"));
+        }
+    }
+    Ok(())
+}
+
+fn discard_up_down_bars(current: &mut UpDownBars, report: &mut RestoreReport) {
+    record_supplied_extension(current.extensions().is_some(), "upDownBars", report);
+    current.set_extensions(None);
+    if let Some(shape) = current
+        .up_bars_mut()
+        .and_then(|bars| bars.shape_properties_mut())
+    {
+        discard_shape_extensions(shape, report);
+    }
+    if let Some(shape) = current
+        .down_bars_mut()
+        .and_then(|bars| bars.shape_properties_mut())
+    {
+        discard_shape_extensions(shape, report);
+    }
+}
+
+/// A group with no authoritative counterpart keeps its editable lines but no
+/// incoming hidden parts.
+fn discard_group_lines(current: GroupLinesMut<'_>, report: &mut RestoreReport) {
+    for lines in [current.drop_lines, current.hi_low_lines]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(shape) = lines.shape_properties_mut() {
+            discard_shape_extensions(shape, report);
+        }
+    }
+    if let Some(bars) = current.up_down_bars {
+        discard_up_down_bars(bars, report);
+    }
+    for band in current.band_formats {
+        if let Some(shape) = band.shape_properties_mut() {
+            discard_shape_extensions(shape, report);
+        }
+    }
+}
+
 fn restore_plot(
     current: &mut PlotArea,
     previous: &PlotArea,
@@ -765,7 +906,7 @@ fn restore_plot(
     );
     axes!(date_axis, date_axis_mut, "date", restore_export_parts);
     axes!(value_axis, value_axis_mut, "value", restore_export_parts; discard_untrusted_display_units);
-    axes!(series_axis, series_axis_mut, "series");
+    axes!(series_axis, series_axis_mut, "series", restore_export_parts; discard_text_export_parts);
 
     let fields = current.reference_role_parts_mut();
     let old = previous.reference_role_parts();
@@ -788,6 +929,9 @@ fn restore_plot(
                 report,
             );
             report.restored_owners += group.restore_export_parts(old_groups[old_position]);
+            restore_group_lines(group.lines_mut(), old_groups[old_position].lines(), report)?;
+        } else {
+            discard_group_lines(group.lines_mut(), report);
         }
         let fields = if groups[group_position].is_some() {
             group.into_reference_role_parts()

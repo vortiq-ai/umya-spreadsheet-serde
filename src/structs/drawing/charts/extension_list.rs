@@ -597,11 +597,7 @@ fn read_extension<R: std::io::BufRead>(
                         name.local_name.as_str(),
                         "fullRef" | "levelRef" | "formulaRef"
                     );
-                // Surface filtering has a normative registration but no typed
-                // Surface series model. Preserve its payload through the
-                // existing opaque route rather than claiming typed support.
-                let unmodeled = name.is(NS_C15, "filteredSurfaceSeries");
-                if (registered || reference) && !unmodeled {
+                if registered || reference {
                     entry
                         .nodes
                         .push(ExtensionNode::Known(Box::new(ExtensionPayload::read(
@@ -678,6 +674,7 @@ fn family_name(family: SeriesFamily) -> &'static str {
         SeriesFamily::Pie => "pie",
         SeriesFamily::Radar => "radar",
         SeriesFamily::Scatter => "scatter",
+        SeriesFamily::Surface => "surface",
     }
 }
 fn family_from_path(path: &str) -> Option<&'static str> {
@@ -689,6 +686,7 @@ fn family_from_path(path: &str) -> Option<&'static str> {
         ("pieChart|pie3DChart|ofPieChart|doughnutChart", "pie"),
         ("radarChart", "radar"),
         ("scatterChart", "scatter"),
+        ("surfaceChart|surface3DChart", "surface"),
     ] {
         if names
             .split('|')
@@ -823,35 +821,35 @@ mod tests {
     }
 
     #[test]
-    fn registered_unmodeled_surface_payloads_are_preserved_without_typed_dispatch_failure() {
+    fn registered_surface_payloads_are_typed_like_the_other_filtered_series() {
         for owner in ["surfaceChart", "surface3DChart"] {
             for payload in [
-                "<c15:filteredSurfaceSeries/>",
-                "<s:filteredSurfaceSeries xmlns:s=\"http://schemas.microsoft.com/office/drawing/2012/chart\" keep=\"opaque\"><s:ser><c:idx val=\"7\"/></s:ser></s:filteredSurfaceSeries>",
+                "<c15:filteredSurfaceSeries><c15:ser><c:idx val=\"7\"/></c15:ser></c15:filteredSurfaceSeries>",
+                "<s:filteredSurfaceSeries xmlns:s=\"http://schemas.microsoft.com/office/drawing/2012/chart\"><s:ser><c:idx val=\"7\"/></s:ser></s:filteredSurfaceSeries>",
             ] {
                 let entry = authored_extension(owner, URI_FILTER, payload);
                 assert_eq!(entry.nodes.len(), 1);
-                let ExtensionNode::Unknown(value) = &entry.nodes[0] else {
-                    panic!("unmodeled surface payload must not claim typed support");
+                let ExtensionNode::Known(value) = &entry.nodes[0] else {
+                    panic!("registered surface payload must be typed");
                 };
-                assert!(registered(entry.uri.as_deref().unwrap(), owner, None, &value.name));
-                assert!(value.name.is(NS_C15, "filteredSurfaceSeries"));
+                assert!(matches!(
+                    value.value,
+                    super::super::extension_payload::ExtensionPayloadValue::FilteredSeries(_)
+                ));
                 assert_eq!(entry.conflict_for_owner(owner, None), None);
-                let rendered = entry.materialized(None).unwrap();
+                let book = Workbook::default();
+                let rendered = entry.materialized(Some(&book)).unwrap();
                 let mut writer = Writer::new(Cursor::new(Vec::new()));
                 rendered.emit(&mut writer).unwrap();
                 let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
                 assert!(xml.contains("filteredSurfaceSeries"));
-                if payload.contains("keep=") {
-                    assert!(xml.contains("keep=\"opaque\""));
-                    assert!(xml.contains("val=\"7\""));
-                }
+                assert!(xml.contains("val=\"7\""));
             }
         }
     }
 
     #[test]
-    fn unmodeled_surface_payload_still_rejects_a_wrong_registered_owner() {
+    fn surface_payload_still_rejects_a_wrong_registered_owner() {
         let entry = authored_extension("lineChart", URI_FILTER, "<c15:filteredSurfaceSeries/>");
         assert!(matches!(entry.nodes[0], ExtensionNode::Unknown(_)));
         assert_eq!(

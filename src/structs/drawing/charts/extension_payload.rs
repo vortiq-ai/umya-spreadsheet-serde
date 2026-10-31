@@ -164,6 +164,7 @@ impl ExtensionPayload {
                     SeriesFamily::Pie => "filteredPieSeries",
                     SeriesFamily::Radar => "filteredRadarSeries",
                     SeriesFamily::Scatter => "filteredScatterSeries",
+                    SeriesFamily::Surface => "filteredSurfaceSeries",
                 },
             ),
             ExtensionPayloadValue::LabelLayout(_) => (NS_C15, "layout"),
@@ -340,7 +341,8 @@ impl ExtensionPayload {
                 | "filteredLineSeries"
                 | "filteredPieSeries"
                 | "filteredRadarSeries"
-                | "filteredScatterSeries" => {
+                | "filteredScatterSeries"
+                | "filteredSurfaceSeries" => {
                     let family = match local {
                         "filteredAreaSeries" => ChartType::AreaChart,
                         "filteredBarSeries" => ChartType::BarChart,
@@ -348,6 +350,7 @@ impl ExtensionPayload {
                         "filteredLineSeries" => ChartType::LineChart,
                         "filteredPieSeries" => ChartType::PieChart,
                         "filteredRadarSeries" => ChartType::RadarChart,
+                        "filteredSurfaceSeries" => ChartType::SurfaceChart,
                         _ => ChartType::ScatterChart,
                     };
                     let mut series = AreaChartSeries::default();
@@ -603,6 +606,7 @@ impl ExtensionPayload {
                     SeriesFamily::Pie => "c15:filteredPieSeries",
                     SeriesFamily::Radar => "c15:filteredRadarSeries",
                     SeriesFamily::Scatter => "c15:filteredScatterSeries",
+                    SeriesFamily::Surface => "c15:filteredSurfaceSeries",
                 };
                 write_start_tag(&mut writer, name, vec![], false);
                 v.series

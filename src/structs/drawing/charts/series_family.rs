@@ -4,7 +4,8 @@ use crate::structs::ChartType;
 /// The series type a plot group writes its `c:ser` elements as.
 ///
 /// Doughnut and of-pie groups use the pie series type; every supported 3D
-/// group uses the series type of its flat counterpart.
+/// group uses the series type of its flat counterpart; stock groups use the
+/// line series type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SeriesFamily {
@@ -15,6 +16,8 @@ pub enum SeriesFamily {
     Scatter,
     Bubble,
     Radar,
+    /// `CT_SurfaceSer`: only `c:cat` and `c:val` besides the shared children.
+    Surface,
 }
 
 impl From<ChartType> for SeriesFamily {
@@ -27,7 +30,7 @@ impl From<&ChartType> for SeriesFamily {
     fn from(value: &ChartType) -> Self {
         match value {
             ChartType::BarChart | ChartType::Bar3DChart => Self::Bar,
-            ChartType::LineChart | ChartType::Line3DChart => Self::Line,
+            ChartType::LineChart | ChartType::Line3DChart | ChartType::StockChart => Self::Line,
             ChartType::AreaChart | ChartType::Area3DChart => Self::Area,
             ChartType::PieChart
             | ChartType::Pie3DChart
@@ -36,6 +39,7 @@ impl From<&ChartType> for SeriesFamily {
             ChartType::ScatterChart => Self::Scatter,
             ChartType::BubbleChart => Self::Bubble,
             ChartType::RadarChart => Self::Radar,
+            ChartType::SurfaceChart | ChartType::Surface3DChart => Self::Surface,
         }
     }
 }
@@ -57,11 +61,11 @@ pub enum SeriesPartKind {
     BubbleSize,
     Bubble3D,
     Smooth,
-    /// Ordered point overrides, legal in every supported family.
+    /// Ordered point overrides, legal in every family but surface.
     DataPoints,
     /// Ordered trendlines and their labels.
     Trendlines,
-    /// Group and point data label content.
+    /// Group and point data label content, legal in every family but surface.
     DataLabels,
     /// Ordered native extension occurrences.
     Extensions,
@@ -105,13 +109,16 @@ impl SeriesFamily {
             return super::error_bars::error_bar_limit(self) > 0;
         }
         if part == SeriesPartKind::Trendlines {
-            return !matches!(self, Self::Pie | Self::Radar);
+            return !matches!(self, Self::Pie | Self::Radar | Self::Surface);
+        }
+        if part == SeriesPartKind::Extensions {
+            return true;
         }
         if matches!(
             part,
-            SeriesPartKind::DataPoints | SeriesPartKind::DataLabels | SeriesPartKind::Extensions
+            SeriesPartKind::DataPoints | SeriesPartKind::DataLabels
         ) {
-            return true;
+            return self != Self::Surface;
         }
         match self {
             Self::Bar => matches!(part, InvertIfNegative | Categories | Values),
@@ -124,6 +131,7 @@ impl SeriesFamily {
                 InvertIfNegative | XValues | YValues | BubbleSize | Bubble3D
             ),
             Self::Radar => matches!(part, Marker | Categories | Values),
+            Self::Surface => matches!(part, Categories | Values),
         }
     }
 }

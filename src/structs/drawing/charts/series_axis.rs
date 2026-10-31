@@ -20,6 +20,8 @@ use super::{
     MajorTickMark,
     MinorTickMark,
     Scaling,
+    ShapeProperties,
+    TextProperties,
     TickLabelPosition,
     Title,
 };
@@ -27,6 +29,7 @@ use crate::{
     Workbook,
     reader::driver::{
         local_name,
+        skip_element,
         try_xml_read_loop,
     },
     writer::driver::{
@@ -49,14 +52,49 @@ pub struct SeriesAxis {
     tick_label_position: TickLabelPosition,
     crossing_axis:       CrossingAxis,
     crosses:             Crosses,
+    #[cfg_attr(feature = "serde", serde(default))]
+    shape_properties:    Option<ShapeProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    text_properties:     Option<TextProperties>,
 }
 
 impl SeriesAxis {
+    pub(crate) fn restore_export_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<usize, crate::XlsxError> {
+        let mut restored = 0;
+        // Incoming text carries no export parts of its own: strip them first,
+        // then restore only into a body of the same structure.
+        if let Some(current) = &mut self.text_properties {
+            current.strip_export_parts();
+            if let Some(previous) = &previous.text_properties {
+                if current.projected_structure_matches(previous) {
+                    restored += current.restore_export_parts(previous)?;
+                } else {
+                    report.incompatible_owners += 1;
+                    report
+                        .diagnostics
+                        .push("replaced series-axis text body retains no old fields".into());
+                }
+            }
+        }
+        Ok(restored)
+    }
+
+    /// An axis without an old counterpart keeps no incoming text export parts.
+    pub(crate) fn discard_text_export_parts(&mut self, _report: &mut super::RestoreReport) {
+        if let Some(text) = &mut self.text_properties {
+            text.strip_export_parts();
+        }
+    }
+
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
         super::chart_reference_roles::AxisParts {
             id:            self.axis_id.explicit_value(),
             title:         self.title.as_ref(),
-            shape:         None,
+            shape:         self.shape_properties.as_ref(),
             gridlines:     self.major_gridlines.as_deref(),
             display_parts: None,
         }
@@ -65,6 +103,9 @@ impl SeriesAxis {
     pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        if let Some(text) = &mut self.text_properties {
+            text.strip_export_parts();
+        }
         self.reference_role_parts_mut()
     }
 
@@ -74,7 +115,7 @@ impl SeriesAxis {
         super::chart_reference_roles::AxisPartsMut {
             id:            self.axis_id.explicit_value(),
             title:         self.title.as_mut(),
-            shape:         None,
+            shape:         self.shape_properties.as_mut(),
             gridlines:     self.major_gridlines.as_deref_mut(),
             display_parts: None,
         }
@@ -355,6 +396,34 @@ impl SeriesAxis {
         self
     }
 
+    #[must_use]
+    pub fn shape_properties(&self) -> Option<&ShapeProperties> {
+        self.shape_properties.as_ref()
+    }
+
+    pub fn shape_properties_mut(&mut self) -> Option<&mut ShapeProperties> {
+        self.shape_properties.as_mut()
+    }
+
+    pub fn set_shape_properties(&mut self, value: ShapeProperties) -> &mut Self {
+        self.shape_properties = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn text_properties(&self) -> Option<&TextProperties> {
+        self.text_properties.as_ref()
+    }
+
+    pub fn text_properties_mut(&mut self) -> Option<&mut TextProperties> {
+        self.text_properties.as_mut()
+    }
+
+    pub fn set_text_properties(&mut self, value: TextProperties) -> &mut Self {
+        self.text_properties = Some(value);
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -380,7 +449,17 @@ impl SeriesAxis {
                         obj.set_attributes_with_session(reader, e, false, session)?;
                         self.set_major_gridlines(obj);
                     }
-                    _ => (),
+                    b"spPr" => {
+                        let mut obj = ShapeProperties::default();
+                        obj.set_attributes_with_session(reader, e, session)?;
+                        self.set_shape_properties(obj);
+                    }
+                    b"txPr" => {
+                        let mut obj = TextProperties::default();
+                        obj.read_with_session(reader, e, Some(session))?;
+                        self.set_text_properties(obj);
+                    }
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
@@ -464,6 +543,16 @@ impl SeriesAxis {
 
         // c:tickLblPos
         self.tick_label_position.write_to(writer);
+
+        // c:spPr
+        if let Some(v) = &self.shape_properties {
+            v.write_to(writer)?;
+        }
+
+        // c:txPr
+        if let Some(v) = &self.text_properties {
+            v.write_to(writer)?;
+        }
 
         // c:crossAx
         self.crossing_axis.write_to(writer);

@@ -161,15 +161,20 @@ pub(crate) struct AxisPartsMut<'a> {
 }
 
 pub(crate) struct GroupParts<'a> {
-    pub(crate) series:     &'a [super::AreaChartSeries],
-    pub(crate) labels:     Option<&'a super::DataLabels>,
-    pub(crate) extensions: Option<&'a super::ExtensionList>,
+    pub(crate) series:           &'a [super::AreaChartSeries],
+    pub(crate) labels:           Option<&'a super::DataLabels>,
+    pub(crate) extensions:       Option<&'a super::ExtensionList>,
+    // Line, bar and band formatting of the group, and the up/down bars' list.
+    pub(crate) shapes:           Vec<&'a super::ShapeProperties>,
+    pub(crate) lines_extensions: Option<&'a super::ExtensionList>,
 }
 
 pub(crate) struct GroupPartsMut<'a> {
-    pub(crate) series:     &'a mut [super::AreaChartSeries],
-    pub(crate) labels:     Option<&'a mut super::DataLabels>,
-    pub(crate) extensions: Option<&'a mut super::ExtensionList>,
+    pub(crate) series:           &'a mut [super::AreaChartSeries],
+    pub(crate) labels:           Option<&'a mut super::DataLabels>,
+    pub(crate) extensions:       Option<&'a mut super::ExtensionList>,
+    pub(crate) shapes:           Vec<&'a mut super::ShapeProperties>,
+    pub(crate) lines_extensions: Option<&'a mut super::ExtensionList>,
 }
 
 pub(crate) struct PivotParts<'a> {
@@ -460,6 +465,8 @@ macro_rules! reference_topology {
                 for series in fields.series { native_series(series, false, w); }
                 if let Some(child)=fields.labels { labels(None, child, w); }
                 if let Some(child)=fields.extensions { list(None, child, w); }
+                for child in fields.shapes { shape(None, child, w); }
+                if let Some(child)=fields.lines_extensions { list(None, child, w); }
             }
         }
         fn native_chart$(<$b>)?(chart:& $($b)? $($m)* Chart,
@@ -1139,29 +1146,37 @@ macro_rules! reference_topology {
             series: Vec<SeriesAfterText<'a>>,
             labels: Option<&'a $($m)* DataLabels>,
             extensions: Option<&'a $($m)* ExtensionList>,
+            shapes: Vec<&'a $($m)* ShapeProperties>,
+            lines_extensions: Option<&'a $($m)* ExtensionList>,
         }
         struct GroupAfterTrends<'a> {
             series: Vec<SeriesAfterTrends<'a>>,
             labels: Option<&'a $($m)* DataLabels>,
             extensions: Option<&'a $($m)* ExtensionList>,
+            shapes: Vec<&'a $($m)* ShapeProperties>,
+            lines_extensions: Option<&'a $($m)* ExtensionList>,
         }
         fn primary_group<'a>(fields:NativeGroupParts<'a>,
         w:&mut State<'_ $(, $b)?>)->GroupAfterText<'a> {
             let mut series=Vec::new();
             for owner in fields.series { series.push(primary_series(owner, w)); }
-            GroupAfterText { series, labels:fields.labels, extensions:fields.extensions }
+            GroupAfterText { series, labels:fields.labels, extensions:fields.extensions,
+                shapes:fields.shapes, lines_extensions:fields.lines_extensions }
         }
         fn primary_group_trends<'a>(rest:GroupAfterText<'a>,
         w:&mut State<'_ $(, $b)?>)->GroupAfterTrends<'a> {
             let mut series=Vec::new();
             for owner in rest.series { series.push(primary_series_trends(owner, w)); }
-            GroupAfterTrends { series, labels:rest.labels, extensions:rest.extensions }
+            GroupAfterTrends { series, labels:rest.labels, extensions:rest.extensions,
+                shapes:rest.shapes, lines_extensions:rest.lines_extensions }
         }
         fn group_remainder$(<$b>)?(rest:GroupAfterTrends<$lt>,
         w:&mut State<'_ $(, $b)?>) {
             for owner in rest.series { series_remainder(owner, w); }
             if let Some(owner)=rest.labels { labels(None, owner, w); }
             if let Some(owner)=rest.extensions { list(None, owner, w); }
+            for owner in rest.shapes { shape(None, owner, w); }
+            if let Some(owner)=rest.lines_extensions { list(None, owner, w); }
         }
         struct AxisAfterPrimary<'a> {
             id: Option<u32>,

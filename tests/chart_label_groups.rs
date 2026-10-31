@@ -27,7 +27,7 @@ enum Mutation {
     Deprecated,
     Setter,
 }
-fn cases() -> [(ChartType, &'static str); 13] {
+fn cases() -> [(ChartType, &'static str); 14] {
     use ChartType::*;
     [
         (LineChart, "lineChart"),
@@ -43,6 +43,7 @@ fn cases() -> [(ChartType, &'static str); 13] {
         (AreaChart, "areaChart"),
         (Area3DChart, "area3DChart"),
         (OfPieChart, "ofPieChart"),
+        (StockChart, "stockChart"),
     ]
 }
 fn marker(cell: &str) -> MarkerType {
@@ -198,6 +199,19 @@ fn edit_group(group: ChartGroupMut<'_>, mode: Mutation) {
         ChartGroupMut::BubbleChart(v) => edit!(v),
         ChartGroupMut::AreaChart(v) => edit!(v),
         ChartGroupMut::OfPieChart(v) => edit!(v),
+        // The stock group is new and has no deprecated `get_*` accessors.
+        ChartGroupMut::StockChart(v) => match mode {
+            Mutation::Current | Mutation::Deprecated => {
+                v.data_labels_mut().show_value_mut().set_val(true);
+            }
+            Mutation::Setter => {
+                let mut labels = DataLabels::default();
+                labels.show_value_mut().set_val(true);
+                v.set_data_labels(labels);
+            }
+        },
+        // A surface group has no data labels of its own.
+        ChartGroupMut::SurfaceChart(_) | ChartGroupMut::Surface3DChart(_) => (),
         ChartGroupMut::Area3DChart(v) => {
             if v.data_labels().is_none() {
                 v.set_data_labels(DataLabels::default());

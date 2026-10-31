@@ -14,12 +14,21 @@ use super::AreaChartSeries;
 use super::{
     AreaChartSeriesList,
     AxisId,
+    ChartLines,
     DataLabels,
     Grouping,
     SeriesFamily,
     ShowMarker,
     Smooth,
+    UpDownBars,
     VaryColors,
+    group_lines::{
+        GroupLines,
+        GroupLinesMut,
+        optional_group_part,
+        read_chart_lines,
+        store_once,
+    },
 };
 use crate::{
     reader::driver::{
@@ -43,12 +52,24 @@ pub struct LineChart {
     data_labels:            DataLabels,
     show_marker:            ShowMarker,
     smooth:                 Smooth,
+    #[cfg_attr(feature = "serde", serde(default))]
+    drop_lines:             Option<ChartLines>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    hi_low_lines:           Option<ChartLines>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    up_down_bars:           Option<UpDownBars>,
     axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl LineChart {
+    optional_group_part!(drop_lines, ChartLines, drop_lines_mut, set_drop_lines);
+
+    optional_group_part!(hi_low_lines, ChartLines, hi_low_lines_mut, set_hi_low_lines);
+
+    optional_group_part!(up_down_bars, UpDownBars, up_down_bars_mut, set_up_down_bars);
+
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         super::chart_metadata_restoration::replace_hidden_parts(
             &mut self.extensions,
@@ -62,12 +83,23 @@ impl LineChart {
         &AreaChartSeriesList,
         Option<&DataLabels>,
         Option<&super::ExtensionList>,
+        GroupLines<'_>,
     ) {
         (
             &self.area_chart_series_list,
             Some(&self.data_labels),
             self.extensions.as_deref(),
+            self.lines_for_roles(),
         )
+    }
+
+    pub(crate) fn lines_for_roles(&self) -> GroupLines<'_> {
+        GroupLines {
+            drop_lines:   self.drop_lines.as_ref(),
+            hi_low_lines: self.hi_low_lines.as_ref(),
+            up_down_bars: self.up_down_bars.as_ref(),
+            band_formats: &[],
+        }
     }
 
     pub(crate) fn projection_group_parts_mut(
@@ -76,8 +108,12 @@ impl LineChart {
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
+        GroupLinesMut<'_>,
     ) {
         self.extensions = None;
+        if let Some(bars) = &mut self.up_down_bars {
+            bars.set_extensions(None);
+        }
         self.reference_group_parts_mut()
     }
 
@@ -87,11 +123,18 @@ impl LineChart {
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
+        GroupLinesMut<'_>,
     ) {
         (
             &mut self.area_chart_series_list,
             Some(&mut self.data_labels),
             self.extensions.as_deref_mut(),
+            GroupLinesMut {
+                drop_lines:   self.drop_lines.as_mut(),
+                hi_low_lines: self.hi_low_lines.as_mut(),
+                up_down_bars: self.up_down_bars.as_mut(),
+                band_formats: &mut [],
+            },
         )
     }
 
@@ -321,11 +364,35 @@ impl LineChart {
                 b"dLbls" => {
                     self.data_labels.set_attributes(reader, e, session)?;
                 }
+                b"dropLines" => {
+                    let value = read_chart_lines(reader, e, false, session, "c:dropLines")?;
+                    store_once(&mut self.drop_lines, value, "c:dropLines")?;
+                }
+                b"hiLowLines" => {
+                    let value = read_chart_lines(reader, e, false, session, "c:hiLowLines")?;
+                    store_once(&mut self.hi_low_lines, value, "c:hiLowLines")?;
+                }
+                b"upDownBars" => {
+                    let value = UpDownBars::read(reader, e, false, session)?;
+                    store_once(&mut self.up_down_bars, value, "c:upDownBars")?;
+                }
                 _ => skip_element(reader, e)?,
             },
             Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
                     b"dLbls" => self.data_labels.mark_empty_import(),
+                b"dropLines" => {
+                    let value = read_chart_lines(reader, e, true, session, "c:dropLines")?;
+                    store_once(&mut self.drop_lines, value, "c:dropLines")?;
+                }
+                b"hiLowLines" => {
+                    let value = read_chart_lines(reader, e, true, session, "c:hiLowLines")?;
+                    store_once(&mut self.hi_low_lines, value, "c:hiLowLines")?;
+                }
+                b"upDownBars" => {
+                    let value = UpDownBars::read(reader, e, true, session)?;
+                    store_once(&mut self.up_down_bars, value, "c:upDownBars")?;
+                }
                 b"grouping" => {
                     self.grouping.set_attributes(reader, e)?;
                 }
@@ -375,6 +442,21 @@ impl LineChart {
 
         // c:dLbls
         self.data_labels.write_to(writer, wb)?;
+
+        // c:dropLines
+        if let Some(v) = &self.drop_lines {
+            v.write_to_as(writer, "c:dropLines")?;
+        }
+
+        // c:hiLowLines
+        if let Some(v) = &self.hi_low_lines {
+            v.write_to_as(writer, "c:hiLowLines")?;
+        }
+
+        // c:upDownBars
+        if let Some(v) = &self.up_down_bars {
+            v.write_to(writer, wb)?;
+        }
 
         // c:marker
         self.show_marker.write_to(writer);

@@ -831,9 +831,13 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size = None,
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
-            SeriesPartKind::DataPoints
-            | SeriesPartKind::DataLabels
-            | SeriesPartKind::Extensions => (),
+            SeriesPartKind::DataPoints => {
+                if let Some(parts) = self.parts.as_mut() {
+                    parts.data_points_mut().clear();
+                }
+            }
+            SeriesPartKind::DataLabels => self.data_labels = None,
+            SeriesPartKind::Extensions => (),
             SeriesPartKind::ErrorBars => {
                 if let Some(parts) = self.parts.as_mut() {
                     parts.error_bars_mut().clear();
@@ -895,7 +899,13 @@ impl AreaChartSeries {
                 ));
             }
         }
-        if let Some(labels) = &self.data_labels {
+        if !family.allows(SeriesPartKind::DataLabels) && self.data_labels.is_some() {
+            conflicts.push((
+                SeriesPartKind::DataLabels,
+                0,
+                SeriesPartConflictReason::NotAllowed,
+            ));
+        } else if let Some(labels) = &self.data_labels {
             let reason = if labels.owner_is_absent() {
                 Some(SeriesPartConflictReason::ConflictingChoice)
             } else {
@@ -906,7 +916,13 @@ impl AreaChartSeries {
             }
         }
         for (occurrence, point) in self.data_points().iter().enumerate() {
-            if !point.is_valid() {
+            if !family.allows(SeriesPartKind::DataPoints) {
+                conflicts.push((
+                    SeriesPartKind::DataPoints,
+                    occurrence,
+                    SeriesPartConflictReason::NotAllowed,
+                ));
+            } else if !point.is_valid() {
                 conflicts.push((
                     SeriesPartKind::DataPoints,
                     occurrence,
@@ -1049,13 +1065,20 @@ impl AreaChartSeries {
             v.write_to(writer)?;
         }
 
-        // Every supported family permits ordered point overrides before labels.
-        for point in self.data_points() {
-            point.write_to(writer)?;
+        // Every family but surface permits ordered point overrides before
+        // labels.
+        if family.allows(SeriesPartKind::DataPoints) {
+            for point in self.data_points() {
+                point.write_to(writer)?;
+            }
         }
 
         // c:dLbls
-        if let Some(v) = &self.data_labels {
+        if let Some(v) = self
+            .data_labels
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::DataLabels))
+        {
             v.write_to_present(writer, wb)?;
         }
 

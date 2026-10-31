@@ -607,10 +607,11 @@ pub(crate) fn error_bar_limit(family: super::SeriesFamily) -> usize {
         Pie,
         Radar,
         Scatter,
+        Surface,
     };
     match family {
         Bar | Line => 1,
         Area | Scatter | Bubble => 2,
-        Pie | Radar => 0,
+        Pie | Radar | Surface => 0,
     }
 }

@@ -18,6 +18,9 @@ pub enum ChartType {
     AreaChart,
     Area3DChart,
     OfPieChart,
+    StockChart,
+    SurfaceChart,
+    Surface3DChart,
 }
 impl EnumTrait for ChartType {
     #[inline]
@@ -36,6 +39,9 @@ impl EnumTrait for ChartType {
             Self::AreaChart => "area_chart",
             Self::Area3DChart => "area_3d_chart",
             Self::OfPieChart => "of_pie_chart",
+            Self::StockChart => "stock_chart",
+            Self::SurfaceChart => "surface_chart",
+            Self::Surface3DChart => "surface_3d_chart",
         }
     }
 }
@@ -58,6 +64,9 @@ impl FromStr for ChartType {
             "area_chart" => Ok(Self::AreaChart),
             "area_3d_chart" => Ok(Self::Area3DChart),
             "of_pie_chart" => Ok(Self::OfPieChart),
+            "stock_chart" => Ok(Self::StockChart),
+            "surface_chart" => Ok(Self::SurfaceChart),
+            "surface_3d_chart" => Ok(Self::Surface3DChart),
             _ => Err(()),
         }
     }

@@ -30,7 +30,7 @@ use umya_spreadsheet::{
     },
 };
 
-const FAMILIES: [(ChartType, &str); 13] = [
+const FAMILIES: [(ChartType, &str); 16] = [
     (ChartType::LineChart, "line_chart"),
     (ChartType::Line3DChart, "line_3d_chart"),
     (ChartType::PieChart, "pie_chart"),
@@ -44,9 +44,13 @@ const FAMILIES: [(ChartType, &str); 13] = [
     (ChartType::AreaChart, "area_chart"),
     (ChartType::Area3DChart, "area_3d_chart"),
     (ChartType::OfPieChart, "of_pie_chart"),
+    (ChartType::StockChart, "stock_chart"),
+    (ChartType::SurfaceChart, "surface_chart"),
+    (ChartType::Surface3DChart, "surface_3d_chart"),
 ];
 
-// The complete previous JSON model ignores the new order key.
+// The complete previous JSON model (with every group field) ignores the new
+// order key.
 #[derive(Serialize, Deserialize)]
 struct PreviousPlotArea {
     layout:           charts::Layout,
@@ -63,6 +67,9 @@ struct PreviousPlotArea {
     area_chart:       Option<charts::AreaChart>,
     area_3d_chart:    Option<charts::Area3DChart>,
     of_pie_chart:     Option<charts::OfPieChart>,
+    stock_chart:      Option<charts::StockChart>,
+    surface_chart:    Option<charts::SurfaceChart>,
+    surface_3d_chart: Option<charts::Surface3DChart>,
     category_axis:    Vec<charts::CategoryAxis>,
     date_axis:        Vec<charts::DateAxis>,
     value_axis:       Vec<charts::ValueAxis>,
@@ -128,6 +135,9 @@ fn group(kind: ChartType, index: u32) -> ChartGroup {
         ChartType::AreaChart => container!(AreaChart),
         ChartType::Area3DChart => container!(Area3DChart),
         ChartType::OfPieChart => container!(OfPieChart),
+        ChartType::StockChart => container!(StockChart),
+        ChartType::SurfaceChart => container!(SurfaceChart),
+        ChartType::Surface3DChart => container!(Surface3DChart),
     }
 }
 
@@ -172,6 +182,15 @@ fn set_group(plot: &mut PlotArea, group: ChartGroup) {
         ChartGroup::OfPieChart(chart) => {
             plot.set_of_pie_chart(chart);
         }
+        ChartGroup::StockChart(chart) => {
+            plot.set_stock_chart(chart);
+        }
+        ChartGroup::SurfaceChart(chart) => {
+            plot.set_surface_chart(chart);
+        }
+        ChartGroup::Surface3DChart(chart) => {
+            plot.set_surface_3d_chart(chart);
+        }
     }
 }
 
@@ -190,6 +209,9 @@ fn legacy_group(plot: &PlotArea, kind: ChartType) -> Value {
         ChartType::AreaChart => serde_json::to_value(plot.area_chart()).unwrap(),
         ChartType::Area3DChart => serde_json::to_value(plot.area_3d_chart()).unwrap(),
         ChartType::OfPieChart => serde_json::to_value(plot.of_pie_chart()).unwrap(),
+        ChartType::StockChart => serde_json::to_value(plot.stock_chart()).unwrap(),
+        ChartType::SurfaceChart => serde_json::to_value(plot.surface_chart()).unwrap(),
+        ChartType::Surface3DChart => serde_json::to_value(plot.surface_3d_chart()).unwrap(),
     }
 }
 
@@ -210,6 +232,9 @@ fn signature(plot: &PlotArea) -> Vec<(ChartType, Value)> {
                 ChartGroupRef::AreaChart(chart) => serde_json::to_value(chart).unwrap(),
                 ChartGroupRef::Area3DChart(chart) => serde_json::to_value(chart).unwrap(),
                 ChartGroupRef::OfPieChart(chart) => serde_json::to_value(chart).unwrap(),
+                ChartGroupRef::StockChart(chart) => serde_json::to_value(chart).unwrap(),
+                ChartGroupRef::SurfaceChart(chart) => serde_json::to_value(chart).unwrap(),
+                ChartGroupRef::Surface3DChart(chart) => serde_json::to_value(chart).unwrap(),
             };
             (group.kind(), value)
         })
@@ -311,7 +336,7 @@ fn assert_canonical(plot: &PlotArea) {
     let json = serde_json::to_value(plot).unwrap();
     let entries: Vec<ChartGroupEntry> =
         serde_json::from_value(json["chart_group_order"].clone()).unwrap();
-    let mut first = [false; 13];
+    let mut first = [false; 16];
     for entry in &entries {
         match entry {
             ChartGroupEntry::First(kind) => {
@@ -322,7 +347,7 @@ fn assert_canonical(plot: &PlotArea) {
             ChartGroupEntry::Additional(group) => assert!(first[group.kind() as usize]),
         }
     }
-    let mut seen = [false; 13];
+    let mut seen = [false; 16];
     for (kind, value) in signature(plot) {
         if !seen[kind as usize] {
             assert_eq!(legacy_group(plot, kind), value);
@@ -477,14 +502,14 @@ fn unsupported_only_containers_are_filtered_during_import() {
     let xml = chart_xml(&bytes).replace(
         "<c:plotArea>",
         concat!(
-            "<c:plotArea><c:surfaceChart>",
+            "<c:plotArea><c:futureChart>",
             r#"<c:wireframe val="0"/><c:ser><c:idx val="0"/><c:order val="0"/>"#,
             "<c:val><c:numRef><c:f>Sheet1!$B$2:$B$3</c:f></c:numRef></c:val></c:ser>",
             r#"<c:axId val="101"/><c:axId val="102"/><c:axId val="103"/>"#,
-            "</c:surfaceChart>",
+            "</c:futureChart>",
         ),
     );
-    assert!(xml.contains("<c:surfaceChart>"));
+    assert!(xml.contains("<c:futureChart>"));
     let mut archive = ::zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     let mut output = ::zip::ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..archive.len() {
@@ -519,7 +544,7 @@ fn structural_adjustment_moves_formulas_in_every_container() {
     }
     plot.add_chart_group(group(ChartType::LineChart, 0));
     assert_eq!(plot.series_part_conflicts(), vec![]);
-    assert_eq!(plot.formula_mut().len(), 17);
+    assert_eq!(plot.formula_mut().len(), 20);
     plot = insert_row(&plot);
     for formula in plot.formula_mut() {
         assert_eq!(formula.address_str(), "Sheet1!$B$3:$B$4");
@@ -600,7 +625,7 @@ fn json_round_trip_keeps_container_order_and_first_containers_in_legacy_fields()
     }
     plot.add_chart_group(group(ChartType::LineChart, 1));
     let mut json = serde_json::to_value(&plot).unwrap();
-    assert_eq!(container_count(&json), 14);
+    assert_eq!(container_count(&json), 17);
     let restored: PlotArea = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(serde_json::to_value(&restored).unwrap(), json);
     let previous: PreviousPlotArea = serde_json::from_value(json.clone()).unwrap();
@@ -657,7 +682,7 @@ fn container_order_has_one_canonical_form() {
                     2 => {
                         entries.insert(0, ChartGroupEntry::First(kind));
                         entries.push(ChartGroupEntry::First(kind));
-                        let absent = FAMILIES[(kind as usize + 1) % 13].0;
+                        let absent = FAMILIES[(kind as usize + 1) % 16].0;
                         entries.insert(0, ChartGroupEntry::First(absent));
                     }
                     // A late marker requires swapping the stored first container.
@@ -686,8 +711,8 @@ fn container_order_has_one_canonical_form() {
     // three.
     for seed in 0..16 {
         let mut plot = PlotArea::default();
-        for offset in 0..13 {
-            let (kind, _) = FAMILIES[(offset * 5 + seed) % 13];
+        for offset in 0..16 {
+            let (kind, _) = FAMILIES[(offset * 5 + seed) % 16];
             for index in 0..(offset + seed) % 4 {
                 plot.add_chart_group(group(kind, u32::try_from(index).unwrap()));
             }

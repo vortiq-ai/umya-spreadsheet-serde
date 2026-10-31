@@ -28,8 +28,11 @@ const RANGE_ROWS: u32 = 100_000;
 /// Projection size, including empty export-only slots.
 // The legend's empty extension slot adds one `None` tag (1 byte) to bincode and
 // `,"parts":null` (13 bytes) to JSON.
-const CHART_BINCODE_BYTES: usize = 696;
-const CHART_JSON_BYTES: usize = 5718;
+// The stock, surface and 3-D surface slots of the plot area and the drop-line,
+// high-low-line and up/down-bar slots of the line group add six `None` tags
+// (6 bytes) to bincode and six `,"name":null` members (64 + 58 bytes) to JSON.
+const CHART_BINCODE_BYTES: usize = 702;
+const CHART_JSON_BYTES: usize = 5840;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

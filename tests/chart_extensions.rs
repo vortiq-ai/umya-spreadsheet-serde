@@ -146,7 +146,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name:         "registered-surfaceChart-filteredSurfaceSeries",
-        supported:    false,
+        supported:    true,
         source_valid: true,
         xml:          include_str!(
             "fixtures/chart_extensions/registered-surfaceChart-filteredSurfaceSeries.xml"
@@ -154,7 +154,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name:         "registered-surface3DChart-filteredSurfaceSeries",
-        supported:    false,
+        supported:    true,
         source_valid: true,
         xml:          include_str!(
             "fixtures/chart_extensions/registered-surface3DChart-filteredSurfaceSeries.xml"
@@ -653,9 +653,7 @@ fn extension_character_decode_errors_propagate_for_lists_and_typed_payloads() {
 #[test]
 fn every_supported_registry_fixture_keeps_complete_chart_state_through_both_codecs_and_export() {
     assert_eq!(CASES.len(), 56);
-    assert_eq!(CASES.iter().filter(|case| !case.supported).count(), 2);
-    // Surface groups remain explicitly unsupported; their two independent
-    // input controls are retained and validated, never claimed as roundtrips.
+    assert_eq!(CASES.iter().filter(|case| !case.supported).count(), 0);
     let container = base();
     let mut exercised = 0;
     for case in CASES.iter().filter(|case| case.supported) {
@@ -672,7 +670,7 @@ fn every_supported_registry_fixture_keeps_complete_chart_state_through_both_code
         }
         exercised += 1;
     }
-    assert_eq!(exercised, 54);
+    assert_eq!(exercised, 56);
     assert_eq!(CASES.iter().filter(|case| case.source_valid).count(), 45);
 }
 #[test]

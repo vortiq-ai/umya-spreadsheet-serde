@@ -14,10 +14,18 @@ use super::{
     AreaChartSeries,
     AreaChartSeriesList,
     AxisId,
+    ChartLines,
     DataLabels,
     Grouping,
     SeriesFamily,
     VaryColors,
+    group_lines::{
+        GroupLines,
+        GroupLinesMut,
+        optional_group_part,
+        read_chart_lines,
+        store_once,
+    },
 };
 use crate::{
     reader::driver::{
@@ -39,12 +47,16 @@ pub struct Area3DChart {
     vary_colors:            VaryColors,
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            Option<Box<DataLabels>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    drop_lines:             Option<ChartLines>,
     axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl Area3DChart {
+    optional_group_part!(drop_lines, ChartLines, drop_lines_mut, set_drop_lines);
+
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         super::chart_metadata_restoration::replace_hidden_parts(
             &mut self.extensions,
@@ -58,12 +70,23 @@ impl Area3DChart {
         &AreaChartSeriesList,
         Option<&DataLabels>,
         Option<&super::ExtensionList>,
+        GroupLines<'_>,
     ) {
         (
             &self.area_chart_series_list,
             self.data_labels.as_deref(),
             self.extensions.as_deref(),
+            self.lines_for_roles(),
         )
+    }
+
+    pub(crate) fn lines_for_roles(&self) -> GroupLines<'_> {
+        GroupLines {
+            drop_lines:   self.drop_lines.as_ref(),
+            hi_low_lines: None,
+            up_down_bars: None,
+            band_formats: &[],
+        }
     }
 
     pub(crate) fn projection_group_parts_mut(
@@ -72,6 +95,7 @@ impl Area3DChart {
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
+        GroupLinesMut<'_>,
     ) {
         self.extensions = None;
         self.reference_group_parts_mut()
@@ -83,11 +107,18 @@ impl Area3DChart {
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
+        GroupLinesMut<'_>,
     ) {
         (
             &mut self.area_chart_series_list,
             self.data_labels.as_deref_mut(),
             self.extensions.as_deref_mut(),
+            GroupLinesMut {
+                drop_lines:   self.drop_lines.as_mut(),
+                hi_low_lines: None,
+                up_down_bars: None,
+                band_formats: &mut [],
+            },
         )
     }
 
@@ -278,6 +309,10 @@ impl Area3DChart {
                         }
                         self.set_data_labels(obj);
                     }
+                    b"dropLines" => {
+                        let value = read_chart_lines(reader, e, is_empty, session, "c:dropLines")?;
+                        store_once(&mut self.drop_lines, value, "c:dropLines")?;
+                    }
                     b"grouping" => {
                         self.grouping.set_attributes(reader, e)?;
                     }
@@ -327,6 +362,11 @@ impl Area3DChart {
         // c:dLbls
         if let Some(v) = &self.data_labels {
             v.write_to_present(writer, wb)?;
+        }
+
+        // c:dropLines
+        if let Some(v) = &self.drop_lines {
+            v.write_to_as(writer, "c:dropLines")?;
         }
 
         // c:axId

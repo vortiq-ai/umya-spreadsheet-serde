@@ -1,3 +1,5 @@
+mod group_lines;
+
 mod chart;
 pub use self::chart::*;
 
@@ -508,6 +510,21 @@ pub use self::extension_payload_leaves::*;
 
 mod chart_lines;
 pub use self::chart_lines::*;
+
+mod up_down_bars;
+pub use self::up_down_bars::*;
+
+mod band_format;
+pub use self::band_format::*;
+
+mod wireframe;
+pub use self::wireframe::*;
+
+mod stock_chart;
+pub use self::stock_chart::*;
+
+mod surface_chart;
+pub use self::surface_chart::*;
 
 mod reference_sequence;
 pub use self::reference_sequence::*;

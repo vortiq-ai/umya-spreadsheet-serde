@@ -25,6 +25,7 @@ use crate::{
                 BubbleSize,
                 CategoryAxis,
                 CategoryAxisData,
+                ChartLines,
                 ChartSpace,
                 ChartText,
                 CrossBetweenValues,
@@ -37,6 +38,8 @@ use crate::{
                 Line3DChart,
                 LineChart,
                 MajorGridlines,
+                Marker,
+                MarkerStyleValues,
                 OfPieChart,
                 OfPieValues,
                 OrientationValues,
@@ -51,16 +54,22 @@ use crate::{
                 ScatterChart,
                 SeriesAxis,
                 SeriesFamily,
+                ShapeProperties,
                 ShapeValues,
                 ShowLeaderLines,
                 Smooth,
+                StockChart,
                 StringLiteral,
                 StringPoint,
                 StringReference,
+                Surface3DChart,
+                SurfaceChart,
+                Symbol,
                 TextProperties,
                 TickLabelPositionValues,
                 TickMarkValues,
                 Title,
+                UpDownBars,
                 ValueAxis,
                 Values,
                 View3D,
@@ -93,6 +102,10 @@ use crate::{
 /// * `PieChart`
 /// * `RadarChart`
 /// * `ScatterChart`
+/// * `StockChart` (high-low-close with three series, open-high-low-close with
+///   four)
+/// * `SurfaceChart` (top view)
+/// * `Surface3DChart`
 ///
 /// Other types will be supported sequentially.
 ///
@@ -747,6 +760,15 @@ impl Chart {
             ChartType::ScatterChart => {
                 self.new_chart_scatter_chart(&area_chart_series_list);
             }
+            ChartType::StockChart => {
+                self.new_chart_stock_chart(&area_chart_series_list);
+            }
+            ChartType::SurfaceChart => {
+                self.new_chart_surface_chart(&area_chart_series_list);
+            }
+            ChartType::Surface3DChart => {
+                self.new_chart_surface_3d_chart(&area_chart_series_list);
+            }
         }
 
         self
@@ -826,6 +848,191 @@ impl Chart {
                 acsl_obj.add_area_chart_series(acs_object);
             });
         acsl_obj
+    }
+
+    // The frame every created chart shares: language, optional 3-D view,
+    // right-hand legend, visible-only plotting and print settings.
+    fn new_chart_frame(
+        &self,
+        view_3d: Option<View3D>,
+        fill_plot: impl FnOnce(&mut PlotArea),
+    ) -> GraphicFrame {
+        let mut style = Style::default();
+        style.set_val('2');
+        let mut graphic_frame = GraphicFrame::default();
+        let space = graphic_frame
+            .graphic_mut()
+            .graphic_data_mut()
+            .chart_space_mut();
+        space.editing_language_mut().set_val(&self.default_language);
+        let chart = space.chart_mut();
+        if let Some(view_3d) = view_3d {
+            chart.set_view_3d(view_3d);
+        }
+        fill_plot(chart.plot_area_mut());
+        chart
+            .legend_mut()
+            .legend_position_mut()
+            .set_val(LegendPositionValues::Right);
+        chart.legend_mut().set_layout(Layout::default());
+        chart.plot_visible_only_mut().set_val(true);
+        chart
+            .display_blanks_as_mut()
+            .set_val(DisplayBlanksAsValues::Zero);
+        space.set_print_settings(Self::make_print_settings());
+        space.set_style(style);
+        graphic_frame
+    }
+
+    fn default_category_axis(id: u32, crossing: u32) -> CategoryAxis {
+        let mut axis = CategoryAxis::default();
+        axis.axis_id_mut().set_val(id);
+        axis.scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        axis.major_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.minor_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        axis.tick_crossing_axis_mut().set_val(crossing);
+        axis.auto_labeled_mut().set_val(true);
+        axis.label_offset_mut().set_val(100);
+        axis
+    }
+
+    fn default_value_axis(id: u32, crossing: u32) -> ValueAxis {
+        let mut axis = ValueAxis::default();
+        axis.axis_id_mut().set_val(id);
+        axis.scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        axis.axis_position_mut().set_val(AxisPositionValues::Left);
+        axis.set_major_gridlines(MajorGridlines::default());
+        axis.numbering_format_mut().set_format_code("General");
+        axis.numbering_format_mut().set_source_linked(true);
+        axis.major_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.minor_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        axis.tick_crossing_axis_mut().set_val(crossing);
+        axis
+    }
+
+    fn default_series_axis(id: u32, crossing: u32) -> SeriesAxis {
+        let mut axis = SeriesAxis::default();
+        axis.axis_id_mut().set_val(id);
+        axis.scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        axis.axis_position_mut().set_val(AxisPositionValues::Bottom);
+        axis.major_tick_mark_mut().set_val(TickMarkValues::Outside);
+        axis.minor_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        axis.tick_crossing_axis_mut().set_val(crossing);
+        axis
+    }
+
+    fn axis_ids(ids: &[u32]) -> Vec<AxisId> {
+        ids.iter()
+            .map(|id| {
+                let mut axis_id = AxisId::default();
+                axis_id.set_val(*id);
+                axis_id
+            })
+            .collect()
+    }
+
+    // Excel hides the line between the points of a stock series; the
+    // high-low lines and bars carry the chart.
+    fn hide_series_lines(series_list: &mut AreaChartSeriesList) {
+        for series in series_list.area_chart_series_mut() {
+            let mut outline = crate::drawing::Outline::default();
+            outline.set_width(38_100);
+            outline.set_cap_type("rnd");
+            outline.set_no_fill(crate::drawing::NoFill::default());
+            let mut shape = ShapeProperties::default();
+            shape.set_outline(outline);
+            series.set_shape_properties(shape);
+            let mut symbol = Symbol::default();
+            symbol.set_val(MarkerStyleValues::None);
+            let mut marker = Marker::default();
+            marker.set_symbol(symbol);
+            series.set_marker(marker);
+        }
+    }
+
+    /// Three series are high-low-close (high-low lines), four are
+    /// open-high-low-close (high-low lines and up/down bars), the layouts of
+    /// Excel's `xlStockHLC` and `xlStockOHLC`. Any other count is kept as
+    /// given, as Excel keeps it in a saved file.
+    pub(crate) fn new_chart_stock_chart(&mut self, area_chart_series_list: &[&str]) {
+        let mut acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Line);
+        Self::hide_series_lines(&mut acsl_obj);
+        let mut stock_chart = StockChart::default();
+        stock_chart.set_area_chart_series_list(acsl_obj);
+        stock_chart.set_hi_low_lines(Some(ChartLines::default()));
+        if area_chart_series_list.len() == 4 {
+            let mut bars = UpDownBars::default();
+            bars.set_up_bars(Some(ChartLines::default()));
+            bars.set_down_bars(Some(ChartLines::default()));
+            stock_chart.set_up_down_bars(Some(bars));
+        }
+        stock_chart.set_axis_id(Self::axis_ids(&[213_468_160, 169_590_080]));
+        let frame = self.new_chart_frame(None, |plot| {
+            plot.set_stock_chart(stock_chart);
+            plot.add_category_axis(Self::default_category_axis(213_468_160, 169_590_080));
+            plot.add_value_axis(Self::default_value_axis(169_590_080, 213_468_160));
+        });
+        self.two_cell_anchor.set_graphic_frame(frame);
+    }
+
+    // A surface is plotted over a category, a value and a series axis, as
+    // Excel does for the 3-D and the top-view types.
+    fn surface_axes(plot: &mut PlotArea) {
+        plot.add_category_axis(Self::default_category_axis(213_468_160, 169_590_080));
+        plot.add_value_axis(Self::default_value_axis(169_590_080, 213_468_160));
+        plot.add_series_axis(Self::default_series_axis(110_000_000, 169_590_080));
+    }
+
+    fn surface_view(rotate_x: i8, rotate_y: u16) -> View3D {
+        let mut x = RotateX::default();
+        x.set_val(rotate_x);
+        let mut y = RotateY::default();
+        y.set_val(rotate_y);
+        let mut view_3d = View3D::default();
+        view_3d.set_rotate_x(x);
+        view_3d.set_rotate_y(y);
+        view_3d
+    }
+
+    /// The top view of a surface (`xlSurfaceTopView`).
+    pub(crate) fn new_chart_surface_chart(&mut self, area_chart_series_list: &[&str]) {
+        let mut surface_chart = SurfaceChart::default();
+        surface_chart.set_area_chart_series_list(Self::convert_series(
+            area_chart_series_list,
+            SeriesFamily::Surface,
+        ));
+        surface_chart.set_axis_id(Self::axis_ids(&[213_468_160, 169_590_080, 110_000_000]));
+        let frame = self.new_chart_frame(Some(Self::surface_view(90, 0)), |plot| {
+            plot.set_surface_chart(surface_chart);
+            Self::surface_axes(plot);
+        });
+        self.two_cell_anchor.set_graphic_frame(frame);
+    }
+
+    pub(crate) fn new_chart_surface_3d_chart(&mut self, area_chart_series_list: &[&str]) {
+        let mut surface_chart = Surface3DChart::default();
+        surface_chart.set_area_chart_series_list(Self::convert_series(
+            area_chart_series_list,
+            SeriesFamily::Surface,
+        ));
+        surface_chart.set_axis_id(Self::axis_ids(&[213_468_160, 169_590_080, 110_000_000]));
+        let frame = self.new_chart_frame(Some(Self::surface_view(15, 20)), |plot| {
+            plot.set_surface_3d_chart(surface_chart);
+            Self::surface_axes(plot);
+        });
+        self.two_cell_anchor.set_graphic_frame(frame);
     }
 
     pub(crate) fn new_chart_line_chart(&mut self, area_chart_series_list: &[&str]) {
