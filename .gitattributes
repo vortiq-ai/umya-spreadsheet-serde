@@ -1,0 +1,3 @@
+# Hashed byte for byte by tests/persisted_chart_compatibility.rs: never convert line endings.
+tools/legacy-chart-json/** -text
+tests/fixtures/persisted_charts/** -text
