@@ -158,7 +158,21 @@ fn validate_start(
     Ok(scope)
 }
 
-fn emit_start(start: &OpaqueStart, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), String> {
+/// HTML void elements: an HTML parser treats a written end tag for them as a
+/// second element, so an empty, unprefixed one is written as `<name/>`. The
+/// VML textbox reader closes exactly the same set of elements.
+const HTML_VOID_ELEMENTS: [&str; 14] = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
+];
+
+pub(crate) fn is_html_void_name(name: &[u8]) -> bool {
+    HTML_VOID_ELEMENTS
+        .iter()
+        .any(|void| name.eq_ignore_ascii_case(void.as_bytes()))
+}
+
+fn start_event(start: &OpaqueStart) -> BytesStart<'static> {
     let name = start.name.lexical();
     let mut e = BytesStart::new(name);
     for (prefix, uri) in &start.namespaces {
@@ -171,8 +185,18 @@ fn emit_start(start: &OpaqueStart, writer: &mut Writer<Cursor<Vec<u8>>>) -> Resu
         let name = name.lexical();
         e.push_attribute((name.as_str(), value.as_str()));
     }
+    e
+}
+
+fn emit_start(start: &OpaqueStart, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), String> {
     writer
-        .write_event(Event::Start(e))
+        .write_event(Event::Start(start_event(start)))
+        .map_err(|e| e.to_string())
+}
+
+fn emit_empty(start: &OpaqueStart, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), String> {
+    writer
+        .write_event(Event::Empty(start_event(start)))
         .map_err(|e| e.to_string())
 }
 
@@ -183,6 +207,11 @@ impl OpaqueElement {
             namespaces: self.namespaces.clone(),
             attributes: self.attributes.clone(),
         }
+    }
+
+    /// The start tag of this element: namespace declarations, then attributes.
+    pub(crate) fn start_event(&self) -> BytesStart<'static> {
+        start_event(&self.root_start())
     }
 
     pub(crate) fn read<R: std::io::BufRead>(
@@ -651,9 +680,18 @@ impl OpaqueElement {
     pub(crate) fn emit(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), String> {
         emit_start(&self.root_start(), writer)?;
         let mut names = Vec::new();
-        for token in &self.children {
+        let mut tokens = self.children.iter().peekable();
+        while let Some(token) = tokens.next() {
             match token {
                 OpaqueToken::Start(v) => {
+                    if v.name.lexical() == v.name.local_name
+                        && is_html_void_name(v.name.local_name.as_bytes())
+                        && matches!(tokens.peek(), Some(OpaqueToken::End))
+                    {
+                        tokens.next();
+                        emit_empty(v, writer)?;
+                        continue;
+                    }
                     emit_start(v, writer)?;
                     names.push(v.name.lexical());
                 }

@@ -18,17 +18,23 @@ use crate::{
 pub fn read<R: io::Read + io::Seek>(
     arv: &mut zip::ZipArchive<R>,
     wb: &mut Workbook,
-) -> Result<(), XlsxError> {
+) -> Result<bool, XlsxError> {
+    // The element parsers below cannot report undecodable text themselves.
+    if let Ok(source) = super::driver::zip_by_name(arv, PKG_STYLES) {
+        crate::reader::spreadsheet_xml::validate_part_text(io::BufReader::new(source))?;
+    }
     let r = io::BufReader::new(match super::driver::zip_by_name(arv, PKG_STYLES) {
         Ok(v) => v,
         Err(zip::result::ZipError::FileNotFound) => {
-            return Ok(());
+            // No styles part: every style index resolves to default
+            // formatting. The writer supplies the default stylesheet.
+            return Ok(false);
         }
         Err(e) => {
             return Err(e.into());
         }
     });
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(r));
+    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(r)?);
     reader.config_mut().trim_text(true);
 
     try_xml_read_loop!(
@@ -44,5 +50,5 @@ pub fn read<R: io::Read + io::Seek>(
         Event::Eof => break
     );
 
-    Ok(())
+    Ok(true)
 }

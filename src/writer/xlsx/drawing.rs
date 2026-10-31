@@ -77,7 +77,37 @@ pub(crate) fn write_dependencies<W: io::Seek + io::Write>(
         }
     }
     if let Some(parts) = worksheet.drawing_parts() {
-        parts.write_common(manager)?;
+        let mut live_charts = std::collections::HashSet::new();
+        let mut bundles = std::collections::HashMap::new();
+        let mut standard =
+            |_: crate::drawing::spreadsheet::DrawingFrameKey,
+             frame: &crate::drawing::spreadsheet::GraphicFrame| {
+                live_charts.extend(frame.source_parts().iter().cloned());
+            };
+        worksheet
+            .worksheet_drawing()
+            .visit_standard_frames(&mut standard);
+        for ole in worksheet.ole_objects().ole_object() {
+            ole.two_cell_anchor().visit_standard_frames(&mut standard);
+        }
+        let mut extended =
+            |_: crate::drawing::spreadsheet::DrawingFrameKey,
+             frame: &crate::drawing::spreadsheet::ExtendedChartFrame| {
+                live_charts.extend(frame.source_part().map(str::to_owned));
+                if let (Some(source), Some(bundle)) = (frame.source_part(), frame.style_bundle()) {
+                    let known: &mut Vec<_> = bundles.entry(source.to_owned()).or_default();
+                    if !known.contains(bundle) {
+                        known.push(bundle.clone());
+                    }
+                }
+            };
+        worksheet
+            .worksheet_drawing()
+            .visit_extended_frames(&mut extended);
+        for ole in worksheet.ole_objects().ole_object() {
+            ole.two_cell_anchor().visit_extended_frames(&mut extended);
+        }
+        parts.write_common(manager, &live_charts, &bundles)?;
     }
     Ok(())
 }

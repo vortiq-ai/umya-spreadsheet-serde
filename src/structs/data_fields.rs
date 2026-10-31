@@ -1,17 +1,11 @@
 // dataFields
 use std::io::Cursor;
 
-use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
-};
+use quick_xml::Writer;
 
 use crate::{
-    reader::driver::xml_read_loop,
+    drawing::charts::OpaqueElement,
+    helper::const_str::SHEET_MAIN_NS,
     structs::DataField,
     writer::driver::{
         write_end_tag,
@@ -55,34 +49,30 @@ impl DataFields {
         self
     }
 
-    #[inline]
-    #[allow(unused_variables)]
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"dataField" {
-                    let mut obj = DataField::default();
-                    obj.set_attributes(reader, e);
-                    self.add_list_mut(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"dataFields" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "dataFields")
-        );
+    pub(crate) fn from_native_element(node: &OpaqueElement) -> Result<Self, String> {
+        crate::xml::expect(node, SHEET_MAIN_NS, "dataFields")?;
+        crate::xml::attributes(node, &["count"], &[])?;
+        let list = crate::xml::direct_children(node)?
+            .iter()
+            .map(DataField::from_native_element)
+            .collect::<Result<Vec<_>, _>>()?;
+        if list.is_empty() {
+            return Err("dataFields requires at least one native data field".into());
+        }
+        if crate::xml::unsigned(node, "count")?.is_some_and(|count| count as usize != list.len()) {
+            return Err("dataFields count does not match native data fields".into());
+        }
+        Ok(Self { list })
     }
 
     #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        for field in &self.list {
+            field.validate().map_err(crate::xml::xml_error)?;
+        }
         if !self.list.is_empty() {
             // dataFields
             write_start_tag(
@@ -94,10 +84,11 @@ impl DataFields {
 
             // dataField
             for sheet_view in &self.list {
-                sheet_view.write_to(writer);
+                sheet_view.write_to(writer)?;
             }
 
             write_end_tag(writer, "dataFields");
         }
+        Ok(())
     }
 }

@@ -276,7 +276,13 @@ impl ConnectionShape {
         self.shape_properties.write_to(writer, rel_list)?;
 
         // xdr:style
-        self.shape_style.write_to(writer)?;
+        if self.shape_style.line_reference().is_some()
+            || self.shape_style.fill_reference().is_some()
+            || self.shape_style.effect_reference().is_some()
+            || self.shape_style.font_reference().is_some()
+        {
+            self.shape_style.write_to(writer)?;
+        }
 
         write_end_tag(writer, "xdr:cxnSp");
         Ok(())

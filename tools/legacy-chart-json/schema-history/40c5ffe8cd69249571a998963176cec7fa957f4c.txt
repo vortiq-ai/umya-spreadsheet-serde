@@ -1,0 +1,490 @@
+# audited opaque Chart serde schema (source superset)
+# revision 40c5ffe8cd69249571a998963176cec7fa957f4c
+# audit scope: complete structs/**/*.rs source superset (including private and nested native owners)
+# serde audit: only deserialization default attributes; no skip/rename or manual Serialize implementations
+# regeneration required for any Cargo source patch or revision change; canonical compatibility must be reviewed
+# files 499; serde_types 483; fields 1336; variants 544; serde_skip_attributes 0
+# serde_default_attributes 0
+struct Address [address.rs] { sheet_name:Box<str>; range:Range }
+struct Alignment [alignment.rs] { horizontal:EnumValue<HorizontalAlignmentValues>; vertical:EnumValue<VerticalAlignmentValues>; wrap_text:BooleanValue; text_rotation:UInt32Value; indent:UInt32Value }
+struct Anchor [anchor.rs] { left_column:u32; left_offset:u32; top_row:u32; top_offset:u32; right_column:u32; right_offset:u32; bottom_row:u32; bottom_offset:u32 }
+struct AutoFilter [auto_filter.rs] { range:Range }
+struct Bold [bold.rs] { val:BooleanValue }
+struct BooleanValue [boolean_value.rs] { value:Option<bool> }
+struct Border [border.rs] { color:Option<Box<Color>>; style:EnumValue<BorderStyleValues> }
+enum BorderStyleValues [border_style_values.rs] { DashDot; DashDotDot; Dashed; Dotted; Double; Hair; Medium; MediumDashDot; MediumDashDotDot; MediumDashed; None; SlantDashDot; Thick; Thin }
+struct Borders [borders.rs] { data:Box<[Border; 7]>; diagonal_down:BooleanValue; diagonal_up:BooleanValue }
+struct BordersCrate [borders_crate.rs] { borders:Vec<Borders> }
+struct Break [break.rs] { id:UInt32Value; max:UInt32Value; min:UInt32Value; manual_page_break:BooleanValue }
+struct ByteValue [byte_value.rs] { value:Option<u8> }
+struct CacheField [cache_field.rs] { name:StringValue; number_format_id:UInt32Value; shared_items:SharedItems }
+struct CacheFields [cache_fields.rs] { list:Vec<CacheField> }
+struct CacheSource [cache_source.rs] { type:EnumValue<SourceValues>; worksheet_source:Option<WorksheetSource> }
+struct Cell [cell.rs] { coordinate:Coordinate; cell_value:Box<CellValue>; style:Box<Style>; hyperlink:Option<Box<Hyperlink>>; cell_meta_index:UInt32Value }
+struct CellFormat [cell_format.rs] { number_format_id:UInt32Value; font_id:UInt32Value; fill_id:UInt32Value; border_id:UInt32Value; format_id:UInt32Value; apply_number_format:BooleanValue; apply_fill:BooleanValue; apply_border:BooleanValue; apply_font:BooleanValue; apply_alignment:BooleanValue; apply_protection:BooleanValue; alignment:Option<Alignment>; protection:Option<Protection> }
+struct CellFormats [cell_formats.rs] { cell_format:Vec<CellFormat> }
+struct CellFormula [cell_formula.rs] { bx:BooleanValue; data_table_2d:BooleanValue; data_table_row:BooleanValue; formula_type:EnumValue<CellFormulaValues>; input_1deleted:BooleanValue; input_2deleted:BooleanValue; r1:StringValue; r2:StringValue; reference:StringValue; shared_index:UInt32Value; text:StringValue; text_view:StringValue }
+enum CellFormulaValues [cell_formula_values.rs] { Array; DataTable; Normal; Shared }
+enum CellRawValue [cell_raw_value.rs] { String(Box<str>); RichText(RichText); Lazy(Box<str>); Numeric(f64); Bool(bool); Error(CellErrorType); Empty }
+struct CellStyle [cell_style.rs] { name:StringValue; builtin_id:UInt32Value; format_id:UInt32Value }
+struct CellStyleFormats [cell_style_formats.rs] { cell_format:Vec<CellFormat> }
+struct CellStyles [cell_styles.rs] { cell_style:Vec<CellStyle> }
+struct CellValue [cell_value.rs] { raw_value:CellRawValue; formula:Option<Box<CellFormula>> }
+struct Cells [cells.rs] { map:HashMap<(u32, u32), Box<Cell>>; row_column_index:BTreeSet<(u32, u32)>; column_row_index:BTreeSet<(u32, u32)>; default_cell_value:CellValue; default_style:Style }
+struct Chart [chart.rs] { two_cell_anchor:Box<TwoCellAnchor>; default_language:String }
+enum ChartType [chart_type.rs] { LineChart; Line3DChart; PieChart; Pie3DChart; DoughnutChart; ScatterChart; BarChart; Bar3DChart; RadarChart; BubbleChart; AreaChart; Area3DChart; OfPieChart }
+struct Color [color.rs] { automatic:Option<bool>; indexed:Option<u32>; theme_index:Option<u32>; argb:Option<ARGB8>; tint:Option<f64> }
+struct ColorScale [color_scale.rs] { cfvo_collection:Vec<ConditionalFormatValueObject>; color_collection:Vec<Color> }
+struct Colors [colors.rs] { mru_colors:MruColors }
+struct Column [column.rs] { col_num:UInt32Value; width:DoubleValue; hidden:BooleanValue; best_fit:BooleanValue; style:Box<Style>; auto_width:BooleanValue; custom_width:BooleanValue }
+struct ColumnBreaks [column_breaks.rs] { break_list:Vec<Break> }
+struct ColumnFields [column_fields.rs] { list:Vec<Field> }
+struct ColumnItems [column_items.rs] { list:Vec<RowItem> }
+struct ColumnReference [column_reference.rs] { num:u32; is_lock:bool }
+struct Columns [columns.rs] { column:Vec<Column> }
+struct Comment [comment.rs] { coordinate:Coordinate; author:Box<str>; text:CommentText; shape:Shape; id:StringValue }
+struct CommentText [comment_text.rs] { text:Option<Text>; rich_text:Option<RichText> }
+struct ConditionalFormatValueObject [conditional_format_value_object.rs] { type:EnumValue<ConditionalFormatValueObjectValues>; val:StringValue }
+enum ConditionalFormatValueObjectValues [conditional_format_value_object_values.rs] { Formula; Max; Min; Number; Percent; Percentile }
+enum ConditionalFormatValues [conditional_format_values.rs] { AboveAverage; BeginsWith; CellIs; ColorScale; ContainsBlanks; ContainsErrors; ContainsText; DataBar; DuplicateValues; EndsWith; Expression; IconSet; NotContainsBlanks; NotContainsErrors; NotContainsText; TimePeriod; Top10; UniqueValues }
+struct ConditionalFormatting [conditional_formatting.rs] { sequence_of_references:SequenceOfReferences; conditional_collection:Vec<ConditionalFormattingRule> }
+enum ConditionalFormattingOperatorValues [conditional_formatting_operator_values.rs] { BeginsWith; Between; ContainsText; EndsWith; Equal; GreaterThan; GreaterThanOrEqual; LessThan; LessThanOrEqual; NotBetween; NotContains; NotEqual }
+struct ConditionalFormattingRule [conditional_formatting_rule.rs] { type:EnumValue<ConditionalFormatValues>; operator:EnumValue<ConditionalFormattingOperatorValues>; text:StringValue; priority:Int32Value; percent:BooleanValue; bottom:BooleanValue; rank:UInt32Value; stop_if_true:BooleanValue; std_dev:Int32Value; above_average:BooleanValue; equal_average:BooleanValue; time_period:EnumValue<TimePeriodValues>; style:Option<Box<Style>>; color_scale:Option<ColorScale>; data_bar:Option<DataBar>; icon_set:Option<IconSet>; formula:Option<Box<Formula>> }
+struct Coordinate [coordinate.rs] { column:ColumnReference; row:RowReference }
+enum CsvEncodeValues [csv_encode_values.rs] { Utf8; ShiftJis; Koi8u; Koi8r; Iso88598i; Gbk; EucKr; Big5; Utf16Le; Utf16Be }
+struct CsvWriterOption [csv_writer_option.rs] { csv_encode_values:EnumValue<CsvEncodeValues>; wrap_with_char:Box<str>; do_trim:bool }
+struct CustomDocumentProperty [custom_properties/custom_document_property.rs] { name:StringValue; link_target:StringValue; custom_document_property_value:CustomDocumentPropertyValue }
+enum CustomDocumentPropertyValue [custom_properties/custom_document_property_value.rs] { String(Box<str>); Date(Box<str>); Numeric(i32); Bool(bool); Null }
+struct Properties [custom_properties/properties.rs] { custom_document_property_list:Vec<CustomDocumentProperty> }
+struct DataBar [data_bar.rs] { cfvo_collection:Vec<ConditionalFormatValueObject>; color_collection:Vec<Color> }
+struct DataField [data_field.rs] { name:StringValue; fie_id:UInt32Value; base_fie_id:Int32Value; base_item:UInt32Value; subtotal:StringValue }
+struct DataFields [data_fields.rs] { list:Vec<DataField> }
+struct DataValidation [data_validation.rs] { type:EnumValue<DataValidationValues>; operator:EnumValue<DataValidationOperatorValues>; allow_blank:BooleanValue; show_input_message:BooleanValue; show_error_message:BooleanValue; prompt_title:StringValue; prompt:StringValue; error_title:StringValue; error_messsage:StringValue; sequence_of_references:SequenceOfReferences; formula1:Box<Formula1>; formula2:Box<Formula2> }
+enum DataValidationOperatorValues [data_validation_operator_values.rs] { Between; Equal; GreaterThan; GreaterThanOrEqual; LessThan; LessThanOrEqual; NotBetween; NotEqual }
+enum DataValidationValues [data_validation_values.rs] { Custom; Date; Decimal; List; None; TextLength; Time; Whole }
+struct DataValidations [data_validations.rs] { data_validation_list:Vec<DataValidation> }
+struct DateTimeValue [date_time_value.rs] { value:Option<Box<str>> }
+struct DefinedName [defined_name.rs] { name:StringValue; address:Vec<Address>; string_value:StringValue; local_sheet_id:UInt32Value; hidden:BooleanValue }
+struct DiagonalBorder [diagonal_border.rs] { color:Color; style:EnumValue<BorderStyleValues> }
+struct DifferentialFormat [differential_format.rs] { font:Option<Box<Font>>; fill:Option<Fill>; borders:Option<Box<Borders>>; alignment:Option<Alignment> }
+struct DifferentialFormats [differential_formats.rs] { differential_format:Vec<DifferentialFormat> }
+struct DoubleValue [double_value.rs] { value:Option<f64> }
+struct AdjustValueList [drawing/adjust_value_list.rs] { shape_guide_collection:Vec<ShapeGuide> }
+struct Alpha [drawing/alpha.rs] { val:Box<str> }
+struct BackgroundColor [drawing/background_color.rs] { scheme_color:SchemeColor }
+struct BackgroundFillStyleList [drawing/background_fill_style_list.rs] { solid_fill:Vec<SolidFill>; gradient_fill_collection:Vec<GradientFill> }
+struct Bevel [drawing/bevel.rs] {  }
+struct BevelBottom [drawing/bevel_bottom.rs] { width:Int64Value; height:Int64Value; preset:EnumValue<BevelPresetValues> }
+enum BevelPresetValues [drawing/bevel_preset_values.rs] { Angle; ArtDeco; Circle; Convex; CoolSlant; Cross; Divot; HardEdge; RelaxedInset; Riblet; Slope; SoftRound }
+struct BevelTop [drawing/bevel_top.rs] { width:Int64Value; height:Int64Value; preset:EnumValue<BevelPresetValues> }
+enum BlackWhiteModeValues [drawing/black_white_mode_values.rs] { Auto; Black; BlackGray; BlackWhite; Color; Gray; GrayWhite; Hidden; InvGray; LightGray; White }
+struct Blip [drawing/blip.rs] { image:MediaObject; cstate:Box<str> }
+struct BlipFill [drawing/blip_fill.rs] { rotate_with_shape:BooleanValue; blip:Blip; source_rectangle:Option<Box<SourceRectangle>>; stretch:Stretch }
+struct BodyProperties [drawing/body_properties.rs] { vert_overflow:StringValue; horz_overflow:StringValue; rtl_col:StringValue; anchor:StringValue; wrap:EnumValue<TextWrappingValues>; rotation:Int32Value; left_inset:Int32Value; top_inset:Int32Value; right_inset:Int32Value; bottom_inset:Int32Value; use_paragraph_spacing:BooleanValue; shape_auto_fit:Option<ShapeAutoFit> }
+struct Camera [drawing/camera.rs] { preset:EnumValue<PresetCameraValues>; rotation:Option<Box<Rotation>> }
+struct Area3DChart [drawing/charts/area_3d_chart.rs] { grouping:Grouping; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:Option<Box<DataLabels>>; axis_id:Vec<AxisId> }
+struct AreaChart [drawing/charts/area_chart.rs] { grouping:Grouping; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; axis_id:Vec<AxisId> }
+struct AreaChartSeries [drawing/charts/area_chart_series.rs] { index:Index; order:Order; chart_text:Option<ChartText>; explosion:Option<Explosion>; invert_if_negative:Option<InvertIfNegative>; marker:Option<Marker>; shape_properties:Option<ShapeProperties>; category_axis_data:Option<CategoryAxisData>; values:Option<Values>; x_values:Option<XValues>; y_values:Option<YValues>; bubble_size:Option<BubbleSize>; bubble_3d:Option<Bubble3D>; smooth:Option<Smooth>; data_labels:Option<DataLabels> }
+struct AreaChartSeriesList [drawing/charts/area_chart_series_list.rs] { area_chart_series:Vec<AreaChartSeries> }
+struct AutoLabeled [drawing/charts/auto_labeled.rs] { val:BooleanValue }
+struct AutoTitleDeleted [drawing/charts/auto_title_deleted.rs] { val:BooleanValue }
+struct AxisId [drawing/charts/axis_id.rs] { val:UInt32Value }
+struct AxisPosition [drawing/charts/axis_position.rs] { val:EnumValue<AxisPositionValues> }
+enum AxisPositionValues [drawing/charts/axis_position_values.rs] { Bottom; Left; Right; Top }
+struct BackWall [drawing/charts/back_wall.rs] { thickness:Option<Thickness>; shape_properties:Option<ShapeProperties> }
+struct Bar3DChart [drawing/charts/bar_3d_chart.rs] { bar_direction:BarDirection; grouping:Grouping; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; gap_width:GapWidth; shape:Shape; axis_id:Vec<AxisId> }
+struct BarChart [drawing/charts/bar_chart.rs] { bar_direction:BarDirection; grouping:Grouping; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; gap_width:GapWidth; overlap:Overlap; axis_id:Vec<AxisId> }
+struct BarDirection [drawing/charts/bar_direction.rs] { val:EnumValue<BarDirectionValues> }
+enum BarDirectionValues [drawing/charts/bar_direction_values.rs] { Bar; Column }
+struct BaseTimeUnit [drawing/charts/base_time_unit.rs] { val:EnumValue<TimeUnitValues> }
+struct Bubble3D [drawing/charts/bubble_3d.rs] { val:BooleanValue }
+struct BubbleChart [drawing/charts/bubble_chart.rs] { vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; bubble_scale:BubbleScale; show_negative_bubbles:ShowNegativeBubbles; axis_id:Vec<AxisId> }
+struct BubbleScale [drawing/charts/bubble_scale.rs] { val:UInt32Value }
+struct BubbleSize [drawing/charts/bubble_size.rs] { number_reference:NumberReference }
+struct CategoryAxis [drawing/charts/category_axis.rs] { axis_id:AxisId; scaling:Scaling; delete:Delete; axis_position:AxisPosition; title:Option<Title>; major_gridlines:Option<MajorGridlines>; major_tick_mark:MajorTickMark; minor_tick_mark:MinorTickMark; tick_label_position:TickLabelPosition; crossing_axis:CrossingAxis; crosses:Crosses; auto_labeled:AutoLabeled; label_alignment:LabelAlignment; label_offset:LabelOffset; no_multi_level_labels:NoMultiLevelLabels; shape_properties:Option<ShapeProperties>; text_properties:Option<TextProperties> }
+struct CategoryAxisData [drawing/charts/category_axis_data.rs] { string_reference:Option<StringReference>; string_literal:Option<StringLiteral>; number_reference:Option<NumberReference> }
+struct Chart [drawing/charts/chart.rs] { title:Option<Title>; auto_title_deleted:AutoTitleDeleted; view_3d:Option<View3D>; floor:Option<Floor>; side_wall:Option<SideWall>; back_wall:Option<BackWall>; plot_area:PlotArea; legend:Legend; legend_present:bool; plot_visible_only:PlotVisibleOnly; display_blanks_as:DisplayBlanksAs; show_data_labels_over_maximum:ShowDataLabelsOverMaximum }
+struct ChartSpace [drawing/charts/chart_space.rs] { date1904:Option<Date1904>; editing_language:EditingLanguage; rounded_corners:RoundedCorners; style:Option<Style>; chart:Chart; shape_properties:Option<ShapeProperties>; print_settings:Option<PrintSettings> }
+struct ChartText [drawing/charts/chart_text.rs] { rich_text:Option<RichText>; string_reference:Option<StringReference>; numeric_value:Option<NumericValue> }
+struct CrossBetween [drawing/charts/cross_between.rs] { val:EnumValue<CrossBetweenValues> }
+enum CrossBetweenValues [drawing/charts/cross_between_values.rs] { Between; MidpointCategory }
+struct Crosses [drawing/charts/crosses.rs] { val:EnumValue<CrossesValues> }
+enum CrossesValues [drawing/charts/crosses_values.rs] { AutoZero; Maximum; Minimum }
+struct CrossingAxis [drawing/charts/crossing_axis.rs] { val:UInt32Value }
+struct DataLabels [drawing/charts/data_labels.rs] { show_legend_key:ShowLegendKey; show_value:ShowValue; show_category_name:ShowCategoryName; show_series_name:ShowSeriesName; show_percent:ShowPercent; show_bubble_size:ShowBubbleSize; show_leader_lines:Option<ShowLeaderLines>; text_properties:Option<TextProperties> }
+struct Date1904 [drawing/charts/date1904.rs] { val:BooleanValue }
+struct DateAxis [drawing/charts/date_axis.rs] { axis_id:AxisId; scaling:Scaling; delete:Delete; axis_position:AxisPosition; major_gridlines:Option<MajorGridlines>; title:Option<Title>; numbering_format:NumberingFormat; major_tick_mark:MajorTickMark; minor_tick_mark:MinorTickMark; tick_label_position:TickLabelPosition; crossing_axis:CrossingAxis; crosses:Crosses; shape_properties:Option<ShapeProperties>; text_properties:Option<TextProperties>; auto_labeled:AutoLabeled; label_offset:LabelOffset; base_time_unit:BaseTimeUnit }
+struct Delete [drawing/charts/delete.rs] { val:BooleanValue }
+struct DisplayBlanksAs [drawing/charts/display_blanks_as.rs] { val:EnumValue<DisplayBlanksAsValues> }
+enum DisplayBlanksAsValues [drawing/charts/display_blanks_as_values.rs] { Gap; Span; Zero }
+struct DoughnutChart [drawing/charts/doughnut_chart.rs] { vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; first_slice_angle:FirstSliceAngle; hole_size:HoleSize }
+struct EditingLanguage [drawing/charts/editing_language.rs] { val:StringValue }
+struct Explosion [drawing/charts/explosion.rs] { val:UInt32Value }
+struct FirstSliceAngle [drawing/charts/first_slice_angle.rs] { val:UInt16Value }
+struct Floor [drawing/charts/floor.rs] { thickness:Option<Thickness>; shape_properties:Option<Box<ShapeProperties>> }
+struct FormatCode [drawing/charts/format_code.rs] { text:Box<str> }
+struct Formula [drawing/charts/formula.rs] { address:Address; string_value:StringValue }
+struct GapWidth [drawing/charts/gap_width.rs] { val:UInt16Value }
+struct Grouping [drawing/charts/grouping.rs] { val:EnumValue<GroupingValues> }
+enum GroupingValues [drawing/charts/grouping_values.rs] { PercentStacked; Stacked; Standard }
+struct HeaderFooter [drawing/charts/header_footer.rs] {  }
+struct Height [drawing/charts/height.rs] { val:DoubleValue }
+struct HeightMode [drawing/charts/height_mode.rs] { val:EnumValue<LayoutModeValues> }
+struct HoleSize [drawing/charts/hole_size.rs] { val:ByteValue }
+struct Index [drawing/charts/index.rs] { val:UInt32Value }
+struct InvertIfNegative [drawing/charts/invert_if_negative.rs] { val:DoubleValue }
+struct LabelAlignment [drawing/charts/label_alignment.rs] { val:EnumValue<LabelAlignmentValues> }
+enum LabelAlignmentValues [drawing/charts/label_alignment_values.rs] { Center; Left; Right }
+struct LabelOffset [drawing/charts/label_offset.rs] { val:UInt16Value }
+struct Layout [drawing/charts/layout.rs] { manual_layout:Option<ManualLayout> }
+enum LayoutModeValues [drawing/charts/layout_mode_values.rs] { Edge; Factor }
+struct LayoutTarget [drawing/charts/layout_target.rs] { val:EnumValue<LayoutTargetValues> }
+enum LayoutTargetValues [drawing/charts/layout_target_values.rs] { Inner; Outer }
+struct Left [drawing/charts/left.rs] { val:DoubleValue }
+struct LeftMode [drawing/charts/left_mode.rs] { val:EnumValue<LayoutModeValues> }
+struct Legend [drawing/charts/legend.rs] { legend_position:LegendPosition; layout:Option<Box<Layout>>; overlay:Overlay; shape_properties:Option<Box<ShapeProperties>>; text_properties:Option<Box<TextProperties>> }
+struct LegendPosition [drawing/charts/legend_position.rs] { val:EnumValue<LegendPositionValues> }
+enum LegendPositionValues [drawing/charts/legend_position_values.rs] { Bottom; Left; Right; Top; TopRight }
+struct Line3DChart [drawing/charts/line_3d_chart.rs] { grouping:Grouping; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; axis_id:Vec<AxisId> }
+struct LineChart [drawing/charts/line_chart.rs] { grouping:Grouping; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; show_marker:ShowMarker; smooth:Smooth; axis_id:Vec<AxisId> }
+struct MajorGridlines [drawing/charts/major_gridlines.rs] { shape_properties:Option<ShapeProperties> }
+struct MajorTickMark [drawing/charts/major_tick_mark.rs] { val:EnumValue<TickMarkValues> }
+struct ManualLayout [drawing/charts/manual_layout.rs] { height:Option<Height>; height_mode:Option<HeightMode>; layout_target:Option<LayoutTarget>; left:Option<Left>; left_mode:Option<LeftMode>; top:Option<Top>; top_mode:Option<TopMode>; width:Option<Width>; width_mode:Option<WidthMode> }
+struct Marker [drawing/charts/marker.rs] { symbol:Option<Symbol>; size:Option<Size>; shape_properties:Option<ShapeProperties> }
+enum MarkerStyleValues [drawing/charts/marker_style_values.rs] { Auto; Circle; Dash; Diamond; Dot; None; Picture; Plus; Square; Star; Triangle; X }
+struct MinorTickMark [drawing/charts/minor_tick_mark.rs] { val:EnumValue<TickMarkValues> }
+struct NoMultiLevelLabels [drawing/charts/no_multi_level_labels.rs] { val:BooleanValue }
+struct NumberReference [drawing/charts/number_reference.rs] { formula:Formula; numbering_cache:NumberingCache }
+struct NumberingCache [drawing/charts/numbering_cache.rs] { format_code:FormatCode }
+struct NumberingFormat [drawing/charts/numbering_format.rs] { format_code:StringValue; source_linked:BooleanValue }
+struct NumericValue [drawing/charts/numeric_value.rs] { text:Box<str> }
+struct OfPieChart [drawing/charts/of_pie_chart.rs] { of_pie_type:OfPieType; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; gap_width:GapWidth; second_pie_size:SecondPieSize; series_lines:SeriesLines }
+struct OfPieType [drawing/charts/of_pie_type.rs] { val:EnumValue<OfPieValues> }
+enum OfPieValues [drawing/charts/of_pie_values.rs] { Bar; Pie }
+struct Order [drawing/charts/order.rs] { val:UInt32Value }
+struct Orientation [drawing/charts/orientation.rs] { val:EnumValue<OrientationValues> }
+enum OrientationValues [drawing/charts/orientation_values.rs] { MaxMin; MinMax }
+struct Overlap [drawing/charts/overlap.rs] { val:SByteValue }
+struct Overlay [drawing/charts/overlay.rs] { val:BooleanValue }
+struct PageMargins [drawing/charts/page_margins.rs] { bottom:DoubleValue; left:DoubleValue; right:DoubleValue; top:DoubleValue; header:DoubleValue; footer:DoubleValue }
+struct PageSetup [drawing/charts/page_setup.rs] {  }
+struct Perspective [drawing/charts/perspective.rs] { val:ByteValue }
+struct Pie3DChart [drawing/charts/pie_3d_chart.rs] { vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels }
+struct PieChart [drawing/charts/pie_chart.rs] { vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; first_slice_angle:FirstSliceAngle }
+struct PlotArea [drawing/charts/plot_area.rs] { layout:Layout; line_chart:Option<LineChart>; line_3d_chart:Option<Line3DChart>; pie_chart:Option<PieChart>; pie_3d_chart:Option<Pie3DChart>; doughnut_chart:Option<DoughnutChart>; scatter_chart:Option<ScatterChart>; bar_chart:Option<BarChart>; bar_3d_chart:Option<Bar3DChart>; radar_chart:Option<RadarChart>; bubble_chart:Option<BubbleChart>; area_chart:Option<AreaChart>; area_3d_chart:Option<Area3DChart>; of_pie_chart:Option<OfPieChart>; category_axis:Vec<CategoryAxis>; date_axis:Vec<DateAxis>; value_axis:Vec<ValueAxis>; series_axis:Vec<SeriesAxis>; shape_properties:Option<ShapeProperties> }
+struct PlotVisibleOnly [drawing/charts/plot_visible_only.rs] { val:BooleanValue }
+struct PrintSettings [drawing/charts/print_settings.rs] { header_footer:HeaderFooter; page_margins:PageMargins; page_setup:PageSetup }
+struct RadarChart [drawing/charts/radar_chart.rs] { radar_style:RadarStyle; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; axis_id:Vec<AxisId> }
+struct RadarStyle [drawing/charts/radar_style.rs] { val:EnumValue<RadarStyleValues> }
+enum RadarStyleValues [drawing/charts/radar_style_values.rs] { Filled; Marker; Standard }
+struct RichText [drawing/charts/rich_text.rs] { body_properties:BodyProperties; list_style:ListStyle; paragraph:Vec<Paragraph> }
+struct RightAngleAxes [drawing/charts/right_angle_axes.rs] { val:BooleanValue }
+struct RotateX [drawing/charts/rotate_x.rs] { val:SByteValue }
+struct RotateY [drawing/charts/rotate_y.rs] { val:UInt16Value }
+struct RoundedCorners [drawing/charts/rounded_corners.rs] { val:BooleanValue }
+struct Scaling [drawing/charts/scaling.rs] { orientation:Orientation }
+struct ScatterChart [drawing/charts/scatter_chart.rs] { scatter_style:ScatterStyle; vary_colors:VaryColors; area_chart_series_list:AreaChartSeriesList; data_labels:DataLabels; axis_id:Vec<AxisId> }
+struct ScatterStyle [drawing/charts/scatter_style.rs] { val:EnumValue<ScatterStyleValues> }
+enum ScatterStyleValues [drawing/charts/scatter_style_values.rs] { Line; LineMarker; Marker; Smooth; SmoothMarker }
+struct SecondPieSize [drawing/charts/second_pie_size.rs] { val:UInt16Value }
+struct SeriesAxis [drawing/charts/series_axis.rs] { axis_id:AxisId; scaling:Scaling; delete:Delete; axis_position:AxisPosition; major_gridlines:Option<Box<MajorGridlines>>; title:Option<Title>; major_tick_mark:MajorTickMark; minor_tick_mark:MinorTickMark; tick_label_position:TickLabelPosition; crossing_axis:CrossingAxis; crosses:Crosses }
+struct SeriesLines [drawing/charts/series_lines.rs] {  }
+struct SeriesText [drawing/charts/series_text.rs] { value:StringValue }
+struct Shape [drawing/charts/shape.rs] { val:EnumValue<ShapeValues> }
+struct ShapeProperties [drawing/charts/shape_properties.rs] { pattern_fill:Option<PatternFill>; transform2d:Option<Transform2D>; preset_geometry:Option<PresetGeometry>; solid_fill:Option<SolidFill>; no_fill:Option<NoFill>; outline:Option<Outline>; effect_list:Option<EffectList>; scene_3d_type:Option<Scene3DType>; shape_3d_type:Option<Shape3DType> }
+enum ShapeValues [drawing/charts/shape_values.rs] { Box; Cone; ConeToMax; Cylinder; Pyramid; PyramidToMaximum }
+struct ShowBubbleSize [drawing/charts/show_bubble_size.rs] { val:BooleanValue }
+struct ShowCategoryName [drawing/charts/show_category_name.rs] { val:BooleanValue }
+struct ShowDataLabelsOverMaximum [drawing/charts/show_data_labels_over_maximum.rs] { val:BooleanValue }
+struct ShowLeaderLines [drawing/charts/show_leader_lines.rs] { val:BooleanValue }
+struct ShowLegendKey [drawing/charts/show_legend_key.rs] { val:BooleanValue }
+struct ShowMarker [drawing/charts/show_marker.rs] { val:BooleanValue }
+struct ShowNegativeBubbles [drawing/charts/show_negative_bubbles.rs] { val:BooleanValue }
+struct ShowPercent [drawing/charts/show_percent.rs] { val:BooleanValue }
+struct ShowSeriesName [drawing/charts/show_series_name.rs] { val:BooleanValue }
+struct ShowValue [drawing/charts/show_value.rs] { val:BooleanValue }
+struct SideWall [drawing/charts/side_wall.rs] { thickness:Option<Thickness>; shape_properties:Option<ShapeProperties> }
+struct Size [drawing/charts/size.rs] { val:ByteValue }
+struct Smooth [drawing/charts/smooth.rs] { val:BooleanValue }
+struct StringCache [drawing/charts/string_cache.rs] {  }
+struct StringLiteral [drawing/charts/string_literal.rs] { string_point_list:Vec<StringPoint> }
+struct StringPoint [drawing/charts/string_point.rs] { numeric_value:NumericValue }
+struct StringReference [drawing/charts/string_reference.rs] { formula:Formula; string_cache:StringCache }
+struct Style [drawing/charts/style.rs] { val:ByteValue }
+struct Symbol [drawing/charts/symbol.rs] { val:EnumValue<MarkerStyleValues> }
+struct TextProperties [drawing/charts/text_properties.rs] { body_properties:BodyProperties; list_style:ListStyle; paragraph:Vec<Paragraph> }
+struct Thickness [drawing/charts/thickness.rs] { val:ByteValue }
+struct TickLabelPosition [drawing/charts/tick_label_position.rs] { val:EnumValue<TickLabelPositionValues> }
+enum TickLabelPositionValues [drawing/charts/tick_label_position_values.rs] { High; Low; NextTo; None }
+enum TickMarkValues [drawing/charts/tick_mark_values.rs] { Cross; Inside; None; Outside }
+enum TimeUnitValues [drawing/charts/time_unit_values.rs] { Days; Months; Years }
+struct Title [drawing/charts/title.rs] { chart_text:Option<ChartText>; layout:Option<Layout>; overlay:Overlay; shape_properties:Option<ShapeProperties> }
+struct Top [drawing/charts/top.rs] { val:DoubleValue }
+struct TopMode [drawing/charts/top_mode.rs] { val:EnumValue<LayoutModeValues> }
+struct ValueAxis [drawing/charts/value_axis.rs] { axis_id:AxisId; scaling:Scaling; delete:Delete; axis_position:AxisPosition; major_gridlines:Option<MajorGridlines>; title:Option<Title>; numbering_format:NumberingFormat; major_tick_mark:MajorTickMark; minor_tick_mark:MinorTickMark; tick_label_position:TickLabelPosition; crossing_axis:CrossingAxis; crosses:Crosses; cross_between:CrossBetween; shape_properties:Option<ShapeProperties>; text_properties:Option<TextProperties> }
+struct Values [drawing/charts/values.rs] { number_reference:NumberReference }
+struct VaryColors [drawing/charts/vary_colors.rs] { val:BooleanValue }
+struct View3D [drawing/charts/view_3d.rs] { rotate_x:Option<RotateX>; rotate_y:Option<RotateY>; right_angle_axes:Option<RightAngleAxes>; perspective:Option<Perspective> }
+struct Width [drawing/charts/width.rs] { val:DoubleValue }
+struct WidthMode [drawing/charts/width_mode.rs] { val:EnumValue<LayoutModeValues> }
+struct XValues [drawing/charts/x_values.rs] { number_reference:NumberReference }
+struct YValues [drawing/charts/y_values.rs] { number_reference:NumberReference }
+struct Color2Type [drawing/color2_type.rs] { rgb_color_model_hex:Option<Box<RgbColorModelHex>>; system_color:Option<Box<SystemColor>> }
+struct ColorScheme [drawing/color_scheme.rs] { name:StringValue; accent1:Color2Type; accent2:Color2Type; accent3:Color2Type; accent4:Color2Type; accent5:Color2Type; accent6:Color2Type; dk1:Color2Type; dk2:Color2Type; fol_hlink:Color2Type; hlink:Color2Type; lt1:Color2Type; lt2:Color2Type }
+struct EffectList [drawing/effect_list.rs] { glow:Option<Box<Glow>>; outer_shadow:Option<Box<OuterShadow>>; soft_edge:Option<Box<SoftEdge>> }
+struct EffectStyle [drawing/effect_style.rs] { effect_list:Option<Box<EffectList>>; scene_3d_type:Option<Box<Scene3DType>>; shape_3d_type:Option<Box<Shape3DType>> }
+struct EffectStyleList [drawing/effect_style_list.rs] { effect_style_collection:Vec<EffectStyle> }
+struct EndConnection [drawing/end_connection.rs] { id:UInt32Value; index:UInt32Value }
+struct ExtensionList [drawing/extension_list.rs] {  }
+struct Extents [drawing/extents.rs] { cx:Int64Value; cy:Int64Value }
+struct FillRectangle [drawing/fill_rectangle.rs] { bottom:usize; left:usize; right:usize; top:usize }
+struct FillStyleList [drawing/fill_style_list.rs] { solid_fill:Vec<SolidFill>; gradient_fill_collection:Vec<GradientFill> }
+struct FontCollectionType [drawing/font_collection_type.rs] { latin_font:TextFontType; east_asian_font:TextFontType; complex_script_font:TextFontType; supplemental_font_list:Vec<SupplementalFont> }
+struct FontScheme [drawing/font_scheme.rs] { name:StringValue; major_font:FontCollectionType; minor_font:FontCollectionType }
+struct ForegroundColor [drawing/foreground_color.rs] { scheme_color:SchemeColor }
+struct FormatScheme [drawing/format_scheme.rs] { name:StringValue; fill_style_list:FillStyleList; line_style_list:LineStyleList; effect_style_list:EffectStyleList; background_fill_style_list:BackgroundFillStyleList }
+struct Glow [drawing/glow.rs] { radius:Int64Value; scheme_color:Option<Box<SchemeColor>> }
+struct GradientFill [drawing/gradient_fill.rs] { flip:EnumValue<TileFlipValues>; rotate_with_shape:BooleanValue; gradient_stop_list:GradientStopList; linear_gradient_fill:Option<Box<LinearGradientFill>>; tile_rectangle:Option<Box<TileRectangle>> }
+struct GradientStop [drawing/gradient_stop.rs] { position:i32; scheme_color:Option<Box<SchemeColor>>; rgb_color_model_hex:Option<Box<RgbColorModelHex>> }
+struct GradientStopList [drawing/gradient_stop_list.rs] { gradient_stop:Vec<GradientStop> }
+struct Graphic [drawing/graphic.rs] { graphic_data:GraphicData }
+struct GraphicData [drawing/graphic_data.rs] { chart_space:ChartSpace }
+struct GroupShapeLocks [drawing/group_shape_locks.rs] { no_change_aspect:BooleanValue; no_grouping:BooleanValue; no_move:BooleanValue; no_resize:BooleanValue; no_rotation:BooleanValue; no_selection:BooleanValue; no_ungrouping:BooleanValue }
+struct LightRig [drawing/light_rig.rs] { rig:EnumValue<LightRigValues>; definition:EnumValue<LightRigDirectionValues>; rotation:Option<Box<Rotation>> }
+enum LightRigDirectionValues [drawing/light_rig_direction_values.rs] { Bottom; BottomLeft; BottomRight; Left; Right; Top; TopLeft; TopRight }
+enum LightRigValues [drawing/light_rig_values.rs] { Balanced; BrightRoom; Chilly; Contrasting; Flat; Flood; Freezing; Glow; Harsh; LegacyFlat1; LegacyFlat2; LegacyFlat3; LegacyFlat4; LegacyHarsh1; LegacyHarsh2; LegacyHarsh3; LegacyHarsh4; LegacyNormal1; LegacyNormal2; LegacyNormal3; LegacyNormal4; Morning; Soft; Sunrise; Sunset; ThreePoints; TwoPoints }
+struct LineSpacing [drawing/line_spacing.rs] { spacing_percent:Option<SpacingPercent> }
+struct LineStyleList [drawing/line_style_list.rs] { outline_collection:Vec<Outline> }
+struct LinearGradientFill [drawing/linear_gradient_fill.rs] { angle:Int32Value; scaled:BooleanValue }
+struct ListStyle [drawing/list_style.rs] { effect_list:Option<Box<EffectList>>; text_paragraph_properties_type:HashMap<Box<str>, Box<TextParagraphPropertiesType>> }
+struct Miter [drawing/miter.rs] { limit:Int32Value }
+struct NoFill [drawing/no_fill.rs] {  }
+struct Offset [drawing/offset.rs] { x:Int64Value; y:Int64Value }
+struct OuterShadow [drawing/outer_shadow.rs] { blur_radius:StringValue; alignment:StringValue; horizontal_ratio:StringValue; vertical_ratio:StringValue; direction:StringValue; distance:StringValue; rotate_with_shape:StringValue; preset_color:Option<Box<PresetColor>>; scheme_color:Option<Box<SchemeColor>>; rgb_color_model_hex:Option<Box<RgbColorModelHex>> }
+struct Outline [drawing/outline.rs] { width:UInt32Value; cap_type:StringValue; compound_line_type:StringValue; solid_fill:Option<Box<SolidFill>>; gradient_fill:Option<Box<GradientFill>>; tail_end:Option<Box<TailEnd>>; no_fill:Option<NoFill>; bevel:Option<Box<Bevel>>; preset_dash:Option<PresetDash>; miter:Option<Miter>; round:Option<Round>; alignment:EnumValue<PenAlignmentValues>; system_color:Option<Box<SystemColor>> }
+struct Paragraph [drawing/paragraph.rs] { paragraph_properties:ParagraphProperties; run:Vec<Run>; end_para_run_properties:Option<Box<RunProperties>> }
+struct ParagraphProperties [drawing/paragraph_properties.rs] { right_to_left:StringValue; alignment:EnumValue<TextAlignmentTypeValues>; default_run_properties:Option<Box<RunProperties>>; line_spacing:Option<LineSpacing> }
+struct PatternFill [drawing/pattern_fill.rs] { preset:Box<str>; foreground_color:ForegroundColor; background_color:BackgroundColor }
+enum PenAlignmentValues [drawing/pen_alignment_values.rs] { Center; Insert }
+struct PercentageType [drawing/percentage_type.rs] { val:Int32Value }
+struct PictureLocks [drawing/picture_locks.rs] { no_change_aspect:bool }
+struct Point2DType [drawing/point_2d_type.rs] { x:Int64Value; y:Int64Value }
+struct PositiveFixedPercentageType [drawing/positive_fixed_percentage_type.rs] { val:Int32Value }
+struct PositiveSize2DType [drawing/positive_size_2d_type.rs] { cx:Int64Value; cy:Int64Value }
+enum PresetCameraValues [drawing/preset_camera_values.rs] { IsometricBottomDown; IsometricBottomUp; IsometricLeftDown; IsometricLeftUp; IsometricOffAxis1Left; IsometricOffAxis1Right; IsometricOffAxis1Top; IsometricOffAxis2Left; IsometricOffAxis2Right; IsometricOffAxis2Top; IsometricOffAxis3Bottom; IsometricOffAxis3Left; IsometricOffAxis3Right; IsometricOffAxis4Bottom; IsometricOffAxis4Left; IsometricOffAxis4Right; IsometricRightDown; IsometricRightUp; IsometricTopDown; IsometricTopUp; LegacyObliqueBottom; LegacyObliqueBottomLeft; LegacyObliqueBottomRight; LegacyObliqueFront; LegacyObliqueLeft; LegacyObliqueRight; LegacyObliqueTop; LegacyObliqueTopLeft; LegacyObliqueTopRight; LegacyPerspectiveBottom; LegacyPerspectiveBottomLeft; LegacyPerspectiveBottomRight; LegacyPerspectiveFront; LegacyPerspectiveLeft; LegacyPerspectiveRight; LegacyPerspectiveTop; LegacyPerspectiveTopLeft; LegacyPerspectiveTopRight; ObliqueBottom; ObliqueBottomLeft; ObliqueBottomRight; ObliqueLeft; ObliqueRight; ObliqueTop; ObliqueTopLeft; ObliqueTopRight; OrthographicFront; PerspectiveAbove; PerspectiveAboveLeftFacing; PerspectiveAboveRightFacing; PerspectiveBelow; PerspectiveContrastingLeftFacing; PerspectiveContrastingRightFacing; PerspectiveFront; PerspectiveHeroicExtremeLeftFacing; PerspectiveHeroicExtremeRightFacing; PerspectiveHeroicLeftFacing; PerspectiveHeroicRightFacing; PerspectiveLeft; PerspectiveRelaxed; PerspectiveRelaxedModerately; PerspectiveRight }
+struct PresetColor [drawing/preset_color.rs] { val:Box<str>; alpha:Option<Alpha> }
+struct PresetDash [drawing/preset_dash.rs] { val:EnumValue<PresetLineDashValues> }
+struct PresetGeometry [drawing/preset_geometry.rs] { geometry:Box<str>; adjust_value_list:AdjustValueList }
+enum PresetLineDashValues [drawing/preset_line_dash_values.rs] { Dash; DashDot; Dot; LargeDash; LargeDashDot; LargeDashDotDot; Solid; SystemDash; SystemDashDot; SystemDashDotDot; SystemDot }
+enum PresetMaterialTypeValues [drawing/preset_material_type_values.rs] { Clear; DarkEdge; Flat; LegacyMatte; LegacyMetal; LegacyPlastic; LegacyWireframe; Matte; Metal; Plastic; Powder; SoftEdge; SoftMetal; TranslucentPowder; WarmMatte }
+struct RgbColorModelHex [drawing/rgb_color_model_hex.rs] { val:StringValue; luminance:Option<PercentageType>; luminance_modulation:Option<PercentageType>; luminance_offset:Option<PercentageType>; saturation:Option<PercentageType>; saturation_modulation:Option<PercentageType>; shade:Option<PositiveFixedPercentageType>; alpha:Option<PositiveFixedPercentageType>; tint:Option<PositiveFixedPercentageType> }
+struct Rotation [drawing/rotation.rs] { latitude:Int32Value; longitude:Int32Value; revolution:Int32Value }
+struct Round [drawing/round.rs] {  }
+struct Run [drawing/run.rs] { text:Box<str>; run_properties:RunProperties }
+struct RunProperties [drawing/run_properties.rs] { text:Box<str>; kumimoji:StringValue; language:StringValue; alternative_language:StringValue; bold:StringValue; sz:StringValue; italic:StringValue; capital:EnumValue<TextCapsValues>; spacing:Int32Value; strike:StringValue; outline:Option<Box<Outline>>; solid_fill:Option<Box<SolidFill>>; latin_font:Option<Box<TextFontType>>; east_asian_font:Option<Box<TextFontType>>; complex_script_font:Option<Box<TextFontType>>; gradient_fill:Option<Box<GradientFill>>; no_fill:Option<NoFill>; effect_list:Option<Box<EffectList>> }
+struct Scene3DType [drawing/scene_3d_type.rs] { camera:Option<Camera>; light_rig:Option<LightRig> }
+struct SchemeColor [drawing/scheme_color.rs] { val:EnumValue<SchemeColorValues>; luminance:Option<PercentageType>; luminance_modulation:Option<PercentageType>; luminance_offset:Option<PercentageType>; saturation:Option<PercentageType>; saturation_modulation:Option<PercentageType>; shade:Option<PositiveFixedPercentageType>; alpha:Option<PositiveFixedPercentageType>; tint:Option<PositiveFixedPercentageType> }
+enum SchemeColorValues [drawing/scheme_color_values.rs] { Accent1; Accent2; Accent3; Accent4; Accent5; Accent6; Background1; Background2; Dark1; Dark2; FollowedHyperlink; Hyperlink; Light1; Light2; PhColor; Text1; Text2 }
+struct Shape3DType [drawing/shape_3d_type.rs] { preset_material:EnumValue<PresetMaterialTypeValues>; bevel_top:Option<Box<BevelTop>>; bevel_bottom:Option<Box<BevelBottom>> }
+struct ShapeAutoFit [drawing/shape_auto_fit.rs] {  }
+struct ShapeGuide [drawing/shape_guide.rs] { name:Box<str>; fmla:Box<str> }
+struct SoftEdge [drawing/soft_edge.rs] { radius:Int64Value }
+struct SolidFill [drawing/solid_fill.rs] { scheme_color:Option<Box<SchemeColor>>; rgb_color_model_hex:Option<Box<RgbColorModelHex>>; system_color:Option<Box<SystemColor>> }
+struct SourceRectangle [drawing/source_rectangle.rs] { t:StringValue; l:StringValue; r:StringValue; b:StringValue }
+struct SpaceAfter [drawing/space_after.rs] { spacing_percent:Option<SpacingPercent> }
+struct SpaceBefore [drawing/space_before.rs] { spacing_percent:Option<SpacingPercent> }
+struct SpacingPercent [drawing/spacing_percent.rs] { val:Int32Value }
+struct BlipFill [drawing/spreadsheet/blip_fill.rs] { rotate_with_shape:BooleanValue; blip:Blip; source_rectangle:Option<Box<SourceRectangle>>; stretch:Stretch }
+struct ConnectionShape [drawing/spreadsheet/connection_shape.rs] { anchor:Anchor; non_visual_connection_shape_properties:NonVisualConnectionShapeProperties; shape_properties:ShapeProperties; shape_style:ShapeStyle }
+enum EditAsValues [drawing/spreadsheet/edit_as_values.rs] { Absolute; OneCell; TwoCell }
+struct Extent [drawing/spreadsheet/extent.rs] { cx:Int64Value; cy:Int64Value }
+struct FromMarker [drawing/spreadsheet/from_marker.rs] { col:usize; col_off:usize; row:usize; row_off:usize }
+struct GraphicFrame [drawing/spreadsheet/graphic_frame.rs] { macro:StringValue; non_visual_graphic_frame_properties:NonVisualGraphicFrameProperties; transform:Transform; graphic:Graphic }
+struct GroupShape [drawing/spreadsheet/group_shape.rs] { non_visual_group_shape_properties:NonVisualGroupShapeProperties; group_shape_properties:GroupShapeProperties; picture_collection:Vec<Picture>; shape_collection:Vec<Shape> }
+struct GroupShapeProperties [drawing/spreadsheet/group_shape_properties.rs] { transform2d:Option<Transform2D> }
+struct MarkerType [drawing/spreadsheet/marker_type.rs] { col:u32; col_off:i32; row:u32; row_off:i32 }
+struct NonVisualConnectionShapeProperties [drawing/spreadsheet/non_visual_connection_shape_properties.rs] { non_visual_drawing_properties:NonVisualDrawingProperties; non_visual_connector_shape_drawing_properties:NonVisualConnectorShapeDrawingProperties }
+struct NonVisualConnectorShapeDrawingProperties [drawing/spreadsheet/non_visual_connector_shape_drawing_properties.rs] { start_connection:Option<Box<StartConnection>>; end_connection:Option<Box<EndConnection>> }
+struct NonVisualDrawingProperties [drawing/spreadsheet/non_visual_drawing_properties.rs] { id:UInt32Value; name:StringValue; hidden:BooleanValue }
+struct NonVisualGraphicFrameDrawingProperties [drawing/spreadsheet/non_visual_graphic_frame_drawing_properties.rs] {  }
+struct NonVisualGraphicFrameProperties [drawing/spreadsheet/non_visual_graphic_frame_properties.rs] { non_visual_drawing_properties:NonVisualDrawingProperties; non_visual_graphic_frame_drawing_properties:NonVisualGraphicFrameDrawingProperties }
+struct NonVisualGroupShapeDrawingProperties [drawing/spreadsheet/non_visual_group_shape_drawing_properties.rs] { group_shape_locks:Option<GroupShapeLocks> }
+struct NonVisualGroupShapeProperties [drawing/spreadsheet/non_visual_group_shape_properties.rs] { non_visual_drawing_properties:NonVisualDrawingProperties; non_visual_group_shape_drawing_properties:NonVisualGroupShapeDrawingProperties }
+struct NonVisualPictureDrawingProperties [drawing/spreadsheet/non_visual_picture_drawing_properties.rs] { prefer_relative_resize:BooleanValue; picture_locks:Option<PictureLocks> }
+struct NonVisualPictureProperties [drawing/spreadsheet/non_visual_picture_properties.rs] { non_visual_drawing_properties:NonVisualDrawingProperties; non_visual_picture_drawing_properties:NonVisualPictureDrawingProperties }
+struct NonVisualShapeProperties [drawing/spreadsheet/non_visual_shape_properties.rs] { non_visual_drawing_properties:NonVisualDrawingProperties }
+struct OneCellAnchor [drawing/spreadsheet/one_cell_anchor.rs] { from_marker:MarkerType; extent:Extent; group_shape:Option<Box<GroupShape>>; graphic_frame:Option<Box<GraphicFrame>>; shape:Option<Box<Shape>>; picture:Option<Box<Picture>> }
+struct Picture [drawing/spreadsheet/picture.rs] { non_visual_picture_properties:NonVisualPictureProperties; blip_fill:BlipFill; shape_properties:ShapeProperties }
+struct Shape [drawing/spreadsheet/shape.rs] { anchor:Anchor; non_visual_shape_properties:NonVisualShapeProperties; shape_properties:ShapeProperties; shape_style:Option<Box<ShapeStyle>>; text_body:Option<Box<TextBody>>; macro:StringValue }
+struct ShapeProperties [drawing/spreadsheet/shape_properties.rs] { transform2d:Option<Box<Transform2D>>; preset_geometry:PresetGeometry; blip_fill:Option<Box<BlipFill>>; solid_fill:Option<Box<SolidFill>>; gradient_fill:Option<Box<GradientFill>>; outline:Option<Box<Outline>>; effect_list:Option<Box<EffectList>>; no_fill:Option<NoFill>; extension_list:Option<ExtensionList>; black_white_mode:EnumValue<BlackWhiteModeValues> }
+struct ShapeStyle [drawing/spreadsheet/shape_style.rs] { line_reference:Option<Box<StyleMatrixReferenceType>>; fill_reference:Option<Box<StyleMatrixReferenceType>>; effect_reference:Option<Box<StyleMatrixReferenceType>>; font_reference:Option<Box<StyleMatrixReferenceType>> }
+struct TextBody [drawing/spreadsheet/text_body.rs] { body_properties:BodyProperties; list_style:ListStyle; paragraph:Vec<Paragraph> }
+struct Transform [drawing/spreadsheet/transform.rs] { offset:Offset; extents:Extents; rotation:Int32Value; vertical_flip:BooleanValue; horizontal_flip:BooleanValue }
+struct TwoCellAnchor [drawing/spreadsheet/two_cell_anchor.rs] { edit_as:EnumValue<EditAsValues>; from_marker:MarkerType; to_marker:MarkerType; group_shape:Option<Box<GroupShape>>; graphic_frame:Option<Box<GraphicFrame>>; shape:Option<Box<Shape>>; connection_shape:Option<Box<ConnectionShape>>; picture:Option<Box<Picture>>; is_alternate_content:BooleanValue }
+struct WorksheetDrawing [drawing/spreadsheet/worksheet_drawing.rs] { image_collection:Vec<Image>; chart_collection:Vec<Chart>; one_cell_anchor_collection:Vec<OneCellAnchor>; two_cell_anchor_collection:Vec<TwoCellAnchor> }
+struct StartConnection [drawing/start_connection.rs] { id:UInt32Value; index:UInt32Value }
+struct Stretch [drawing/stretch.rs] { fill_rectangle:Option<Box<FillRectangle>> }
+struct StyleMatrixReferenceType [drawing/style_matrix_reference_type.rs] { index:Box<str>; scheme_color:Option<Box<SchemeColor>> }
+struct SupplementalFont [drawing/supplemental_font.rs] { script:StringValue; typeface:StringValue }
+struct SystemColor [drawing/system_color.rs] { val:EnumValue<SystemColorValues>; last_color:StringValue }
+enum SystemColorValues [drawing/system_color_values.rs] { ActiveBorder; ActiveCaption; ApplicationWorkspace; Background; ButtonFace; ButtonHighlight; ButtonShadow; ButtonText; CaptionText; GradientActiveCaption; GradientInactiveCaption; GrayText; Highlight; HighlightText; HotLight; InactiveBorder; InactiveCaption; InactiveCaptionText; InfoBack; InfoText; Menu; MenuBar; MenuHighlight; MenuText; ScrollBar; ThreeDDarkShadow; ThreeDLight; Window; WindowFrame; WindowText }
+struct TailEnd [drawing/tail_end.rs] { t_type:StringValue; width:StringValue; length:StringValue }
+enum TextAlignmentTypeValues [drawing/text_alignment_type_values.rs] { Center; Distributed; Justified; JustifiedLow; Left; Right; ThaiDistributed }
+enum TextCapsValues [drawing/text_caps_values.rs] { All; None; Small }
+enum TextFontAlignmentValues [drawing/text_font_alignment_values.rs] { Automatic; Baseline; Bottom; Center; Top }
+struct TextFontType [drawing/text_font_type.rs] { typeface:StringValue; pitch_family:StringValue; charset:StringValue; panose:StringValue }
+struct TextParagraphPropertiesType [drawing/text_paragraph_properties_type.rs] { right_to_left:BooleanValue; alignment:EnumValue<TextAlignmentTypeValues>; font_alignment:EnumValue<TextFontAlignmentValues>; space_before:Option<SpaceBefore>; space_after:Option<SpaceAfter>; default_run_properties:Option<Box<RunProperties>> }
+enum TextWrappingValues [drawing/text_wrapping_values.rs] { None; Square }
+struct Theme [drawing/theme.rs] { name:StringValue; theme_elements:ThemeElements }
+struct ThemeElements [drawing/theme_elements.rs] { color_scheme:ColorScheme; font_scheme:FontScheme; format_scheme:FormatScheme }
+enum TileFlipValues [drawing/tile_flip_values.rs] { Horizontal; HorizontalAndVertical; None; Vertical }
+struct TileRectangle [drawing/tile_rectangle.rs] {  }
+struct Transform2D [drawing/transform2d.rs] { offset:Point2DType; extents:PositiveSize2DType; child_offset:Option<Box<Point2DType>>; child_extents:Option<Box<PositiveSize2DType>>; rot:StringValue; flip_v:StringValue; flip_h:StringValue }
+struct EmbeddedObjectProperties [embedded_object_properties.rs] { prog_id:StringValue; shape_id:UInt32Value; image:MediaObject; default_size:BooleanValue; auto_pict:BooleanValue; object_anchor:ObjectAnchor }
+struct EnumValue [enum_value.rs] { value:Option<T>; value_default:T }
+enum CellErrorType [error.rs] { Div0; Name; NA; Num; Value; Ref; Null; Data }
+struct Field [field.rs] { x:Int32Value }
+struct Fill [fill.rs] { pattern_fill:Option<Box<PatternFill>>; gradient_fill:Option<Box<GradientFill>> }
+struct Fills [fills.rs] { fill:Vec<Fill> }
+struct Font [font.rs] { font_name:FontName; font_size:FontSize; font_family_numbering:FontFamilyNumbering; font_bold:Bold; font_italic:Italic; font_underline:Underline; font_strike:Strike; color:Color; font_char_set:FontCharSet; font_scheme:FontScheme; vertical_text_alignment:VerticalTextAlignment }
+struct FontCharSet [font_char_set.rs] { val:Int32Value }
+struct FontFamilyNumbering [font_family_numbering.rs] { val:Int32Value }
+struct FontName [font_name.rs] { val:StringValue }
+struct FontScheme [font_scheme.rs] { val:EnumValue<FontSchemeValues> }
+enum FontSchemeValues [font_scheme_values.rs] { Major; Minor; None }
+struct FontSize [font_size.rs] { val:DoubleValue }
+struct Fonts [fonts.rs] { font:Vec<Font> }
+struct Formula [formula.rs] { address:Address; string_value:StringValue }
+struct Formula1 [formula1.rs] { text:String }
+struct Formula2 [formula2.rs] { text:String }
+struct FromMarker [from_marker.rs] { col:usize; col_off:usize; row:usize; row_off:usize }
+struct GradientFill [gradient_fill.rs] { degree:DoubleValue; gradient_stop:Vec<GradientStop> }
+struct GradientStop [gradient_stop.rs] { position:DoubleValue; color:Color }
+struct HeaderFooter [header_footer.rs] { odd_header:OddHeader; odd_footer:OddFooter }
+enum HorizontalAlignmentValues [horizontal_alignment_values.rs] { Center; CenterContinuous; Distributed; Fill; General; Justify; Left; Right }
+struct Hyperlink [hyperlink.rs] { url:Box<str>; tooltip:Box<str>; location:bool }
+struct IconSet [icon_set.rs] { cfvo_collection:Vec<ConditionalFormatValueObject>; color_collection:Vec<Color> }
+struct Image [image.rs] { two_cell_anchor:Option<Box<TwoCellAnchor>>; one_cell_anchor:Option<Box<OneCellAnchor>> }
+struct Int16Value [int16_value.rs] { value:Option<i16> }
+struct Int32Value [int32_value.rs] { value:Option<i32> }
+struct Int64Value [int64_value.rs] { value:Option<i64> }
+struct Italic [italic.rs] { val:BooleanValue }
+struct Item [item.rs] { index:UInt32Value; item_type:EnumValue<ItemValues> }
+enum ItemValues [item_values.rs] { Average; Blank; Count; CountA; Data; Default; Grand; Maximum; Minimum; Product; StandardDeviation; StandardDeviationP; Sum; Variance; VarianceP }
+struct Items [items.rs] { list:Vec<Item> }
+struct Location [location.rs] { reference:StringValue; first_header_row:UInt32Value; first_data_row:UInt32Value; first_data_col:UInt32Value }
+struct MediaObject [media_object.rs] { title:Box<str>; name:Box<str>; data:Vec<u8> }
+struct MemberPropertyIndex [member_property_index.rs] { val:Int32Value }
+struct MergeCells [merge_cells.rs] { range:Vec<Range> }
+struct MruColors [mru_colors.rs] { color:Vec<Color> }
+struct NumberingFormat [numbering_format.rs] { number_format_id:u32; format_code:Box<str>; is_build_in:bool }
+struct NumberingFormats [numbering_formats.rs] { numbering_format:HashMap<u32, NumberingFormat> }
+struct ObjectAnchor [object_anchor.rs] { move_with_cells:BooleanValue; from_marker:FromMarker; to_marker:ToMarker }
+struct OddFooter [odd_footer.rs] { value:StringValue }
+struct OddHeader [odd_header.rs] { value:StringValue }
+struct Formula [office/excel/formula.rs] { value:Address }
+struct ReferenceSequence [office/excel/reference_sequence.rs] { value:Vec<Range> }
+struct Style [office2010/drawing/charts/style.rs] { include_alternate_content:bool; val:StringValue }
+struct DataValidation [office2010/excel/data_validation.rs] { type:EnumValue<DataValidationValues>; operator:EnumValue<DataValidationOperatorValues>; allow_blank:BooleanValue; show_input_message:BooleanValue; show_error_message:BooleanValue; prompt_title:StringValue; prompt:StringValue; reference_sequence:ReferenceSequence; formula1:Option<Box<DataValidationForumla1>>; formula2:Option<Box<DataValidationForumla2>> }
+struct DataValidationForumla1 [office2010/excel/data_validation_forumla1.rs] { value:Formula }
+struct DataValidationForumla2 [office2010/excel/data_validation_forumla2.rs] { value:Formula }
+struct DataValidations [office2010/excel/data_validations.rs] { data_validation_list:Vec<DataValidation> }
+struct ThreadedComment [office2019/threaded_comment.rs] { coordinate:Coordinate; d_t:DateTimeValue; threaded_comment_text:ThreadedCommentText; id:StringValue }
+struct ThreadedCommentText [office2019/threaded_comment_text.rs] { value:Box<str> }
+struct OleObject [ole_object.rs] { requires:StringValue; prog_id:StringValue; object_extension:Box<str>; object_data:Option<Vec<u8>>; embedded_object_properties:EmbeddedObjectProperties; two_cell_anchor:TwoCellAnchor; shape:Shape }
+struct OleObjects [ole_objects.rs] { ole_object:Vec<OleObject> }
+enum OrientationValues [orientation_values.rs] { Default; Landscape; Portrait }
+struct PageMargins [page_margins.rs] { left:DoubleValue; right:DoubleValue; top:DoubleValue; bottom:DoubleValue; header:DoubleValue; footer:DoubleValue }
+struct PageSetup [page_setup.rs] { paper_size:UInt32Value; orientation:EnumValue<OrientationValues>; scale:UInt32Value; fit_to_height:UInt32Value; fit_to_width:UInt32Value; horizontal_dpi:UInt32Value; vertical_dpi:UInt32Value; object_data:Option<Vec<u8>> }
+struct Pane [pane.rs] { horizontal_split:DoubleValue; vertical_split:DoubleValue; top_left_cell:Coordinate; active_pane:EnumValue<PaneValues>; state:EnumValue<PaneStateValues> }
+enum PaneStateValues [pane_state_values.rs] { Frozen; FrozenSplit; Split }
+enum PaneValues [pane_values.rs] { BottomLeft; BottomRight; TopLeft; TopRight }
+struct PatternFill [pattern_fill.rs] { pattern_type:EnumValue<PatternValues>; foreground_color:Option<Box<Color>>; background_color:Option<Box<Color>> }
+enum PatternValues [pattern_values.rs] { DarkDown; DarkGray; DarkGrid; DarkHorizontal; DarkTrellis; DarkUp; DarkVertical; Gray0625; Gray125; LightDown; LightGray; LightGrid; LightHorizontal; LightTrellis; LightUp; LightVertical; MediumGray; None; Solid }
+struct PhoneticRun [phonetic_run.rs] {  }
+struct PivotCacheDefinition [pivot_cache_definition.rs] { id:StringValue; refreshed_by:StringValue; refreshed_date:DoubleValue; created_version:ByteValue; refreshed_version:ByteValue; min_refreshable_version:ByteValue; record_count:UInt32Value; cache_source:CacheSource; cache_fields:CacheFields; raw_cache_records:Vec<u8> }
+struct PivotField [pivot_field.rs] { data_field:BooleanValue; show_all:BooleanValue; items:Items; axis:EnumValue<PivotTableAxisValues>; missing_items_limit:UInt32Value }
+struct PivotFields [pivot_fields.rs] { list:Vec<PivotField> }
+struct PivotTable [pivot_table.rs] { pivot_table_definition:PivotTableDefinition; pivot_cache_definition:PivotCacheDefinition }
+enum PivotTableAxisValues [pivot_table_axis_values.rs] { AxisColumn; AxisPage; AxisRow; AxisValues }
+struct PivotTableDefinition [pivot_table_definition.rs] { apply_number_formats:BooleanValue; apply_border_formats:BooleanValue; apply_font_formats:BooleanValue; apply_pattern_formats:BooleanValue; apply_alignment_formats:BooleanValue; apply_width_height_formats:BooleanValue; use_auto_formatting:BooleanValue; item_print_titles:BooleanValue; outline:BooleanValue; outline_data:BooleanValue; multiple_field_filters:BooleanValue; refresh_on_load:BooleanValue; row_grand_totals:BooleanValue; col_grand_totals:BooleanValue; compact_data:BooleanValue; name:StringValue; xr_uid:StringValue; cache_id:UInt32Value; indent:UInt32Value; local_name:StringValue; data_caption:StringValue; updated_version:ByteValue; min_refreshable_version:ByteValue; created_version:ByteValue; location:Location; pivot_fields:PivotFields; row_fields:RowFields; row_items:RowItems; column_fields:ColumnFields; column_items:ColumnItems; data_fields:DataFields; pivot_table_style:PivotTableStyle }
+struct PivotTableStyle [pivot_table_style.rs] { name:StringValue; show_row_headers:BooleanValue; show_column_headers:BooleanValue; show_row_stripes:BooleanValue; show_column_stripes:BooleanValue; show_last_column:BooleanValue }
+struct PrintOptions [print_options.rs] { horizontal_centered:BooleanValue; vertical_centered:BooleanValue }
+struct Properties [properties.rs] { creator:StringValue; last_modified_by:StringValue; created:StringValue; modified:StringValue; title:StringValue; description:StringValue; subject:StringValue; keywords:StringValue; category:StringValue; manager:StringValue; company:StringValue; revision:StringValue; version:StringValue; custom_properties:CustomProperties }
+struct Protection [protection.rs] { locked:BooleanValue; hidden:BooleanValue }
+struct Range [range.rs] { start_col:Option<ColumnReference>; start_row:Option<RowReference>; end_col:Option<ColumnReference>; end_row:Option<RowReference> }
+struct RawFile [raw/raw_file.rs] { file_target:StringValue; file_data:Vec<u8>; source_file:Option<PathBuf> }
+struct RawRelationship [raw/raw_relationship.rs] { id:StringValue; r_type:StringValue; target:StringValue; raw_file:RawFile; target_mode:StringValue }
+struct RawRelationships [raw/raw_relationships.rs] { file_target:StringValue; relationship_list:Vec<RawRelationship> }
+struct RawWorksheet [raw/raw_worksheet.rs] { worksheet_file:RawFile; relationships_list:Vec<RawRelationships> }
+struct RichText [rich_text.rs] { rich_text_elements:Vec<TextElement> }
+struct Row [row.rs] { row_num:UInt32Value; height:DoubleValue; descent:DoubleValue; thick_top:BooleanValue; thick_bot:BooleanValue; custom_height:BooleanValue; hidden:BooleanValue; style:Style }
+struct RowBreaks [row_breaks.rs] { break_list:Vec<Break> }
+struct RowFields [row_fields.rs] { list:Vec<Field> }
+struct RowItem [row_item.rs] { index:UInt32Value; item_type:EnumValue<ItemValues>; repeated_item_count:UInt32Value; member_property_indices:Vec<MemberPropertyIndex> }
+struct RowItems [row_items.rs] { list:Vec<RowItem> }
+struct RowReference [row_reference.rs] { num:u32; is_lock:bool }
+struct Rows [rows.rs] { rows:HashMap<u32, Box<Row>> }
+struct SByteValue [s_byte_value.rs] { value:Option<i8> }
+struct Selection [selection.rs] { pane:EnumValue<PaneValues>; active_cell:Option<Coordinate>; sequence_of_references:SequenceOfReferences }
+struct SequenceOfReferences [sequence_of_references.rs] { range_collection:Vec<Range> }
+struct SharedItems [shared_items.rs] { contains_semi_mixed_types:BooleanValue; contains_string:BooleanValue; contains_number:BooleanValue; contains_integer:BooleanValue; min_value:DoubleValue; max_value:DoubleValue; items:Vec<SharedItemValue> }
+enum SharedItemValue [shared_items.rs] { Bool(bool); Date(Box<str>); Error(CellErrorType); Empty; Numeric(f64); String(Box<str>) }
+struct SharedStringItem [shared_string_item.rs] { text:Option<Text>; rich_text:Option<RichText> }
+struct SharedStringTable [shared_string_table.rs] { shared_string_item:Vec<SharedStringItem>; map:HashMap<u64, usize>; regist_count:usize }
+struct SheetFormatProperties [sheet_format_properties.rs] { base_column_width:UInt32Value; custom_height:BooleanValue; default_column_width:DoubleValue; default_row_height:DoubleValue; dy_descent:DoubleValue; outline_level_column:ByteValue; outline_level_row:ByteValue; thick_bottom:BooleanValue; thick_top:BooleanValue }
+struct SheetProtection [sheet_protection.rs] { algorithm_name:StringValue; hash_value:StringValue; salt_value:StringValue; spin_count:UInt32Value; password:StringValue; sheet:BooleanValue; objects:BooleanValue; delete_rows:BooleanValue; insert_columns:BooleanValue; delete_columns:BooleanValue; insert_hyperlinks:BooleanValue; auto_filter:BooleanValue; scenarios:BooleanValue; format_cells:BooleanValue; format_columns:BooleanValue; insert_rows:BooleanValue; format_rows:BooleanValue; pivot_tables:BooleanValue; select_locked_cells:BooleanValue; select_unlocked_cells:BooleanValue; sort:BooleanValue }
+enum SheetStateValues [sheet_state_values.rs] { Hidden; VeryHidden; Visible }
+struct SheetView [sheet_view.rs] { show_grid_lines:BooleanValue; tab_selected:BooleanValue; workbook_view_id:UInt32Value; pane:Option<Box<Pane>>; view:EnumValue<SheetViewValues>; zoom_scale:UInt32Value; zoom_scale_normal:UInt32Value; zoom_scale_page_layout_view:UInt32Value; zoom_scale_sheet_layout_view:UInt32Value; top_left_cell:StringValue; selection:Vec<Selection> }
+enum SheetViewValues [sheet_view_values.rs] { Normal; PageBreakPreview; PageLayout }
+struct SheetViews [sheet_views.rs] { sheet_view_list:Vec<SheetView> }
+enum SourceValues [source_values.rs] { Consolidation; External; Scenario; Worksheet }
+struct Strike [strike.rs] { val:BooleanValue }
+struct StringValue [string_value.rs] { value:Option<Box<str>> }
+struct Style [style.rs] { font:Option<Box<Font>>; fill:Option<Box<Fill>>; borders:Option<Box<Borders>>; alignment:Option<Alignment>; numbering_format:Option<Box<NumberingFormat>>; format_id:UInt32Value; protection:Option<Protection> }
+struct Stylesheet [stylesheet.rs] { numbering_formats:NumberingFormats; fonts:Fonts; fills:Fills; borders:BordersCrate; cell_style_formats:CellStyleFormats; cell_formats:CellFormats; cell_styles:CellStyles; differential_formats:DifferentialFormats; colors:Colors; maked_style_list:Vec<Style> }
+struct TabColor [tab_color.rs] { indexed:UInt32Value; theme_index:UInt32Value; argb:StringValue; tint:DoubleValue }
+struct Table [table.rs] { name:Box<str>; area:(Coordinate, Coordinate); display_name:Box<str>; columns:Vec<TableColumn>; style_info:Option<Box<TableStyleInfo>>; totals_row_shown:BooleanValue; totals_row_count:UInt32Value }
+struct TableColumn [table.rs] { name:String; totals_row_label:StringValue; totals_row_function:EnumValue<TotalsRowFunctionValues>; calculated_column_formula:Option<String> }
+struct TableStyleInfo [table.rs] { name:String; show_first_col:ShowColumn; show_last_col:ShowColumn; show_row_stripes:ShowStripes; show_col_stripes:ShowStripes }
+enum ShowColumn [table.rs] { Show; Hide }
+enum ShowStripes [table.rs] { Show; Hide }
+struct Text [text.rs] { value:Box<str> }
+struct TextElement [text_element.rs] { text:Text; run_properties:Option<Box<Font>> }
+enum TimePeriodValues [time_period_values.rs] { Last7Days; LastMonth; LastWeek; NextMonth; NextWeek; ThisMonth; ThisWeek; Today; Tomorrow; Yesterday }
+struct ToMarker [to_marker.rs] { col:usize; col_off:usize; row:usize; row_off:usize }
+enum TotalsRowFunctionValues [totals_row_function_values.rs] { Average; Count; CountNumbers; Custom; Maximum; Minimum; None; StandardDeviation; Sum; Variance }
+struct TrueFalseBlankValue [true_false_blank_value.rs] { value:Option<bool> }
+struct TrueFalseValue [true_false_value.rs] { value:Option<bool>; value_default:bool }
+struct UInt16Value [u_int16_value.rs] { value:Option<u16> }
+struct UInt32Value [u_int32_value.rs] { value:Option<u32> }
+struct Underline [underline.rs] { val:EnumValue<UnderlineValues> }
+enum UnderlineValues [underline_values.rs] { Double; DoubleAccounting; None; Single; SingleAccounting }
+enum VerticalAlignmentRunValues [vertical_alignment_run_values.rs] { Baseline; Subscript; Superscript }
+enum VerticalAlignmentValues [vertical_alignment_values.rs] { Bottom; Center; Distributed; Justify; Top }
+struct VerticalTextAlignment [vertical_text_alignment.rs] { val:EnumValue<VerticalAlignmentRunValues> }
+struct Fill [vml/fill.rs] { color:StringValue; color_2:StringValue; on:TrueFalseValue; focus_size:StringValue; image:Option<MediaObject> }
+struct ImageData [vml/image_data.rs] { image:Option<MediaObject>; title:StringValue }
+enum ConnectValues [vml/office/connect_values.rs] { Custom; None; Rectangle; Segments }
+enum InsetMarginValues [vml/office/inset_margin_values.rs] { Auto; Custom }
+struct Path [vml/path.rs] { connection_point_type:EnumValue<ConnectValues> }
+struct Shadow [vml/shadow.rs] { on:TrueFalseValue; color:StringValue; obscured:TrueFalseValue }
+struct Shape [vml/shape.rs] { style:StringValue; r_type:StringValue; filled:TrueFalseValue; fill_color:StringValue; stroked:TrueFalseValue; stroke_color:StringValue; stroke_weight:StringValue; inset_mode:EnumValue<InsetMarginValues>; fill:Option<Box<Fill>>; image_data:Option<Box<ImageData>>; stroke:Option<Box<Stroke>>; shadow:Option<Box<Shadow>>; path:Option<Box<Path>>; text_box:Option<Box<TextBox>>; client_data:ClientData; optional_number:Int32Value; coordinate_size:StringValue }
+struct Anchor [vml/spreadsheet/anchor.rs] { left_column:u32; left_offset:u32; top_row:u32; top_offset:u32; right_column:u32; right_offset:u32; bottom_row:u32; bottom_offset:u32 }
+struct AutoFill [vml/spreadsheet/auto_fill.rs] { value:TrueFalseBlankValue }
+struct AutoSizePicture [vml/spreadsheet/auto_size_picture.rs] { value:TrueFalseBlankValue }
+struct ClientData [vml/spreadsheet/client_data.rs] { object_type:EnumValue<ObjectValues>; move_with_cells:Option<MoveWithCells>; resize_with_cells:Option<ResizeWithCells>; anchor:Anchor; auto_fill:Option<AutoFill>; comment_row_target:Option<CommentRowTarget>; comment_column_target:Option<CommentColumnTarget>; visible:Option<Visible>; clipboard_format:Option<ClipboardFormat>; auto_size_picture:Option<AutoSizePicture> }
+struct ClipboardFormat [vml/spreadsheet/clipboard_format.rs] { value:EnumValue<ClipboardFormatValues> }
+enum ClipboardFormatValues [vml/spreadsheet/clipboard_format_values.rs] { Bitmap; Picture; PictureOld; PicturePrint; PictureScreen }
+struct CommentColumnTarget [vml/spreadsheet/comment_column_target.rs] { value:UInt32Value }
+struct CommentRowTarget [vml/spreadsheet/comment_row_target.rs] { value:UInt32Value }
+struct MoveWithCells [vml/spreadsheet/move_with_cells.rs] { value:TrueFalseBlankValue }
+enum ObjectValues [vml/spreadsheet/object_values.rs] { AuditingLine; AuditingRectangle; Button; Checkbox; Dialog; Drop; Edit; Group; GroupBox; Label; List; Movie; Note; Picture; Radio; Rectangle; Scroll; Shape; Spin }
+struct ResizeWithCells [vml/spreadsheet/resize_with_cells.rs] { value:TrueFalseBlankValue }
+struct Visible [vml/spreadsheet/visible.rs] { value:TrueFalseBlankValue }
+struct Stroke [vml/stroke.rs] { color:StringValue; color_2:StringValue; dash_style:StringValue }
+struct TextBox [vml/text_box.rs] { style:StringValue; innder:StringValue }
+struct WorkbookProtection [workbook_protection.rs] { workbook_algorithm_name:StringValue; workbook_hash_value:StringValue; workbook_salt_value:StringValue; workbook_spin_count:UInt32Value; workbook_password:StringValue; revisions_algorithm_name:StringValue; revisions_hash_value:StringValue; revisions_salt_value:StringValue; revisions_spin_count:UInt32Value; revisions_password:StringValue; lock_revision:BooleanValue; lock_structure:BooleanValue; lock_windows:BooleanValue }
+struct WorkbookView [workbook_view.rs] { active_tab:UInt32Value; x_window:Int32Value; y_window:Int32Value; window_width:Int32Value; window_height:Int32Value; tab_ratio:Int32Value }
+struct Worksheet [worksheet.rs] { raw_data_of_worksheet:Option<RawWorksheet>; r_id:Box<str>; sheet_id:Box<str>; title:Box<str>; state:EnumValue<SheetStateValues>; cells:Cells; rows:Rows; columns:Columns; worksheet_drawing:WorksheetDrawing; sheet_state:Box<str>; page_setup:PageSetup; page_margins:PageMargins; header_footer:HeaderFooter; sheet_views:SheetViews; conditional_formatting_collection:Vec<ConditionalFormatting>; merge_cells:MergeCells; auto_filter:Option<AutoFilter>; comments:Vec<Comment>; threaded_comments:Vec<ThreadedComment>; active_cell:Box<str>; tab_color:Option<Color>; code_name:StringValue; ole_objects:OleObjects; defined_names:Vec<DefinedName>; print_options:PrintOptions; column_breaks:ColumnBreaks; row_breaks:RowBreaks; tables:Vec<Table>; pivot_tables:Vec<PivotTable>; data_validations:Option<DataValidations>; data_validations_2010:Option<DataValidations2010>; sheet_format_properties:SheetFormatProperties; sheet_protection:Option<SheetProtection> }
+struct WorksheetSource [worksheet_source.rs] { address:Address; name:StringValue }

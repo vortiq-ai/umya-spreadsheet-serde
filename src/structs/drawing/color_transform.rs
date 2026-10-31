@@ -51,6 +51,154 @@ pub enum ColorTransform {
     InverseGamma,
 }
 
+pub(super) fn resolve_rgb(value: &str, transforms: &[ColorTransform]) -> Option<String> {
+    use crate::helper::color::{
+        convert_hls_to_rgb,
+        convert_rgb_to_hls,
+        join_rgb,
+        split_rgb,
+    };
+
+    if value.len() != 6 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut rgb = value.to_string();
+    let mut hls = None;
+    for transform in transforms {
+        transform.validate().ok()?;
+        let amount = match transform.value() {
+            Some(value) => Some(if let Some(value) = value.strip_suffix('%') {
+                value.parse::<f64>().ok()? / 100.0
+            } else {
+                value.parse::<f64>().ok()? / 100_000.0
+            }),
+            None => None,
+        };
+        if amount.is_some_and(|value| !value.is_finite()) {
+            return None;
+        }
+        match transform {
+            ColorTransform::Hue(_)
+            | ColorTransform::HueOffset(_)
+            | ColorTransform::HueModulation(_)
+            | ColorTransform::Saturation(_)
+            | ColorTransform::SaturationOffset(_)
+            | ColorTransform::SaturationModulation(_)
+            | ColorTransform::Luminance(_)
+            | ColorTransform::LuminanceOffset(_)
+            | ColorTransform::LuminanceModulation(_)
+            | ColorTransform::Complement => {
+                // Keep adjacent HSL operations in HSL space to avoid rounding
+                // intermediate RGB values between ordered transforms.
+                let color = hls.get_or_insert_with(|| convert_rgb_to_hls(&rgb));
+                match transform {
+                    ColorTransform::Hue(value) => {
+                        color.h = value.parse::<f64>().ok()? / 21_600_000.0;
+                    }
+                    ColorTransform::HueOffset(value) => {
+                        color.h += value.parse::<f64>().ok()? / 21_600_000.0;
+                    }
+                    ColorTransform::HueModulation(_) => color.h *= amount?,
+                    ColorTransform::Saturation(_) => color.s = amount?,
+                    ColorTransform::SaturationOffset(_) => color.s += amount?,
+                    ColorTransform::SaturationModulation(_) => color.s *= amount?,
+                    ColorTransform::Luminance(_) => color.l = amount?,
+                    ColorTransform::LuminanceOffset(_) => color.l += amount?,
+                    ColorTransform::LuminanceModulation(_) => color.l *= amount?,
+                    ColorTransform::Complement => color.h += 0.5,
+                    _ => unreachable!(),
+                }
+                color.h = color.h.rem_euclid(1.0);
+                color.l = color.l.clamp(0.0, 1.0);
+                color.s = color.s.clamp(0.0, 1.0);
+                if matches!(
+                    transform,
+                    ColorTransform::Luminance(_)
+                        | ColorTransform::LuminanceOffset(_)
+                        | ColorTransform::LuminanceModulation(_)
+                ) && (color.l <= 0.0 || color.l >= 1.0)
+                {
+                    color.s = 0.0;
+                }
+            }
+            ColorTransform::Alpha(_)
+            | ColorTransform::AlphaOffset(_)
+            | ColorTransform::AlphaModulation(_) => (),
+            _ => {
+                if let Some(color) = hls.take() {
+                    rgb = convert_hls_to_rgb(&color);
+                }
+                let (red, green, blue) = split_rgb(&rgb);
+                let mut channels = [red, green, blue].map(|value| f64::from(value) / 255.0);
+                let linear = !matches!(
+                    transform,
+                    ColorTransform::Grayscale
+                        | ColorTransform::Gamma
+                        | ColorTransform::InverseGamma
+                );
+                if linear {
+                    channels = channels.map(srgb_to_linear);
+                }
+                match transform {
+                    ColorTransform::Red(_) => channels[0] = amount?,
+                    ColorTransform::RedOffset(_) => channels[0] += amount?,
+                    ColorTransform::RedModulation(_) => channels[0] *= amount?,
+                    ColorTransform::Green(_) => channels[1] = amount?,
+                    ColorTransform::GreenOffset(_) => channels[1] += amount?,
+                    ColorTransform::GreenModulation(_) => channels[1] *= amount?,
+                    ColorTransform::Blue(_) => channels[2] = amount?,
+                    ColorTransform::BlueOffset(_) => channels[2] += amount?,
+                    ColorTransform::BlueModulation(_) => channels[2] *= amount?,
+                    ColorTransform::Tint(_) => {
+                        let amount = amount?;
+                        channels = channels.map(|value| value * amount + 1.0 - amount);
+                    }
+                    ColorTransform::Shade(_) => {
+                        let amount = amount?;
+                        channels = channels.map(|value| value * amount);
+                    }
+                    ColorTransform::Inverse => channels = channels.map(|value| 1.0 - value),
+                    ColorTransform::Grayscale => {
+                        let gray = 0.22 * channels[0] + 0.72 * channels[1] + 0.06 * channels[2];
+                        channels = [gray; 3];
+                    }
+                    ColorTransform::Gamma => {
+                        channels = channels.map(linear_to_srgb);
+                    }
+                    ColorTransform::InverseGamma => {
+                        channels = channels.map(srgb_to_linear);
+                    }
+                    _ => unreachable!(),
+                }
+                if linear {
+                    channels = channels.map(|value| linear_to_srgb(value.clamp(0.0, 1.0)));
+                }
+                let [red, green, blue] = channels.map(|value| {
+                    num_traits::cast::<f64, i32>((value.clamp(0.0, 1.0) * 255.0).round())
+                });
+                rgb = join_rgb(red?, green?, blue?);
+            }
+        }
+    }
+    Some(hls.map_or(rgb, |color| convert_hls_to_rgb(&color)))
+}
+
+fn srgb_to_linear(value: f64) -> f64 {
+    if value <= 0.040_45 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(value: f64) -> f64 {
+    if value <= 0.003_130_8 {
+        12.92 * value
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 impl ColorTransform {
     #[must_use]
     pub fn xml_name(&self) -> &'static str {

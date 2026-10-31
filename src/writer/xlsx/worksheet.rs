@@ -19,6 +19,7 @@ use super::{
         write_new_line,
         write_start_tag,
     },
+    worksheet_rels::RelationshipIds,
 };
 use crate::{
     Row,
@@ -34,8 +35,10 @@ use crate::{
     structs::{
         Cell,
         SharedStringTable,
+        SlicerKinds,
         Stylesheet,
         Worksheet,
+        WorksheetExtensionIds,
         WriterManager,
     },
 };
@@ -51,6 +54,7 @@ type InternalWriter = Writer<io::Cursor<Vec<u8>>>;
 /// * `shared_string_table` - Table containing shared strings
 /// * `stylesheet` - The workbook's stylesheet
 /// * `has_macros` - Whether the workbook contains macros
+/// * `slicers` - The slicer lists the worksheet extensions need
 /// * `writer_mng` - The writer manager handling file output
 ///
 /// # Returns
@@ -62,16 +66,26 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     shared_string_table: &RwLock<SharedStringTable>,
     stylesheet: &mut Stylesheet,
     has_macros: bool,
+    slicers: SlicerKinds,
     writer_mng: &mut WriterManager<W>,
 ) -> Result<(), XlsxError> {
+    worksheet.check_structural_conflicts()?;
     let mut writer = Writer::new(io::Cursor::new(Vec::new()));
 
     write_worksheet_header(&mut writer);
     write_worksheet_properties(&mut writer, worksheet, has_macros);
     write_dimension_and_views(&mut writer, worksheet);
     write_columns_and_rows(&mut writer, worksheet, shared_string_table, stylesheet);
-    write_worksheet_features(&mut writer, worksheet, stylesheet)?;
-    write_worksheet_extensions(&mut writer, worksheet)?;
+    let ids = RelationshipIds::of(worksheet, slicers)?;
+    let carried = carried_relationship_ids(worksheet, &ids)?;
+    write_worksheet_features(
+        &mut writer,
+        worksheet,
+        stylesheet,
+        &carried.preserved,
+        &mut carried.conditional.iter().cloned(),
+    )?;
+    write_worksheet_extensions(&mut writer, worksheet, &ids, carried)?;
 
     write_end_tag(&mut writer, "worksheet");
 
@@ -274,20 +288,42 @@ fn write_worksheet_features(
     writer: &mut InternalWriter,
     worksheet: &Worksheet,
     stylesheet: &mut Stylesheet,
+    preserved_ids: &[Vec<String>],
+    conditional_ids: &mut dyn Iterator<Item = Vec<String>>,
 ) -> Result<(), XlsxError> {
+    write_preserved_elements(writer, worksheet, preserved_ids, &["sheetCalcPr"])?;
+
     if let Some(v) = worksheet.sheet_protection() {
         v.write_to(writer);
     }
+
+    write_preserved_elements(
+        writer,
+        worksheet,
+        preserved_ids,
+        &["protectedRanges", "scenarios"],
+    )?;
 
     if let Some(v) = worksheet.auto_filter() {
         v.write_to(writer)?;
     }
 
+    write_preserved_elements(
+        writer,
+        worksheet,
+        preserved_ids,
+        &["dataConsolidate", "customSheetViews"],
+    )?;
+
     worksheet.merge_cells_crate().write_to(writer);
     write_start_tag(writer, "phoneticPr", vec![("fontId", "1").into()], true);
 
     for conditional_formatting in worksheet.conditional_formatting_collection() {
-        conditional_formatting.write_to(writer, stylesheet.differential_formats_mut());
+        conditional_formatting.write_to(
+            writer,
+            stylesheet.differential_formats_mut(),
+            conditional_ids,
+        )?;
     }
 
     if let Some(v) = worksheet.data_validations() {
@@ -296,30 +332,104 @@ fn write_worksheet_features(
     Ok(())
 }
 
+/// Writes the preserved worksheet children named `names`, in the order they
+/// were read.
+fn write_preserved_elements(
+    writer: &mut InternalWriter,
+    worksheet: &Worksheet,
+    preserved_ids: &[Vec<String>],
+    names: &[&str],
+) -> Result<(), XlsxError> {
+    for (index, entry) in worksheet.preserved_elements.iter().enumerate() {
+        if !names.contains(&entry.element.name.local_name.as_str()) {
+            continue;
+        }
+        let new_ids = preserved_ids
+            .get(index)
+            .ok_or_else(|| crate::xml::xml_error("worksheet element has no relationship ids"))?;
+        entry
+            .rebound(new_ids)
+            .map_err(crate::xml::xml_error)?
+            .write_to(writer, &crate::structs::worksheet_extension_scope())
+            .map_err(crate::xml::xml_error)?;
+    }
+    Ok(())
+}
+
+/// The relationship ids the writer allocated for the parts of the preserved
+/// extensions and of the preserved worksheet children.
+struct CarriedIds {
+    extensions:  Vec<Vec<String>>,
+    preserved:   Vec<Vec<String>>,
+    conditional: Vec<Vec<String>>,
+}
+
+fn carried_relationship_ids(
+    worksheet: &Worksheet,
+    ids: &RelationshipIds,
+) -> Result<CarriedIds, XlsxError> {
+    let mut next_part = ids.extension_parts;
+    let mut take = |count: usize| -> Result<Vec<String>, XlsxError> {
+        let first = next_part;
+        next_part += i32::try_from(count).map_err(crate::xml::xml_error)?;
+        Ok((first..next_part).map(|id| format!("rId{id}")).collect())
+    };
+    let mut extensions = Vec::new();
+    for entry in worksheet.extensions() {
+        if let crate::structs::WorksheetExtension::Other(extension) = entry {
+            extensions.push(take(extension.parts.len())?);
+        }
+    }
+    let mut preserved = Vec::new();
+    for entry in &worksheet.preserved_elements {
+        preserved.push(take(entry.parts.len())?);
+    }
+    let mut conditional = Vec::new();
+    for entry in worksheet.conditional_extension_entries() {
+        conditional.push(take(entry.parts.len())?);
+    }
+    Ok(CarriedIds {
+        extensions,
+        preserved,
+        conditional,
+    })
+}
+
 /// Writes worksheet extensions including hyperlinks, print settings, drawings,
 /// and tables.
-///
-/// # Arguments
-///
-/// * `writer` - The XML writer to write to
-/// * `worksheet` - The worksheet containing the extensions
 fn write_worksheet_extensions(
     writer: &mut InternalWriter,
     worksheet: &Worksheet,
+    ids: &RelationshipIds,
+    carried: CarriedIds,
 ) -> Result<(), XlsxError> {
-    let mut r_id = write_hyperlinks(writer, worksheet);
-    r_id = write_print_settings(writer, worksheet, r_id);
-    r_id = write_drawings(writer, worksheet, r_id);
-    write_tables_and_objects(writer, worksheet, r_id)?;
+    write_hyperlinks(writer, worksheet, ids.hyperlinks);
+    write_print_settings(writer, worksheet, ids.page_setup);
+    write_preserved_elements(
+        writer,
+        worksheet,
+        &carried.preserved,
+        &[
+            "customProperties",
+            "cellWatches",
+            "ignoredErrors",
+            "smartTags",
+        ],
+    )?;
+    write_drawings(writer, ids);
+    write_objects_and_tables(writer, worksheet, ids)?;
 
-    if worksheet.data_validations_2010().is_some() {
-        write_start_tag(writer, "extLst", vec![], false);
-        if let Some(v) = worksheet.data_validations_2010() {
-            v.write_to(writer);
-        }
-        write_end_tag(writer, "extLst");
-    }
-    Ok(())
+    let relationship_id = |id: i32| format!("rId{id}");
+    crate::structs::write_worksheet_extensions(
+        writer,
+        worksheet.extensions(),
+        worksheet.data_validations_2010(),
+        &WorksheetExtensionIds {
+            pivot_slicers: ids.pivot_slicers.map(relationship_id),
+            table_slicers: ids.table_slicers.map(relationship_id),
+            carried:       carried.extensions,
+        },
+    )
 }
 
 /// Writes rows and their contained cells to the worksheet.
@@ -401,18 +511,9 @@ fn write_row_with_cells(
     }
 }
 
-/// Writes hyperlinks and returns the next available relationship ID.
-///
-/// # Arguments
-///
-/// * `writer` - The XML writer to write to
-/// * `worksheet` - The worksheet containing hyperlinks
-///
-/// # Returns
-///
-/// The next available relationship ID
-fn write_hyperlinks(writer: &mut InternalWriter, worksheet: &Worksheet) -> i32 {
-    let mut r_id = 1;
+/// Writes hyperlinks, numbering the external ones from `first_id`.
+fn write_hyperlinks(writer: &mut InternalWriter, worksheet: &Worksheet, first_id: i32) {
+    let mut r_id = first_id;
 
     if worksheet.has_hyperlink() {
         write_start_tag(writer, "hyperlinks", vec![], false);
@@ -435,83 +536,51 @@ fn write_hyperlinks(writer: &mut InternalWriter, worksheet: &Worksheet) -> i32 {
 
         write_end_tag(writer, "hyperlinks");
     }
-
-    r_id
 }
 
-/// Writes print settings and returns the next available relationship ID.
-///
-/// # Arguments
-///
-/// * `writer` - The XML writer to write to
-/// * `worksheet` - The worksheet containing print settings
-/// * `r_id` - The current relationship ID
-///
-/// # Returns
-///
-/// The next available relationship ID
-fn write_print_settings(writer: &mut InternalWriter, worksheet: &Worksheet, r_id: i32) -> i32 {
-    let mut r_id = r_id;
+/// Writes print settings, with the page setup's printer-settings relationship
+/// id.
+fn write_print_settings(
+    writer: &mut InternalWriter,
+    worksheet: &Worksheet,
+    page_setup_id: Option<i32>,
+) {
     worksheet.print_options().write_to(writer);
     worksheet.page_margins().write_to(writer);
 
     if worksheet.page_setup().has_param() {
-        let mut r_id_write: usize = num_traits::cast(r_id).unwrap();
+        // The id is only written when the page setup has printer settings.
+        let mut r_id_write: usize = page_setup_id.map_or(0, |id| num_traits::cast(id).unwrap());
         worksheet.page_setup().write_to(writer, &mut r_id_write);
-        r_id = num_traits::cast(r_id_write).unwrap();
     }
 
     worksheet.header_footer().write_to(writer);
     worksheet.row_breaks().write_to(writer);
     worksheet.column_breaks().write_to(writer);
-
-    r_id
 }
 
-/// Writes drawing objects and returns the next available relationship ID.
-///
-/// # Arguments
-///
-/// * `writer` - The XML writer to write to
-/// * `worksheet` - The worksheet containing drawings
-/// * `r_id` - The current relationship ID
-///
-/// # Returns
-///
-/// The next available relationship ID
-fn write_drawings(writer: &mut InternalWriter, worksheet: &Worksheet, mut r_id: i32) -> i32 {
-    if worksheet.has_drawing_object() {
-        let r_id_str = format!("rId{r_id}");
-        write_start_tag(writer, "drawing", vec![("r:id", &r_id_str).into()], true);
-        r_id += 1;
-    }
-
-    if worksheet.has_legacy_drawing() {
-        let r_id_str = format!("rId{r_id}");
-        write_start_tag(
-            writer,
-            "legacyDrawing",
-            vec![("r:id", &r_id_str).into()],
-            true,
-        );
-        r_id += 1;
-    }
-
-    r_id
+/// Writes the drawing, legacy drawing and header/footer drawing references.
+fn write_drawings(writer: &mut InternalWriter, ids: &RelationshipIds) {
+    let id_element = |writer: &mut InternalWriter, tag: &str, id: Option<i32>| {
+        if let Some(id) = id {
+            let r_id_str = format!("rId{id}");
+            write_start_tag(writer, tag, vec![("r:id", &r_id_str).into()], true);
+        }
+    };
+    id_element(writer, "drawing", ids.drawing);
+    id_element(writer, "legacyDrawing", ids.legacy_drawing);
+    id_element(writer, "legacyDrawingHF", ids.header_footer);
 }
 
-/// Writes tables and OLE objects.
-///
-/// # Arguments
-///
-/// * `writer` - The XML writer to write to
-/// * `worksheet` - The worksheet containing tables and objects
-/// * `r_id` - The current relationship ID
-fn write_tables_and_objects(
+/// Writes OLE objects and then table parts, the order `CT_Worksheet` requires.
+fn write_objects_and_tables(
     writer: &mut InternalWriter,
     worksheet: &Worksheet,
-    mut r_id: i32,
+    ids: &RelationshipIds,
 ) -> Result<(), XlsxError> {
+    let first_ole = usize::try_from(ids.ole_objects).map_err(crate::xml::xml_error)?;
+    worksheet.ole_objects().write_to(writer, first_ole)?;
+
     if worksheet.has_table() {
         let tables = worksheet.tables();
         write_start_tag(
@@ -520,16 +589,12 @@ fn write_tables_and_objects(
             vec![("count", &tables.len().to_string()).into()],
             false,
         );
-        for _table in worksheet.tables() {
+        for (r_id, _table) in (ids.tables..).zip(worksheet.tables()) {
             let r_id_str = format!("rId{r_id}");
             write_start_tag(writer, "tablePart", vec![("r:id", &r_id_str).into()], true);
-            r_id += 1;
         }
         write_end_tag(writer, "tableParts");
     }
-
-    let r_id = usize::try_from(r_id).map_err(crate::xml::xml_error)?;
-    worksheet.ole_objects().write_to(writer, r_id)?;
     Ok(())
 }
 
@@ -662,11 +727,11 @@ mod tests {
         let mut writer = setup_test_writer();
         let worksheet = setup_test_worksheet();
 
-        let r_id = write_print_settings(&mut writer, &worksheet, 1);
+        write_print_settings(&mut writer, &worksheet, None);
 
         let result = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(result.contains("pageMargins"));
-        assert_eq!(r_id, 1);
+        assert!(!result.contains("r:id"));
     }
 
     #[test]
@@ -685,14 +750,15 @@ mod tests {
         assert!(worksheet.page_setup().has_param());
         assert!(worksheet.page_setup().object_data().is_none());
 
-        let r_id = write_print_settings(&mut writer, &worksheet, 1);
+        let ids = RelationshipIds::of(&worksheet, SlicerKinds::default()).unwrap();
+        // No printerSettings relationship is allocated, so the next
+        // relationship id (e.g. the drawing's) is not consumed.
+        assert!(ids.page_setup.is_none());
+        write_print_settings(&mut writer, &worksheet, ids.page_setup);
 
         let result = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(result.contains("pageSetup"));
         assert!(!result.contains("r:id"));
-        // No printerSettings relationship was written, so the next relationship
-        // id (e.g. the drawing's) must remain unchanged.
-        assert_eq!(r_id, 1);
     }
 
     #[test]
@@ -700,10 +766,12 @@ mod tests {
         let mut writer = setup_test_writer();
         let worksheet = setup_test_worksheet();
 
-        let r_id = write_drawings(&mut writer, &worksheet, 1);
+        let ids = RelationshipIds::of(&worksheet, SlicerKinds::default()).unwrap();
+        write_drawings(&mut writer, &ids);
 
-        // Should return same r_id if no drawings
-        assert_eq!(r_id, 1);
+        let result = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+        // No drawings, no elements
+        assert!(!result.contains("r:id"));
     }
 
     #[test]
@@ -711,7 +779,8 @@ mod tests {
         let mut writer = setup_test_writer();
         let worksheet = setup_test_worksheet();
 
-        write_tables_and_objects(&mut writer, &worksheet, 1).unwrap();
+        let ids = RelationshipIds::of(&worksheet, SlicerKinds::default()).unwrap();
+        write_objects_and_tables(&mut writer, &worksheet, &ids).unwrap();
 
         let result = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         // Should be empty if no tables/objects
@@ -733,6 +802,7 @@ mod tests {
             &shared_string_table,
             &mut stylesheet,
             false,
+            SlicerKinds::default(),
             &mut writer_manager,
         );
 

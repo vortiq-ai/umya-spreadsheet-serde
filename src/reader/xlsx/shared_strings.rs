@@ -19,6 +19,10 @@ pub(crate) fn read<R: io::Read + io::Seek>(
     arv: &mut zip::ZipArchive<R>,
     wb: &mut Workbook,
 ) -> Result<(), XlsxError> {
+    // The element parsers below cannot report undecodable text themselves.
+    if let Ok(source) = super::driver::zip_by_name(arv, PKG_SHARED_STRINGS) {
+        crate::reader::spreadsheet_xml::validate_part_text(io::BufReader::new(source))?;
+    }
     let r = io::BufReader::new(match super::driver::zip_by_name(arv, PKG_SHARED_STRINGS) {
         Ok(v) => v,
         Err(zip::result::ZipError::FileNotFound) => {
@@ -28,7 +32,7 @@ pub(crate) fn read<R: io::Read + io::Seek>(
             return Err(e.into());
         }
     });
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(r));
+    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(r)?);
     reader.config_mut().trim_text(false);
 
     try_xml_read_loop!(

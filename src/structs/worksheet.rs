@@ -66,6 +66,7 @@ use crate::{
         SheetProtection,
         SheetStateValues,
         SheetViews,
+        Slicer,
         Style,
         Stylesheet,
         Table,
@@ -121,9 +122,220 @@ pub struct Worksheet {
     sheet_protection:                  Option<SheetProtection>,
     #[cfg_attr(feature = "serde", serde(default))]
     drawing_parts:                     Option<Box<super::drawing_parts::DrawingParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    native_vml_drawing:                Option<Box<super::vml::NativeDrawing>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    slicers:                           Vec<Slicer>,
+    /// The content of this worksheet was already streamed out; only its
+    /// identity remains, so its bindings cannot be inspected any more.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    streamed_out:                      bool,
+    /// Slicer part relationship ids read from the worksheet extension lists,
+    /// consumed while the worksheet package parts are read.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) slicer_part_references: Vec<super::slicer::SlicerPartReference>,
+    /// The worksheet `extLst` entries in source order. Slicer lists and the
+    /// data validations extension are regenerated from the model; every other
+    /// entry is kept verbatim with the parts it references.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) extensions:             Vec<super::slicer::WorksheetExtension>,
+    /// Worksheet children the library does not model (protected ranges,
+    /// ignored errors, scenarios, ...), kept as read and written at their
+    /// place in the worksheet.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) preserved_elements:     Vec<super::package_extension::PreservedExtension>,
+    /// Structural edits that changed ranges inside preserved content that
+    /// cannot follow them; writing the worksheet reports each one.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) structural_conflicts:   Vec<String>,
+    /// The VML part named by `legacyDrawingHF` (header/footer images). Its
+    /// shapes are not modelled, so it is preserved with its relationships.
+    #[cfg_attr(feature = "serde", serde(default))]
+    header_footer_vml:                 Option<Box<super::vml::NativeDrawing>>,
+}
+
+/// Worksheet children kept verbatim, in the order they appear in the schema.
+const PRESERVED_SHEET_ELEMENTS: [&str; 9] = [
+    "sheetCalcPr",
+    "protectedRanges",
+    "scenarios",
+    "dataConsolidate",
+    "customSheetViews",
+    "customProperties",
+    "cellWatches",
+    "ignoredErrors",
+    "smartTags",
+];
+
+/// Whether a local name is that of a worksheet child the worksheet keeps
+/// verbatim.
+pub(crate) fn is_preserved_sheet_element_name(local: &[u8]) -> bool {
+    PRESERVED_SHEET_ELEMENTS
+        .iter()
+        .any(|name| name.as_bytes() == local)
+}
+
+/// Whether a worksheet child element is one the worksheet keeps verbatim.
+pub(crate) fn is_preserved_sheet_element(element: &BytesStart<'_>) -> bool {
+    PRESERVED_SHEET_ELEMENTS
+        .iter()
+        .any(|name| crate::reader::spreadsheet_xml::is_native_start(element, name.as_bytes()))
 }
 
 impl Worksheet {
+    pub(crate) fn extensions(&self) -> &[super::slicer::WorksheetExtension] {
+        &self.extensions
+    }
+
+    /// Keep a worksheet child the library does not model; the package parts
+    /// it names are resolved once the worksheet relationships are read.
+    pub(crate) fn preserve_element(&mut self, element: crate::drawing::charts::OpaqueElement) {
+        self.preserved_elements
+            .push(super::package_extension::PreservedExtension::new(element));
+    }
+
+    /// Reports the structural edits preserved content could not follow.
+    pub(crate) fn check_structural_conflicts(&self) -> Result<(), XlsxError> {
+        match self.structural_conflicts.first() {
+            Some(conflict) => Err(crate::xml::xml_error(format!(
+                "worksheet '{}': {conflict}",
+                self.name()
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Follow a structural edit of this sheet in the ranges of preserved
+    /// extensions and worksheet children, as Excel does; content whose ranges
+    /// cannot follow is recorded so that writing reports it.
+    fn adjust_preserved_ranges(&mut self, edit: &super::preserved_ranges::LocalEdit) {
+        use super::{
+            preserved_ranges::adjust_local_ranges,
+            slicer::WorksheetExtension,
+        };
+        let mut conflicts = Vec::new();
+        self.extensions.retain_mut(|entry| match entry {
+            WorksheetExtension::Other(extension) => {
+                !adjust_local_ranges(&mut extension.element, edit, &mut conflicts)
+            }
+            _ => true,
+        });
+        self.preserved_elements
+            .retain_mut(|entry| match entry.element.name.local_name.as_str() {
+                "protectedRanges" | "ignoredErrors" => {
+                    !adjust_local_ranges(&mut entry.element, edit, &mut conflicts)
+                }
+                "scenarios" | "cellWatches" | "customSheetViews" | "dataConsolidate" => {
+                    conflicts.push(format!(
+                        "a row or column edit changes ranges inside the preserved '{}' element, \
+                         which cannot follow it",
+                        entry.element.name.local_name
+                    ));
+                    true
+                }
+                _ => true,
+            });
+        self.structural_conflicts.extend(conflicts);
+    }
+
+    /// The new text of every `xm:f` formula of the preserved extensions under
+    /// `prepared`, in document order (`None` keeps a formula).
+    pub(crate) fn prepare_extension_formula_edits(
+        &self,
+        host: &str,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+    ) -> Vec<Option<String>> {
+        use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
+        self.extensions
+            .iter()
+            .filter_map(|entry| match entry {
+                super::slicer::WorksheetExtension::Other(extension) => Some(extension),
+                _ => None,
+            })
+            .flat_map(|extension| super::preserved_ranges::formula_texts(&extension.element))
+            .map(|text| {
+                let decision = edit_prepared_formula_text(&text, host, prepared, false);
+                (decision.text != text).then_some(decision.text)
+            })
+            .collect()
+    }
+
+    /// Apply the decisions of [`Self::prepare_extension_formula_edits`].
+    pub(crate) fn apply_extension_formula_edits(&mut self, decisions: Vec<Option<String>>) {
+        let mut decisions = decisions.into_iter();
+        for entry in &mut self.extensions {
+            if let super::slicer::WorksheetExtension::Other(extension) = entry {
+                let count = super::preserved_ranges::formula_texts(&extension.element).len();
+                let own: Vec<Option<String>> = decisions.by_ref().take(count).collect();
+                if own.iter().any(Option::is_some) {
+                    super::preserved_ranges::set_formula_texts(&mut extension.element, &own);
+                }
+            }
+        }
+    }
+
+    /// Number of relationships the preserved extensions and worksheet
+    /// children need.
+    pub(crate) fn extension_relationship_count(&self) -> usize {
+        self.carried_parts().count()
+    }
+
+    /// The parts the preserved extensions name, then the parts the preserved
+    /// worksheet children name; this is the order their relationships are
+    /// written in.
+    pub(crate) fn carried_parts(
+        &self,
+    ) -> impl Iterator<Item = &super::package_extension::ExtensionPart> {
+        self.extensions
+            .iter()
+            .filter_map(|entry| match entry {
+                super::slicer::WorksheetExtension::Other(extension) => Some(extension),
+                _ => None,
+            })
+            .chain(&self.preserved_elements)
+            .chain(
+                self.conditional_formatting_collection
+                    .iter()
+                    .flat_map(ConditionalFormatting::extension_entries),
+            )
+            .flat_map(|extension| extension.parts.iter())
+    }
+
+    /// The preserved extensions inside the conditional formats, in the order
+    /// they are written.
+    pub(crate) fn conditional_extension_entries_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut super::package_extension::PreservedExtension> {
+        self.conditional_formatting_collection
+            .iter_mut()
+            .flat_map(ConditionalFormatting::extension_entries_mut)
+    }
+
+    /// The preserved extensions inside the conditional formats.
+    pub(crate) fn conditional_extension_entries(
+        &self,
+    ) -> impl Iterator<Item = &super::package_extension::PreservedExtension> {
+        self.conditional_formatting_collection
+            .iter()
+            .flat_map(ConditionalFormatting::extension_entries)
+    }
+
+    pub(crate) fn native_vml_drawing(&self) -> Option<&super::vml::NativeDrawing> {
+        self.native_vml_drawing.as_deref()
+    }
+
+    pub(crate) fn set_native_vml_drawing(&mut self, drawing: super::vml::NativeDrawing) {
+        self.native_vml_drawing = Some(Box::new(drawing));
+    }
+
+    pub(crate) fn header_footer_vml(&self) -> Option<&super::vml::NativeDrawing> {
+        self.header_footer_vml.as_deref()
+    }
+
+    pub(crate) fn set_header_footer_vml(&mut self, drawing: super::vml::NativeDrawing) {
+        self.header_footer_vml = Some(Box::new(drawing));
+    }
+
     pub(crate) fn drawing_parts(&self) -> Option<&super::drawing_parts::DrawingParts> {
         self.drawing_parts.as_deref()
     }
@@ -448,6 +660,8 @@ impl Worksheet {
         let host = self.name().to_owned();
         for edit in prepared {
             self.adjust_defined_names_for_prepared(edit);
+            let formulas = self.prepare_extension_formula_edits(&host, edit);
+            self.apply_extension_formula_edits(formulas);
             let decisions = self.prepare_chart_space_edits(&host, edit);
             self.apply_chart_space_edits(decisions);
         }
@@ -2541,6 +2755,18 @@ impl Worksheet {
         self.tables_mut()
     }
 
+    /// Native slicer views placed on this worksheet.
+    #[inline]
+    #[must_use]
+    pub fn slicers(&self) -> &[Slicer] {
+        &self.slicers
+    }
+
+    #[inline]
+    pub fn slicers_mut(&mut self) -> &mut Vec<Slicer> {
+        &mut self.slicers
+    }
+
     #[inline]
     #[must_use]
     pub fn has_pivot_table(&self) -> bool {
@@ -2920,7 +3146,12 @@ impl Worksheet {
                 }
             }
         }
-        for ole_objects in self.ole_objects().ole_object() {
+        for ole_objects in self
+            .ole_objects()
+            .ole_object()
+            .iter()
+            .filter(|object| object.has_preview_image())
+        {
             let media_object = ole_objects.embedded_object_properties().image();
             let is_new = !list
                 .iter()
@@ -2991,6 +3222,17 @@ impl Worksheet {
     #[inline]
     pub(crate) fn is_deserialized(&self) -> bool {
         self.raw_data_of_worksheet.is_none()
+    }
+
+    /// Whether the pivot tables, tables and slicers of this worksheet can be
+    /// inspected: it is read and its content was not streamed out.
+    #[inline]
+    pub(crate) fn is_inspectable(&self) -> bool {
+        self.is_deserialized() && !self.streamed_out
+    }
+
+    pub(crate) fn mark_streamed_out(&mut self) {
+        self.streamed_out = true;
     }
 
     /// Stage parsed sheet content without copying raw XML or partially loaded
@@ -3087,7 +3329,14 @@ impl Worksheet {
     /// Has Legacy Drawing.
     #[inline]
     pub(crate) fn has_legacy_drawing(&self) -> bool {
-        self.has_comments() || self.has_ole_objects()
+        self.has_comments() || self.has_ole_objects() || self.native_vml_drawing.is_some()
+    }
+
+    /// (This method is crate only.)
+    /// Has a preserved header/footer VML part.
+    #[inline]
+    pub(crate) fn has_header_footer_vml(&self) -> bool {
+        self.header_footer_vml.is_some()
     }
 
     /// Moving a section of the sheet
@@ -3359,6 +3608,15 @@ impl Worksheet {
             );
         }
 
+        // preserved extension and worksheet content
+        self.adjust_preserved_ranges(&super::preserved_ranges::LocalEdit {
+            insert:    true,
+            root_col:  root_col_num,
+            col_count: offset_col_num,
+            root_row:  root_row_num,
+            row_count: offset_row_num,
+        });
+
         // merge cells
         for merge_cell in self.merge_cells_mut() {
             merge_cell.adjustment_insert_coordinate(
@@ -3433,6 +3691,15 @@ impl Worksheet {
             );
         }
 
+        // preserved extension and worksheet content
+        self.adjust_preserved_ranges(&super::preserved_ranges::LocalEdit {
+            insert:    false,
+            root_col:  root_col_num,
+            col_count: offset_col_num,
+            root_row:  root_row_num,
+            row_count: offset_row_num,
+        });
+
         // conditional styles
         self.conditional_formatting_collection.retain(|x| {
             !x.is_remove_coordinate(root_col_num, offset_col_num, root_row_num, offset_row_num)
@@ -3461,12 +3728,9 @@ impl Worksheet {
 
         // auto filter
         let is_remove = match self.auto_filter() {
-            Some(v) => v.range().is_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            ),
+            Some(v) => {
+                v.is_remove_coordinate(root_col_num, offset_col_num, root_row_num, offset_row_num)
+            }
             None => false,
         };
         if is_remove {

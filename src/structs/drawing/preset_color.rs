@@ -16,7 +16,7 @@ use crate::writer::driver::{
     write_start_tag,
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct PresetColor {
     val:        Box<str>,
@@ -345,5 +345,87 @@ fn validate_preset_color(value: &str) -> Result<(), crate::XlsxError> {
         | "yellow"
         | "yellowGreen" => Ok(()),
         _ => Err(crate::xml::xml_error("invalid DrawingML preset color")),
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PresetColor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["val", "transforms", "alpha"];
+        struct ColourVisitor;
+        impl<'de> serde::de::Visitor<'de> for ColourVisitor {
+            type Value = PresetColor;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a DrawingML colour")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let val = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let transforms = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(3, &self));
+                }
+                Ok(PresetColor { val, transforms })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut val: Option<Box<str>> = None;
+                let mut transforms: Option<Vec<ColorTransform>> = None;
+                let mut alpha: Option<Option<Alpha>> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "val" => {
+                            if val.is_some() {
+                                return Err(serde::de::Error::duplicate_field("val"));
+                            }
+                            val = Some(map.next_value()?);
+                        }
+                        "transforms" => {
+                            if transforms.is_some() {
+                                return Err(serde::de::Error::duplicate_field("transforms"));
+                            }
+                            transforms = Some(map.next_value()?);
+                        }
+                        "alpha" => {
+                            if alpha.is_some() {
+                                return Err(serde::de::Error::duplicate_field("alpha"));
+                            }
+                            alpha = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                let val = val.ok_or_else(|| serde::de::Error::missing_field("val"))?;
+                let legacy = alpha.is_some();
+                if transforms.is_some() && legacy {
+                    return Err(serde::de::Error::custom(
+                        "conflicting current and legacy colour transforms",
+                    ));
+                }
+                if let Some(transforms) = transforms {
+                    return Ok(PresetColor { val, transforms });
+                }
+                let mut transforms = Vec::new();
+                if let Some(Some(value)) = alpha {
+                    transforms.push(ColorTransform::Alpha(value));
+                }
+                for transform in &transforms {
+                    transform.validate().map_err(serde::de::Error::custom)?;
+                }
+                Ok(PresetColor { val, transforms })
+            }
+        }
+        deserializer.deserialize_struct("PresetColor", &["val", "transforms"], ColourVisitor)
     }
 }

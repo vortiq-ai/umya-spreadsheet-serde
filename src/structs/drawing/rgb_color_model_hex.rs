@@ -21,11 +21,10 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct RgbColorModelHex {
     val:        StringValue,
-    #[cfg_attr(feature = "serde", serde(default))]
     transforms: Vec<ColorTransform>,
 }
 impl RgbColorModelHex {
@@ -445,5 +444,202 @@ impl RgbColorModelHex {
             write_end_tag(writer, "a:srgbClr");
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for RgbColorModelHex {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "val",
+            "transforms",
+            "luminance",
+            "luminance_modulation",
+            "luminance_offset",
+            "saturation",
+            "saturation_modulation",
+            "shade",
+            "alpha",
+            "tint",
+        ];
+        struct ColourVisitor;
+        impl<'de> serde::de::Visitor<'de> for ColourVisitor {
+            type Value = RgbColorModelHex;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a DrawingML colour")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let val = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let transforms = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(3, &self));
+                }
+                Ok(RgbColorModelHex { val, transforms })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut val: Option<StringValue> = None;
+                let mut transforms: Option<Vec<ColorTransform>> = None;
+                let mut luminance: Option<Option<super::scheme_color::LegacyPercentage>> = None;
+                let mut luminance_modulation: Option<
+                    Option<super::scheme_color::LegacyPercentage>,
+                > = None;
+                let mut luminance_offset: Option<Option<super::scheme_color::LegacyPercentage>> =
+                    None;
+                let mut saturation: Option<Option<super::scheme_color::LegacyPercentage>> = None;
+                let mut saturation_modulation: Option<
+                    Option<super::scheme_color::LegacyPercentage>,
+                > = None;
+                let mut shade: Option<Option<super::scheme_color::LegacyPercentage>> = None;
+                let mut alpha: Option<Option<super::scheme_color::LegacyPercentage>> = None;
+                let mut tint: Option<Option<super::scheme_color::LegacyPercentage>> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "val" => {
+                            if val.is_some() {
+                                return Err(serde::de::Error::duplicate_field("val"));
+                            }
+                            val = Some(map.next_value()?);
+                        }
+                        "transforms" => {
+                            if transforms.is_some() {
+                                return Err(serde::de::Error::duplicate_field("transforms"));
+                            }
+                            transforms = Some(map.next_value()?);
+                        }
+                        "luminance" => {
+                            if luminance.is_some() {
+                                return Err(serde::de::Error::duplicate_field("luminance"));
+                            }
+                            luminance = Some(map.next_value()?);
+                        }
+                        "luminance_modulation" => {
+                            if luminance_modulation.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "luminance_modulation",
+                                ));
+                            }
+                            luminance_modulation = Some(map.next_value()?);
+                        }
+                        "luminance_offset" => {
+                            if luminance_offset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("luminance_offset"));
+                            }
+                            luminance_offset = Some(map.next_value()?);
+                        }
+                        "saturation" => {
+                            if saturation.is_some() {
+                                return Err(serde::de::Error::duplicate_field("saturation"));
+                            }
+                            saturation = Some(map.next_value()?);
+                        }
+                        "saturation_modulation" => {
+                            if saturation_modulation.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "saturation_modulation",
+                                ));
+                            }
+                            saturation_modulation = Some(map.next_value()?);
+                        }
+                        "shade" => {
+                            if shade.is_some() {
+                                return Err(serde::de::Error::duplicate_field("shade"));
+                            }
+                            shade = Some(map.next_value()?);
+                        }
+                        "alpha" => {
+                            if alpha.is_some() {
+                                return Err(serde::de::Error::duplicate_field("alpha"));
+                            }
+                            alpha = Some(map.next_value()?);
+                        }
+                        "tint" => {
+                            if tint.is_some() {
+                                return Err(serde::de::Error::duplicate_field("tint"));
+                            }
+                            tint = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                let val = val.ok_or_else(|| serde::de::Error::missing_field("val"))?;
+                let legacy = luminance.is_some()
+                    || luminance_modulation.is_some()
+                    || luminance_offset.is_some()
+                    || saturation.is_some()
+                    || saturation_modulation.is_some()
+                    || shade.is_some()
+                    || alpha.is_some()
+                    || tint.is_some();
+                if transforms.is_some() && legacy {
+                    return Err(serde::de::Error::custom(
+                        "conflicting current and legacy colour transforms",
+                    ));
+                }
+                if let Some(transforms) = transforms {
+                    return Ok(RgbColorModelHex { val, transforms });
+                }
+                // Preserve the emission order of the legacy OOXML writer.
+                let mut transforms = Vec::new();
+                if let Some(value) = luminance.flatten().filter(|value| value.val.has_value()) {
+                    transforms.push(ColorTransform::Luminance(value.val.value().to_string()));
+                }
+                if let Some(value) = luminance_modulation
+                    .flatten()
+                    .filter(|value| value.val.has_value())
+                {
+                    transforms.push(ColorTransform::LuminanceModulation(
+                        value.val.value().to_string(),
+                    ));
+                }
+                if let Some(value) = luminance_offset
+                    .flatten()
+                    .filter(|value| value.val.has_value())
+                {
+                    transforms.push(ColorTransform::LuminanceOffset(
+                        value.val.value().to_string(),
+                    ));
+                }
+                if let Some(value) = saturation.flatten().filter(|value| value.val.has_value()) {
+                    transforms.push(ColorTransform::Saturation(value.val.value().to_string()));
+                }
+                if let Some(value) = saturation_modulation
+                    .flatten()
+                    .filter(|value| value.val.has_value())
+                {
+                    transforms.push(ColorTransform::SaturationModulation(
+                        value.val.value().to_string(),
+                    ));
+                }
+                if let Some(value) = shade.flatten().filter(|value| value.val.has_value()) {
+                    transforms.push(ColorTransform::Shade(value.val.value().to_string()));
+                }
+                if let Some(value) = alpha.flatten().filter(|value| value.val.has_value()) {
+                    let mut alpha = Alpha::default();
+                    alpha.set_val(value.val.value().to_string());
+                    transforms.push(ColorTransform::Alpha(alpha));
+                }
+                if let Some(value) = tint.flatten().filter(|value| value.val.has_value()) {
+                    transforms.push(ColorTransform::Tint(value.val.value().to_string()));
+                }
+                for transform in &transforms {
+                    transform.validate().map_err(serde::de::Error::custom)?;
+                }
+                Ok(RgbColorModelHex { val, transforms })
+            }
+        }
+        deserializer.deserialize_struct("RgbColorModelHex", &["val", "transforms"], ColourVisitor)
     }
 }

@@ -104,7 +104,7 @@ impl Stylesheet {
     pub(crate) fn get_fonts_mut(&mut self) -> &mut Fonts {
         self.fonts_mut()
     }
-    
+
     #[inline]
     pub(crate) fn set_fonts(&mut self, value: Fonts) -> &mut Self {
         self.fonts = value;
@@ -510,6 +510,17 @@ impl Stylesheet {
         self.maked_style_list.push(style.clone());
         self.cell_formats.set_cell_format(cell_format);
         index
+    }
+
+    /// The stylesheet to write for a workbook that has none: the default
+    /// font, the two reserved fills, the default border and one default cell
+    /// format. Style indexes beyond it stay undefined, as in the source.
+    pub(crate) fn set_export_default_value(&mut self) -> &mut Self {
+        if self.cell_formats.cell_format().is_empty() {
+            self.set_style(&Style::default_value());
+            self.fills.set_style(&Style::default_value_2());
+        }
+        self
     }
 
     pub(crate) fn set_defalut_value(&mut self) -> &mut Self {

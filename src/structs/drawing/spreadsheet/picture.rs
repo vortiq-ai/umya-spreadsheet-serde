@@ -29,9 +29,24 @@ pub struct Picture {
     non_visual_picture_properties: NonVisualPictureProperties,
     blip_fill:                     BlipFill,
     shape_properties:              ShapeProperties,
+    #[cfg_attr(feature = "serde", serde(default))]
+    shape_style:                   Option<Box<super::ShapeStyle>>,
 }
 
 impl Picture {
+    #[must_use]
+    pub fn shape_style(&self) -> Option<&super::ShapeStyle> {
+        self.shape_style.as_deref()
+    }
+
+    pub fn shape_style_mut(&mut self) -> Option<&mut super::ShapeStyle> {
+        self.shape_style.as_deref_mut()
+    }
+
+    pub fn set_shape_style(&mut self, value: super::ShapeStyle) {
+        self.shape_style = Some(Box::new(value));
+    }
+
     #[inline]
     #[must_use]
     pub fn non_visual_picture_properties(&self) -> &NonVisualPictureProperties {
@@ -175,6 +190,11 @@ impl Picture {
                                 session,
                             )?;
                         }
+                        "style" => {
+                            let mut value = super::ShapeStyle::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_shape_style(value);
+                        }
                         _ => {
                             return Err(crate::xml::xml_error(
                                 "unsupported spreadsheet drawing child",
@@ -223,6 +243,10 @@ impl Picture {
 
         // xdr:spPr
         self.shape_properties.write_to(writer, rel_list)?;
+
+        if let Some(style) = &self.shape_style {
+            style.write_to(writer)?;
+        }
 
         write_end_tag(writer, "xdr:pic");
         Ok(())

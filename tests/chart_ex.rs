@@ -272,7 +272,7 @@ fn layout_properties_are_native_and_conflicting_choices_fail() {
     );
     properties.binning.as_mut().unwrap().bin_count = Some(8);
     let output = export(&chart);
-    assert!(output.contains("<cx:binCount>8</cx:binCount>"));
+    assert!(output.contains("<cx:binCount val=\"8\"/>"));
     assert!(output.contains("quartileMethod=\"inclusive\""));
     let invalid = xml.replace(
         "<cx:binCount>4</cx:binCount>",

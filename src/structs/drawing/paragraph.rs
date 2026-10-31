@@ -37,6 +37,73 @@ pub struct Paragraph {
     end_para_run_properties: Option<Box<RunProperties>>,
     #[cfg_attr(feature = "serde", serde(default))]
     parts:                   Option<Box<ParagraphParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    breaks:                  Vec<PositionedTextBreak>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct PositionedTextBreak {
+    pub before_run:     u32,
+    /// Number of fields preceding this break in document order. Fields at
+    /// the same run boundary can occur on either side of a break.
+    pub before_field:   u32,
+    pub run_properties: Option<RunProperties>,
+}
+
+impl PositionedTextBreak {
+    fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<Self, XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(e)?;
+        let mut result = Self::default();
+        if empty {
+            return Ok(result);
+        }
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                if crate::reader::driver::local_name(e.name().as_ref()) != b"rPr"
+                    || result.run_properties.is_some()
+                {
+                    return Err(crate::xml::xml_error("invalid DrawingML text break child"));
+                }
+                let mut properties = RunProperties::default();
+                properties.read_with_session(reader, e, empty, session)?;
+                result.run_properties = Some(properties);
+            },
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => return Ok(result),
+            Event::Text(ref text) if !text.iter().all(u8::is_ascii_whitespace) => {
+                return Err(crate::xml::xml_error("unexpected text in DrawingML text break"));
+            },
+            Event::CData(_) => return Err(crate::xml::xml_error("unexpected text in DrawingML text break")),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text break")),
+        );
+    }
+
+    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
+        write_start_tag(writer, "a:br", vec![], self.run_properties.is_none());
+        if let Some(properties) = &self.run_properties {
+            properties.write_to_rpr(writer)?;
+            write_end_tag(writer, "a:br");
+        }
+        Ok(())
+    }
 }
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -174,6 +241,11 @@ impl Paragraph {
         for run in &mut self.run {
             run.strip_export_parts();
         }
+        for text_break in &mut self.breaks {
+            if let Some(properties) = &mut text_break.run_properties {
+                properties.strip_export_parts();
+            }
+        }
         if let Some(properties) = &mut self.end_para_run_properties {
             properties.strip_export_parts();
         }
@@ -207,13 +279,62 @@ impl Paragraph {
                 self.parts = Some(parts);
                 restored += 1;
             }
-        } else if let (Some(current), Some(previous)) = (&mut self.parts, &previous.parts) {
+        } else if let Some(current) = &mut self.parts {
             // A property-only edit materializes presence metadata, not a
             // replacement of the authoritative positioned-field list.
             // Explicit field removal is already reflected in `previous`.
-            if current.fields.is_empty() && !previous.fields.is_empty() {
-                current.fields.clone_from(&previous.fields);
-                restored += 1;
+            let previous_fields = previous
+                .parts
+                .as_ref()
+                .map_or(&[][..], |p| p.fields.as_slice());
+            let bytes = |field: &TextField| -> Result<Vec<u8>, XlsxError> {
+                let mut writer = Writer::new(Cursor::new(Vec::new()));
+                field.write_to(&mut writer)?;
+                Ok(writer.into_inner().into_inner())
+            };
+            let mut changed = current.fields.len() != previous_fields.len();
+            if !changed {
+                for (current, previous) in current.fields.iter().zip(previous_fields) {
+                    if current.before_run != previous.before_run {
+                        changed = true;
+                        break;
+                    }
+                    let authoritative = bytes(&previous.field)?;
+                    // Supplied hidden fields are always replaced. A malformed
+                    // supplied paint cannot prevent that trusted replacement.
+                    if !matches!(bytes(&current.field), Ok(value) if value == authoritative) {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            current.fields = previous_fields.to_vec();
+            restored += usize::from(changed);
+        }
+        let same_breaks = self.breaks.len() == previous.breaks.len()
+            && self
+                .breaks
+                .iter()
+                .zip(&previous.breaks)
+                .all(|(current, old)| {
+                    current.before_run == old.before_run && current.before_field == old.before_field
+                });
+        for (index, text_break) in self.breaks.iter_mut().enumerate() {
+            if let Some(properties) = &mut text_break.run_properties {
+                let mut before = Writer::new(Cursor::new(Vec::new()));
+                properties.write_to_rpr(&mut before)?;
+                properties.strip_export_parts();
+                if same_breaks {
+                    if let Some(old) = &previous.breaks[index].run_properties {
+                        if properties.restore_export_parts(old) > 0 {
+                            let mut after = Writer::new(Cursor::new(Vec::new()));
+                            properties.write_to_rpr(&mut after)?;
+                            restored += usize::from(
+                                before.into_inner().into_inner() != after.into_inner().into_inner(),
+                            );
+                        }
+                    }
+                }
             }
         }
         restored += self
@@ -238,18 +359,48 @@ impl Paragraph {
                 .run
                 .iter()
                 .all(|v| v.run_properties().supplemental_attributes_valid())
+            && self.breaks_valid()
             && self
                 .end_para_run_properties
                 .as_ref()
                 .is_none_or(|v| v.supplemental_attributes_valid())
-            && self.parts.as_ref().is_none_or(|p| {
-                p.fields
-                    .windows(2)
-                    .all(|pair| pair[0].before_run <= pair[1].before_run)
-                    && p.fields
-                        .iter()
-                        .all(|f| f.before_run as usize <= self.run.len() && f.field.is_valid())
-            })
+            && self.field_positions_valid()
+            && self.fields().iter().all(|field| field.field.is_valid())
+    }
+
+    fn field_positions_valid(&self) -> bool {
+        self.fields()
+            .windows(2)
+            .all(|pair| pair[0].before_run <= pair[1].before_run)
+            && self
+                .fields()
+                .iter()
+                .all(|field| field.before_run as usize <= self.run.len())
+    }
+
+    fn breaks_valid(&self) -> bool {
+        self.breaks.windows(2).all(|pair| {
+            pair[0].before_run < pair[1].before_run
+                || (pair[0].before_run == pair[1].before_run
+                    && pair[0].before_field <= pair[1].before_field)
+        }) && self.breaks.iter().all(|text_break| {
+            text_break.before_run as usize <= self.run.len()
+                && text_break
+                    .run_properties
+                    .as_ref()
+                    .is_none_or(RunProperties::supplemental_attributes_valid)
+        })
+    }
+
+    fn break_field_positions_valid(&self) -> bool {
+        // A projection omits fields but retains their positions in editable
+        // breaks. Check these ranks only when writing the complete paragraph.
+        let fields = self.fields();
+        self.breaks.iter().all(|text_break| {
+            let first = fields.partition_point(|field| field.before_run < text_break.before_run);
+            let end = fields.partition_point(|field| field.before_run <= text_break.before_run);
+            (first..=end).contains(&(text_break.before_field as usize))
+        })
     }
 
     pub(crate) fn mark_empty_import(&mut self) {
@@ -259,6 +410,15 @@ impl Paragraph {
     #[must_use]
     pub fn fields(&self) -> &[PositionedTextField] {
         self.parts.as_ref().map_or(&[], |p| &p.fields)
+    }
+
+    #[must_use]
+    pub fn breaks(&self) -> &[PositionedTextBreak] {
+        &self.breaks
+    }
+
+    pub fn breaks_mut(&mut self) -> &mut Vec<PositionedTextBreak> {
+        &mut self.breaks
     }
 
     pub fn add_field(&mut self, before_run: u32, field: TextField) -> bool {
@@ -272,6 +432,14 @@ impl Paragraph {
             })
         });
         let pos = p.fields.partition_point(|v| v.before_run <= before_run);
+        for text_break in &mut self.breaks {
+            if text_break.before_field as usize > pos || text_break.before_run > before_run {
+                text_break.before_field = text_break
+                    .before_field
+                    .checked_add(1)
+                    .expect("paragraph field position overflow during field insertion");
+            }
+        }
         p.fields
             .insert(pos, PositionedTextField { before_run, field });
         true
@@ -282,6 +450,14 @@ impl Paragraph {
             return false;
         }
         let insertion_position = run_position(index);
+        for text_break in &mut self.breaks {
+            if text_break.before_run >= insertion_position {
+                text_break.before_run = text_break
+                    .before_run
+                    .checked_add(1)
+                    .expect("paragraph break position overflow during run insertion");
+            }
+        }
         if let Some(p) = &mut self.parts {
             for field in &mut p.fields {
                 if field.before_run >= insertion_position {
@@ -301,6 +477,11 @@ impl Paragraph {
             return None;
         }
         let removed_position = run_position(index);
+        for text_break in &mut self.breaks {
+            if text_break.before_run > removed_position {
+                text_break.before_run -= 1;
+            }
+        }
         if let Some(p) = &mut self.parts {
             for field in &mut p.fields {
                 if field.before_run > removed_position {
@@ -435,7 +616,7 @@ impl Paragraph {
                     continue;
                 }
                 match crate::reader::driver::local_name(e.name().as_ref()) {
-                    b"pPr" if !properties_present && self.run.is_empty() && self.parts.as_ref().is_none_or(|parts| parts.fields.is_empty()) && !end_properties_present => {
+                    b"pPr" if !properties_present && self.run.is_empty() && self.breaks.is_empty() && self.parts.as_ref().is_none_or(|parts| parts.fields.is_empty()) && !end_properties_present => {
                         properties_present = true;
                         self.parts.get_or_insert_with(Default::default).properties_present = true;
                         self.paragraph_properties.read_with_session(reader, e, empty, session)?;
@@ -454,13 +635,21 @@ impl Paragraph {
                         run.read_with_session(reader, e, session)?;
                         self.run.push(run);
                     }
+                    b"br" if !end_properties_present => {
+                        let mut text_break = PositionedTextBreak::read(reader, e, empty, session)?;
+                        text_break.before_run = u32::try_from(self.run.len())
+                            .map_err(|_| crate::xml::xml_error("DrawingML paragraph contains too many runs"))?;
+                        text_break.before_field = u32::try_from(self.fields().len())
+                            .map_err(|_| crate::xml::xml_error("DrawingML paragraph contains too many fields"))?;
+                        self.breaks.push(text_break);
+                    }
                     b"endParaRPr" if !end_properties_present => {
                         end_properties_present = true;
                         let mut properties = RunProperties::default();
                         properties.read_with_session(reader, e, empty, session)?;
                         self.set_end_para_run_properties(properties);
                     }
-                    b"pPr" | b"fld" | b"r" | b"endParaRPr" => return Err(crate::xml::xml_error("duplicate or misplaced DrawingML paragraph child")),
+                    b"pPr" | b"fld" | b"r" | b"br" | b"endParaRPr" => return Err(crate::xml::xml_error("duplicate or misplaced DrawingML paragraph child")),
                     _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
@@ -470,6 +659,16 @@ impl Paragraph {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
+        if !self.field_positions_valid() {
+            return Err(crate::xml::xml_error(
+                "invalid DrawingML paragraph field positions",
+            ));
+        }
+        if !self.breaks_valid() || !self.break_field_positions_valid() {
+            return Err(crate::xml::xml_error(
+                "invalid DrawingML paragraph text breaks",
+            ));
+        }
         // a:p
         write_start_tag(writer, "a:p", vec![], false);
 
@@ -478,23 +677,37 @@ impl Paragraph {
             self.paragraph_properties.write_to(writer)?;
         }
 
-        // a:r
-        for (i, run) in self.run.iter().enumerate() {
-            if let Some(p) = &self.parts {
-                let run_index = run_position(i);
-                for field in p.fields.iter().filter(|v| v.before_run == run_index) {
-                    field.field.write_to(writer)?;
+        let mut fields = self.fields().iter().enumerate().peekable();
+        let mut breaks = self.breaks.iter().peekable();
+        for index in 0..=self.run.len() {
+            let run_index = run_position(index);
+            while fields
+                .peek()
+                .is_some_and(|(_, field)| field.before_run == run_index)
+            {
+                let Some((field_index, field)) = fields.next() else {
+                    break;
+                };
+                while breaks.peek().is_some_and(|text_break| {
+                    text_break.before_run == run_index
+                        && text_break.before_field as usize <= field_index
+                }) {
+                    if let Some(text_break) = breaks.next() {
+                        text_break.write_to(writer)?;
+                    }
+                }
+                field.field.write_to(writer)?;
+            }
+            while breaks
+                .peek()
+                .is_some_and(|text_break| text_break.before_run == run_index)
+            {
+                if let Some(text_break) = breaks.next() {
+                    text_break.write_to(writer)?;
                 }
             }
-            run.write_to(writer)?;
-        }
-        if let Some(p) = &self.parts {
-            for field in p
-                .fields
-                .iter()
-                .filter(|v| v.before_run == run_position(self.run.len()))
-            {
-                field.field.write_to(writer)?;
+            if let Some(run) = self.run.get(index) {
+                run.write_to(writer)?;
             }
         }
 
@@ -549,5 +762,28 @@ mod parity_tests {
         assert_eq!(p.fields()[0].before_run, 0);
         assert!(p.insert_run(0, Run::default()));
         assert_eq!(p.fields()[0].before_run, 1);
+    }
+
+    #[test]
+    fn repeated_restoration_does_not_recount_unchanged_break_supplements() {
+        let xml = "<a:p><a:r><a:t>North</a:t></a:r><a:br><a:rPr \
+                   u=\"dbl\"/></a:br><a:r><a:t>South</a:t></a:r></a:p>";
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let mut buf = Vec::new();
+        let Event::Start(start) = reader.read_event_into(&mut buf).unwrap() else {
+            panic!("expected paragraph");
+        };
+        let mut previous = Paragraph::default();
+        previous
+            .set_attributes(&mut reader, &start.into_owned())
+            .unwrap();
+        let mut current = previous.clone();
+        current.strip_export_parts();
+        assert!(current.restore_export_parts(&previous).unwrap() > 0);
+        assert_eq!(current.restore_export_parts(&previous).unwrap(), 0);
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        current.write_to(&mut writer).unwrap();
+        let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+        assert!(output.contains("u=\"dbl\""));
     }
 }

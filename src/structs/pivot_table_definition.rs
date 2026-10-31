@@ -83,6 +83,14 @@ pub struct PivotTableDefinition {
     extensions:                 Option<Vec<crate::structs::PivotTableExtension>>,
     #[cfg_attr(feature = "serde", serde(default))]
     hierarchies:                Option<crate::structs::PivotTableHierarchies>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    page_fields:                Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    filters:                    Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    row_hierarchies_usage:      Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    column_hierarchies_usage:   Option<crate::drawing::charts::OpaqueElement>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -136,6 +144,103 @@ pub struct PivotTableProperties {
     pub custom_list_sort:          Option<bool>,
 }
 impl PivotTableDefinition {
+    fn read_legacy_table_child<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        parent: &crate::drawing::charts::NamespaceScope,
+    ) -> Result<bool, crate::XlsxError> {
+        use crate::xml::xml_error;
+        let name = parent
+            .child(element)
+            .map_err(xml_error)?
+            .resolve(element.name().as_ref(), false)
+            .map_err(xml_error)?;
+        if name.namespace_uri != SHEET_MAIN_NS
+            || !matches!(
+                name.local_name.as_str(),
+                "rowFields" | "rowItems" | "colFields" | "colItems" | "dataFields"
+            )
+        {
+            return Ok(false);
+        }
+        let node =
+            crate::drawing::charts::OpaqueElement::read_detached(reader, element, empty, parent)
+                .map_err(xml_error)?;
+        if name.local_name == "dataFields" {
+            self.set_data_fields(DataFields::from_native_element(&node).map_err(xml_error)?);
+            return Ok(true);
+        }
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        node.write_to(
+            &mut writer,
+            &crate::drawing::charts::NamespaceScope::default(),
+        )
+        .map_err(xml_error)?;
+        let bytes = Self::canonical_legacy_table_child(writer.into_inner().into_inner())?;
+        let mut canonical = Reader::from_reader(Cursor::new(bytes));
+        let mut buffer = Vec::new();
+        let Event::Start(root) = canonical.read_event_into(&mut buffer)? else {
+            return Err(xml_error("missing native pivot table collection"));
+        };
+        match name.local_name.as_str() {
+            "rowFields" => {
+                let mut value = RowFields::default();
+                value.set_attributes(&mut canonical, &root);
+                self.set_row_fields(value);
+            }
+            "rowItems" => {
+                let mut value = RowItems::default();
+                value.set_attributes(&mut canonical, &root);
+                self.set_row_items(value);
+            }
+            "colFields" => {
+                let mut value = ColumnFields::default();
+                value.set_attributes(&mut canonical, &root);
+                self.set_column_fields(value);
+            }
+            "colItems" => {
+                let mut value = ColumnItems::default();
+                value.set_attributes(&mut canonical, &root);
+                self.set_column_items(value);
+            }
+            _ => return Err(xml_error("unknown native pivot table collection")),
+        }
+        Ok(true)
+    }
+
+    fn read_table_child<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        parent: &crate::drawing::charts::NamespaceScope,
+    ) -> Result<bool, crate::XlsxError> {
+        use crate::xml::xml_error;
+        let name = parent
+            .child(element)
+            .map_err(xml_error)?
+            .resolve(element.name().as_ref(), false)
+            .map_err(xml_error)?;
+        let target = match (name.namespace_uri.as_str(), name.local_name.as_str()) {
+            (SHEET_MAIN_NS, "pageFields") => &mut self.page_fields,
+            (SHEET_MAIN_NS, "filters") => &mut self.filters,
+            (SHEET_MAIN_NS, "rowHierarchiesUsage") => &mut self.row_hierarchies_usage,
+            (SHEET_MAIN_NS, "colHierarchiesUsage") => &mut self.column_hierarchies_usage,
+            _ => return Ok(false),
+        };
+        if target.is_some() {
+            return Err(xml_error(format!("duplicate native {}", name.local_name)));
+        }
+        let node =
+            crate::drawing::charts::OpaqueElement::read_detached(reader, element, empty, parent)
+                .map_err(xml_error)?;
+        validate_table_child(&node).map_err(xml_error)?;
+        *target = Some(node);
+        Ok(true)
+    }
+
     #[must_use]
     pub fn hierarchies(&self) -> Option<&crate::structs::PivotTableHierarchies> {
         self.hierarchies.as_ref()
@@ -928,6 +1033,7 @@ impl PivotTableDefinition {
         let scope = crate::drawing::charts::NamespaceScope::default()
             .child(e)
             .map_err(xml_error)?;
+        let root_name = e.name().as_ref().to_vec();
         if !scope
             .resolve(e.name().as_ref(), false)
             .map_err(xml_error)?
@@ -1081,6 +1187,8 @@ impl PivotTableDefinition {
         crate::try_xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
+                if self.read_table_child(reader, e, true, &scope)? { continue; }
+                if self.read_legacy_table_child(reader, e, true, &scope)? { continue; }
                 let name = scope.child(e).map_err(xml_error)?
                     .resolve(e.name().as_ref(), false).map_err(xml_error)?;
                 if name.is(SHEET_MAIN_NS,"pivotHierarchies") {
@@ -1113,20 +1221,45 @@ impl PivotTableDefinition {
                         reader,e,true,&scope,
                     ).map_err(xml_error)?);
                 }
-                if e.name().into_inner() == b"location" {
+                if name.is(SHEET_MAIN_NS, "location") {
                     let mut obj = Location::default();
                     obj.set_attributes(reader, e);
                     self.set_location(obj);
                 }
-                if e.name().into_inner() == b"pivotTableStyleInfo" {
+                if name.is(SHEET_MAIN_NS, "pivotTableStyleInfo") {
                     let mut obj = PivotTableStyle::default();
                     obj.set_attributes(reader, e);
                     self.set_pivot_table_style(obj);
                 }
+                if name.is(SHEET_MAIN_NS, "pivotFields") {
+                    let mut obj = PivotFields::default();
+                    obj.set_attributes_scoped(reader, e, true, &scope)?;
+                    self.set_pivot_fields(obj);
+                }
             },
             Event::Start(ref e) => {
+                if self.read_table_child(reader, e, false, &scope)? { continue; }
+                if self.read_legacy_table_child(reader, e, false, &scope)? { continue; }
                 let name = scope.child(e).map_err(xml_error)?
                     .resolve(e.name().as_ref(), false).map_err(xml_error)?;
+                if name.is(SHEET_MAIN_NS, "location")
+                    || name.is(SHEET_MAIN_NS, "pivotTableStyleInfo")
+                {
+                    let node = crate::drawing::charts::OpaqueElement::read(
+                        reader, e, false, &scope,
+                    ).map_err(xml_error)?;
+                    crate::xml::no_children(&node).map_err(xml_error)?;
+                    if name.local_name == "location" {
+                        let mut obj = Location::default();
+                        obj.set_attributes(reader, e);
+                        self.set_location(obj);
+                    } else {
+                        let mut obj = PivotTableStyle::default();
+                        obj.set_attributes(reader, e);
+                        self.set_pivot_table_style(obj);
+                    }
+                    continue;
+                }
                 if name.is(SHEET_MAIN_NS,"pivotHierarchies") {
                     if self.hierarchies.is_some(){return Err(xml_error("duplicate native pivot hierarchies"));}
                     self.hierarchies=Some(crate::structs::PivotTableHierarchies::read(
@@ -1157,39 +1290,14 @@ impl PivotTableDefinition {
                         reader,e,false,&scope,
                     ).map_err(xml_error)?);
                 }
-                if e.name().into_inner() == b"pivotFields" {
+                if name.is(SHEET_MAIN_NS, "pivotFields") {
                     let mut obj = PivotFields::default();
-                    obj.set_attributes(reader, e)?;
+                    obj.set_attributes_scoped(reader, e, false, &scope)?;
                     self.set_pivot_fields(obj);
-                }
-                if e.name().into_inner() == b"rowFields" {
-                    let mut obj = RowFields::default();
-                    obj.set_attributes(reader, e);
-                    self.set_row_fields(obj);
-                }
-                if e.name().into_inner() == b"rowItems" {
-                    let mut obj = RowItems::default();
-                    obj.set_attributes(reader, e);
-                    self.set_row_items(obj);
-                }
-                if e.name().into_inner() == b"colFields" {
-                    let mut obj = ColumnFields::default();
-                    obj.set_attributes(reader, e);
-                    self.set_column_fields(obj);
-                }
-                if e.name().into_inner() == b"colItems" {
-                    let mut obj = ColumnItems::default();
-                    obj.set_attributes(reader, e);
-                    self.set_column_items(obj);
-                }
-                if e.name().into_inner() == b"dataFields" {
-                    let mut obj = DataFields::default();
-                    obj.set_attributes(reader, e);
-                    self.set_data_fields(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"pivotTableDefinition" {
+                if e.name().as_ref() == root_name {
                     return Ok(())
                 }
             },
@@ -1545,16 +1653,20 @@ impl PivotTableDefinition {
         // colItems
         self.column_items.write_to(writer);
 
-        // dataFields
-        self.data_fields.write_to(writer);
-
-        if let Some(hierarchies) = &self.hierarchies {
-            hierarchies
-                .write_to(writer)
+        let native_scope = crate::drawing::charts::NamespaceScope::with_bindings([
+            (None, SHEET_MAIN_NS.into()),
+            (Some("mc".into()), MC_NS.into()),
+            (Some("xr".into()), SHEET_MS_REVISION_NS.into()),
+        ]);
+        if let Some(page_fields) = &self.page_fields {
+            validate_table_child(page_fields).map_err(crate::xml::xml_error)?;
+            page_fields
+                .write_to(writer, &native_scope)
                 .map_err(crate::xml::xml_error)?;
         }
-        // pivotTableStyleInfo
-        self.pivot_table_style.write_to(writer);
+
+        // dataFields
+        self.data_fields.write_to(writer)?;
 
         if let Some(formats) = &self.formats {
             formats
@@ -1571,6 +1683,28 @@ impl PivotTableDefinition {
                 .write_to(writer, "chartFormats")
                 .map_err(crate::xml::xml_error)?;
         }
+        if let Some(hierarchies) = &self.hierarchies {
+            hierarchies
+                .write_to(writer)
+                .map_err(crate::xml::xml_error)?;
+        }
+        // pivotTableStyleInfo
+        self.pivot_table_style.write_to(writer);
+
+        for child in [
+            &self.filters,
+            &self.row_hierarchies_usage,
+            &self.column_hierarchies_usage,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            validate_table_child(child).map_err(crate::xml::xml_error)?;
+            child
+                .write_to(writer, &native_scope)
+                .map_err(crate::xml::xml_error)?;
+        }
+
         if let Some(extensions) = &self.extensions {
             crate::structs::pivot_table_extension::write_extensions(writer, extensions)
                 .map_err(crate::xml::xml_error)?;
@@ -1578,6 +1712,174 @@ impl PivotTableDefinition {
         write_end_tag(writer, "pivotTableDefinition");
         Ok(())
     }
+}
+
+fn validate_table_child(node: &crate::drawing::charts::OpaqueElement) -> Result<(), String> {
+    use crate::xml::{
+        attributes,
+        direct_children,
+        expect,
+        no_children,
+        required,
+        required_unsigned,
+        signed,
+        unsigned,
+    };
+    let qualified = [(MC_NS, "Ignorable")];
+    attributes(node, &["count"], &qualified)?;
+    let children = direct_children(node)?;
+    let name = node.name.local_name.as_str();
+    if name != "filters" && children.is_empty() {
+        return Err(format!("native {name} cannot be empty"));
+    }
+    if unsigned(node, "count")?.is_some_and(|count| count as usize != children.len()) {
+        return Err(format!("native {name} count mismatch"));
+    }
+    for child in children {
+        match name {
+            "pageFields" => {
+                expect(&child, SHEET_MAIN_NS, "pageField")?;
+                attributes(&child, &["fld", "item", "hier", "name", "cap"], &qualified)?;
+                signed(&child, "fld")?.ok_or("pageField requires fld")?;
+                unsigned(&child, "item")?;
+                signed(&child, "hier")?;
+                validate_table_child_extension(&child, false)?;
+            }
+            "filters" => {
+                expect(&child, SHEET_MAIN_NS, "filter")?;
+                attributes(
+                    &child,
+                    &[
+                        "fld",
+                        "mpFld",
+                        "type",
+                        "evalOrder",
+                        "id",
+                        "iMeasureHier",
+                        "iMeasureFld",
+                        "name",
+                        "description",
+                        "stringValue1",
+                        "stringValue2",
+                    ],
+                    &qualified,
+                )?;
+                required_unsigned(&child, "fld")?;
+                required_unsigned(&child, "id")?;
+                for attribute in ["mpFld", "iMeasureHier", "iMeasureFld"] {
+                    unsigned(&child, attribute)?;
+                }
+                signed(&child, "evalOrder")?;
+                let filter_type = required(&child, "type")?;
+                if !matches!(
+                    filter_type.as_str(),
+                    "unknown"
+                        | "count"
+                        | "percent"
+                        | "sum"
+                        | "captionEqual"
+                        | "captionNotEqual"
+                        | "captionBeginsWith"
+                        | "captionNotBeginsWith"
+                        | "captionEndsWith"
+                        | "captionNotEndsWith"
+                        | "captionContains"
+                        | "captionNotContains"
+                        | "captionGreaterThan"
+                        | "captionGreaterThanOrEqual"
+                        | "captionLessThan"
+                        | "captionLessThanOrEqual"
+                        | "captionBetween"
+                        | "captionNotBetween"
+                        | "valueEqual"
+                        | "valueNotEqual"
+                        | "valueGreaterThan"
+                        | "valueGreaterThanOrEqual"
+                        | "valueLessThan"
+                        | "valueLessThanOrEqual"
+                        | "valueBetween"
+                        | "valueNotBetween"
+                        | "dateEqual"
+                        | "dateNotEqual"
+                        | "dateOlderThan"
+                        | "dateOlderThanOrEqual"
+                        | "dateNewerThan"
+                        | "dateNewerThanOrEqual"
+                        | "dateBetween"
+                        | "dateNotBetween"
+                        | "tomorrow"
+                        | "today"
+                        | "yesterday"
+                        | "nextWeek"
+                        | "thisWeek"
+                        | "lastWeek"
+                        | "nextMonth"
+                        | "thisMonth"
+                        | "lastMonth"
+                        | "nextQuarter"
+                        | "thisQuarter"
+                        | "lastQuarter"
+                        | "nextYear"
+                        | "thisYear"
+                        | "lastYear"
+                        | "yearToDate"
+                        | "Q1"
+                        | "Q2"
+                        | "Q3"
+                        | "Q4"
+                        | "M1"
+                        | "M2"
+                        | "M3"
+                        | "M4"
+                        | "M5"
+                        | "M6"
+                        | "M7"
+                        | "M8"
+                        | "M9"
+                        | "M10"
+                        | "M11"
+                        | "M12"
+                ) {
+                    return Err("invalid native pivot filter type".into());
+                }
+                validate_table_child_extension(&child, true)?;
+            }
+            "rowHierarchiesUsage" | "colHierarchiesUsage" => {
+                let entry = if name == "rowHierarchiesUsage" {
+                    "rowHierarchyUsage"
+                } else {
+                    "colHierarchyUsage"
+                };
+                expect(&child, SHEET_MAIN_NS, entry)?;
+                attributes(&child, &["hierarchyUsage"], &qualified)?;
+                signed(&child, "hierarchyUsage")?.ok_or("hierarchy usage requires index")?;
+                no_children(&child)?;
+            }
+            _ => return Err("unknown retained native pivot table child".into()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_table_child_extension(
+    node: &crate::drawing::charts::OpaqueElement,
+    requires_filter: bool,
+) -> Result<(), String> {
+    let children = crate::xml::direct_children(node)?;
+    let mut next = 0;
+    if requires_filter {
+        let filter = children.first().ok_or("pivot filter requires autoFilter")?;
+        crate::xml::expect(filter, SHEET_MAIN_NS, "autoFilter")?;
+        next = 1;
+    }
+    if let Some(extension) = children.get(next) {
+        crate::xml::expect(extension, SHEET_MAIN_NS, "extLst")?;
+        next += 1;
+    }
+    if next != children.len() {
+        return Err("unexpected native pivot table child content".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -189,7 +189,7 @@ pub(crate) fn edit_prepared_formula_text_for_moved_cell(
 /// Classify with the existing coordinate grammar, then enforce native bounds.
 /// Names and malformed anchored/compound fragments stay lexical. In particular
 /// a numeric suffix too large for u32 is not an omitted whole-axis dimension.
-fn is_native_coordinate_operand(range: &str) -> bool {
+pub(crate) fn is_native_coordinate_operand(range: &str) -> bool {
     if is_out_of_grid_name_operand(range) {
         return false;
     }
@@ -225,7 +225,7 @@ fn is_native_coordinate_operand(range: &str) -> bool {
 
 /// Lexical names, not a lookup of their definitions. MS-XLSX 2.2.2 permits
 /// non-ASCII name characters and excludes native A1/R1C1 reference spellings.
-fn is_named_operand(value: &str) -> bool {
+pub(crate) fn is_named_operand(value: &str) -> bool {
     let start = |c: char| c.is_ascii_alphabetic() || c == '_' || c == '\\' || !c.is_ascii();
     let mut chars = value.chars();
     if !chars.next().is_some_and(start)

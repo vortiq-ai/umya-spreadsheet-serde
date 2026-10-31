@@ -47,6 +47,8 @@ pub(crate) struct WriteContext<'a> {
 }
 
 pub(crate) trait NativeElement: Sized {
+    fn visit_shapes(&self, _visit: &mut dyn FnMut(&ShapeProperties)) {}
+    fn visit_shapes_mut(&mut self, _visit: &mut dyn FnMut(&mut ShapeProperties)) {}
     fn read<R: BufRead>(
         reader: &mut Reader<R>,
         element: &BytesStart<'_>,
@@ -62,6 +64,9 @@ pub(crate) trait NativeElement: Sized {
     ) -> Result<(), String>;
     fn visit_formulas(&self, _visit: &mut dyn FnMut(&crate::drawing::charts::Formula)) {}
     fn visit_formulas_mut(&mut self, _visit: &mut dyn FnMut(&mut crate::drawing::charts::Formula)) {
+    }
+    fn opaque_extension_count(&self) -> usize {
+        0
     }
 }
 
@@ -311,8 +316,7 @@ impl NativeElement for u32 {
         parent: &NamespaceScope,
         _session: &SourceCacheSession,
     ) -> Result<Self, String> {
-        Attributes::read(element, &parent.child(element)?)?.finish()?;
-        Self::parse(&text(reader, element, empty)?)
+        numeric_scalar(reader, element, empty, parent)
     }
 
     fn write(
@@ -321,7 +325,7 @@ impl NativeElement for u32 {
         name: &str,
         _context: &mut WriteContext<'_>,
     ) -> Result<(), String> {
-        leaf(writer, name, &self.to_string());
+        start(writer, name, vec![("val", self.to_string())], true);
         Ok(())
     }
 }
@@ -333,8 +337,7 @@ impl NativeElement for XmlDouble {
         parent: &NamespaceScope,
         _session: &SourceCacheSession,
     ) -> Result<Self, String> {
-        Attributes::read(element, &parent.child(element)?)?.finish()?;
-        Self::parse(&text(reader, element, empty)?)
+        numeric_scalar(reader, element, empty, parent)
     }
 
     fn write(
@@ -343,12 +346,39 @@ impl NativeElement for XmlDouble {
         name: &str,
         _context: &mut WriteContext<'_>,
     ) -> Result<(), String> {
-        leaf(writer, name, &self.lexical()?);
+        start(writer, name, vec![("val", self.lexical()?)], true);
         Ok(())
     }
 }
 
+// MS-ODRAWXML defines numeric leaf text, while Excel also writes a `val`
+// attribute for axisId/binCount/binSize. Each form has one explicit value.
+fn numeric_scalar<T: AttributeValue, R: BufRead>(
+    reader: &mut Reader<R>,
+    element: &BytesStart<'_>,
+    empty: bool,
+    parent: &NamespaceScope,
+) -> Result<T, String> {
+    let mut attrs = Attributes::read(element, &parent.child(element)?)?;
+    let value = attrs.optional::<String>("val")?;
+    attrs.finish()?;
+    let body = text(reader, element, empty)?;
+    match value {
+        Some(value) if body.trim().is_empty() => T::parse(value.trim()),
+        Some(_) => Err("ChartEx numeric scalar cannot combine val and text".to_owned()),
+        None => T::parse(body.trim()),
+    }
+}
+
 impl NativeElement for ShapeProperties {
+    fn visit_shapes(&self, visit: &mut dyn FnMut(&ShapeProperties)) {
+        visit(self);
+    }
+
+    fn visit_shapes_mut(&mut self, visit: &mut dyn FnMut(&mut ShapeProperties)) {
+        visit(self);
+    }
+
     fn read<R: BufRead>(
         reader: &mut Reader<R>,
         element: &BytesStart<'_>,
@@ -625,6 +655,13 @@ macro_rules! native_element {
     };
     (@visitors []) => {};
     (@visitors [$($field:ident $many:ident),+]) => {
+        fn visit_shapes(&self, visit: &mut dyn FnMut(&crate::drawing::charts::ShapeProperties)) {
+            $(native_element!(@visit_shapes self, $field, visit, $many);)+
+        }
+        fn visit_shapes_mut(&mut self,
+            visit: &mut dyn FnMut(&mut crate::drawing::charts::ShapeProperties)) {
+            $(native_element!(@visit_shapes_mut self, $field, visit, $many);)+
+        }
         fn visit_formulas(&self, visit: &mut dyn FnMut(&crate::drawing::charts::Formula)) {
             $(native_element!(@visit self, $field, visit, $many);)+
         }
@@ -632,6 +669,15 @@ macro_rules! native_element {
             visit: &mut dyn FnMut(&mut crate::drawing::charts::Formula)) {
             $(native_element!(@visit_mut self, $field, visit, $many);)+
         }
+        fn opaque_extension_count(&self) -> usize {
+            0 $(+ native_element!(@extension_count self, $field, $many))+
+        }
+    };
+    (@extension_count $value:ident, $field:ident, many) => {
+        $value.$field.iter().map(NativeElement::opaque_extension_count).sum::<usize>()
+    };
+    (@extension_count $value:ident, $field:ident, one) => {
+        $value.$field.as_ref().map_or(0, NativeElement::opaque_extension_count)
     };
     (@visit $value:ident, $field:ident, $visit:ident, many) => {
         for value in &$value.$field { value.visit_formulas($visit); }
@@ -641,6 +687,18 @@ macro_rules! native_element {
     };
     (@visit_mut $value:ident, $field:ident, $visit:ident, many) => {
         for value in &mut $value.$field { value.visit_formulas_mut($visit); }
+    };
+    (@visit_shapes_mut $value:ident, $field:ident, $visit:ident, many) => {
+        for value in &mut $value.$field { value.visit_shapes_mut($visit); }
+    };
+    (@visit_shapes $value:ident, $field:ident, $visit:ident, many) => {
+        for value in &$value.$field { value.visit_shapes($visit); }
+    };
+    (@visit_shapes $value:ident, $field:ident, $visit:ident, one) => {
+        if let Some(value) = &$value.$field { value.visit_shapes($visit); }
+    };
+    (@visit_shapes_mut $value:ident, $field:ident, $visit:ident, one) => {
+        if let Some(value) = &mut $value.$field { value.visit_shapes_mut($visit); }
     };
     (@visit_mut $value:ident, $field:ident, $visit:ident, one) => {
         if let Some(value) = &mut $value.$field { value.visit_formulas_mut($visit); }

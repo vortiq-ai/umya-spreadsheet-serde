@@ -322,6 +322,7 @@ macro_rules! reference_topology {
             allow_cache: bool,
             cache_phase: ReferenceCachePhase,
             pub(super) order: ReferenceOrder,
+            pub(super) shapes: Option<&'v mut dyn FnMut(& $($m)* ShapeProperties)>,
         }
         impl<'v $(,
         $b)?> State<'v $(,
@@ -334,7 +335,8 @@ macro_rules! reference_topology {
                     ordinal:0,
                     allow_cache:true,
                     cache_phase:ReferenceCachePhase::Legacy,
-                    order:ReferenceOrder::CacheAdmission }
+                    order:ReferenceOrder::CacheAdmission,
+                    shapes:None }
             }
             pub(super) fn without_cache_identities_for_late_plot(
                 &mut self, rest:PlotLate<$lt>) {
@@ -1592,6 +1594,7 @@ macro_rules! reference_topology {
         owner:& $($b)? $($m)* ShapeProperties,
         w:&mut State<'_ $(,
         $b)?>){
+            if let Some(visit) = &mut w.shapes { visit(owner); }
             if let Some(v)=get!(owner,
             ext){
                 list(base,
@@ -2124,6 +2127,23 @@ pub(crate) fn visit_ref<'a>(
     borrowed::space(space, &mut state);
     state.opaque
 }
+pub(crate) fn visit_shapes(space: &ChartSpace, visitor: &mut dyn FnMut(&super::ShapeProperties)) {
+    let mut ignore = |_, _: ReferenceTargetRef<'_>| {};
+    let mut state = borrowed::State::new(&mut ignore);
+    state.shapes = Some(visitor);
+    borrowed::space(space, &mut state);
+}
+
+pub(crate) fn visit_shapes_mut(
+    space: &mut ChartSpace,
+    visitor: &mut dyn FnMut(&mut super::ShapeProperties),
+) {
+    let mut ignore = |_, _: ReferenceTargetMut<'_>| {};
+    let mut state = mutable::State::new(&mut ignore);
+    state.shapes = Some(visitor);
+    mutable::space(space, &mut state);
+}
+
 pub(crate) fn visit_mut(
     space: &mut ChartSpace,
     visitor: &mut dyn FnMut(ReferenceMetadata, ReferenceTargetMut<'_>),

@@ -31,6 +31,9 @@ pub(crate) mod content_types;
 
 pub(crate) mod drawing_parts;
 
+pub(crate) mod package_extension;
+pub(crate) mod preserved_ranges;
+
 mod pivot_table_hierarchy;
 pub use self::pivot_table_hierarchy::*;
 

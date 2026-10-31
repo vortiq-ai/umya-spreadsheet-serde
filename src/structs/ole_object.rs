@@ -144,6 +144,18 @@ impl OleObject {
         &self.embedded_object_properties
     }
 
+    /// Whether the object has a preview image. `objectPr` and the image
+    /// relationship are optional, and written only when there is one.
+    #[inline]
+    #[must_use]
+    pub(crate) fn has_preview_image(&self) -> bool {
+        !self
+            .embedded_object_properties
+            .image()
+            .image_name()
+            .is_empty()
+    }
+
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use embedded_object_properties()")]
@@ -430,7 +442,9 @@ impl OleObject {
         write_start_tag(writer, "oleObject", attributes, false);
 
         // objectPr
-        self.embedded_object_properties.write_to(writer, r_id + 1);
+        if self.has_preview_image() {
+            self.embedded_object_properties.write_to(writer, r_id + 1);
+        }
 
         write_end_tag(writer, "oleObject");
 

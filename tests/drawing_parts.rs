@@ -751,7 +751,7 @@ fn malformed_shape_extensions_return_errors() {
 }
 
 #[test]
-fn unsupported_and_ambiguous_ole_choices_return_errors() {
+fn supported_ole_choices_resolve_the_first_matching_owner() {
     for duplicate in [false, true] {
         let bytes = replace_part(&mixed_package(), "xl/drawings/drawing1.xml", |mut xml| {
             if duplicate {
@@ -764,7 +764,16 @@ fn unsupported_and_ambiguous_ole_choices_return_errors() {
                 xml.replace("Requires=\"a14\"", "Requires=\"xdr\"")
             }
         });
-        assert!(reader::xlsx::read_reader(Cursor::new(bytes), true).is_err());
+        let mut book = reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut("Z99")
+            .set_value_number(42);
+        let output = write(&book);
+        let drawing = xml(&output, "xl/drawings/drawing1.xml");
+        assert_eq!(drawing.matches("name=\"OLE\"").count(), 1);
+        let reread = reader::xlsx::read_reader(Cursor::new(output), true).unwrap();
+        assert_eq!(reread.sheet(0).unwrap().ole_objects().ole_object().len(), 1);
     }
 }
 
@@ -1131,9 +1140,9 @@ fn malformed_spreadsheet_properties_fail_without_panics_and_roll_back() {
 fn self_closing_spreadsheet_properties_match_expanded_properties() {
     for expanded in [false, true] {
         let properties = if expanded {
-            r#"<xdr:spPr><a:prstGeom prst="rect"></a:prstGeom><a:ln w="42"></a:ln><a:xfrm rot="12000"></a:xfrm><a:noFill></a:noFill><a:effectLst></a:effectLst></xdr:spPr><xdr:txBody><a:bodyPr rot="60000"></a:bodyPr><a:lstStyle></a:lstStyle><a:p></a:p></xdr:txBody>"#
+            r#"<xdr:spPr><a:xfrm rot="12000"></a:xfrm><a:prstGeom prst="rect"></a:prstGeom><a:noFill></a:noFill><a:ln w="42"></a:ln><a:effectLst></a:effectLst></xdr:spPr><xdr:txBody><a:bodyPr rot="60000"></a:bodyPr><a:lstStyle></a:lstStyle><a:p></a:p></xdr:txBody>"#
         } else {
-            r#"<xdr:spPr><a:prstGeom prst="rect"/><a:ln w="42"/><a:xfrm rot="12000"/><a:noFill/><a:effectLst/></xdr:spPr><xdr:txBody><a:bodyPr rot="60000"/><a:lstStyle/><a:p/></xdr:txBody>"#
+            r#"<xdr:spPr><a:xfrm rot="12000"/><a:prstGeom prst="rect"/><a:noFill/><a:ln w="42"/><a:effectLst/></xdr:spPr><xdr:txBody><a:bodyPr rot="60000"/><a:lstStyle/><a:p/></xdr:txBody>"#
         };
         let source = replace_part(&mixed_package(), "xl/drawings/drawing1.xml", |xml| {
             xml.replace("<xdr:spPr/>", properties)
@@ -1162,6 +1171,7 @@ fn bitmap_fill_public_paths_keep_the_same_serialized_field_layout() {
         blip:              &'a umya_spreadsheet::drawing::Blip,
         source_rectangle:  Option<&'a umya_spreadsheet::drawing::SourceRectangle>,
         stretch:           &'a umya_spreadsheet::drawing::Stretch,
+        tile:              Option<&'a umya_spreadsheet::drawing::Tile>,
     }
     let mut common = umya_spreadsheet::drawing::BlipFill::default();
     common.set_rotate_with_shape(true);
@@ -1175,6 +1185,7 @@ fn bitmap_fill_public_paths_keep_the_same_serialized_field_layout() {
         blip:              common.blip(),
         source_rectangle:  common.source_rectangle(),
         stretch:           common.stretch(),
+        tile:              common.tile(),
     };
     assert_eq!(
         serde_json::to_value(&common).unwrap(),

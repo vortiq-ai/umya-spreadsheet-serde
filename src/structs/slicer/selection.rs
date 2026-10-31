@@ -276,19 +276,21 @@ impl SlicerCache {
                 return Err("missing or ambiguous slicer source field".into());
             }
             let (index, cache_field) = fields[0];
-            let shared_count = cache_field.shared_items().items().len();
+            let item_count = cache_field.items().len();
+            let mut source_items = cache_field.shared_items().clone();
+            *source_items.items_mut() = cache_field.items().to_vec();
             guards.push((
                 link.sheet_id,
                 link.name.clone(),
                 index,
                 table.pivot_table_definition().cache_id(),
-                cache_field.shared_items().to_xml()?,
+                source_items.to_xml()?,
             ));
             if source.items.as_ref().is_some_and(|items| {
                 items
                     .items
                     .iter()
-                    .any(|item| item.index as usize >= shared_count)
+                    .any(|item| item.index as usize >= item_count)
             }) {
                 return Err("slicer item is outside its source field".into());
             }
@@ -300,7 +302,7 @@ impl SlicerCache {
                 .ok_or("pivot source field is missing")?
                 .clone();
             if field.items().list().is_empty() && selected.is_some() {
-                for item_index in 0..shared_count {
+                for item_index in 0..item_count {
                     let mut item = Item::default();
                     item.set_index(
                         u32::try_from(item_index)
@@ -313,7 +315,7 @@ impl SlicerCache {
                 if !item.is_data_item() {
                     continue;
                 }
-                if !item.has_index() || item.index() as usize >= shared_count {
+                if !item.has_index() || item.index() as usize >= item_count {
                     return Err("invalid pivot source item identity".into());
                 }
                 item.set_hidden(Some(
@@ -380,10 +382,11 @@ impl SlicerSelectionPlan {
 
 #[derive(Clone, Debug)]
 pub struct SlicerTableSelectionPlan {
-    cache_xml: Vec<u8>,
-    table_id:  u32,
-    column_id: u32,
-    rule:      Option<crate::structs::filter_rule::FilterRule>,
+    cache_xml:       Vec<u8>,
+    table_id:        u32,
+    column_id:       u32,
+    filter_bindings: Vec<(u32, u32)>,
+    rule:            Option<crate::structs::filter_rule::FilterRule>,
 }
 
 impl SlicerCache {
@@ -397,6 +400,10 @@ impl SlicerCache {
             return Err("table selection requires a table slicer source".into());
         };
         table_column(table, source.table_id, source.column_id)?;
+        let filter_bindings = table_filter_bindings(table)?;
+        if table.auto_filter().range().range().is_empty() {
+            table_filter_range(table)?;
+        }
         let rule = match selection {
             SlicerSelection::All => None,
             SlicerSelection::Items(keys) => {
@@ -509,6 +516,7 @@ impl SlicerCache {
             cache_xml: self.to_xml()?,
             table_id: source.table_id,
             column_id: source.column_id,
+            filter_bindings,
             rule,
         })
     }
@@ -555,6 +563,17 @@ impl SlicerTableSelectionPlan {
         }
         let index = u32::try_from(table_column(table, self.table_id, self.column_id)?)
             .map_err(|_| "table column index out of range")?;
+        if table_filter_bindings(table)? != self.filter_bindings {
+            return Err("table filter column identities changed after selection validation".into());
+        }
+        let range = if table.auto_filter().range().range().is_empty() {
+            Some(table_filter_range(table)?)
+        } else {
+            None
+        };
+        if let Some(range) = range {
+            table.set_auto_filter(range);
+        }
         let columns = table.auto_filter_mut().filter_columns_mut();
         if let Some(column) = columns
             .iter_mut()
@@ -568,6 +587,48 @@ impl SlicerTableSelectionPlan {
         }
         Ok(())
     }
+}
+
+fn table_filter_bindings(table: &crate::structs::Table) -> Result<Vec<(u32, u32)>, String> {
+    table
+        .auto_filter()
+        .filter_columns()
+        .iter()
+        .map(|filter| {
+            let column = table
+                .columns()
+                .get(filter.column_id() as usize)
+                .ok_or("invalid table filter column binding")?;
+            let id = column
+                .id()
+                .ok_or("table filter column has no stable identity")?;
+            if table
+                .columns()
+                .iter()
+                .filter(|column| column.id() == Some(id))
+                .count()
+                != 1
+            {
+                return Err("ambiguous stable table filter column identity".into());
+            }
+            Ok((filter.column_id(), id))
+        })
+        .collect()
+}
+
+fn table_filter_range(table: &crate::structs::Table) -> Result<String, String> {
+    if !table.is_ok() {
+        return Err("table selection requires a valid table area".into());
+    }
+    let (start, end) = table.area();
+    let end_row = end
+        .row_num()
+        .checked_sub(table.totals_row_count())
+        .filter(|row| *row >= start.row_num())
+        .ok_or("table totals leave no header and data range")?;
+    let mut end = end.clone();
+    end.set_row_num(end_row);
+    Ok(format!("{start}:{end}"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -762,7 +823,7 @@ fn prepare_olap(
             return Err("missing explicit native/provider OLAP field bindings".into());
         }
         binding_count += fields.len();
-        let mut all_name = hierarchy
+        let all_name = hierarchy
             .all_unique_name
             .clone()
             .filter(|name| !name.is_empty());
@@ -795,27 +856,24 @@ fn prepare_olap(
                     return Err("OLAP field usage ordinal/back-reference mismatch".into());
                 }
             }
-            if !source
+            let cached_level = source
                 .levels
                 .levels
                 .iter()
-                .any(|cached_level| cached_level.unique_name == field.name())
-                || !bound_levels.insert(field.name())
-            {
+                .find(|cached_level| cached_level.unique_name == field.name())
+                .ok_or("OLAP binding does not identify a cached level")?;
+            if !bound_levels.insert(field.name()) {
                 return Err("OLAP binding does not identify a unique cached level".into());
             }
             if let Some(all) = &binding.all_member {
                 if all.unique_name.is_empty()
                     || !all.parents.is_empty()
-                    || all_name
-                        .as_ref()
-                        .is_some_and(|known| known != &all.unique_name)
+                    || all_name.as_ref() != Some(&all.unique_name)
                 {
                     return Err(
                         "OLAP all-member context contradicts native hierarchy identity".into(),
                     );
                 }
-                all_name = Some(all.unique_name.clone());
             }
             let native_field = table
                 .pivot_table_definition()
@@ -849,6 +907,20 @@ fn prepare_olap(
                                     name"
                             .into());
                     }
+                }
+                let occurrences: Vec<_> = cached_level
+                    .ranges
+                    .iter()
+                    .flatten()
+                    .flat_map(|range| &range.items)
+                    .filter(|item| item.unique_name == member.member.unique_name)
+                    .collect();
+                if !occurrences.is_empty()
+                    && !occurrences
+                        .iter()
+                        .any(|item| item.parents == member.member.parents)
+                {
+                    return Err("provider OLAP parents contradict cached member ancestry".into());
                 }
                 if let Some(previous) = graph.insert(
                     member.member.unique_name.clone(),
@@ -886,10 +958,9 @@ fn prepare_olap(
             members.clone()
         } else {
             vec![OlapSlicerSelection {
-                unique_name: all_name.clone().ok_or(
-                    "clearing an OLAP slicer requires a native or verified-provider all-member \
-                     identity",
-                )?,
+                unique_name: all_name
+                    .clone()
+                    .ok_or("clearing an OLAP slicer requires a native all-member identity")?,
                 parents:     Vec::new(),
             }]
         };

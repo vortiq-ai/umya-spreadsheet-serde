@@ -1,6 +1,10 @@
 //! Native `ChartEx` data and layout, separate from standard `DrawingML` charts.
+mod accessors;
+mod builders;
 mod data;
 mod model;
+mod references;
+mod style_parts;
 mod xml;
 
 use std::{
@@ -14,6 +18,7 @@ use std::{
     },
 };
 
+pub use builders::*;
 pub use data::*;
 pub use model::*;
 use quick_xml::{
@@ -24,6 +29,7 @@ use quick_xml::{
         Event,
     },
 };
+pub use references::*;
 use xml::{
     AttributeValue,
     Attributes,
@@ -85,6 +91,20 @@ native_element!(
 );
 
 impl ChartExSpace {
+    pub(crate) fn visit_shapes(&self, visit: &mut dyn FnMut(&ShapeProperties)) {
+        NativeElement::visit_shapes(self, visit);
+    }
+
+    pub(crate) fn has_picture_fills(&self) -> bool {
+        let mut present = false;
+        NativeElement::visit_shapes(self, &mut |shape| present |= shape.blip_fill().is_some());
+        present
+    }
+
+    pub(crate) fn visit_shapes_mut(&mut self, visit: &mut dyn FnMut(&mut ShapeProperties)) {
+        NativeElement::visit_shapes_mut(self, visit);
+    }
+
     #[must_use]
     pub fn new(data: ChartExDataCollection, chart: ChartExChart) -> Self {
         Self {
@@ -165,6 +185,17 @@ impl ChartExSpace {
     }
 
     pub fn to_xml(
+        &self,
+        host: &str,
+        resolver: &mut dyn ChartExDataResolver,
+    ) -> Result<Vec<u8>, String> {
+        if self.has_picture_fills() {
+            return Err("chart picture fills require the XLSX package writer".to_owned());
+        }
+        self.to_xml_prepared(host, resolver)
+    }
+
+    pub(crate) fn to_xml_prepared(
         &self,
         host: &str,
         resolver: &mut dyn ChartExDataResolver,

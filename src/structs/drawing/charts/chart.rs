@@ -38,7 +38,7 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct Chart {
     title:                         Option<Title>,
@@ -63,13 +63,260 @@ pub struct Chart {
     parts:                         Option<Box<DrawingChartParts>>,
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Chart {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "title",
+            "auto_title_deleted",
+            "view_3d",
+            "floor",
+            "side_wall",
+            "back_wall",
+            "plot_area",
+            "legend",
+            "legend_present",
+            "plot_visible_only",
+            "display_blanks_as",
+            "show_data_labels_over_maximum",
+            "parts",
+        ];
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Chart;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("Chart")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Ok(Chart {
+                    title:                         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                    auto_title_deleted:            seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?,
+                    view_3d:                       seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?,
+                    floor:                         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?,
+                    side_wall:                     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?,
+                    back_wall:                     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?,
+                    plot_area:                     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?,
+                    legend:                        seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(7, &self))?,
+                    legend_present:                seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(8, &self))?,
+                    plot_visible_only:             seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(9, &self))?,
+                    display_blanks_as:             seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(10, &self))?,
+                    show_data_labels_over_maximum: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(11, &self))?,
+                    parts:                         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(12, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut title = None;
+                let mut auto_title_deleted = None;
+                let mut view_3d = None;
+                let mut floor = None;
+                let mut side_wall = None;
+                let mut back_wall = None;
+                let mut plot_area = None;
+                let mut legend = None;
+                let mut legend_present = None;
+                let mut plot_visible_only = None;
+                let mut display_blanks_as = None;
+                let mut show_data_labels_over_maximum = None;
+                let mut parts = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "title" => {
+                            if title.is_some() {
+                                return Err(serde::de::Error::duplicate_field("title"));
+                            }
+                            title = Some(map.next_value()?);
+                        }
+                        "auto_title_deleted" => {
+                            if auto_title_deleted.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "auto_title_deleted",
+                                ));
+                            }
+                            auto_title_deleted = Some(map.next_value()?);
+                        }
+                        "view_3d" => {
+                            if view_3d.is_some() {
+                                return Err(serde::de::Error::duplicate_field("view_3d"));
+                            }
+                            view_3d = Some(map.next_value()?);
+                        }
+                        "floor" => {
+                            if floor.is_some() {
+                                return Err(serde::de::Error::duplicate_field("floor"));
+                            }
+                            floor = Some(map.next_value()?);
+                        }
+                        "side_wall" => {
+                            if side_wall.is_some() {
+                                return Err(serde::de::Error::duplicate_field("side_wall"));
+                            }
+                            side_wall = Some(map.next_value()?);
+                        }
+                        "back_wall" => {
+                            if back_wall.is_some() {
+                                return Err(serde::de::Error::duplicate_field("back_wall"));
+                            }
+                            back_wall = Some(map.next_value()?);
+                        }
+                        "plot_area" => {
+                            if plot_area.is_some() {
+                                return Err(serde::de::Error::duplicate_field("plot_area"));
+                            }
+                            plot_area = Some(map.next_value()?);
+                        }
+                        "legend" => {
+                            if legend.is_some() {
+                                return Err(serde::de::Error::duplicate_field("legend"));
+                            }
+                            legend = Some(map.next_value()?);
+                        }
+                        "legend_present" => {
+                            if legend_present.is_some() {
+                                return Err(serde::de::Error::duplicate_field("legend_present"));
+                            }
+                            legend_present = Some(map.next_value()?);
+                        }
+                        "plot_visible_only" => {
+                            if plot_visible_only.is_some() {
+                                return Err(serde::de::Error::duplicate_field("plot_visible_only"));
+                            }
+                            plot_visible_only = Some(map.next_value()?);
+                        }
+                        "display_blanks_as" => {
+                            if display_blanks_as.is_some() {
+                                return Err(serde::de::Error::duplicate_field("display_blanks_as"));
+                            }
+                            display_blanks_as = Some(map.next_value()?);
+                        }
+                        "show_data_labels_over_maximum" => {
+                            if show_data_labels_over_maximum.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "show_data_labels_over_maximum",
+                                ));
+                            }
+                            show_data_labels_over_maximum = Some(map.next_value()?);
+                        }
+                        "parts" => {
+                            if parts.is_some() {
+                                return Err(serde::de::Error::duplicate_field("parts"));
+                            }
+                            parts = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                Ok(Chart {
+                    title:                         title.unwrap_or(None),
+                    auto_title_deleted:            auto_title_deleted
+                        .ok_or_else(|| serde::de::Error::missing_field("auto_title_deleted"))?,
+                    view_3d:                       view_3d.unwrap_or(None),
+                    floor:                         floor.unwrap_or(None),
+                    side_wall:                     side_wall.unwrap_or(None),
+                    back_wall:                     back_wall.unwrap_or(None),
+                    plot_area:                     plot_area
+                        .ok_or_else(|| serde::de::Error::missing_field("plot_area"))?,
+                    legend:                        legend
+                        .ok_or_else(|| serde::de::Error::missing_field("legend"))?,
+                    // Historical writers always emitted the stored legend.
+                    legend_present:                legend_present.unwrap_or(true),
+                    plot_visible_only:             plot_visible_only
+                        .ok_or_else(|| serde::de::Error::missing_field("plot_visible_only"))?,
+                    display_blanks_as:             display_blanks_as
+                        .ok_or_else(|| serde::de::Error::missing_field("display_blanks_as"))?,
+                    show_data_labels_over_maximum: show_data_labels_over_maximum.ok_or_else(
+                        || serde::de::Error::missing_field("show_data_labels_over_maximum"),
+                    )?,
+                    parts:                         parts.unwrap_or(None),
+                })
+            }
+        }
+        deserializer.deserialize_struct("Chart", FIELDS, Visitor)
+    }
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod pivot_serialization_tests {
     use super::*;
     #[test]
+    fn current_chart_encoding_matches_the_derived_field_sequence() {
+        let chart = Chart::default();
+        let current = bincode::serialize(&(
+            &chart.title,
+            &chart.auto_title_deleted,
+            &chart.view_3d,
+            &chart.floor,
+            &chart.side_wall,
+            &chart.back_wall,
+            &chart.plot_area,
+            &chart.legend,
+            &chart.legend_present,
+            &chart.plot_visible_only,
+            &chart.display_blanks_as,
+            &chart.show_data_labels_over_maximum,
+            &chart.parts,
+        ))
+        .unwrap();
+        assert_eq!(bincode::serialize(&chart).unwrap(), current);
+        let restored: Chart = bincode::deserialize(&current).unwrap();
+        assert_eq!(bincode::serialize(&restored).unwrap(), current);
+        let legacy = bincode::serialize(&(
+            &chart.title,
+            &chart.auto_title_deleted,
+            &chart.view_3d,
+            &chart.floor,
+            &chart.side_wall,
+            &chart.back_wall,
+            &chart.plot_area,
+            &chart.legend,
+            &chart.plot_visible_only,
+            &chart.display_blanks_as,
+            &chart.show_data_labels_over_maximum,
+        ))
+        .unwrap();
+        assert!(bincode::deserialize::<Chart>(&legacy).is_err());
+    }
+
+    #[test]
     fn chart_prefix_and_pivot_owner_tail_are_exact() {
-        let mut chart = Chart::default();
-        chart.legend_present = false;
+        let mut chart = Chart {
+            legend_present: false,
+            ..Chart::default()
+        };
         let prefix = bincode::serialize(&(
             &chart.title,
             &chart.auto_title_deleted,

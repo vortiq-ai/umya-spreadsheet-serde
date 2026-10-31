@@ -31,12 +31,17 @@ pub(crate) fn read<R: io::Read + io::Seek>(
         super::driver::zip_by_name(arv, PKG_WORKBOOK)?,
     ))?;
     let r = io::BufReader::new(super::driver::zip_by_name(arv, PKG_WORKBOOK)?);
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(r));
+    let mut reader = Reader::from_reader(
+        crate::reader::spreadsheet_xml::SpreadsheetXml::open_with_all_extensions(r)?,
+    );
     reader.config_mut().trim_text(true);
     let mut wb = Workbook::default();
 
     let mut defined_names: Vec<DefinedName> = Vec::new();
     let mut sheet_ids = std::collections::HashSet::new();
+    let mut pivot_cache_ids = std::collections::HashSet::new();
+    let mut pivot_cache_relationships = std::collections::HashSet::new();
+    let mut extension_entries = Vec::new();
 
     try_xml_read_loop!(
         reader,
@@ -71,18 +76,42 @@ pub(crate) fn read<R: io::Read + io::Seek>(
                 b"pivotCache" => {
                     let cache_id = get_required_attribute(e, b"cacheId")?;
                     let r_id = get_required_attribute(e, b"r:id")?;
-                    wb.add_pivot_caches((r_id, cache_id, String::new()));
+                    let cache_id = crate::xml::parse_u32(&cache_id).map_err(crate::xml::xml_error)?;
+                    if !pivot_cache_ids.insert(cache_id)
+                        || r_id.is_empty()
+                        || !pivot_cache_relationships.insert(r_id.clone())
+                    {
+                        return Err(crate::xml::xml_error("duplicate or invalid workbook pivot cache binding"));
+                    }
+                    wb.add_pivot_caches((r_id, cache_id.to_string(), String::new()));
                 }
                 b"definedName" => {
                     let mut obj = DefinedName::default();
                     obj.set_attributes(&mut reader, e);
                     defined_names.push(obj);
                 }
+                _ if crate::reader::spreadsheet_xml::is_native_start(e, b"ext") => {
+                    extension_entries.push(
+                        crate::drawing::charts::OpaqueElement::read(
+                            &mut reader,
+                            e,
+                            is_empty,
+                            &crate::drawing::charts::NamespaceScope::default(),
+                        )
+                        .map_err(crate::xml::xml_error)?,
+                    );
+                }
                 _ => (),
             }
         },
         Event::Eof => break
     );
+
+    let (extensions, slicer_refs) =
+        crate::structs::slicer::read_workbook_extensions(&extension_entries)
+            .map_err(crate::xml::xml_error)?;
+    wb.extensions = extensions;
+    wb.slicer_refs = slicer_refs;
 
     for defined_name in &defined_names {
         if defined_name.has_local_sheet_id() {

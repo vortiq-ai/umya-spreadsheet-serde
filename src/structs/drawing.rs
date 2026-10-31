@@ -45,6 +45,12 @@ pub use self::fill_rectangle::*;
 mod blip;
 pub use self::blip::*;
 
+mod blip_effect;
+pub use self::blip_effect::*;
+
+mod tile;
+pub use self::tile::*;
+
 mod source_rectangle;
 pub use self::source_rectangle::*;
 

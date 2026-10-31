@@ -1,0 +1,10 @@
+[package]
+name = "legacy-chart-json"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+umya-spreadsheet = { git = "https://github.com/vortiq-ai/umya-spreadsheet-serde", rev = "327722cffd3e8e4db073c703bf3474f8820c938f", features = ["serde"] }
+serde_json = "1.0"

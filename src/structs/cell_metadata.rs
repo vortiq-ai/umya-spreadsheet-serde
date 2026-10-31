@@ -23,6 +23,12 @@ pub(crate) const DYNAMIC: &str =
     "http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray";
 pub(crate) const REL: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata";
+pub(crate) const METADATA_PATH: &str = "xl/metadata.xml";
+pub(crate) const CONNECTIONS_PATH: &str = "xl/connections.xml";
+pub(crate) const CONNECTIONS_REL: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/connections";
+pub(crate) const CONNECTIONS_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.connections+xml";
 pub(crate) const CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml";
 
@@ -258,7 +264,7 @@ impl Default for CellMetadata {
     fn default() -> Self {
         Self {
             root:  node(&format!(r#"<metadata xmlns="{MAIN}"/>"#)),
-            path:  "xl/metadata.xml".into(),
+            path:  METADATA_PATH.into(),
             index: MetadataIndex::default(),
         }
     }

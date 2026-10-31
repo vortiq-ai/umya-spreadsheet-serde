@@ -89,6 +89,91 @@ impl AutoFilter {
         self
     }
 
+    fn range_is_removed(
+        range: &Range,
+        root_col_num: u32,
+        offset_col_num: u32,
+        root_row_num: u32,
+        offset_row_num: u32,
+    ) -> bool {
+        let covered = |start: Option<u32>, end: Option<u32>, root: u32, count: u32| {
+            start.is_some_and(|start| {
+                root != 0
+                    && count != 0
+                    && root <= start
+                    && u64::from(end.unwrap_or(start)) < u64::from(root) + u64::from(count)
+            })
+        };
+        covered(
+            range
+                .coordinate_start_col()
+                .map(super::ColumnReference::num),
+            range.coordinate_end_col().map(super::ColumnReference::num),
+            root_col_num,
+            offset_col_num,
+        ) || covered(
+            range.coordinate_start_row().map(super::RowReference::num),
+            range.coordinate_end_row().map(super::RowReference::num),
+            root_row_num,
+            offset_row_num,
+        )
+    }
+
+    fn adjust_removed_range(
+        range: &mut Range,
+        root_col_num: u32,
+        offset_col_num: u32,
+        root_row_num: u32,
+        offset_row_num: u32,
+    ) {
+        // A partly deleted filter/sort reference keeps its surviving cells.
+        // Removed endpoints clip to the deletion boundary instead of moving
+        // backwards by the entire deleted count.
+        let adjusted_boundary = |value: u32, root: u32, count: u32, trailing: bool| {
+            if count == 0 || value < root {
+                value
+            } else if u64::from(value) >= u64::from(root) + u64::from(count) {
+                value - count
+            } else if trailing {
+                root.saturating_sub(1)
+            } else {
+                root
+            }
+        };
+        if let Some(column) = range.coordinate_start_col_mut() {
+            column.set_num(adjusted_boundary(
+                column.num(),
+                root_col_num,
+                offset_col_num,
+                false,
+            ));
+        }
+        if let Some(column) = range.coordinate_end_col_mut() {
+            column.set_num(adjusted_boundary(
+                column.num(),
+                root_col_num,
+                offset_col_num,
+                true,
+            ));
+        }
+        if let Some(row) = range.coordinate_start_row_mut() {
+            row.set_num(adjusted_boundary(
+                row.num(),
+                root_row_num,
+                offset_row_num,
+                false,
+            ));
+        }
+        if let Some(row) = range.coordinate_end_row_mut() {
+            row.set_num(adjusted_boundary(
+                row.num(),
+                root_row_num,
+                offset_row_num,
+                true,
+            ));
+        }
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -257,6 +342,18 @@ impl AdjustmentCoordinate for AutoFilter {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        if offset_col_num != 0 {
+            if let Some(start) = self.range.coordinate_start_col() {
+                let start = start.num();
+                if root_col_num > start {
+                    for column in &mut self.filter_columns {
+                        if start + column.column_id() >= root_col_num {
+                            column.set_column_id(column.column_id() + offset_col_num);
+                        }
+                    }
+                }
+            }
+        }
         self.range.adjustment_insert_coordinate(
             root_col_num,
             offset_col_num,
@@ -289,27 +386,94 @@ impl AdjustmentCoordinate for AutoFilter {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.range.adjustment_remove_coordinate(
+        let start = self
+            .range
+            .coordinate_start_col()
+            .map(super::ColumnReference::num);
+        Self::adjust_removed_range(
+            &mut self.range,
             root_col_num,
             offset_col_num,
             root_row_num,
             offset_row_num,
         );
-        if let Some(sort) = &mut self.sort_state {
-            sort.reference.adjustment_remove_coordinate(
+        if offset_col_num != 0 {
+            if let (Some(start), Some(new_start)) = (
+                start,
+                self.range
+                    .coordinate_start_col()
+                    .map(super::ColumnReference::num),
+            ) {
+                let end = root_col_num + offset_col_num;
+                self.filter_columns.retain_mut(|column| {
+                    let absolute = start + column.column_id();
+                    if (root_col_num..end).contains(&absolute) {
+                        return false;
+                    }
+                    let adjusted = if absolute >= end {
+                        absolute - offset_col_num
+                    } else {
+                        absolute
+                    };
+                    column.set_column_id(adjusted - new_start);
+                    true
+                });
+            }
+        }
+        if self.sort_state.as_ref().is_some_and(|sort| {
+            Self::range_is_removed(
+                &sort.reference,
+                root_col_num,
+                offset_col_num,
+                root_row_num,
+                offset_row_num,
+            )
+        }) {
+            self.sort_state = None;
+        } else if let Some(sort) = &mut self.sort_state {
+            Self::adjust_removed_range(
+                &mut sort.reference,
                 root_col_num,
                 offset_col_num,
                 root_row_num,
                 offset_row_num,
             );
-            for condition in &mut sort.conditions {
-                condition.reference.adjustment_remove_coordinate(
+            sort.conditions.retain_mut(|condition| {
+                if Self::range_is_removed(
+                    &condition.reference,
+                    root_col_num,
+                    offset_col_num,
+                    root_row_num,
+                    offset_row_num,
+                ) {
+                    return false;
+                }
+                Self::adjust_removed_range(
+                    &mut condition.reference,
                     root_col_num,
                     offset_col_num,
                     root_row_num,
                     offset_row_num,
                 );
-            }
+                true
+            });
         }
+    }
+
+    #[inline]
+    fn is_remove_coordinate(
+        &self,
+        root_col_num: u32,
+        offset_col_num: u32,
+        root_row_num: u32,
+        offset_row_num: u32,
+    ) -> bool {
+        Self::range_is_removed(
+            &self.range,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+        )
     }
 }

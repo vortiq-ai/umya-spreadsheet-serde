@@ -180,17 +180,10 @@ impl Color2Type {
             return None;
         }
         if let Some(value) = &self.rgb_color_model_hex {
-            let value = value.val();
-            return (value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                .then(|| value.to_string());
+            return super::color_transform::resolve_rgb(value.val(), value.transforms());
         }
         self.system_color.as_ref().and_then(|value| {
-            (value.last_color().len() == 6
-                && value
-                    .last_color()
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| value.last_color().to_string())
+            super::color_transform::resolve_rgb(value.last_color(), value.transforms())
         })
     }
 
@@ -575,7 +568,7 @@ mod namespace_tests {
         color
             .read_with_session(&mut reader, &owner, false, None)
             .unwrap();
-        assert_eq!(color.val().as_deref(), Some("123456"));
+        assert_eq!(color.rgb_color_model_hex().unwrap().val(), "123456");
         let transforms = color.rgb_color_model_hex().unwrap().transforms();
         assert_eq!(transforms.len(), 1);
         assert_eq!(transforms[0].xml_name(), "shade");

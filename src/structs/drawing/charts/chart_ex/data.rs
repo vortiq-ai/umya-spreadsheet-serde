@@ -435,7 +435,32 @@ pub struct ChartExData {
 
 /// Resolves source references against the current host workbook on every
 /// export.
+/// Parses the formula's reference operand. Only an operand that is the error
+/// value itself counts, so a sheet that is named `#REF!` stays valid.
+fn formula_is_invalid_reference(text: &str) -> bool {
+    let text = text.trim();
+    let text = text.strip_prefix('=').unwrap_or(text).trim();
+    let (_, operand) = crate::helper::address::split_reference_address(text);
+    operand
+        .parse::<crate::CellErrorType>()
+        .is_ok_and(|error| error == crate::CellErrorType::Ref)
+}
+
 pub trait ChartExDataResolver {
+    /// Whether the formula refers to a reference that structural edits
+    /// destroyed (`#REF!`), either directly or through a defined name. The
+    /// default only parses the formula itself; resolvers that know the
+    /// workbook's names follow them.
+    ///
+    /// # Errors
+    /// Returns an error when the formula cannot be resolved at all.
+    fn is_invalid_reference(
+        &mut self,
+        _host: &str,
+        formula: &ChartExFormula,
+    ) -> Result<bool, String> {
+        Ok(formula_is_invalid_reference(&formula.text()))
+    }
     fn text_value(
         &mut self,
         host: &str,
@@ -494,10 +519,18 @@ fn read_dimension<R: BufRead, L: NativeElement + LevelMetadata>(
         },
     )?;
     if let Some(formula) = formula {
-        let level_properties = levels
+        let mut level_properties: Vec<_> = levels
             .iter_mut()
             .map(LevelMetadata::take_properties)
             .collect();
+        // Cache levels retain the source shape. Unspecified trailing
+        // overrides carry no additional model state.
+        while level_properties
+            .last()
+            .is_some_and(|value| value.name.is_none() && value.format_code.is_none())
+        {
+            level_properties.pop();
+        }
         let source_cache = (!levels.is_empty()).then(|| {
             Box::new(ChartExImportedCache {
                 formula_guard:          formula.text(),
@@ -655,6 +688,12 @@ impl NativeElement for ChartExNumericDimension {
     }
 }
 impl NativeElement for ChartExData {
+    fn opaque_extension_count(&self) -> usize {
+        self.extensions
+            .as_ref()
+            .map_or(0, NativeElement::opaque_extension_count)
+    }
+
     fn read<R: BufRead>(
         reader: &mut Reader<R>,
         element: &BytesStart<'_>,
@@ -910,6 +949,10 @@ pub struct ChartExExtensionList {
     pub entries: Vec<ChartExExtension>,
 }
 impl NativeElement for ChartExExtensionList {
+    fn opaque_extension_count(&self) -> usize {
+        self.entries.len()
+    }
+
     fn read<R: BufRead>(
         reader: &mut Reader<R>,
         element: &BytesStart<'_>,
@@ -1245,6 +1288,26 @@ impl ChartExColorMapping {
     }
 }
 impl NativeElement for ChartExColorMapping {
+    fn opaque_extension_count(&self) -> usize {
+        let mut count = 0;
+        let mut depth = 0_isize;
+        if let Some(extensions) = &self.extensions {
+            for token in &extensions.children {
+                match token {
+                    crate::drawing::charts::OpaqueToken::Start(element) => {
+                        if depth == 0 && element.name.is(xml::NS_A, "ext") {
+                            count += 1;
+                        }
+                        depth += 1;
+                    }
+                    crate::drawing::charts::OpaqueToken::End => depth -= 1,
+                    _ => (),
+                }
+            }
+        }
+        count
+    }
+
     fn read<R: BufRead>(
         reader: &mut Reader<R>,
         element: &BytesStart<'_>,

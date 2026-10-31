@@ -11,6 +11,7 @@ use quick_xml::{
 };
 
 use super::{
+    ConnectionShape,
     Extent,
     GraphicFrame,
     GroupShape,
@@ -30,14 +31,16 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct OneCellAnchor {
-    from_marker:   MarkerType,
-    extent:        Extent,
-    group_shape:   Option<Box<GroupShape>>,
-    graphic_frame: Option<Box<GraphicFrame>>,
-    shape:         Option<Box<Shape>>,
-    picture:       Option<Box<Picture>>,
+    from_marker:      MarkerType,
+    extent:           Extent,
+    group_shape:      Option<Box<GroupShape>>,
+    graphic_frame:    Option<Box<GraphicFrame>>,
+    shape:            Option<Box<Shape>>,
+    picture:          Option<Box<Picture>>,
     #[cfg_attr(feature = "serde", serde(default))]
-    client_data:   Option<Box<super::DrawingClientData>>,
+    client_data:      Option<Box<super::DrawingClientData>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    connection_shape: Option<Box<ConnectionShape>>,
 }
 
 impl OneCellAnchor {
@@ -163,6 +166,23 @@ impl OneCellAnchor {
 
     #[inline]
     #[must_use]
+    pub fn connection_shape(&self) -> Option<&ConnectionShape> {
+        self.connection_shape.as_deref()
+    }
+
+    #[inline]
+    pub fn connection_shape_mut(&mut self) -> Option<&mut ConnectionShape> {
+        self.connection_shape.as_deref_mut()
+    }
+
+    #[inline]
+    pub fn set_connection_shape(&mut self, value: ConnectionShape) -> &mut Self {
+        self.connection_shape = Some(Box::new(value));
+        self
+    }
+
+    #[inline]
+    #[must_use]
     pub fn picture(&self) -> Option<&Picture> {
         self.picture.as_deref()
     }
@@ -210,7 +230,17 @@ impl OneCellAnchor {
 
     #[inline]
     pub(crate) fn is_image(&self) -> bool {
-        self.picture.is_some() || self.group_shape.is_some()
+        let missing_embedded_image = self
+            .picture()
+            .is_some_and(|picture| picture.blip_fill().blip().image().image_name().is_empty())
+            || self.group_shape().is_some_and(|group| {
+                group
+                    .content()
+                    .iter()
+                    .flat_map(|child| child.media_objects())
+                    .any(|image| image.image_name().is_empty())
+            });
+        (self.picture.is_some() || self.group_shape.is_some()) && !missing_embedded_image
     }
 
     #[must_use]
@@ -320,6 +350,14 @@ impl OneCellAnchor {
                             value.set_attributes(reader, child, drawing_relationships, session)?;
                             self.set_picture(value);
                         }
+                        "cxnSp" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing connector"));
+                            }
+                            let mut value = ConnectionShape::default();
+                            value.set_attributes(reader, child, drawing_relationships, session)?;
+                            self.set_connection_shape(value);
+                        }
                         "clientData" => {
                             let element = crate::drawing::charts::OpaqueElement::read(
                                 reader, child, empty, &scope,
@@ -383,6 +421,11 @@ impl OneCellAnchor {
         // xdr:sp
         if let Some(v) = &self.shape {
             v.write_to(writer, rel_list, 0)?;
+        }
+
+        // xdr:cxnSp
+        if let Some(value) = &self.connection_shape {
+            value.write_to(writer, rel_list, 0)?;
         }
 
         // xdr:pic
@@ -555,6 +598,11 @@ impl OneCellAnchor {
                 .non_visual_shape_properties()
                 .visit_relationships(visit);
         }
+        if let Some(value) = self.connection_shape() {
+            value
+                .non_visual_connection_shape_properties()
+                .visit_relationships(visit);
+        }
         if let Some(value) = self.picture() {
             value
                 .non_visual_picture_properties()
@@ -582,6 +630,11 @@ impl OneCellAnchor {
         if let Some(value) = self.shape_mut() {
             value
                 .non_visual_shape_properties_mut()
+                .visit_relationships_mut(visit);
+        }
+        if let Some(value) = self.connection_shape_mut() {
+            value
+                .non_visual_connection_shape_properties_mut()
                 .visit_relationships_mut(visit);
         }
         if let Some(value) = self.picture_mut() {

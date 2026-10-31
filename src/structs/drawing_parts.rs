@@ -7,7 +7,12 @@ use std::{
 };
 
 use crate::{
+    drawing::spreadsheet::ChartExStyleBundle,
     helper::const_str::{
+        CHART_COLOR_STYLE_NS,
+        CHART_COLOR_STYLE_TYPE,
+        CHART_STYLE_NS,
+        CHART_STYLE_TYPE,
         DRAWINGS_NS,
         IMAGE_NS,
     },
@@ -18,6 +23,7 @@ use crate::{
         XlsxErrorKind,
         raw::{
             RawFile,
+            RawRelationship,
             RawRelationships,
             RawWorksheet,
         },
@@ -36,11 +42,34 @@ pub(crate) struct DrawingParts {
 }
 
 pub(crate) struct PreparedDrawingParts {
-    value:     DrawingParts,
-    locations: Vec<(usize, usize)>,
+    value:         DrawingParts,
+    locations:     Vec<(usize, usize)>,
+    style_bundles: HashMap<String, ChartExStyleBundle>,
 }
 
 impl PreparedDrawingParts {
+    /// Hands every native extended chart the style and colour parts its own
+    /// package relationships name, so the chart owns them from now on.
+    pub(crate) fn bind_style_bundles(&self, sheet: &mut Worksheet) {
+        let mut bind =
+            |_: crate::drawing::spreadsheet::DrawingFrameKey,
+             frame: &mut crate::drawing::spreadsheet::ExtendedChartFrame| {
+                if let Some(bundle) = frame
+                    .source_part()
+                    .and_then(|source| self.style_bundles.get(source))
+                {
+                    frame.bind_style_bundle(bundle.clone());
+                }
+            };
+        sheet
+            .worksheet_drawing_mut()
+            .visit_extended_frames_mut(&mut bind);
+        for ole in sheet.ole_objects_mut().ole_object_mut() {
+            ole.two_cell_anchor_mut()
+                .visit_extended_frames_mut(&mut bind);
+        }
+    }
+
     pub(crate) fn commit(mut self, raw: &mut RawWorksheet) -> Box<DrawingParts> {
         for (list_index, edge_index) in self.locations {
             let edge =
@@ -52,12 +81,20 @@ impl PreparedDrawingParts {
 }
 
 impl DrawingParts {
+    pub(crate) fn preserved_files(files: Vec<RawFile>) -> Self {
+        Self {
+            files,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn prepare(
         raw: &RawWorksheet,
         sheet: &Worksheet,
         session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
     ) -> Result<Option<PreparedDrawingParts>, XlsxError> {
-        let Some(sheet_relationships) = raw.worksheet_relationships() else {
+        let Some(sheet_relationships) = raw.worksheet_relationships()? else {
             return Ok(None);
         };
         let drawings: Vec<_> = sheet_relationships
@@ -72,12 +109,7 @@ impl DrawingParts {
             return Err(part_error("worksheet has multiple drawing parts"));
         }
         let drawing = drawings[0].raw_file();
-        let drawing_rels_path = relationships_path(drawing.file_target())?;
-        let Some(drawing_rels) = raw
-            .relationships_list()
-            .iter()
-            .find(|list| list.file_target() == drawing_rels_path)
-        else {
+        let Some(drawing_rels) = raw.relationships_of_part(drawing.file_target())? else {
             return Ok(None);
         };
         let mut source_ids = HashSet::new();
@@ -102,11 +134,13 @@ impl DrawingParts {
             .visit_standard_frames(&mut |_, frame| {
                 chart_parts.extend(frame.source_parts().iter().cloned());
             });
+        let mut extended_sources = HashSet::new();
         sheet
             .worksheet_drawing()
             .visit_extended_frames(&mut |_, frame| {
                 if let Some(part) = frame.source_part() {
                     chart_parts.insert(part.to_owned());
+                    extended_sources.insert(part.to_owned());
                 }
             });
         for ole in sheet.ole_objects().ole_object() {
@@ -118,6 +152,7 @@ impl DrawingParts {
                 .visit_extended_frames(&mut |_, frame| {
                     if let Some(part) = frame.source_part() {
                         chart_parts.insert(part.to_owned());
+                        extended_sources.insert(part.to_owned());
                     }
                 });
         }
@@ -176,12 +211,44 @@ impl DrawingParts {
                 }
             }
         }
+        let mut retained_files: Vec<RawFile> = sheet
+            .drawing_parts()
+            .map(|parts| {
+                parts
+                    .files
+                    .iter()
+                    .filter(|file| file_targets.contains(file.file_target()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut retained_targets: HashSet<String> = retained_files
+            .iter()
+            .map(|file| file.file_target().to_owned())
+            .collect();
         let mut file_locations = HashMap::new();
         for (list_index, list) in raw.relationships_list().iter().enumerate() {
             for (edge_index, edge) in list.relationship_list().iter().enumerate() {
                 let file = edge.raw_file();
-                if file_targets.contains(file.file_target()) {
+                if file_targets.contains(file.file_target())
+                    && !retained_targets.contains(file.file_target())
+                {
                     if file.file_data().is_empty() && file.source_file().is_none() {
+                        if matches!(
+                            edge.get_type(),
+                            crate::helper::const_str::CHART_NS
+                                | crate::helper::const_str::CHART_EX_NS
+                        ) {
+                            let mut recovered = RawFile::default();
+                            recovered.set_file_target(file.file_target());
+                            provider.with_part(file.file_target(), session, &mut |data| {
+                                recovered.set_file_data(data);
+                                Ok(())
+                            })?;
+                            retained_targets.insert(file.file_target().to_owned());
+                            retained_files.push(recovered);
+                            continue;
+                        }
                         return Err(part_error(format!(
                             "missing drawing dependency: {}",
                             file.file_target()
@@ -193,7 +260,7 @@ impl DrawingParts {
                 }
             }
         }
-        if file_locations.len() != file_targets.len() {
+        if file_locations.len() + retained_files.len() != file_targets.len() {
             return Err(part_error("unresolved drawing dependencies"));
         }
         let mut selected_lists: Vec<_> = selected_lists.into_iter().collect();
@@ -210,7 +277,7 @@ impl DrawingParts {
                 parts
             },
             relationships,
-            files: Vec::new(),
+            files: retained_files,
             content_types: Vec::new(),
         };
         let mut locations: Vec<_> = file_locations.into_values().collect();
@@ -229,7 +296,29 @@ impl DrawingParts {
                 Ok((part.to_owned(), content_type.to_owned()))
             })
             .collect::<Result<_, XlsxError>>()?;
-        Ok(Some(PreparedDrawingParts { value, locations }))
+        for file in &value.files {
+            let part = file.file_target();
+            let content_type = session.content_type(part).ok_or_else(|| {
+                part_error(format!(
+                    "missing content type for drawing dependency: {part}"
+                ))
+            })?;
+            value
+                .content_types
+                .push((part.to_owned(), content_type.to_owned()));
+        }
+        let mut style_bundles = HashMap::new();
+        for source in &extended_sources {
+            style_bundles.insert(
+                source.clone(),
+                chart_style_bundle(raw, &value.files, source, session)?,
+            );
+        }
+        Ok(Some(PreparedDrawingParts {
+            value,
+            locations,
+            style_bundles,
+        }))
     }
 
     pub(crate) fn prepare_relationships(
@@ -277,48 +366,136 @@ impl DrawingParts {
     }
 
     pub(crate) fn reserve<W: io::Seek + io::Write>(&self, manager: &mut WriterManager<W>) {
+        if let Some(relationships) = &self.drawing_relationships {
+            manager.register_preserved_relationships(relationships, true);
+        }
         for file in &self.files {
             manager.reserve_part(file.file_target());
         }
         for list in &self.relationships {
             manager.reserve_part(list.file_target());
+            manager.register_preserved_relationships(list, false);
         }
         for part in &self.chart_parts {
             manager.reserve_part(part);
         }
     }
 
+    /// Whether a chart's style or colour edge points at a preserved part
+    /// holding exactly the given payload.
+    pub(crate) fn style_edge_matches(
+        &self,
+        edge: &RawRelationship,
+        expected: Option<&[u8]>,
+    ) -> Result<bool, XlsxError> {
+        let Some(expected) = expected else {
+            return Ok(false);
+        };
+        let target = edge.raw_file().file_target();
+        let Some(file) = self.files.iter().find(|file| file.file_target() == target) else {
+            return Ok(false);
+        };
+        Ok(file.read_data()? == expected)
+    }
+
+    /// Style and colour parts that only chart parts no longer present in the
+    /// sheet, or edges of a chart that name another chart's payload, referred
+    /// to. A chart moved elsewhere writes its own copy there.
+    fn orphaned_chart_style_parts(
+        &self,
+        live_charts: &HashSet<String>,
+        bundles: &HashMap<String, Vec<ChartExStyleBundle>>,
+    ) -> Result<HashSet<&str>, XlsxError> {
+        let chart_parts: HashSet<&str> = self.chart_parts.iter().map(String::as_str).collect();
+        let mut candidates = HashSet::new();
+        let mut referenced = HashSet::new();
+        for list in &self.relationships {
+            let owner = relationships_owner(list.file_target());
+            let dead_chart = owner
+                .as_deref()
+                .is_some_and(|owner| chart_parts.contains(owner) && !live_charts.contains(owner));
+            let bundle = owner.as_deref().and_then(|owner| bundles.get(owner));
+            for edge in list.relationship_list() {
+                if edge.target_mode() == "External" {
+                    continue;
+                }
+                let target = edge.raw_file().file_target();
+                let kind = edge.get_type();
+                let is_style = matches!(kind, CHART_STYLE_NS | CHART_COLOR_STYLE_NS);
+                let owned = match (dead_chart, bundle) {
+                    _ if !is_style => true,
+                    (true, _) => false,
+                    (false, Some(bundles)) => {
+                        let mut owned = false;
+                        for bundle in bundles {
+                            owned |= self.style_edge_matches(
+                                edge,
+                                if kind == CHART_STYLE_NS {
+                                    bundle.style.as_deref()
+                                } else {
+                                    bundle.colors.as_deref()
+                                },
+                            )?;
+                        }
+                        owned
+                    }
+                    (false, None) => true,
+                };
+                if is_style && !owned {
+                    candidates.insert(target);
+                } else {
+                    referenced.insert(target);
+                }
+            }
+        }
+        candidates.retain(|target| !referenced.contains(target));
+        Ok(candidates)
+    }
+
     pub(crate) fn write_common<W: io::Seek + io::Write>(
         &self,
         manager: &mut WriterManager<W>,
+        live_charts: &HashSet<String>,
+        bundles: &HashMap<String, Vec<ChartExStyleBundle>>,
     ) -> Result<(), XlsxError> {
+        let orphaned = self.orphaned_chart_style_parts(live_charts, bundles)?;
         for (part, content_type) in &self.content_types {
-            manager.register_content_type(part, content_type)?;
+            if orphaned.contains(part.as_str()) {
+                continue;
+            }
+            if manager.preserve_source_part(part)? {
+                manager.register_content_type(part, content_type)?;
+            }
         }
         let chart_parts: HashSet<&str> = self.chart_parts.iter().map(String::as_str).collect();
         for list in &self.relationships {
             if relationships_owner(list.file_target())
                 .as_deref()
-                .is_some_and(|owner| chart_parts.contains(owner))
+                .is_some_and(|owner| {
+                    chart_parts.contains(owner)
+                        && !self.files.iter().any(|file| file.file_target() == owner)
+                })
             {
                 continue;
             }
             list.write_to(manager, None)?;
         }
         for file in &self.files {
-            file.write_to(manager)?;
+            if orphaned.contains(file.file_target()) {
+                continue;
+            }
+            if manager.preserve_source_part(file.file_target())? {
+                file.write_to(manager)?;
+            }
         }
         Ok(())
     }
 
-    pub(crate) fn write_chart_dependencies<W: io::Seek + io::Write>(
+    pub(crate) fn chart_relationships(
         &self,
         sources: &[String],
-        output: &str,
-        manager: &mut WriterManager<W>,
-    ) -> Result<(), XlsxError> {
+    ) -> Result<RawRelationships, XlsxError> {
         let mut result = RawRelationships::default();
-        result.set_file_target(relationships_path(output)?);
         let mut ids = HashMap::new();
         for source in sources {
             let path = relationships_path(source)?;
@@ -328,10 +505,7 @@ impl DrawingParts {
                 .find(|list| list.file_target() == path)
             {
                 for edge in list.relationship_list() {
-                    let mut edge = edge.clone();
-                    if edge.target_mode() != "External" {
-                        edge.set_target(relative_target(output, edge.raw_file().file_target())?);
-                    }
+                    let edge = edge.clone();
                     let identity = (
                         edge.get_type().to_owned(),
                         edge.target().to_owned(),
@@ -349,15 +523,169 @@ impl DrawingParts {
                 }
             }
         }
-        result.write_to(manager, None)
+        Ok(result)
     }
+
+    pub(crate) fn matching_chart_image(
+        &self,
+        relationships: &RawRelationships,
+        image: &crate::MediaObject,
+        modeled_media: &[&crate::MediaObject],
+    ) -> Result<Option<String>, XlsxError> {
+        for edge in relationships.relationship_list() {
+            if edge.get_type() != IMAGE_NS
+                || edge.target_mode() == "External"
+                || edge.raw_file().file_name() != image.image_name()
+            {
+                continue;
+            }
+            let target = edge.raw_file().file_target();
+            let matches = if let Some(file) =
+                self.files.iter().find(|file| file.file_target() == target)
+            {
+                let mut file = file.clone();
+                file.load_file_data_from_source()?;
+                file.file_data() == image.image_data()
+            } else {
+                // Modeled drawing pictures own their media instead of the raw
+                // sidecar. Match the complete package path and actual bytes.
+                let modeled = modeled_media
+                    .iter()
+                    .find(|media| format!("xl/media/{}", media.image_name()) == target)
+                    .ok_or_else(|| part_error("preserved chart image bytes are missing"))?;
+                modeled.image_data() == image.image_data()
+            };
+            if matches {
+                return Ok(Some(edge.id().to_owned()));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn update_dependency_fingerprint(&self, digest: &mut sha2::Sha256) {
+        use sha2::Digest as _;
+        let mut field = |value: &[u8]| {
+            digest.update(value.len().to_le_bytes());
+            digest.update(value);
+        };
+        field(
+            &(usize::from(self.drawing_relationships.is_some()) + self.relationships.len())
+                .to_le_bytes(),
+        );
+        for relationships in self.drawing_relationships.iter().chain(&self.relationships) {
+            field(relationships.file_target().as_bytes());
+            field(&relationships.relationship_list().len().to_le_bytes());
+            for edge in relationships.relationship_list() {
+                field(edge.id().as_bytes());
+                field(edge.get_type().as_bytes());
+                field(edge.target().as_bytes());
+                field(edge.target_mode().as_bytes());
+                field(edge.raw_file().file_target().as_bytes());
+            }
+        }
+        field(&self.files.len().to_le_bytes());
+        for file in &self.files {
+            field(file.file_target().as_bytes());
+            field(file.file_data());
+            field(&[u8::from(file.source_file().is_some())]);
+            if let Some(path) = file.source_file() {
+                field(path.to_string_lossy().as_bytes());
+            }
+        }
+        field(&self.content_types.len().to_le_bytes());
+        for (target, content_type) in &self.content_types {
+            field(target.as_bytes());
+            field(content_type.as_bytes());
+        }
+        field(&self.chart_parts.len().to_le_bytes());
+        for part in &self.chart_parts {
+            field(part.as_bytes());
+        }
+    }
+
+    pub(crate) fn write_chart_relationships<W: io::Seek + io::Write>(
+        relationships: &mut RawRelationships,
+        output: &str,
+        manager: &mut WriterManager<W>,
+    ) -> Result<(), XlsxError> {
+        relationships.set_file_target(relationships_path(output)?);
+        for edge in relationships.relationship_list_mut() {
+            if edge.target_mode() != "External" {
+                edge.set_target(relative_target(output, edge.raw_file().file_target())?);
+            }
+        }
+        relationships.write_to(manager, None)
+    }
+}
+
+/// The style and colour payloads a chart part names through its own
+/// relationships. A chart declaring several parts of one kind is rejected
+/// rather than silently reduced to one of them.
+fn chart_style_bundle(
+    raw: &RawWorksheet,
+    retained: &[RawFile],
+    chart: &str,
+    session: &crate::reader::xlsx::SourceCacheSession,
+) -> Result<ChartExStyleBundle, XlsxError> {
+    let mut bundle = ChartExStyleBundle::default();
+    let Some(list) = raw.relationships_of_part(chart)? else {
+        return Ok(bundle);
+    };
+    for edge in list.relationship_list() {
+        let (slot, expected) = match edge.get_type() {
+            CHART_STYLE_NS => (&mut bundle.style, CHART_STYLE_TYPE),
+            CHART_COLOR_STYLE_NS => (&mut bundle.colors, CHART_COLOR_STYLE_TYPE),
+            _ => continue,
+        };
+        if edge.target_mode() == "External" {
+            return Err(part_error("chart style part cannot be external"));
+        }
+        // Excel refuses a package whose style or colour part is declared
+        // with any other content type, so the part is never imported as one.
+        let declared = session.content_type(edge.raw_file().file_target());
+        if declared != Some(expected) {
+            return Err(part_error(format!(
+                "chart part {} has content type {}, expected {expected}",
+                edge.raw_file().file_target(),
+                declared.unwrap_or("(none)")
+            )));
+        }
+        if slot.is_some() {
+            return Err(part_error(format!(
+                "chart {chart} declares several style or colour parts"
+            )));
+        }
+        let target = edge.raw_file().file_target();
+        // The package keeps one copy of a part shared by several edges.
+        let bytes = retained
+            .iter()
+            .chain(
+                raw.relationships_list()
+                    .iter()
+                    .flat_map(RawRelationships::relationship_list)
+                    .map(RawRelationship::raw_file),
+            )
+            .find(|file| {
+                file.file_target() == target
+                    && (!file.file_data().is_empty() || file.source_file().is_some())
+            })
+            .ok_or_else(|| part_error(format!("chart style part has no bytes: {target}")))?
+            .read_data()?;
+        if bytes.is_empty() {
+            return Err(part_error(format!(
+                "chart style part has no bytes: {target}"
+            )));
+        }
+        *slot = Some(bytes);
+    }
+    Ok(bundle)
 }
 
 fn metadata_only(source: &RawRelationships) -> RawRelationships {
     let mut value = RawRelationships::default();
     value.set_file_target(source.file_target());
     for original in source.relationship_list() {
-        let mut edge = crate::structs::raw::RawRelationship::default();
+        let mut edge = RawRelationship::default();
         edge.set_id(original.id());
         edge.set_type(original.get_type());
         edge.set_target(original.target());
@@ -371,20 +699,28 @@ fn metadata_only(source: &RawRelationships) -> RawRelationships {
 }
 
 pub(crate) fn relationships_path(part: &str) -> Result<String, XlsxError> {
-    let (directory, name) = part
-        .rsplit_once('/')
-        .ok_or_else(|| part_error("package part has no directory"))?;
-    Ok(format!("{directory}/_rels/{name}.rels"))
+    let part = part.trim_start_matches('/');
+    if part.is_empty() {
+        return Err(part_error("package part name is empty"));
+    }
+    Ok(match part.rsplit_once('/') {
+        Some((directory, name)) => format!("{directory}/_rels/{name}.rels"),
+        None => format!("_rels/{part}.rels"),
+    })
 }
-fn relationships_owner(path: &str) -> Option<String> {
+pub(crate) fn relationships_owner(path: &str) -> Option<String> {
+    let path = path.trim_start_matches('/');
+    if let Some(name) = path.strip_prefix("_rels/") {
+        return Some(name.strip_suffix(".rels")?.to_owned());
+    }
     let (directory, name) = path.rsplit_once("/_rels/")?;
     Some(format!("{directory}/{}", name.strip_suffix(".rels")?))
 }
 pub(crate) fn relative_target(owner: &str, target: &str) -> Result<String, XlsxError> {
-    let (directory, _) = owner
+    let owner = owner.trim_start_matches('/');
+    let from: Vec<_> = owner
         .rsplit_once('/')
-        .ok_or_else(|| part_error("package owner has no directory"))?;
-    let from: Vec<_> = directory.split('/').collect();
+        .map_or_else(Vec::new, |(directory, _)| directory.split('/').collect());
     let to: Vec<_> = target.split('/').collect();
     if to
         .iter()
@@ -414,4 +750,41 @@ fn relationship_identity(list: &RawRelationships) -> Vec<(&str, &str, &str, &str
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod root_part_tests {
+    use super::{
+        relationships_owner,
+        relationships_path,
+        relative_target,
+    };
+
+    #[test]
+    fn root_level_parts_pair_with_their_relationships() {
+        assert_eq!(
+            relationships_path("pivotTable1.xml").unwrap(),
+            "_rels/pivotTable1.xml.rels"
+        );
+        assert_eq!(
+            relationships_path("/pivotTable1.xml").unwrap(),
+            "_rels/pivotTable1.xml.rels"
+        );
+        assert_eq!(
+            relationships_owner("_rels/pivotTable1.xml.rels").as_deref(),
+            Some("pivotTable1.xml")
+        );
+        assert_eq!(
+            relationships_owner("xl/_rels/workbook.xml.rels").as_deref(),
+            Some("xl/workbook.xml")
+        );
+        assert_eq!(
+            relative_target("pivotTable1.xml", "xl/pivotCache/c.xml").unwrap(),
+            "xl/pivotCache/c.xml"
+        );
+        assert_eq!(
+            relative_target("xl/drawings/d.xml", "xl/charts/c.xml").unwrap(),
+            "../charts/c.xml"
+        );
+    }
 }

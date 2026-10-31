@@ -1,0 +1,288 @@
+{
+  "pins": [
+    {
+      "pin": "5c776271e6403ed4a291bb00593cd25e26d12456",
+      "deployments": [
+        {
+          "consumer_commit": "646651481dfd7fd0777d77bc6aa885a455ebb46e",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "7fd0288662ac833c5e71c7602ede8a24b50f1e35de5eec3201f9165e66d0299c",
+      "chart_types": 270,
+      "superset_manifest": "5c776271e6403ed4a291bb00593cd25e26d12456.txt"
+    },
+    {
+      "pin": "408f470d74b251fa6814e9c789a50e437eecadbc",
+      "deployments": [
+        {
+          "consumer_commit": "5e365906e259df2dd829af71780a25013de1595d",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "7fd0288662ac833c5e71c7602ede8a24b50f1e35de5eec3201f9165e66d0299c",
+      "chart_types": 270,
+      "superset_manifest": "408f470d74b251fa6814e9c789a50e437eecadbc.txt"
+    },
+    {
+      "pin": "efe1cd84bf301dc2961474075ff34af6de98bcce",
+      "deployments": [
+        {
+          "consumer_commit": "bef89d6c229323c01c56ca1f1188b03ce4740966",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "7fd0288662ac833c5e71c7602ede8a24b50f1e35de5eec3201f9165e66d0299c",
+      "chart_types": 270,
+      "superset_manifest": "efe1cd84bf301dc2961474075ff34af6de98bcce.txt"
+    },
+    {
+      "pin": "d80fb35f2ad89e16031e999189240a5ca37976d7",
+      "deployments": [
+        {
+          "consumer_commit": "07c376c5590f644996b021e3badf921a8eecfad5",
+          "source": "manifest rev"
+        },
+        {
+          "consumer_commit": "c840c8491e0eed936ff3c7c987a4502439f8771a",
+          "source": "workbook/Cargo.lock (manifest has no rev)"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "7fd0288662ac833c5e71c7602ede8a24b50f1e35de5eec3201f9165e66d0299c",
+      "chart_types": 270,
+      "superset_manifest": "d80fb35f2ad89e16031e999189240a5ca37976d7.txt"
+    },
+    {
+      "pin": "40c5ffe8cd69249571a998963176cec7fa957f4c",
+      "deployments": [
+        {
+          "consumer_commit": "9c88db1de0c89a83dea219f61ac0d68adc92e4f4",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "40c5ffe8cd69249571a998963176cec7fa957f4c.txt"
+    },
+    {
+      "pin": "323336c2125194caf3703231357d38df09b6d0e6",
+      "deployments": [
+        {
+          "consumer_commit": "dc79f5f38f138aed673251f617c415733400e54c",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "323336c2125194caf3703231357d38df09b6d0e6.txt"
+    },
+    {
+      "pin": "f35257f3eafdb1ae8c8554c1c078e551de695457",
+      "deployments": [
+        {
+          "consumer_commit": "0348b294a767b9bd21b1dd1a6c8c94f50a47572b",
+          "source": "manifest rev"
+        },
+        {
+          "consumer_commit": "8d0d75880aaf823e5c5e3eb2017e2703c4bd2eb7",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "f35257f3eafdb1ae8c8554c1c078e551de695457.txt"
+    },
+    {
+      "pin": "a3a2cd8dcb2e19e6d69913e04b37d6a9df71fede",
+      "deployments": [
+        {
+          "consumer_commit": "f377341ef08c5d2d483e5f904f00dd756e3df346",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": null,
+      "error": "Command '['git', '-C', 'D:\\\\Code\\\\Projects\\\\vortiq\\\\beyondcell\\\\umya-spreadsheet-serde', 'archive', 'a3a2cd8dcb2e19e6d69913e04b37d6a9df71fede']' returned non-zero exit status 128."
+    },
+    {
+      "pin": "051e822971a8376f023c02bab87550eec7a0e017",
+      "deployments": [
+        {
+          "consumer_commit": "7f80b49b77442406d887e8f90c5f4cb5d5bed234",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "051e822971a8376f023c02bab87550eec7a0e017.txt"
+    },
+    {
+      "pin": "3880d6880df09f77b7d7a3368062d817e26f04be",
+      "deployments": [
+        {
+          "consumer_commit": "756125cdd4296e99727019dc472cae0f292fc5d1",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "3880d6880df09f77b7d7a3368062d817e26f04be.txt"
+    },
+    {
+      "pin": "b7f85abf14215e30daa821de1228b0a18c43e367",
+      "deployments": [
+        {
+          "consumer_commit": "bc3fe5b043110be644574939955d9087554273e2",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "b7f85abf14215e30daa821de1228b0a18c43e367.txt"
+    },
+    {
+      "pin": "26acdc701552e46fbe25a8d69fbabb45efb3705d",
+      "deployments": [
+        {
+          "consumer_commit": "e8b42c0bfb45462df87924a1eeeb29e8cb71995f",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "26acdc701552e46fbe25a8d69fbabb45efb3705d.txt"
+    },
+    {
+      "pin": "8b7295fe63c002053748443f6fde471665f36f53",
+      "deployments": [
+        {
+          "consumer_commit": "331f2d5df0959ed6e87cb0ac319a95823976be92",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "8b7295fe63c002053748443f6fde471665f36f53.txt"
+    },
+    {
+      "pin": "5ec08b764dad018fb6bb9c292062595fb44181c1",
+      "deployments": [
+        {
+          "consumer_commit": "f79821e3240c565ef95233125e28824d05f8002f",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "chart_types": 270,
+      "superset_manifest": "5ec08b764dad018fb6bb9c292062595fb44181c1.txt"
+    },
+    {
+      "pin": "3595b5e2c470b15a45a07d10bb56edeec5ee870d",
+      "deployments": [
+        {
+          "consumer_commit": "7def69b561dddc85606d03944a17234dcd2403ff",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "d1bbfefa5a7f9bf09c04ed69f28efac80cc0bdb6d04e2bdacfb61bb097b4e1ef",
+      "chart_types": 273,
+      "superset_manifest": "3595b5e2c470b15a45a07d10bb56edeec5ee870d.txt"
+    },
+    {
+      "pin": "4282eaf9c86907bed239fd208ded3349772f6542",
+      "deployments": [
+        {
+          "consumer_commit": "db51a32fbbfeb5943519637c20da6defe9db5a9b",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "d1bbfefa5a7f9bf09c04ed69f28efac80cc0bdb6d04e2bdacfb61bb097b4e1ef",
+      "chart_types": 273,
+      "superset_manifest": "4282eaf9c86907bed239fd208ded3349772f6542.txt"
+    },
+    {
+      "pin": "336476e91b94ef97e0133fb4813b56ff620de75b",
+      "deployments": [
+        {
+          "consumer_commit": "822aa4c60e4fbabcacf4171fc4dcfe0385b4341a",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "47ebd1cad36fdf75314b9c6c14f67de6d5202d453045bea42919767d793f1bf1",
+      "chart_types": 276,
+      "superset_manifest": "336476e91b94ef97e0133fb4813b56ff620de75b.txt"
+    },
+    {
+      "pin": "327722cffd3e8e4db073c703bf3474f8820c938f",
+      "deployments": [
+        {
+          "consumer_commit": "2fe3f73c8dd2067dbfc3f7ebbccc9a261817a42e",
+          "source": "manifest rev"
+        }
+      ],
+      "auditor_exit": 0,
+      "chart_manifest_sha256": "c60b369408036aaf103dee0ecb8379a88e3128096a26f996173954ca6aa02dd5",
+      "chart_types": 279,
+      "superset_manifest": "327722cffd3e8e4db073c703bf3474f8820c938f.txt"
+    }
+  ],
+  "classes": [
+    {
+      "sha256": "7fd0288662ac833c5e71c7602ede8a24b50f1e35de5eec3201f9165e66d0299c",
+      "pins": [
+        "5c776271e6403ed4a291bb00593cd25e26d12456",
+        "408f470d74b251fa6814e9c789a50e437eecadbc",
+        "efe1cd84bf301dc2961474075ff34af6de98bcce",
+        "d80fb35f2ad89e16031e999189240a5ca37976d7"
+      ]
+    },
+    {
+      "sha256": "168fb290c4b8f7bbfb648257c47b887c5ef03cab8dbd34792a351099e746383d",
+      "pins": [
+        "40c5ffe8cd69249571a998963176cec7fa957f4c",
+        "323336c2125194caf3703231357d38df09b6d0e6",
+        "f35257f3eafdb1ae8c8554c1c078e551de695457",
+        "051e822971a8376f023c02bab87550eec7a0e017",
+        "3880d6880df09f77b7d7a3368062d817e26f04be",
+        "b7f85abf14215e30daa821de1228b0a18c43e367",
+        "26acdc701552e46fbe25a8d69fbabb45efb3705d",
+        "8b7295fe63c002053748443f6fde471665f36f53",
+        "5ec08b764dad018fb6bb9c292062595fb44181c1"
+      ]
+    },
+    {
+      "sha256": "d1bbfefa5a7f9bf09c04ed69f28efac80cc0bdb6d04e2bdacfb61bb097b4e1ef",
+      "pins": [
+        "3595b5e2c470b15a45a07d10bb56edeec5ee870d",
+        "4282eaf9c86907bed239fd208ded3349772f6542"
+      ]
+    },
+    {
+      "sha256": "47ebd1cad36fdf75314b9c6c14f67de6d5202d453045bea42919767d793f1bf1",
+      "pins": [
+        "336476e91b94ef97e0133fb4813b56ff620de75b"
+      ]
+    },
+    {
+      "sha256": "c60b369408036aaf103dee0ecb8379a88e3128096a26f996173954ca6aa02dd5",
+      "pins": [
+        "327722cffd3e8e4db073c703bf3474f8820c938f"
+      ]
+    }
+  ]
+}

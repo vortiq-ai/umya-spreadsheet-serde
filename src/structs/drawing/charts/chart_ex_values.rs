@@ -16,7 +16,6 @@ use super::{
     ChartExStringLevel,
     ChartExStringPoint,
     ChartExStringReference,
-    Formula,
     MAX_SOURCE_CACHE_POINTS,
     MAX_SOURCE_CACHE_TEXT_BYTES,
     SourceCache,
@@ -27,7 +26,6 @@ use crate::{
     DefinedName,
     Workbook,
     helper::address::{
-        join_address,
         name_eq_ignore_case,
         split_reference_address,
         unescape_sheet_name,
@@ -75,11 +73,12 @@ struct Rect {
     bottom: u32,
 }
 impl Rect {
-    fn from_formula(formula: &Formula) -> Option<Self> {
-        if formula.has_string_value() {
+    fn from_reference(reference: &str) -> Option<Self> {
+        if !super::reference_edit_engine::is_native_coordinate_operand(reference) {
             return None;
         }
-        let range = formula.address().range();
+        let mut range = crate::Range::default();
+        range.set_range(reference.to_ascii_uppercase());
         let first_column = range
             .coordinate_start_col()
             .map(crate::structs::column_reference::ColumnReference::num);
@@ -132,7 +131,10 @@ impl Rect {
 }
 
 enum Source {
-    Error(String),
+    Error {
+        identity:  String,
+        reference: bool,
+    },
     Scalar {
         identity: String,
         value:    Value,
@@ -146,7 +148,7 @@ enum Source {
 impl Source {
     fn identity(&self) -> &str {
         match self {
-            Self::Error(identity)
+            Self::Error { identity, .. }
             | Self::Scalar { identity, .. }
             | Self::Cells { identity, .. } => identity,
         }
@@ -154,7 +156,7 @@ impl Source {
 
     fn size(&self, direction: ChartExFormulaDirection) -> (u32, u32) {
         match self {
-            Self::Error(_) => (0, 0),
+            Self::Error { .. } => (0, 0),
             Self::Scalar { .. } => (1, 1),
             Self::Cells { area, .. } => match direction {
                 ChartExFormulaDirection::Column => (area.width(), area.height()),
@@ -175,7 +177,7 @@ impl Source {
             return None;
         }
         match self {
-            Self::Error(_) => None,
+            Self::Error { .. } => None,
             Self::Scalar { .. } => Some((1, 1)),
             Self::Cells { area, .. } => Some(match direction {
                 ChartExFormulaDirection::Column => (area.left + level, area.top + point),
@@ -234,11 +236,22 @@ impl<'a> WorkbookChartExResolver<'a> {
     ) -> Result<Source, String> {
         let text = text.trim();
         let text = text.strip_prefix('=').unwrap_or(text).trim();
-        if let Some(literal) = text.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        if let Some(quoted) = text.strip_prefix('"') {
+            let unsupported =
+                || format!("unsupported ChartEx expression requires a resolver: {text}");
+            let literal = quoted.strip_suffix('"').ok_or_else(unsupported)?;
+            let mut characters = literal.chars();
+            let mut display = String::new();
+            while let Some(character) = characters.next() {
+                if character == '"' && characters.next() != Some('"') {
+                    return Err(unsupported());
+                }
+                display.push(character);
+            }
             return Ok(Source::Scalar {
                 identity: format!("literal:{text}"),
                 value:    Value {
-                    display: literal.replace("\"\"", "\""),
+                    display,
                     ..Value::default()
                 },
             });
@@ -260,8 +273,11 @@ impl<'a> WorkbookChartExResolver<'a> {
                 "external ChartEx source requires a resolver: {text}"
             ));
         }
-        if operand.parse::<crate::CellErrorType>().is_ok() {
-            return Ok(Source::Error(format!("error:{text}")));
+        if let Ok(error) = operand.parse::<crate::CellErrorType>() {
+            return Ok(Source::Error {
+                identity:  format!("error:{text}"),
+                reference: error == crate::CellErrorType::Ref,
+            });
         }
         let scope = if qualifier.is_empty() {
             host.to_owned()
@@ -270,9 +286,7 @@ impl<'a> WorkbookChartExResolver<'a> {
         } else {
             qualifier.into_owned()
         };
-        let mut formula = Formula::default();
-        formula.set_address_str(join_address(&scope, operand));
-        if let Some(area) = Rect::from_formula(&formula) {
+        if let Some(area) = Rect::from_reference(operand) {
             let sheet = self
                 .workbook
                 .sheet_collection_no_check()
@@ -375,7 +389,7 @@ impl<'a> WorkbookChartExResolver<'a> {
     }
 
     fn grid(&self, source: &Source) -> Result<Grid, String> {
-        if matches!(source, Source::Error(_)) {
+        if matches!(source, Source::Error { .. }) {
             return Ok(Grid {
                 width:  1,
                 values: Vec::new(),
@@ -434,7 +448,7 @@ impl<'a> WorkbookChartExResolver<'a> {
             .map(|&coordinate| (coordinate, String::new()))
             .collect::<HashMap<_, _>>();
         match source {
-            Source::Error(_) => return Ok(HashMap::new()),
+            Source::Error { .. } => return Ok(HashMap::new()),
             Source::Scalar { value, .. } => {
                 if let Some(display) = displays.get_mut(&(1, 1)) {
                     display.clone_from(&value.display);
@@ -582,13 +596,27 @@ impl<'a> WorkbookChartExResolver<'a> {
 }
 
 impl ChartExDataResolver for WorkbookChartExResolver<'_> {
+    fn is_invalid_reference(
+        &mut self,
+        host: &str,
+        formula: &ChartExFormula,
+    ) -> Result<bool, String> {
+        Ok(matches!(
+            self.resolve(host, &formula.text(), &mut HashSet::new())?,
+            Source::Error {
+                reference: true,
+                ..
+            }
+        ))
+    }
+
     fn text_value(
         &mut self,
         host: &str,
         formula: &ChartExFormula,
     ) -> Result<Option<String>, String> {
         let source = self.resolve(host, &formula.text(), &mut HashSet::new())?;
-        if matches!(source, Source::Error(_)) {
+        if matches!(source, Source::Error { .. }) {
             return Ok(None);
         }
         let coordinate = source
@@ -612,7 +640,7 @@ impl ChartExDataResolver for WorkbookChartExResolver<'_> {
             return Err("string ChartEx levels cannot have numeric formats".into());
         }
         let source = self.resolve(host, &reference.formula().text(), &mut HashSet::new())?;
-        if matches!(source, Source::Error(_)) {
+        if matches!(source, Source::Error { .. }) {
             return Ok(Vec::new());
         }
         if let Some(levels) = self.retained_strings(host, reference, &source)? {
@@ -658,7 +686,7 @@ impl ChartExDataResolver for WorkbookChartExResolver<'_> {
         reference: &ChartExNumericReference,
     ) -> Result<Vec<ChartExNumericLevel>, String> {
         let source = self.resolve(host, &reference.formula().text(), &mut HashSet::new())?;
-        if matches!(source, Source::Error(_)) {
+        if matches!(source, Source::Error { .. }) {
             return Ok(Vec::new());
         }
         let grid = self.grid(&source)?;

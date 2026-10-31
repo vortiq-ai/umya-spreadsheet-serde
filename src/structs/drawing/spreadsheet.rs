@@ -89,6 +89,8 @@ mod absolute_anchor;
 pub use self::absolute_anchor::*;
 mod extended_chart;
 pub(crate) use extended_chart::drawing_error;
+mod slicer_frame;
+pub use self::slicer_frame::*;
 
 #[cfg(test)]
 mod metadata_content_tests {

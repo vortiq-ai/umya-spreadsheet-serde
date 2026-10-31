@@ -42,8 +42,7 @@ pub enum TextAutoFit {
     Shape(ShapeAutoFit),
 }
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "NormalAutoFitAttributes"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct NormalAutoFit {
     font_scale:             Option<String>,
@@ -51,21 +50,84 @@ pub struct NormalAutoFit {
 }
 
 #[cfg(feature = "serde")]
-#[derive(serde::Deserialize)]
-struct NormalAutoFitAttributes {
-    font_scale:             Option<String>,
-    line_spacing_reduction: Option<String>,
-}
+impl<'de> serde::Deserialize<'de> for NormalAutoFit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = NormalAutoFit;
 
-#[cfg(feature = "serde")]
-impl TryFrom<NormalAutoFitAttributes> for NormalAutoFit {
-    type Error = XlsxError;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("NormalAutoFit")
+            }
 
-    fn try_from(value: NormalAutoFitAttributes) -> Result<Self, Self::Error> {
-        let mut result = Self::default();
-        result.set_font_scale(value.font_scale.as_deref())?;
-        result.set_line_spacing_reduction(value.line_spacing_reduction.as_deref())?;
-        Ok(result)
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let font_scale: Option<String> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let line_spacing_reduction: Option<String> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let mut result = NormalAutoFit::default();
+                result
+                    .set_font_scale(font_scale.as_deref())
+                    .map_err(serde::de::Error::custom)?;
+                result
+                    .set_line_spacing_reduction(line_spacing_reduction.as_deref())
+                    .map_err(serde::de::Error::custom)?;
+                Ok(result)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut font_scale = None;
+                let mut line_spacing_reduction = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "font_scale" => {
+                            if font_scale.is_some() {
+                                return Err(serde::de::Error::duplicate_field("font_scale"));
+                            }
+                            font_scale = Some(map.next_value()?);
+                        }
+                        "line_spacing_reduction" => {
+                            if line_spacing_reduction.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "line_spacing_reduction",
+                                ));
+                            }
+                            line_spacing_reduction = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(
+                                &key,
+                                &["font_scale", "line_spacing_reduction"],
+                            ));
+                        }
+                    }
+                }
+                let font_scale: Option<String> = font_scale.unwrap_or_default();
+                let line_spacing_reduction: Option<String> =
+                    line_spacing_reduction.unwrap_or_default();
+                let mut result = NormalAutoFit::default();
+                result
+                    .set_font_scale(font_scale.as_deref())
+                    .map_err(serde::de::Error::custom)?;
+                result
+                    .set_line_spacing_reduction(line_spacing_reduction.as_deref())
+                    .map_err(serde::de::Error::custom)?;
+                Ok(result)
+            }
+        }
+        deserializer.deserialize_struct(
+            "NormalAutoFit",
+            &["font_scale", "line_spacing_reduction"],
+            Visitor,
+        )
     }
 }
 

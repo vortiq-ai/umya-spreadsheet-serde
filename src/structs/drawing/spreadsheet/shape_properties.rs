@@ -33,20 +33,405 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ShapeProperties {
-    transform2d:      Option<Box<Transform2D>>,
-    preset_geometry:  PresetGeometry,
-    blip_fill:        Option<Box<BlipFill>>,
-    solid_fill:       Option<Box<SolidFill>>,
-    gradient_fill:    Option<Box<GradientFill>>,
-    outline:          Option<Box<Outline>>,
-    effect_list:      Option<Box<EffectList>>,
-    no_fill:          Option<NoFill>,
-    extension_list:   Option<ExtensionList>,
-    black_white_mode: EnumValue<BlackWhiteModeValues>,
+    transform2d:          Option<Box<Transform2D>>,
+    preset_geometry:      PresetGeometry,
+    blip_fill:            Option<Box<BlipFill>>,
+    solid_fill:           Option<Box<SolidFill>>,
+    gradient_fill:        Option<Box<GradientFill>>,
+    outline:              Option<Box<Outline>>,
+    effect_list:          Option<Box<EffectList>>,
+    no_fill:              Option<NoFill>,
+    extension_list:       Option<ExtensionList>,
+    black_white_mode:     EnumValue<BlackWhiteModeValues>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    preserved_properties: Vec<crate::drawing::charts::OpaqueElement>,
 }
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ShapeProperties {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "transform2d",
+            "preset_geometry",
+            "blip_fill",
+            "solid_fill",
+            "gradient_fill",
+            "outline",
+            "effect_list",
+            "no_fill",
+            "extension_list",
+            "black_white_mode",
+            "preserved_properties",
+        ];
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ShapeProperties;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("spreadsheet shape properties")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let value = ShapeProperties {
+                    transform2d:          seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                    preset_geometry:      seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?,
+                    blip_fill:            seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?,
+                    solid_fill:           seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?,
+                    gradient_fill:        seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?,
+                    outline:              seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?,
+                    effect_list:          seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?,
+                    no_fill:              seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(7, &self))?,
+                    extension_list:       seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(8, &self))?,
+                    black_white_mode:     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(9, &self))?,
+                    preserved_properties: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(10, &self))?,
+                };
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(12, &self));
+                }
+                Ok(value)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut transform2d = None;
+                let mut preset_geometry = None;
+                let mut blip_fill = None;
+                let mut solid_fill = None;
+                let mut gradient_fill = None;
+                let mut outline = None;
+                let mut effect_list = None;
+                let mut no_fill = None;
+                let mut extension_list = None;
+                let mut black_white_mode = None;
+                let mut preserved_properties = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "transform2d" => {
+                            if transform2d.is_some() {
+                                return Err(serde::de::Error::duplicate_field("transform2d"));
+                            }
+                            transform2d = Some(map.next_value()?);
+                        }
+                        "preset_geometry" => {
+                            if preset_geometry.is_some() {
+                                return Err(serde::de::Error::duplicate_field("preset_geometry"));
+                            }
+                            preset_geometry = Some(map.next_value()?);
+                        }
+                        "blip_fill" => {
+                            if blip_fill.is_some() {
+                                return Err(serde::de::Error::duplicate_field("blip_fill"));
+                            }
+                            blip_fill = Some(map.next_value()?);
+                        }
+                        "solid_fill" => {
+                            if solid_fill.is_some() {
+                                return Err(serde::de::Error::duplicate_field("solid_fill"));
+                            }
+                            solid_fill = Some(map.next_value()?);
+                        }
+                        "gradient_fill" => {
+                            if gradient_fill.is_some() {
+                                return Err(serde::de::Error::duplicate_field("gradient_fill"));
+                            }
+                            gradient_fill = Some(map.next_value::<DeferredGradientValue>()?);
+                        }
+                        "outline" => {
+                            if outline.is_some() {
+                                return Err(serde::de::Error::duplicate_field("outline"));
+                            }
+                            outline = Some(map.next_value()?);
+                        }
+                        "effect_list" => {
+                            if effect_list.is_some() {
+                                return Err(serde::de::Error::duplicate_field("effect_list"));
+                            }
+                            effect_list = Some(map.next_value()?);
+                        }
+                        "no_fill" => {
+                            if no_fill.is_some() {
+                                return Err(serde::de::Error::duplicate_field("no_fill"));
+                            }
+                            no_fill = Some(map.next_value()?);
+                        }
+                        "extension_list" => {
+                            if extension_list.is_some() {
+                                return Err(serde::de::Error::duplicate_field("extension_list"));
+                            }
+                            extension_list = Some(map.next_value()?);
+                        }
+                        "black_white_mode" => {
+                            if black_white_mode.is_some() {
+                                return Err(serde::de::Error::duplicate_field("black_white_mode"));
+                            }
+                            black_white_mode = Some(map.next_value()?);
+                        }
+                        "preserved_properties" => {
+                            if preserved_properties.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "preserved_properties",
+                                ));
+                            }
+                            preserved_properties = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                // Historical JSON retained gradients that its writer never
+                // emitted. The new native property list
+                // distinguishes maps whose gradients really are
+                // part of the authoritative drawing.
+                let gradient_fill = if preserved_properties.is_some() {
+                    gradient_fill
+                        .map(serde::Deserialize::deserialize)
+                        .transpose()
+                        .map_err(serde::de::Error::custom)?
+                        .flatten()
+                } else {
+                    if gradient_fill.as_ref().is_some_and(|value| {
+                        !matches!(
+                            value,
+                            DeferredGradientValue::Unit | DeferredGradientValue::Map(_)
+                        )
+                    }) {
+                        return Err(serde::de::Error::custom(
+                            "historical gradient field must be a map or null",
+                        ));
+                    }
+                    // Unused legacy map contents are discarded without current
+                    // nested validation, not revalidated against obsolete
+                    // serde.
+                    None
+                };
+                Ok(ShapeProperties {
+                    transform2d: transform2d.unwrap_or(None),
+                    preset_geometry: preset_geometry
+                        .ok_or_else(|| serde::de::Error::missing_field("preset_geometry"))?,
+                    blip_fill: blip_fill.unwrap_or(None),
+                    solid_fill: solid_fill.unwrap_or(None),
+                    gradient_fill,
+                    outline: outline.unwrap_or(None),
+                    effect_list: effect_list.unwrap_or(None),
+                    no_fill: no_fill.unwrap_or(None),
+                    extension_list: extension_list.unwrap_or(None),
+                    black_white_mode: black_white_mode
+                        .ok_or_else(|| serde::de::Error::missing_field("black_white_mode"))?,
+                    preserved_properties: preserved_properties.unwrap_or_default(),
+                })
+            }
+        }
+        deserializer.deserialize_struct("ShapeProperties", FIELDS, Visitor)
+    }
+}
+
+// Buffer only this self-describing map field until its format marker is known.
+// Discarded historical gradients must not enter the current native validators;
+// binary sequences above still deserialize GradientFill directly.
+#[cfg(feature = "serde")]
+enum DeferredGradientValue {
+    Unit,
+    Boolean(bool),
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+    String(String),
+    Sequence(Vec<Self>),
+    Map(Vec<(String, Self)>),
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DeferredGradientValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = DeferredGradientValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a self-describing gradient field")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::Unit)
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::Unit)
+            }
+
+            fn visit_some<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                serde::Deserialize::deserialize(deserializer)
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::Boolean(value))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::Signed(value))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::Unsigned(value))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::Float(value))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::String(value.to_owned()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(DeferredGradientValue::String(value))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(DeferredGradientValue::Sequence(values))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = map.next_entry()? {
+                    values.push(value);
+                }
+                Ok(DeferredGradientValue::Map(values))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::de::IntoDeserializer<'_, serde::de::value::Error> for DeferredGradientValue {
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self::Deserializer {
+        self
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserializer<'de> for DeferredGradientValue {
+    type Error = serde::de::value::Error;
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf unit unit_struct seq tuple tuple_struct map struct
+        identifier ignored_any
+    }
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self {
+            Self::Unit => visitor.visit_unit(),
+            Self::Boolean(value) => visitor.visit_bool(value),
+            Self::Signed(value) => visitor.visit_i64(value),
+            Self::Unsigned(value) => visitor.visit_u64(value),
+            Self::Float(value) => visitor.visit_f64(value),
+            Self::String(value) => visitor.visit_string(value),
+            Self::Sequence(values) => serde::Deserializer::deserialize_any(
+                serde::de::value::SeqDeserializer::new(values.into_iter()),
+                visitor,
+            ),
+            Self::Map(values) => serde::Deserializer::deserialize_any(
+                serde::de::value::MapDeserializer::new(values.into_iter()),
+                visitor,
+            ),
+        }
+    }
+
+    fn deserialize_option<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self {
+            Self::Unit => visitor.visit_none(),
+            value => visitor.visit_some(value),
+        }
+    }
+
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self {
+            Self::String(value) => serde::Deserializer::deserialize_enum(
+                serde::de::value::StringDeserializer::new(value),
+                name,
+                variants,
+                visitor,
+            ),
+            Self::Map(values) if values.len() == 1 => serde::Deserializer::deserialize_enum(
+                serde::de::value::MapAccessDeserializer::new(
+                    serde::de::value::MapDeserializer::new(values.into_iter()),
+                ),
+                name,
+                variants,
+                visitor,
+            ),
+            _ => Err(serde::de::Error::custom(
+                "expected a string or single-entry gradient enum",
+            )),
+        }
+    }
+
+    fn deserialize_newtype_struct<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_newtype_struct(self)
+    }
+}
+
 impl ShapeProperties {
     #[inline]
     #[must_use]
@@ -93,6 +478,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn geometry_mut(&mut self) -> &mut PresetGeometry {
+        self.preserved_properties
+            .retain(|value| value.name.local_name != "custGeom");
         &mut self.preset_geometry
     }
 
@@ -104,6 +491,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_geometry(&mut self, value: PresetGeometry) -> &mut Self {
+        self.preserved_properties
+            .retain(|value| value.name.local_name != "custGeom");
         self.preset_geometry = value;
         self
     }
@@ -134,6 +523,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_blip_fill(&mut self, value: BlipFill) -> &mut Self {
+        self.preserved_properties
+            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
         self.blip_fill = Some(Box::new(value));
         self
     }
@@ -164,6 +555,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_solid_fill(&mut self, value: SolidFill) -> &mut Self {
+        self.preserved_properties
+            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
         self.solid_fill = Some(Box::new(value));
         self
     }
@@ -194,6 +587,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_gradient_fill(&mut self, value: GradientFill) -> &mut Self {
+        self.preserved_properties
+            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
         self.gradient_fill = Some(Box::new(value));
         self
     }
@@ -254,6 +649,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_effect_list(&mut self, value: EffectList) -> &mut Self {
+        self.preserved_properties
+            .retain(|value| value.name.local_name != "effectDag");
         self.effect_list = Some(Box::new(value));
         self
     }
@@ -284,6 +681,8 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_no_fill(&mut self, value: NoFill) -> &mut Self {
+        self.preserved_properties
+            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
         self.no_fill = Some(value);
         self
     }
@@ -361,6 +760,7 @@ impl ShapeProperties {
         }
         let end = owner.name().as_ref().to_vec();
         let mut buffer = Vec::new();
+        let mut previous_rank = None;
         loop {
             match reader.read_event_into(&mut buffer)? {
                 ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
@@ -375,7 +775,37 @@ impl ShapeProperties {
                         }
                         continue;
                     }
+                    let rank = match name.local_name.as_str() {
+                        "xfrm" => 0,
+                        "prstGeom" | "custGeom" => 1,
+                        "noFill" | "solidFill" | "gradFill" | "blipFill" | "pattFill"
+                        | "grpFill" => 2,
+                        "ln" => 3,
+                        "effectLst" | "effectDag" => 4,
+                        "scene3d" => 5,
+                        "sp3d" => 6,
+                        "extLst" => 7,
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported drawing shape property",
+                            ));
+                        }
+                    };
+                    if previous_rank.is_some_and(|previous| rank <= previous) {
+                        return Err(crate::xml::xml_error(
+                            "duplicate or out-of-order drawing shape property",
+                        ));
+                    }
+                    previous_rank = Some(rank);
                     match name.local_name.as_str() {
+                        "custGeom" | "pattFill" | "grpFill" | "effectDag" | "scene3d" | "sp3d" => {
+                            self.preserved_properties.push(
+                                crate::drawing::charts::OpaqueElement::read_detached(
+                                    reader, child, empty, &scope,
+                                )
+                                .map_err(crate::xml::xml_error)?,
+                            );
+                        }
                         "xfrm" => {
                             let mut value = Transform2D::default();
                             value.read_with_session(reader, child, empty, Some(session))?;
@@ -467,7 +897,15 @@ impl ShapeProperties {
         }
 
         // a:prstGeom
-        self.preset_geometry.write_to(writer);
+        if self
+            .preserved_properties
+            .iter()
+            .any(|value| value.name.local_name == "custGeom")
+        {
+            self.write_preserved(writer, rel_list, &["custGeom"])?;
+        } else {
+            self.preset_geometry.write_to(writer);
+        }
 
         // a:blipFill
         if let Some(v) = &self.blip_fill {
@@ -487,6 +925,8 @@ impl ShapeProperties {
             NoFill::write_to(writer);
         }
 
+        self.write_preserved(writer, rel_list, &["pattFill", "grpFill"])?;
+
         // a:ln
         if let Some(v) = &self.outline {
             v.write_to(writer)?;
@@ -496,6 +936,8 @@ impl ShapeProperties {
         if let Some(v) = &self.effect_list {
             v.write_to(writer)?;
         }
+
+        self.write_preserved(writer, rel_list, &["effectDag", "scene3d", "sp3d"])?;
 
         if let Some(value) = &self.extension_list {
             let mut metadata = value.clone();
@@ -517,12 +959,38 @@ impl ShapeProperties {
 }
 
 impl ShapeProperties {
+    fn write_preserved(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        rel_list: &[(String, String)],
+        names: &[&str],
+    ) -> Result<(), crate::XlsxError> {
+        for value in &self.preserved_properties {
+            if names.contains(&value.name.local_name.as_str()) {
+                let mut value = value.clone();
+                super::non_visual_drawing_properties::extension_relationships_mut(
+                    &mut value,
+                    &mut |_, id| {
+                        super::non_visual_drawing_properties::rebind_relationship_id(id, rel_list);
+                    },
+                );
+                value
+                    .write_to(writer, &crate::drawing::charts::NamespaceScope::default())
+                    .map_err(crate::xml::xml_error)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn visit_relationships(
         &self,
         visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str),
     ) {
         if let Some(fill) = &self.blip_fill {
             fill.blip().visit_relationships(visit);
+        }
+        for value in &self.preserved_properties {
+            super::non_visual_drawing_properties::extension_relationships(value, visit);
         }
         if let Some(value) = self
             .extension_list
@@ -539,6 +1007,9 @@ impl ShapeProperties {
     ) {
         if let Some(fill) = &mut self.blip_fill {
             fill.blip_mut().visit_relationships_mut(visit);
+        }
+        for value in &mut self.preserved_properties {
+            super::non_visual_drawing_properties::extension_relationships_mut(value, visit);
         }
         if let Some(value) = self
             .extension_list

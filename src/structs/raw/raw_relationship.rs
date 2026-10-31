@@ -5,7 +5,6 @@ use std::{
 };
 
 use quick_xml::{
-    Reader,
     Writer,
     events::BytesStart,
 };
@@ -121,9 +120,8 @@ impl RawRelationship {
         self
     }
 
-    pub(crate) fn set_attributes<R: io::BufRead, A: io::Read + io::Seek>(
+    pub(crate) fn set_attributes<A: io::Read + io::Seek>(
         &mut self,
-        _reader: &mut Reader<R>,
         e: &BytesStart,
         arv: &mut zip::read::ZipArchive<A>,
         base_path: &str,

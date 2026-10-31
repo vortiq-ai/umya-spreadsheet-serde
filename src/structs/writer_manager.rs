@@ -22,7 +22,9 @@ use zip::result::ZipResult;
 
 use crate::{
     helper::const_str::{
+        CHART_COLOR_STYLE_TYPE,
         CHART_EX_TYPE,
+        CHART_STYLE_TYPE,
         CHART_TYPE,
         COMMENTS_TYPE,
         CORE_PROPS_TYPE,
@@ -55,18 +57,31 @@ use crate::{
     writer::driver::make_file_from_bin,
 };
 pub struct WriterManager<W: io::Seek + io::Write> {
-    files:                 Vec<String>,
-    written_parts:         HashMap<String, WrittenPart>,
-    reserved_parts:        HashSet<String>,
-    content_types:         HashMap<String, String>,
-    arv:                   zip::ZipWriter<W>,
-    is_light:              bool,
-    table_no:              i32,
-    table_ids:             HashSet<u32>,
-    written_table_ids:     HashSet<u32>,
-    reserved_table_parts:  HashSet<String>,
-    pivot_table_no:        i32,
-    pivot_cache_hash_list: Vec<String>,
+    files:                   Vec<String>,
+    written_parts:           HashMap<String, WrittenPart>,
+    reserved_parts:          HashSet<String>,
+    content_types:           HashMap<String, String>,
+    arv:                     zip::ZipWriter<W>,
+    is_light:                bool,
+    table_no:                i32,
+    table_ids:               HashSet<u32>,
+    written_table_ids:       HashSet<u32>,
+    reserved_table_parts:    HashSet<String>,
+    pivot_table_no:          i32,
+    allocated_parts:         HashMap<String, u32>,
+    pivot_cache_hash_list:   Vec<String>,
+    written_pivot_caches:    HashSet<i32>,
+    preserved_graph:         HashMap<String, Vec<String>>,
+    original_graph:          HashMap<String, Vec<String>>,
+    preserved_roots:         HashSet<String>,
+    preserved_media:         HashSet<String>,
+    preserved_graph_error:   Option<String>,
+    chart_media:             HashMap<(String, [u8; 32]), String>,
+    rewritten_picture_graph: bool,
+    rewritten_chart_edges:   HashMap<String, HashSet<String>>,
+    preserved_chart_owners:  HashSet<String>,
+    extended_charts:         HashMap<String, [u8; 32]>,
+    claimed_style_parts:     HashSet<String>,
 }
 
 impl<W: io::Seek + io::Write> WriterManager<W> {
@@ -84,7 +99,20 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
             written_table_ids: HashSet::new(),
             reserved_table_parts: HashSet::new(),
             pivot_table_no: 0,
+            allocated_parts: HashMap::new(),
             pivot_cache_hash_list: Vec::new(),
+            written_pivot_caches: HashSet::new(),
+            preserved_graph: HashMap::new(),
+            original_graph: HashMap::new(),
+            preserved_roots: HashSet::new(),
+            preserved_media: HashSet::new(),
+            preserved_graph_error: None,
+            chart_media: HashMap::new(),
+            rewritten_picture_graph: false,
+            rewritten_chart_edges: HashMap::new(),
+            preserved_chart_owners: HashSet::new(),
+            extended_charts: HashMap::new(),
+            claimed_style_parts: HashSet::new(),
         }
     }
 
@@ -131,7 +159,15 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
                     }
                 }
             } else {
+                let sheet_relationships = sheet
+                    .raw_data_of_worksheet()
+                    .worksheet_relationships()?
+                    .map(super::raw::RawRelationships::file_target);
                 for relationships in sheet.raw_data_of_worksheet().relationships_list() {
+                    self.register_preserved_relationships(
+                        relationships,
+                        sheet_relationships == Some(relationships.file_target()),
+                    );
                     for relationship in relationships.relationship_list() {
                         if relationship.get_type() != crate::helper::const_str::TABLE_NS {
                             continue;
@@ -157,6 +193,10 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         Ok(())
     }
 
+    pub(crate) fn written_table_ids(&self) -> &HashSet<u32> {
+        &self.written_table_ids
+    }
+
     pub(crate) fn table_id(&mut self, imported: Option<u32>) -> Result<u32, XlsxError> {
         let id = if let Some(id) = imported {
             id
@@ -178,23 +218,75 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         Ok(id)
     }
 
+    /// Table ids that are reserved or written, across every sheet.
+    #[inline]
+    pub(crate) fn table_ids(&self) -> &HashSet<u32> {
+        &self.table_ids
+    }
+
+    /// A part name `<directory>/<stem><n>.<extension>` that no source part
+    /// reserves and no written part occupies.
+    pub(crate) fn allocate_part(&mut self, directory: &str, stem: &str, extension: &str) -> String {
+        let counter = self
+            .allocated_parts
+            .entry(format!("{directory}/{stem}.{extension}"))
+            .or_insert(0);
+        loop {
+            *counter += 1;
+            let path = format!("{directory}/{stem}{counter}.{extension}");
+            if !self.reserved_parts.contains(&path) && !self.written_parts.contains_key(&path) {
+                return path;
+            }
+        }
+    }
+
     #[inline]
     pub fn next_pivot_table_no(&mut self) -> i32 {
         self.pivot_table_no += 1;
         self.pivot_table_no
     }
 
+    /// The number of the pivot cache `id`, reserving the next one when the
+    /// workbook does not declare it. Reported with whether its definition was
+    /// already written.
     #[inline]
     pub fn get_pivot_cache_no(&mut self, hash: &str) -> (bool, i32) {
-        if let Some(v) = self.pivot_cache_hash_list.iter().position(|x| x == hash) {
-            (true, i32::try_from(v + 1).unwrap())
-        } else {
-            self.pivot_cache_hash_list.push(hash.to_string());
-            (
-                false,
-                i32::try_from(self.pivot_cache_hash_list.len()).unwrap(),
-            )
+        let no = self.reserve_pivot_cache(hash);
+        (!self.written_pivot_caches.insert(no), no)
+    }
+
+    /// Number the pivot caches the workbook declares, in its declared order,
+    /// before any sheet is written: declarations and parts then agree whatever
+    /// order the sheets are written in.
+    pub(crate) fn reserve_pivot_caches(&mut self, ids: &[String]) {
+        for id in ids {
+            self.reserve_pivot_cache(id);
         }
+    }
+
+    fn reserve_pivot_cache(&mut self, id: &str) -> i32 {
+        let position = self
+            .pivot_cache_hash_list
+            .iter()
+            .position(|known| known == id)
+            .unwrap_or_else(|| {
+                self.pivot_cache_hash_list.push(id.to_string());
+                self.pivot_cache_hash_list.len() - 1
+            });
+        i32::try_from(position + 1).unwrap()
+    }
+
+    /// Whether the definition part of pivot cache number `no` was written.
+    pub(crate) fn pivot_cache_written(&self, no: i32) -> bool {
+        self.written_pivot_caches.contains(&no)
+    }
+
+    /// The reserved number of the pivot cache `id`.
+    pub(crate) fn pivot_cache_number(&self, id: &str) -> Option<i32> {
+        self.pivot_cache_hash_list
+            .iter()
+            .position(|known| known == id)
+            .map(|position| i32::try_from(position + 1).unwrap())
     }
 
     pub(crate) fn reserve_drawing_parts(&mut self, wb: &Workbook) {
@@ -209,6 +301,14 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
                     for edge in relationships.relationship_list() {
                         if edge.target_mode() != "External" {
                             self.reserve_part(edge.raw_file().file_target());
+                            if matches!(
+                                edge.get_type(),
+                                crate::helper::const_str::CHART_NS
+                                    | crate::helper::const_str::CHART_EX_NS
+                            ) {
+                                self.preserved_chart_owners
+                                    .insert(edge.raw_file().file_target().to_owned());
+                            }
                         }
                     }
                 }
@@ -218,6 +318,119 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
 
     pub(crate) fn reserve_part(&mut self, target: &str) {
         self.reserved_parts.insert(target.to_owned());
+    }
+
+    pub(crate) fn register_preserved_relationships(
+        &mut self,
+        relationships: &super::raw::RawRelationships,
+        root: bool,
+    ) {
+        let Some(owner) = super::drawing_parts::relationships_owner(relationships.file_target())
+        else {
+            self.preserved_graph_error = Some("invalid preserved relationship owner".into());
+            return;
+        };
+        let mut targets = Vec::new();
+        for edge in relationships.relationship_list() {
+            if edge.target_mode() == "External" {
+                continue;
+            }
+            let target = edge.raw_file().file_target();
+            if target.is_empty() {
+                self.preserved_graph_error = Some("preserved dependency has no target".into());
+                continue;
+            }
+            if edge.get_type() == crate::helper::const_str::IMAGE_NS {
+                self.preserved_media.insert(target.to_owned());
+            }
+            targets.push(target.to_owned());
+        }
+        targets.sort();
+        targets.dedup();
+        if self
+            .original_graph
+            .get(&owner)
+            .is_some_and(|old| old != &targets)
+        {
+            self.preserved_graph_error = Some("conflicting preserved dependency graph".into());
+        } else {
+            self.original_graph.insert(owner.clone(), targets.clone());
+            if !self.rewritten_chart_edges.contains_key(&owner) {
+                self.preserved_graph.insert(owner.clone(), targets);
+            }
+        }
+        if root {
+            self.preserved_roots.insert(owner);
+        }
+    }
+
+    pub(crate) fn replace_chart_relationship_graph(
+        &mut self,
+        sources: &[String],
+        relationships: &super::raw::RawRelationships,
+    ) -> Result<(), XlsxError> {
+        if let Some(error) = &self.preserved_graph_error {
+            return Err(part_error(error.clone()));
+        }
+        let targets: Vec<_> = relationships
+            .relationship_list()
+            .iter()
+            .filter(|edge| edge.target_mode() != "External")
+            .map(|edge| edge.raw_file().file_target().to_owned())
+            .collect();
+        if targets.iter().any(String::is_empty) {
+            return Err(part_error("chart dependency has no target"));
+        }
+        for source in sources {
+            let rewritten = self
+                .rewritten_chart_edges
+                .entry(source.clone())
+                .or_default();
+            if self.preserved_chart_owners.contains(source) {
+                if let Some(original) = self.original_graph.get(source) {
+                    rewritten.extend(original.iter().cloned());
+                }
+            }
+            rewritten.extend(targets.iter().cloned());
+            self.preserved_graph
+                .insert(source.clone(), rewritten.iter().cloned().collect());
+        }
+        self.rewritten_picture_graph |= !sources.is_empty();
+        Ok(())
+    }
+
+    pub(crate) fn preserve_chart_owners(&mut self, sources: &[String]) {
+        self.preserved_chart_owners.extend(sources.iter().cloned());
+        for source in sources {
+            if let (Some(original), Some(rewritten)) = (
+                self.original_graph.get(source),
+                self.rewritten_chart_edges.get_mut(source),
+            ) {
+                rewritten.extend(original.iter().cloned());
+                self.preserved_graph
+                    .insert(source.clone(), rewritten.iter().cloned().collect());
+            }
+        }
+    }
+
+    pub(crate) fn preserve_source_part(&self, target: &str) -> Result<bool, XlsxError> {
+        if let Some(error) = &self.preserved_graph_error {
+            return Err(part_error(error.clone()));
+        }
+        if !self.rewritten_picture_graph || !self.preserved_media.contains(target) {
+            return Ok(true);
+        }
+        let mut reachable = HashSet::new();
+        let mut pending: Vec<_> = self.preserved_roots.iter().map(String::as_str).collect();
+        while let Some(owner) = pending.pop() {
+            if !reachable.insert(owner) {
+                continue;
+            }
+            if let Some(edges) = self.preserved_graph.get(owner) {
+                pending.extend(edges.iter().map(String::as_str));
+            }
+        }
+        Ok(reachable.contains(target))
     }
 
     pub(crate) fn add_typed_bin(
@@ -307,12 +520,120 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         Ok(())
     }
 
+    /// Writes an extended chart part. Identical chart XML owning different
+    /// style payloads is a different chart and gets its own part name.
     pub(crate) fn add_extended_chart(
         &mut self,
         preferred: Option<&str>,
         data: &[u8],
+        owner: [u8; 32],
     ) -> Result<String, XlsxError> {
+        let preferred = preferred.filter(|target| {
+            self.extended_charts
+                .get(*target)
+                .is_none_or(|previous| *previous == owner)
+        });
         self.add_chart_part(preferred, data, CHART_EX_TYPE, "chartEx")
+    }
+
+    /// Whether an identical extended chart (same XML, same style payloads)
+    /// already wrote its part and relationships; every frame of that chart
+    /// shares them.
+    pub(crate) fn extended_chart_written(&self, target: &str) -> bool {
+        self.extended_charts.contains_key(target)
+    }
+
+    /// A style or colour part belongs to one chart; a second chart pointing
+    /// at it would share what Excel writes once per chart.
+    pub(crate) fn style_part_claimed(&self, target: &str) -> bool {
+        self.claimed_style_parts.contains(target)
+    }
+
+    pub(crate) fn claim_style_part(&mut self, target: &str) {
+        self.claimed_style_parts.insert(target.to_owned());
+    }
+
+    pub(crate) fn record_extended_chart(&mut self, target: &str, owner: [u8; 32]) {
+        self.extended_charts.insert(target.to_owned(), owner);
+    }
+
+    /// Writes the requested style and/or colour parts of an extended chart
+    /// under one shared number, returning the part names of those written.
+    pub(crate) fn add_extended_chart_style_parts(
+        &mut self,
+        style: Option<&[u8]>,
+        colors: Option<&[u8]>,
+    ) -> Result<(Option<String>, Option<String>), XlsxError> {
+        let mut number = 1u32;
+        loop {
+            let style_target = format!("{PKG_CHARTS}/style{number}.xml");
+            let colors_target = format!("{PKG_CHARTS}/colors{number}.xml");
+            let taken = |manager: &Self, target: &str| {
+                manager.reserved_parts.contains(target)
+                    || manager.written_parts.contains_key(target)
+            };
+            if !(style.is_some() && taken(self, &style_target)
+                || colors.is_some() && taken(self, &colors_target))
+            {
+                let mut written = (None, None);
+                if let Some(data) = style {
+                    self.add_typed_bin(&style_target, CHART_STYLE_TYPE, data)?;
+                    written.0 = Some(style_target);
+                }
+                if let Some(data) = colors {
+                    self.add_typed_bin(&colors_target, CHART_COLOR_STYLE_TYPE, data)?;
+                    written.1 = Some(colors_target);
+                }
+                return Ok(written);
+            }
+            number = number
+                .checked_add(1)
+                .ok_or_else(|| part_error("chart style part numbers exhausted"))?;
+        }
+    }
+
+    pub(crate) fn add_chart_image(
+        &mut self,
+        image: &super::MediaObject,
+    ) -> Result<String, XlsxError> {
+        let extension = image
+            .image_name()
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .ok_or_else(|| part_error("chart image filename has no extension"))?;
+        let content_type = match extension.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "bmp" => "image/bmp",
+            "tif" | "tiff" => "image/tiff",
+            "emf" => "image/x-emf",
+            "wmf" => "image/x-wmf",
+            "svg" => "image/svg+xml",
+            _ => return Err(part_error("unsupported chart image extension")),
+        };
+        if image.image_data().is_empty() {
+            return Err(part_error("embedded chart image has no bytes"));
+        }
+        let identity = (
+            content_type.to_owned(),
+            Sha256::digest(image.image_data()).into(),
+        );
+        if let Some(target) = self.chart_media.get(&identity) {
+            return Ok(target.clone());
+        }
+        let mut number = 1u32;
+        loop {
+            let target = format!("xl/media/chartPicture{number}.{extension}");
+            if !self.reserved_parts.contains(&target) && !self.written_parts.contains_key(&target) {
+                self.add_typed_bin(&target, content_type, image.image_data())?;
+                self.chart_media.insert(identity, target.clone());
+                return Ok(target);
+            }
+            number = number
+                .checked_add(1)
+                .ok_or_else(|| part_error("chart image part numbers exhausted"))?;
+        }
     }
 
     pub(crate) fn add_standard_chart(
@@ -647,6 +968,12 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
                 .is_some_and(|metadata| file == format!("/{}", metadata.path))
             {
                 content_type = crate::structs::cell_metadata::CONTENT_TYPE;
+            }
+
+            if wb.connections.is_some()
+                && file == format!("/{}", crate::structs::cell_metadata::CONNECTIONS_PATH)
+            {
+                content_type = crate::structs::cell_metadata::CONNECTIONS_CONTENT_TYPE;
             }
 
             // Override Unsupported

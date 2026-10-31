@@ -142,6 +142,8 @@ pub(crate) fn normalize_path(path: &str) -> PathBuf {
 pub(crate) fn join_paths(base_path: &str, target: &str) -> String {
     match target.split_once('/') {
         Some(("", target)) => normalize_path_to_str(target),
+        // A part at the package root has an empty directory.
+        _ if base_path.is_empty() => normalize_path_to_str(target),
         _ => normalize_path_to_str(&format!("{base_path}/{target}")),
     }
 }

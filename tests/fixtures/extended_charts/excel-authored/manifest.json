@@ -1,0 +1,51 @@
+﻿{
+    "excel":  "Excel 16.0 build 20527",
+    "sunburst":  {
+                     "workbook_sha256":  "43d44df441dbf539bd12f52bb22ab835260fcd360437067aebc969bcc7f42e28",
+                     "style_sha256":  "97a495b5049d3ea8c03006e4378d255ff4b6feba92c93dbcba40dda1992155f6",
+                     "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                     "requires":  "cx1"
+                 },
+    "treemap":  {
+                    "workbook_sha256":  "5c5c4125c78b1b236785870be1a8d849ef57be0e55523b908062c1e5d24df1c7",
+                    "style_sha256":  "23c702b35f981c591eaee8c2eaf5a463278ed3c8a15c1cb70c85e7158a54eb83",
+                    "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                    "requires":  "cx1"
+                },
+    "waterfall":  {
+                      "workbook_sha256":  "729bab584e250fd2a4911c1ab169dd20f1d75d2543b767e2c38be55cb8f503da",
+                      "style_sha256":  "18c20406dc1f0b2bf2b3ed683785ad0b7126269e743429d4d8747c03ef558f63",
+                      "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                      "requires":  "cx1"
+                  },
+    "histogram":  {
+                      "workbook_sha256":  "7626edf0d0b1025fb828e0cf8e7c2dca3bae6ec5a34217bde27e9533ef0ab9fe",
+                      "style_sha256":  "94305dd1f95b72016b51cc9dd8969313cd40f1f7f02772940f988ba8970cdb35",
+                      "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                      "requires":  "cx1"
+                  },
+    "pareto":  {
+                   "workbook_sha256":  "9acee459748b2e4b873ceea39bf314bddefffefebaf96ac682101d3f8963b57f",
+                   "style_sha256":  "94305dd1f95b72016b51cc9dd8969313cd40f1f7f02772940f988ba8970cdb35",
+                   "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                   "requires":  "cx1"
+               },
+    "box-whisker":  {
+                        "workbook_sha256":  "bc48f5b189271d6da663c889343b9fe78259ffd8e7b0df57d6f158c4787a0287",
+                        "style_sha256":  "25905c723f6ff964fa7d420a73dff39e84867e4100daddcb7ee08d1d2234eb0a",
+                        "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                        "requires":  "cx1"
+                    },
+    "funnel":  {
+                   "workbook_sha256":  "0ebddc8dea8d56b50548ac4002a824794a92b2c1be6f0115c7cd5f0d57890020",
+                   "style_sha256":  "fd75e4b43f7c237f61100e07a66b0ff11116abb3b04db4f2db29cf4c9f0a9ec0",
+                   "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                   "requires":  "cx2"
+               },
+    "region-map":  {
+                       "workbook_sha256":  "b4d4c5a56dfc808fc255989c55caaf02239329ac63ca7dfeddedf301fef28d32",
+                       "style_sha256":  "d20f0bcff6b39ed39c5ad55cbbc249de2b379d849fd2eb0187e72d43234fade2",
+                       "colors_sha256":  "04fefba7d31853fa0aa636e5c8b8e308fc3126a9b48a1f4490947fff91d5a92f",
+                       "requires":  "cx4"
+                   }
+}

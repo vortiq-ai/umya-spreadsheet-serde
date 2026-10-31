@@ -31,9 +31,25 @@ pub struct BlipFill {
     blip:              Blip,
     source_rectangle:  Option<Box<SourceRectangle>>,
     stretch:           Stretch,
+    #[cfg_attr(feature = "serde", serde(default))]
+    tile:              Option<Box<super::Tile>>,
 }
 
 impl BlipFill {
+    #[must_use]
+    pub fn tile(&self) -> Option<&super::Tile> {
+        self.tile.as_deref()
+    }
+
+    pub fn tile_mut(&mut self) -> Option<&mut super::Tile> {
+        self.tile.as_deref_mut()
+    }
+
+    pub fn set_tile(&mut self, value: super::Tile) -> &mut Self {
+        self.tile = Some(Box::new(value));
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn rotate_with_shape(&self) -> bool {
@@ -128,6 +144,7 @@ impl BlipFill {
 
     #[inline]
     pub fn stretch_mut(&mut self) -> &mut Stretch {
+        self.tile = None;
         &mut self.stretch
     }
 
@@ -139,6 +156,7 @@ impl BlipFill {
 
     #[inline]
     pub fn set_stretch(&mut self, value: Stretch) -> &mut Self {
+        self.tile = None;
         self.stretch = value;
         self
     }
@@ -152,9 +170,12 @@ impl BlipFill {
         session: &crate::reader::xlsx::SourceCacheSession,
     ) -> Result<(), crate::XlsxError> {
         let _guard = session.enter_child_scope(owner)?;
-        let scope = crate::drawing::charts::NamespaceScope::default()
-            .child(owner)
-            .map_err(crate::xml::xml_error)?;
+        let scope = match session.current_namespace_scope() {
+            Some(scope) => scope,
+            None => crate::drawing::charts::NamespaceScope::default()
+                .child(owner)
+                .map_err(crate::xml::xml_error)?,
+        };
         if let Some(value) = crate::reader::driver::read_attribute(owner, b"rotWithShape")? {
             self.set_rotate_with_shape(
                 crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?,
@@ -183,14 +204,11 @@ impl BlipFill {
                     }
                     match name.local_name.as_str() {
                         "blip" => {
-                            let relationships = drawing_relationships.ok_or_else(|| {
-                                crate::xml::xml_error("drawing image relationships are missing")
-                            })?;
                             self.blip.read_with_session(
                                 reader,
                                 child,
                                 empty,
-                                relationships,
+                                drawing_relationships,
                                 Some(session),
                             )?;
                         }
@@ -200,8 +218,21 @@ impl BlipFill {
                             self.set_source_rectangle(value);
                         }
                         "stretch" => {
+                            if seen.contains("tile") {
+                                return Err(crate::xml::xml_error(
+                                    "tile and stretch are mutually exclusive",
+                                ));
+                            }
                             self.stretch
                                 .read_with_session(reader, child, empty, Some(session))?;
+                        }
+                        "tile" => {
+                            if seen.contains("stretch") {
+                                return Err(crate::xml::xml_error(
+                                    "tile and stretch are mutually exclusive",
+                                ));
+                            }
+                            self.set_tile(super::Tile::read(reader, child, empty, &scope)?);
                         }
                         _ => {
                             return Err(crate::xml::xml_error(
@@ -232,6 +263,25 @@ impl BlipFill {
         rel_list: &mut Vec<(String, String)>,
         name: &str,
     ) -> Result<(), crate::XlsxError> {
+        self.write_content(writer, name, |writer| self.blip.write_to(writer, rel_list))
+    }
+
+    pub(crate) fn write_with_embed_id(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        embed: Option<&str>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_content(writer, "a:blipFill", |writer| {
+            self.blip.write_with_embed_id(writer, embed, &[])
+        })
+    }
+
+    fn write_content(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+        write_blip: impl FnOnce(&mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError>,
+    ) -> Result<(), crate::XlsxError> {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.rotate_with_shape.has_value() {
             attributes.push(("rotWithShape", self.rotate_with_shape.value_string()).into());
@@ -239,7 +289,7 @@ impl BlipFill {
         write_start_tag(writer, name, attributes, false);
 
         // a:blip
-        self.blip.write_to(writer, rel_list)?;
+        write_blip(writer)?;
 
         // a:srcRect
         if let Some(v) = &self.source_rectangle {
@@ -247,7 +297,11 @@ impl BlipFill {
         }
 
         // a:stretch
-        self.stretch.write_to(writer)?;
+        if let Some(tile) = &self.tile {
+            tile.write_to(writer)?;
+        } else {
+            self.stretch.write_to(writer)?;
+        }
 
         write_end_tag(writer, name);
         Ok(())

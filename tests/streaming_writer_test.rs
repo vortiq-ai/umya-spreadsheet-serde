@@ -284,3 +284,86 @@ fn streaming_writer_suppresses_legend_like_normal_writer() {
          remain"
     );
 }
+
+const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const CONNECTIONS_XML: &str = r#"<connections xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><connection id="17" name="SalesCube" type="5" refreshedVersion="3"><dbPr connection="Provider=MSOLAP;Data Source=localhost" command="SalesCube" commandType="1"/><olapPr local="0"/></connection></connections>"#;
+
+/// A package whose workbook declares a connections part and a cell metadata
+/// part, each with its relationship and content type.
+fn package_with_workbook_parts() -> Vec<u8> {
+    use std::io::Write;
+
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let parts = [
+        ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/connections.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.connections+xml"/><Override PartName="/xl/metadata.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml"/></Types>"#.to_owned()),
+        ("_rels/.rels", format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL_NS}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#)),
+        ("xl/workbook.xml", format!(r#"<workbook xmlns="{MAIN_NS}" xmlns:r="{REL_NS}"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#)),
+        ("xl/_rels/workbook.xml.rels", format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL_NS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{REL_NS}/connections" Target="connections.xml"/><Relationship Id="rId3" Type="{REL_NS}/sheetMetadata" Target="metadata.xml"/></Relationships>"#)),
+        ("xl/worksheets/sheet1.xml", format!(r#"<worksheet xmlns="{MAIN_NS}"><sheetData/></worksheet>"#)),
+        ("xl/connections.xml", CONNECTIONS_XML.to_owned()),
+        ("xl/metadata.xml", format!(r#"<metadata xmlns="{MAIN_NS}"/>"#)),
+    ];
+    for (name, xml) in parts {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(xml.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+fn zip_part(bytes: &[u8], name: &str) -> Option<String> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut text = String::new();
+    archive.by_name(name).ok()?.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+#[test]
+fn streamed_workbook_writes_the_parts_behind_its_connections_and_metadata_relationships() {
+    for eager in [true, false] {
+        let book =
+            reader::xlsx::read_reader(Cursor::new(package_with_workbook_parts()), eager).unwrap();
+        let mut sw = StreamingWriter::new(zip::ZipWriter::new(Cursor::new(Vec::new())), book);
+        let sheet = sw.take_sheet("Sheet1").unwrap();
+        sw.flush_sheet(sheet).unwrap();
+        let bytes = sw.finish().unwrap().into_inner();
+
+        assert_eq!(
+            zip_part(&bytes, "xl/connections.xml").as_deref(),
+            Some(CONNECTIONS_XML),
+            "eager={eager}"
+        );
+        assert!(
+            zip_part(&bytes, "xl/metadata.xml").is_some(),
+            "eager={eager}"
+        );
+        // Every internal workbook relationship names a part in the package.
+        let rels = zip_part(&bytes, "xl/_rels/workbook.xml.rels").unwrap();
+        let mut seen_connections = false;
+        let mut seen_metadata = false;
+        for relationship in rels.split("<Relationship ").skip(1) {
+            let attribute = |name: &str| {
+                relationship
+                    .split(&format!("{name}=\""))
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            };
+            let target = attribute("Target");
+            assert!(
+                zip_part(&bytes, &format!("xl/{target}")).is_some(),
+                "dangling relationship {}: {rels}",
+                attribute("Id")
+            );
+            seen_connections |= attribute("Type").ends_with("/connections");
+            seen_metadata |= attribute("Type").ends_with("/sheetMetadata");
+        }
+        assert!(seen_connections && seen_metadata, "{rels}");
+        let reread = reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
+        assert_eq!(reread.sheet_count(), 1);
+    }
+}

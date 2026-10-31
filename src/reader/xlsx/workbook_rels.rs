@@ -2,7 +2,10 @@ use std::io;
 
 use quick_xml::{
     NsReader,
-    events::Event,
+    events::{
+        BytesStart,
+        Event,
+    },
     name::{
         Namespace,
         ResolveResult,
@@ -25,40 +28,82 @@ use crate::{
     structs::Workbook,
 };
 
-pub(crate) fn read<R: io::Read + io::Seek>(
+/// Call `visit` for every `Relationship` element of the workbook relationships,
+/// whatever its prefix and whether it is written as an empty element or as a
+/// start/end pair.
+fn visit_relationships<R: io::Read + io::Seek>(
     arv: &mut zip::read::ZipArchive<R>,
-    wb: &mut Workbook,
-) -> Result<Vec<(String, String, String)>, XlsxError> {
+    visit: &mut dyn FnMut(&BytesStart) -> Result<(), XlsxError>,
+) -> Result<(), XlsxError> {
     let r = io::BufReader::new(super::driver::zip_by_name(arv, PKG_WORKBOOK_RELS)?);
     let mut reader = NsReader::from_reader(r);
     reader.config_mut().trim_text(true);
 
-    let mut result: Vec<(String, String, String)> = Vec::new();
-
+    let is_relationship = |reader: &NsReader<_>, e: &BytesStart| {
+        let (namespace, local_name) = reader.resolver().resolve_element(e.name());
+        namespace == ResolveResult::Bound(Namespace(REL_NS.as_bytes()))
+            && local_name.as_ref() == b"Relationship"
+    };
+    let mut open_relationship_depth = 0usize;
     try_xml_read_loop!(
         reader,
-        Event::Empty(ref e) => {
-            let (namespace, local_name) = reader.resolver().resolve_element(e.name());
-            if namespace == ResolveResult::Bound(Namespace(REL_NS.as_bytes()))
-                && local_name.as_ref() == b"Relationship"
-            {
-                let id_value = get_required_attribute(e, b"Id")?;
-                let type_value = get_required_attribute(e, b"Type")?;
-                let target_value = get_required_attribute(e, b"Target")?;
-                let target_value = target_value
-                    .strip_prefix("/xl/")
-                    .map(ToOwned::to_owned)
-                    .unwrap_or(target_value);
-                if type_value == PIVOT_CACHE_DEF_NS {
-                    wb.update_pivot_caches(id_value.as_str(), target_value.as_str());
-                }
-                result.push((id_value, type_value, target_value));
+        Event::Start(ref e) => {
+            let relationship = open_relationship_depth == 0 && is_relationship(&reader, e);
+            if open_relationship_depth > 0 || relationship {
+                open_relationship_depth += 1;
             }
+            if relationship {
+                visit(e)?;
+            }
+        },
+        Event::Empty(ref e) => {
+            if open_relationship_depth == 0 && is_relationship(&reader, e) {
+                visit(e)?;
+            }
+        },
+        Event::End(_) => {
+            open_relationship_depth = open_relationship_depth.saturating_sub(1);
         },
         Event::Eof => break,
     );
+    Ok(())
+}
 
+pub(crate) fn read<R: io::Read + io::Seek>(
+    arv: &mut zip::read::ZipArchive<R>,
+    wb: &mut Workbook,
+) -> Result<Vec<(String, String, String)>, XlsxError> {
+    let mut result: Vec<(String, String, String)> = Vec::new();
+    visit_relationships(arv, &mut |e| {
+        let id_value = get_required_attribute(e, b"Id")?;
+        let type_value = get_required_attribute(e, b"Type")?;
+        let target_value = get_required_attribute(e, b"Target")?;
+        let target_value = target_value
+            .strip_prefix("/xl/")
+            .map(ToOwned::to_owned)
+            .unwrap_or(target_value);
+        if type_value == PIVOT_CACHE_DEF_NS {
+            wb.update_pivot_caches(id_value.as_str(), target_value.as_str());
+        }
+        result.push((id_value, type_value, target_value));
+        Ok(())
+    })?;
     Ok(result)
+}
+
+/// Ids of the workbook relationships whose target is outside the package.
+pub(crate) fn read_external_ids<R: io::Read + io::Seek>(
+    arv: &mut zip::read::ZipArchive<R>,
+) -> Result<Vec<String>, XlsxError> {
+    let mut ids = Vec::new();
+    visit_relationships(arv, &mut |e| {
+        let mode = super::driver::get_attribute(e, b"TargetMode");
+        if mode.as_deref() == Some("External") {
+            ids.push(get_required_attribute(e, b"Id")?);
+        }
+        Ok(())
+    })?;
+    Ok(ids)
 }
 
 #[cfg(test)]

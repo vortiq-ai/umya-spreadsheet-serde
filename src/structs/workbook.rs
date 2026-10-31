@@ -31,6 +31,7 @@ use crate::{
         DefinedName,
         Properties,
         SharedStringTable,
+        SlicerCache,
         Stylesheet,
         WorkbookProtection,
         WorkbookView,
@@ -42,6 +43,15 @@ use crate::{
     },
     traits::AdjustmentCoordinateWithSheet,
 };
+
+/// Whether the pivot cache list is derived from the worksheets held or was
+/// settled while they were all held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PivotCacheListState {
+    #[default]
+    Derived,
+    Settled,
+}
 
 /// A Workbook Object.
 /// The starting point of all struct.
@@ -60,6 +70,9 @@ pub struct Workbook {
     workbook_view:            WorkbookView,
     package_content_types:    Arc<super::content_types::PackageContentTypes>,
     pivot_caches:             Vec<(Box<str>, Box<str>, Box<str>)>,
+    /// The pivot cache list was settled against the worksheets and is final:
+    /// a streaming export no longer holds the worksheets that would settle it.
+    pivot_caches_state:       PivotCacheListState,
     workbook_protection:      Option<Box<WorkbookProtection>>,
     defined_names:            Vec<DefinedName>,
     /// `<calcPr iterate=.. iterateCount=.. iterateDelta=..>` — Excel's
@@ -79,6 +92,18 @@ pub struct Workbook {
     full_calc_on_load:        bool,
     date1904:                 bool,
     pub(crate) cell_metadata: Option<super::cell_metadata::CellMetadata>,
+    /// Bytes of the workbook connections part, kept verbatim so pivot cache
+    /// `connectionId` references keep resolving after a save. The writer
+    /// always emits them as `xl/connections.xml`.
+    pub(crate) connections:   Option<Vec<u8>>,
+    slicer_caches:            Vec<SlicerCache>,
+    /// Workbook extension list entries in source order. Slicer cache lists
+    /// are regenerated from `slicer_caches`; every other entry is kept
+    /// verbatim.
+    pub(crate) extensions:    Vec<super::slicer::WorkbookExtension>,
+    /// Slicer cache relationship ids read from the workbook extension lists,
+    /// consumed while the package is read.
+    pub(crate) slicer_refs:   Vec<super::slicer::SlicerPartReference>,
 }
 
 // Precomputed decisions are kept separate from model mutation: an unresolved
@@ -89,9 +114,10 @@ struct WorkbookReferencePlan {
     sheets:       Vec<SheetReferencePlan>,
 }
 struct SheetReferencePlan {
-    index:  usize,
-    cells:  Vec<((u32, u32), crate::structs::CellFormula)>,
-    charts: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
+    index:              usize,
+    cells:              Vec<((u32, u32), crate::structs::CellFormula)>,
+    charts:             Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
+    extension_formulas: Vec<Option<String>>,
 }
 
 #[cfg(test)]
@@ -290,10 +316,12 @@ impl Workbook {
                 }
             }
             let charts = sheet.prepare_chart_space_edits(host, &prepared);
+            let extension_formulas = sheet.prepare_extension_formula_edits(host, &prepared);
             sheets.push(SheetReferencePlan {
                 index,
                 cells,
                 charts,
+                extension_formulas,
             });
         }
         Ok(WorkbookReferencePlan {
@@ -330,6 +358,7 @@ impl Workbook {
                 }
             }
             sheet.apply_chart_space_edits(sheet_plan.charts);
+            sheet.apply_extension_formula_edits(sheet_plan.extension_formulas);
         }
     }
 
@@ -1113,6 +1142,7 @@ impl Workbook {
         let stylesheet = self.stylesheet().clone();
         let mut session = SourceCacheSession::deferred();
         session.set_content_types(self.package_content_types());
+        session.set_pivot_cache_bindings(self.pivot_cache_bindings());
         let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
         let mut staged = Vec::new();
         let mut result = Ok(());
@@ -1167,6 +1197,7 @@ impl Workbook {
         let stylesheet = self.stylesheet().clone();
         let mut session = SourceCacheSession::deferred();
         session.set_content_types(self.package_content_types());
+        session.set_pivot_cache_bindings(self.pivot_cache_bindings());
         let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
         let staged = prepare_worksheet_materialization(
             &mut self.work_sheet_collection[index],
@@ -1422,6 +1453,7 @@ impl Workbook {
             sheet: name.clone(),
             sheet_order,
         };
+        self.prepare_slicer_reconciliation()?;
         let hosts = self.prepare_reference_hosts(&[&name], &edit)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
         self.apply_workbook_reference_adjustment(plan);
@@ -1444,6 +1476,7 @@ impl Workbook {
         // Their semantic scope survives removal of that physical owner.
         self.defined_names
             .extend(removed.defined_names().iter().cloned());
+        self.reconcile_slicers_after_sheet_removal(&removed);
         for mut name in deleted_locals {
             let collides = self
                 .defined_names
@@ -1651,6 +1684,22 @@ impl Workbook {
             .any(Worksheet::has_defined_names)
     }
 
+    /// Workbook `pivotCache` entries as (`cacheId`, resolved definition part).
+    pub(crate) fn pivot_cache_bindings(&self) -> Arc<Vec<(String, String)>> {
+        Arc::new(
+            self.pivot_caches
+                .iter()
+                .filter(|(_, _, target)| !target.is_empty())
+                .map(|(_, id, target)| {
+                    (
+                        id.to_string(),
+                        crate::reader::driver::join_paths("xl", target),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn package_content_types(&self) -> Arc<super::content_types::PackageContentTypes> {
         Arc::clone(&self.package_content_types)
     }
@@ -1682,8 +1731,27 @@ impl Workbook {
         self
     }
 
+    /// Native slicer caches of the workbook.
+    #[inline]
+    #[must_use]
+    pub fn slicer_caches(&self) -> &[SlicerCache] {
+        &self.slicer_caches
+    }
+
+    #[inline]
+    pub fn slicer_caches_mut(&mut self) -> &mut Vec<SlicerCache> {
+        &mut self.slicer_caches
+    }
+
     #[must_use]
     pub fn pivot_caches(&self) -> Vec<(String, String, String)> {
+        if self.pivot_caches_state == PivotCacheListState::Settled {
+            return self
+                .pivot_caches
+                .iter()
+                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+                .collect();
+        }
         let mut result: Vec<(String, String, String)> = Vec::new();
         for (val1, val2, val3) in &self.pivot_caches {
             let val3_up = format!("xl/{val3}");
@@ -1735,6 +1803,27 @@ impl Workbook {
             value.2.into_boxed_str(),
         ));
         self
+    }
+
+    /// Settle the pivot cache list against the worksheets now held, so it
+    /// stays the same after the worksheets are streamed out.
+    pub(crate) fn resolve_pivot_caches(&mut self) {
+        let settled = self.pivot_caches();
+        self.set_pivot_cache_collection(settled);
+        self.pivot_caches_state = PivotCacheListState::Settled;
+    }
+
+    pub(crate) fn set_pivot_cache_collection(&mut self, caches: Vec<(String, String, String)>) {
+        self.pivot_caches = caches
+            .into_iter()
+            .map(|(relationship, id, target)| {
+                (
+                    relationship.into_boxed_str(),
+                    id.into_boxed_str(),
+                    target.into_boxed_str(),
+                )
+            })
+            .collect();
     }
 
     #[inline]

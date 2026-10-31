@@ -31,7 +31,7 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct BodyProperties {
     vert_overflow:         StringValue,
@@ -95,6 +95,253 @@ pub struct BodyPropertiesParts {
     anchor_center:         Option<super::charts::BooleanLexeme>,
     invalid_vertical:      bool,
     invalid_anchor_center: bool,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for BodyProperties {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BodyProperties;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("BodyProperties")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Ok(BodyProperties {
+                    vert_overflow:         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                    horz_overflow:         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?,
+                    rtl_col:               seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?,
+                    anchor:                seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?,
+                    wrap:                  seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?,
+                    rotation:              seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?,
+                    left_inset:            seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?,
+                    top_inset:             seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(7, &self))?,
+                    right_inset:           seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(8, &self))?,
+                    bottom_inset:          seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(9, &self))?,
+                    use_paragraph_spacing: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(10, &self))?,
+                    auto_fit:              seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(11, &self))?,
+                    parts:                 seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(12, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut vert_overflow = None;
+                let mut horz_overflow = None;
+                let mut rtl_col = None;
+                let mut anchor = None;
+                let mut wrap = None;
+                let mut rotation = None;
+                let mut left_inset = None;
+                let mut top_inset = None;
+                let mut right_inset = None;
+                let mut bottom_inset = None;
+                let mut use_paragraph_spacing = None;
+                let mut auto_fit = None;
+                let mut parts = None;
+                let mut shape_auto_fit = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "vert_overflow" => {
+                            if vert_overflow.is_some() {
+                                return Err(serde::de::Error::duplicate_field("vert_overflow"));
+                            }
+                            vert_overflow = Some(map.next_value()?);
+                        }
+                        "horz_overflow" => {
+                            if horz_overflow.is_some() {
+                                return Err(serde::de::Error::duplicate_field("horz_overflow"));
+                            }
+                            horz_overflow = Some(map.next_value()?);
+                        }
+                        "rtl_col" => {
+                            if rtl_col.is_some() {
+                                return Err(serde::de::Error::duplicate_field("rtl_col"));
+                            }
+                            rtl_col = Some(map.next_value()?);
+                        }
+                        "anchor" => {
+                            if anchor.is_some() {
+                                return Err(serde::de::Error::duplicate_field("anchor"));
+                            }
+                            anchor = Some(map.next_value()?);
+                        }
+                        "wrap" => {
+                            if wrap.is_some() {
+                                return Err(serde::de::Error::duplicate_field("wrap"));
+                            }
+                            wrap = Some(map.next_value()?);
+                        }
+                        "rotation" => {
+                            if rotation.is_some() {
+                                return Err(serde::de::Error::duplicate_field("rotation"));
+                            }
+                            rotation = Some(map.next_value()?);
+                        }
+                        "left_inset" => {
+                            if left_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("left_inset"));
+                            }
+                            left_inset = Some(map.next_value()?);
+                        }
+                        "top_inset" => {
+                            if top_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("top_inset"));
+                            }
+                            top_inset = Some(map.next_value()?);
+                        }
+                        "right_inset" => {
+                            if right_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("right_inset"));
+                            }
+                            right_inset = Some(map.next_value()?);
+                        }
+                        "bottom_inset" => {
+                            if bottom_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bottom_inset"));
+                            }
+                            bottom_inset = Some(map.next_value()?);
+                        }
+                        "use_paragraph_spacing" => {
+                            if use_paragraph_spacing.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "use_paragraph_spacing",
+                                ));
+                            }
+                            use_paragraph_spacing = Some(map.next_value()?);
+                        }
+                        "auto_fit" => {
+                            if auto_fit.is_some() {
+                                return Err(serde::de::Error::duplicate_field("auto_fit"));
+                            }
+                            auto_fit = Some(map.next_value()?);
+                        }
+                        "parts" => {
+                            if parts.is_some() {
+                                return Err(serde::de::Error::duplicate_field("parts"));
+                            }
+                            parts = Some(map.next_value()?);
+                        }
+                        "shape_auto_fit" => {
+                            if shape_auto_fit.is_some() {
+                                return Err(serde::de::Error::duplicate_field("shape_auto_fit"));
+                            }
+                            shape_auto_fit = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(
+                                &key,
+                                &[
+                                    "vert_overflow",
+                                    "horz_overflow",
+                                    "rtl_col",
+                                    "anchor",
+                                    "wrap",
+                                    "rotation",
+                                    "left_inset",
+                                    "top_inset",
+                                    "right_inset",
+                                    "bottom_inset",
+                                    "use_paragraph_spacing",
+                                    "auto_fit",
+                                    "parts",
+                                    "shape_auto_fit",
+                                ],
+                            ));
+                        }
+                    }
+                }
+                if auto_fit.is_some() && shape_auto_fit.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "auto_fit and shape_auto_fit are mutually exclusive",
+                    ));
+                }
+                let auto_fit = match (auto_fit, shape_auto_fit) {
+                    (Some(value), None) => value,
+                    (None, Some(value)) => {
+                        let legacy: Option<ShapeAutoFit> = value;
+                        legacy.map(TextAutoFit::Shape)
+                    }
+                    _ => None,
+                };
+                Ok(BodyProperties {
+                    vert_overflow: vert_overflow
+                        .ok_or_else(|| serde::de::Error::missing_field("vert_overflow"))?,
+                    horz_overflow: horz_overflow
+                        .ok_or_else(|| serde::de::Error::missing_field("horz_overflow"))?,
+                    rtl_col: rtl_col.ok_or_else(|| serde::de::Error::missing_field("rtl_col"))?,
+                    anchor: anchor.ok_or_else(|| serde::de::Error::missing_field("anchor"))?,
+                    wrap: wrap.ok_or_else(|| serde::de::Error::missing_field("wrap"))?,
+                    rotation: rotation
+                        .ok_or_else(|| serde::de::Error::missing_field("rotation"))?,
+                    left_inset: left_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("left_inset"))?,
+                    top_inset: top_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("top_inset"))?,
+                    right_inset: right_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("right_inset"))?,
+                    bottom_inset: bottom_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("bottom_inset"))?,
+                    use_paragraph_spacing: use_paragraph_spacing
+                        .ok_or_else(|| serde::de::Error::missing_field("use_paragraph_spacing"))?,
+                    auto_fit,
+                    parts: parts.unwrap_or_default(),
+                })
+            }
+        }
+        deserializer.deserialize_struct(
+            "BodyProperties",
+            &[
+                "vert_overflow",
+                "horz_overflow",
+                "rtl_col",
+                "anchor",
+                "wrap",
+                "rotation",
+                "left_inset",
+                "top_inset",
+                "right_inset",
+                "bottom_inset",
+                "use_paragraph_spacing",
+                "auto_fit",
+                "parts",
+            ],
+            Visitor,
+        )
+    }
 }
 
 impl BodyProperties {

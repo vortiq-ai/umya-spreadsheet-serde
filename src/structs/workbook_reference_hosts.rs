@@ -28,7 +28,10 @@ use crate::{
         },
     },
     helper::{
-        address::is_address,
+        address::{
+            is_address,
+            split_reference_address,
+        },
         formula::{
             FormulaTokenSubTypes,
             FormulaTokenTypes,
@@ -72,7 +75,18 @@ fn part_bytes(raw: &RawFile) -> Result<Cow<'_, [u8]>, XlsxError> {
 // Unknown names/shared formulas/unsupported edit geometries may depend on the
 // edit and therefore select the host. This is conservative; it never makes an
 // unsupported semantic decision or changes the supplied formula.
-fn may_depend(text: &str, host: &str, prepared: &PreparedReferenceEdit<'_>) -> bool {
+//
+// Only extended (ChartEx) charts regenerate their cached values from a
+// sheet-qualified defined name. A standard chart's export rebuilds its cache
+// from the cell address in its formula, which a name does not resolve, so its
+// output is independent of the edit and such a name does not select a
+// standard chart's host.
+fn may_depend(
+    text: &str,
+    host: &str,
+    prepared: &PreparedReferenceEdit<'_>,
+    extended: bool,
+) -> bool {
     if text.is_empty() {
         return true;
     }
@@ -83,11 +97,21 @@ fn may_depend(text: &str, host: &str, prepared: &PreparedReferenceEdit<'_>) -> b
             continue;
         }
         let raw = token.get_value();
-        if raw.contains('[') || raw.contains(']') {
-            continue;
-        }
-        if !raw.contains('!') && !raw.contains(':') && !is_address(raw.to_ascii_uppercase()) {
-            return true;
+        if extended {
+            let (qualifier, operand) = split_reference_address(raw);
+            if qualifier != "[0]" && (raw.contains('[') || raw.contains(']')) {
+                continue;
+            }
+            if !operand.contains(':') && !is_address(operand.to_ascii_uppercase()) {
+                return true;
+            }
+        } else {
+            if raw.contains('[') || raw.contains(']') {
+                continue;
+            }
+            if !raw.contains('!') && !raw.contains(':') && !is_address(raw.to_ascii_uppercase()) {
+                return true;
+            }
         }
     }
     edit_prepared_formula_text(text, host, prepared, false).text != text
@@ -120,11 +144,16 @@ fn scan_part(
                     .map_err(error)?;
                 let target = match kind {
                     PartKind::Worksheet => {
-                        name.namespace_uri == SHEET_NS
+                        (name.namespace_uri == SHEET_NS
                             && name.local_name == "f"
                             && scopes
                                 .last()
-                                .is_some_and(|(_, uri, local)| uri == SHEET_NS && local == "c")
+                                .is_some_and(|(_, uri, local)| uri == SHEET_NS && local == "c"))
+                            // Formulas of extensions (sparkline sources, x14
+                            // conditional formats).
+                            || (name.namespace_uri
+                                == crate::structs::preserved_ranges::XM_NS
+                                && name.local_name == "f")
                     }
                     PartKind::Chart => {
                         matches!(name.namespace_uri.as_str(), CHART_NS | C15_NS | CX_NS)
@@ -155,11 +184,11 @@ fn scan_part(
                         if sequence
                             .references()
                             .iter()
-                            .any(|value| may_depend(&value.address_str(), host, prepared))
+                            .any(|value| may_depend(&value.address_str(), host, prepared, false))
                         {
                             return Ok(true);
                         }
-                    } else if may_depend(&text, host, prepared) {
+                    } else if may_depend(&text, host, prepared, name.namespace_uri == CX_NS) {
                         return Ok(true);
                     }
                 } else if !empty {

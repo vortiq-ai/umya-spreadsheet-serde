@@ -10,17 +10,48 @@ use quick_xml::{
     },
 };
 
-use super::SchemeColor;
+use super::{
+    HslColor,
+    PresetColor,
+    RgbColorModelHex,
+    RgbColorModelPercentage,
+    SchemeColor,
+    SystemColor,
+};
 use crate::writer::driver::{
     write_end_tag,
     write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug)]
+enum StyleColor {
+    Rgb(Box<RgbColorModelHex>),
+    ScRgb(Box<RgbColorModelPercentage>),
+    Hsl(Box<HslColor>),
+    System(Box<SystemColor>),
+    Preset(Box<PresetColor>),
+}
+
+impl StyleColor {
+    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+        match self {
+            Self::Rgb(value) => value.write_to(writer),
+            Self::ScRgb(value) => value.write_to(writer),
+            Self::Hsl(value) => value.write_to(writer),
+            Self::System(value) => value.write_to(writer),
+            Self::Preset(value) => value.write_to(writer),
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct StyleMatrixReferenceType {
     index:        Box<str>,
     scheme_color: Option<Box<SchemeColor>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    color_choice: Option<StyleColor>,
 }
 
 impl StyleMatrixReferenceType {
@@ -57,6 +88,7 @@ impl StyleMatrixReferenceType {
 
     #[inline]
     pub fn set_scheme_color(&mut self, value: SchemeColor) {
+        self.color_choice = None;
         self.scheme_color = Some(Box::new(value));
     }
 
@@ -98,16 +130,47 @@ impl StyleMatrixReferenceType {
                         .child(child)
                         .and_then(|scope| scope.resolve(child.name().as_ref(), false))
                         .map_err(crate::xml::xml_error)?;
-                    if !name.is(crate::helper::const_str::DRAWINGML_MAIN_NS, "schemeClr")
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS
                         || self.scheme_color.is_some()
+                        || self.color_choice.is_some()
                     {
                         return Err(crate::xml::xml_error(
                             "unsupported or duplicate drawing style color",
                         ));
                     }
-                    let mut value = SchemeColor::default();
-                    value.read_with_session(reader, child, empty, session)?;
-                    self.set_scheme_color(value);
+                    match name.local_name.as_str() {
+                        "schemeClr" => {
+                            let mut value = SchemeColor::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_scheme_color(value);
+                        }
+                        "srgbClr" => {
+                            let mut value = RgbColorModelHex::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.color_choice = Some(StyleColor::Rgb(Box::new(value)));
+                        }
+                        "scrgbClr" => {
+                            let mut value = RgbColorModelPercentage::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.color_choice = Some(StyleColor::ScRgb(Box::new(value)));
+                        }
+                        "hslClr" => {
+                            let mut value = HslColor::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.color_choice = Some(StyleColor::Hsl(Box::new(value)));
+                        }
+                        "sysClr" => {
+                            let mut value = SystemColor::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.color_choice = Some(StyleColor::System(Box::new(value)));
+                        }
+                        "prstClr" => {
+                            let mut value = PresetColor::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.color_choice = Some(StyleColor::Preset(Box::new(value)));
+                        }
+                        _ => return Err(crate::xml::xml_error("unsupported drawing style color")),
+                    }
                 }
                 Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
                 Event::Eof => {
@@ -126,10 +189,17 @@ impl StyleMatrixReferenceType {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         tag_name: &str,
     ) -> Result<(), crate::XlsxError> {
-        if let Some(color) = &self.scheme_color {
+        if self.scheme_color.is_some() && self.color_choice.is_some() {
+            return Err(crate::xml::xml_error("conflicting drawing style colors"));
+        }
+        if self.scheme_color.is_some() || self.color_choice.is_some() {
             write_start_tag(writer, tag_name, vec![("idx", &self.index).into()], false);
-            // a:schemeClr
-            color.write_to(writer)?;
+            if let Some(color) = &self.scheme_color {
+                color.write_to(writer)?;
+            }
+            if let Some(color) = &self.color_choice {
+                color.write_to(writer)?;
+            }
             write_end_tag(writer, tag_name);
         } else {
             write_start_tag(writer, tag_name, vec![("idx", &self.index).into()], true);

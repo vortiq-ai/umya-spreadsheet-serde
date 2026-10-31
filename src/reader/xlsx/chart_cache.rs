@@ -1182,12 +1182,14 @@ enum SourceCacheSessionMode {
 #[derive(Clone)]
 pub(crate) struct SourceCacheSession {
     content_types: std::sync::Arc<crate::structs::content_types::PackageContentTypes>,
+    pivot_cache_bindings:         std::sync::Arc<Vec<(String, String)>>,
     mode:                         SourceCacheSessionMode,
     descriptors:                  Rc<RefCell<HashMap<usize, DeferredSource>>>,
     parts:                        Rc<RefCell<Vec<ChartPart>>>,
     current_part:                 Rc<StateCell<Option<usize>>>,
     chart_namespaces:             Rc<RefCell<Option<crate::drawing::charts::ChartNamespaces>>>,
     extension_scopes:             Rc<RefCell<Vec<crate::drawing::charts::NamespaceScope>>>,
+    chart_relationships: Rc<RefCell<HashMap<String, crate::structs::raw::RawRelationships>>>,
     #[cfg(test)]
     registered_keys:              Rc<RefCell<Vec<usize>>>,
     #[cfg(test)]
@@ -1226,10 +1228,38 @@ impl Drop for ChartPartGuard {
 }
 
 impl SourceCacheSession {
+    pub(crate) fn register_chart_relationships(
+        &self,
+        target: &str,
+        relationships: &crate::structs::raw::RawRelationships,
+    ) {
+        self.chart_relationships
+            .borrow_mut()
+            .insert(target.to_owned(), relationships.clone());
+    }
+
+    pub(crate) fn read_chart_picture<R: std::io::BufRead>(
+        &self,
+        reader: &mut Reader<R>,
+        owner: &quick_xml::events::BytesStart<'_>,
+        empty: bool,
+    ) -> Result<crate::drawing::BlipFill, XlsxError> {
+        let part = self
+            .current_part
+            .get()
+            .ok_or_else(|| crate::xml::xml_error("chart picture fill has no chart part owner"))?;
+        let target = self.parts.borrow()[part].target.clone();
+        let relationships = self.chart_relationships.borrow();
+        let mut picture = crate::drawing::BlipFill::default();
+        picture.read_with_session(reader, owner, empty, relationships.get(&target), self)?;
+        Ok(picture)
+    }
+
     pub(crate) fn for_sheet(&self) -> Self {
         let mut sheet = Self::deferred();
         sheet.mode = self.mode;
         sheet.content_types = std::sync::Arc::clone(&self.content_types);
+        sheet.pivot_cache_bindings = std::sync::Arc::clone(&self.pivot_cache_bindings);
         sheet
     }
 
@@ -1337,11 +1367,13 @@ impl SourceCacheSession {
         Self {
             mode:                                      SourceCacheSessionMode::Deferred,
             content_types:                             std::sync::Arc::default(),
+            pivot_cache_bindings:                      std::sync::Arc::default(),
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
             chart_namespaces:                          Rc::new(RefCell::new(None)),
             extension_scopes:                          Rc::new(RefCell::new(Vec::new())),
+            chart_relationships:                       Rc::new(RefCell::new(HashMap::new())),
             #[cfg(test)]
             registered_keys:                           Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
@@ -1362,11 +1394,13 @@ impl SourceCacheSession {
         Self {
             mode:                                      SourceCacheSessionMode::Immediate,
             content_types:                             std::sync::Arc::default(),
+            pivot_cache_bindings:                      std::sync::Arc::default(),
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
             parts:                                     Rc::new(RefCell::new(Vec::new())),
             current_part:                              Rc::new(StateCell::new(None)),
             chart_namespaces:                          Rc::new(RefCell::new(None)),
             extension_scopes:                          Rc::new(RefCell::new(Vec::new())),
+            chart_relationships:                       Rc::new(RefCell::new(HashMap::new())),
             #[cfg(test)]
             registered_keys:                           Rc::new(RefCell::new(Vec::new())),
             #[cfg(test)]
@@ -1386,11 +1420,15 @@ impl SourceCacheSession {
         Self {
             mode:                                      SourceCacheSessionMode::Immediate,
             content_types:                             std::sync::Arc::clone(&self.content_types),
+            pivot_cache_bindings:                      std::sync::Arc::clone(
+                &self.pivot_cache_bindings,
+            ),
             descriptors:                               Rc::clone(&self.descriptors),
             parts:                                     Rc::clone(&self.parts),
             current_part:                              Rc::clone(&self.current_part),
             chart_namespaces:                          Rc::clone(&self.chart_namespaces),
             extension_scopes:                          Rc::clone(&self.extension_scopes),
+            chart_relationships:                       Rc::clone(&self.chart_relationships),
             #[cfg(test)]
             registered_keys:                           Rc::clone(&self.registered_keys),
             #[cfg(test)]
@@ -1411,6 +1449,21 @@ impl SourceCacheSession {
         types: std::sync::Arc<crate::structs::content_types::PackageContentTypes>,
     ) {
         self.content_types = types;
+    }
+
+    /// Workbook `pivotCache` bindings as (`cacheId`, resolved definition part).
+    pub(crate) fn set_pivot_cache_bindings(
+        &mut self,
+        bindings: std::sync::Arc<Vec<(String, String)>>,
+    ) {
+        self.pivot_cache_bindings = bindings;
+    }
+
+    pub(crate) fn pivot_cache_id_of(&self, definition_part: &str) -> Option<&str> {
+        self.pivot_cache_bindings
+            .iter()
+            .find(|(_, target)| target.eq_ignore_ascii_case(definition_part))
+            .map(|(id, _)| id.as_str())
     }
 
     pub(crate) fn content_type(&self, part: &str) -> Option<&str> {

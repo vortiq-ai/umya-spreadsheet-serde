@@ -16,11 +16,83 @@ use super::{
     SolidFill,
     SystemColor,
 };
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ForegroundColor {
     color: SolidFill,
 }
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ForegroundColor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ForegroundColor;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("ForegroundColor")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Ok(ForegroundColor {
+                    color: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut color = None;
+                let mut scheme_color = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "color" => {
+                            if color.is_some() {
+                                return Err(serde::de::Error::duplicate_field("color"));
+                            }
+                            color = Some(map.next_value()?);
+                        }
+                        "scheme_color" => {
+                            if scheme_color.is_some() {
+                                return Err(serde::de::Error::duplicate_field("scheme_color"));
+                            }
+                            scheme_color = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(
+                                &key,
+                                &["color", "scheme_color"],
+                            ));
+                        }
+                    }
+                }
+                if color.is_some() && scheme_color.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "color and scheme_color are mutually exclusive",
+                    ));
+                }
+                let color = match (color, scheme_color) {
+                    (Some(value), None) => value,
+                    (None, Some(value)) => {
+                        let mut fill = SolidFill::default();
+                        fill.set_scheme_color(value);
+                        fill
+                    }
+                    _ => return Err(serde::de::Error::missing_field("color")),
+                };
+                Ok(ForegroundColor { color })
+            }
+        }
+        deserializer.deserialize_struct("ForegroundColor", &["color"], Visitor)
+    }
+}
+
 impl ForegroundColor {
     #[must_use]
     pub fn hsl_color(&self) -> Option<&HslColor> {

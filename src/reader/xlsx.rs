@@ -17,6 +17,7 @@ use crate::{
         THEME_NS,
         THREADED_COMMENT_NS,
         VML_DRAWING_NS,
+        WORKSHEET_NS,
     },
     structs::{
         Cell,
@@ -43,6 +44,7 @@ mod pivot_cache;
 mod pivot_table;
 mod rels;
 mod shared_strings;
+mod slicer;
 mod styles;
 pub(crate) mod table;
 mod theme;
@@ -62,6 +64,290 @@ pub(crate) use self::chart_cache::{
     finalize_parsed_string_cache,
     register_parsed_string_cache,
 };
+
+/// The relationship ids named by the worksheet's `legacyDrawing` and
+/// `legacyDrawingHF` elements.
+fn legacy_drawing_ids(sheet_xml: &[u8]) -> Result<(Option<String>, Option<String>), XlsxError> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_reader(sheet_xml);
+    let (mut legacy, mut header_footer) = (None, None);
+    loop {
+        let event = reader.read_event()?;
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                let slot = match e.local_name().as_ref() {
+                    b"legacyDrawing" => &mut legacy,
+                    b"legacyDrawingHF" => &mut header_footer,
+                    _ => continue,
+                };
+                let mut id = None;
+                for attribute in e.attributes() {
+                    let attribute = attribute.map_err(crate::xml::xml_error)?;
+                    if attribute.key.local_name().as_ref() == b"id" {
+                        id = Some(
+                            attribute
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                                .map_err(crate::xml::xml_error)?
+                                .into_owned(),
+                        );
+                    }
+                }
+                if slot
+                    .replace(id.ok_or_else(|| {
+                        crate::xml::xml_error("legacy drawing element has no relationship id")
+                    })?)
+                    .is_some()
+                {
+                    return Err(crate::xml::xml_error(
+                        "worksheet declares a legacy drawing element more than once",
+                    ));
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok((legacy, header_footer))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The worksheet parts scanned for metadata cells, in scan order.
+    static SCANNED_SHEET_PARTS: std::cell::RefCell<Vec<(&'static str, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The reference (empty when it has none) of the first cell of the worksheet
+/// part that carries a `cm` attribute. Only cells in the `SpreadsheetML` main
+/// namespace and unqualified attributes count: namespace declarations such as
+/// `xmlns:cm`, foreign-namespace attributes and foreign elements named `c`
+/// do not.
+fn first_metadata_cell<R: io::Read>(sheet: R) -> Result<Option<String>, XlsxError> {
+    use quick_xml::{
+        events::Event,
+        name::ResolveResult,
+    };
+
+    let mut reader = quick_xml::NsReader::from_reader(io::BufReader::new(sheet));
+    let mut buffer = Vec::new();
+    loop {
+        let (namespace, event) = reader.read_resolved_event_into(&mut buffer)?;
+        match event {
+            Event::Start(e) | Event::Empty(e)
+                if e.local_name().as_ref() == b"c"
+                    && matches!(
+                        namespace,
+                        ResolveResult::Bound(ns)
+                            if ns.as_ref() == crate::helper::const_str::SHEET_MAIN_NS.as_bytes()
+                    ) =>
+            {
+                let mut reference = String::new();
+                let mut has_metadata = false;
+                for item in e.attributes() {
+                    let item = item.map_err(crate::xml::xml_error)?;
+                    let key = item.key.as_ref();
+                    if key != b"cm" && key != b"r" {
+                        continue;
+                    }
+                    let value = item
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(crate::xml::xml_error)?
+                        .into_owned();
+                    if key == b"cm" {
+                        has_metadata = true;
+                    } else {
+                        reference = value;
+                    }
+                }
+                if has_metadata {
+                    return Ok(Some(reference));
+                }
+            }
+            Event::Eof => return Ok(None),
+            _ => {}
+        }
+        buffer.clear();
+    }
+}
+
+/// Every worksheet part of the package as `(rel target, part path)`.
+fn worksheet_part_paths(workbook_rel: &[(String, String, String)]) -> Vec<String> {
+    workbook_rel
+        .iter()
+        .filter(|(_, rel_type, _)| rel_type == WORKSHEET_NS)
+        .map(|(_, _, target)| driver::join_paths("xl", target))
+        .collect()
+}
+
+/// What one worksheet part uses of styles.
+#[derive(Default)]
+struct StyleUse {
+    /// The first cell `s` other than 0, as (cell reference, value).
+    cell:   Option<(String, String)>,
+    /// The first column `style` other than 0, as (first column, value).
+    column: Option<(String, String)>,
+}
+
+/// Reads the style references of a worksheet part in one namespace-resolved
+/// stream: `s` of `c` and `style` of `col`, both in the
+/// `SpreadsheetML` main namespace and unqualified.
+fn style_use<R: io::Read>(sheet: R) -> Result<StyleUse, XlsxError> {
+    use quick_xml::{
+        events::Event,
+        name::ResolveResult,
+    };
+
+    let mut found = StyleUse::default();
+    let mut reader = quick_xml::NsReader::from_reader(io::BufReader::new(sheet));
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        let (namespace, event) = reader.read_resolved_event_into(&mut buffer)?;
+        match event {
+            Event::Start(e) | Event::Empty(e)
+                if matches!(
+                    namespace,
+                    ResolveResult::Bound(ns)
+                        if ns.as_ref() == crate::helper::const_str::SHEET_MAIN_NS.as_bytes()
+                ) =>
+            {
+                let (identity, attribute): (&[u8], &[u8]) = match e.local_name().as_ref() {
+                    b"c" => (b"r", b"s"),
+                    b"col" => (b"min", b"style"),
+                    _ => continue,
+                };
+                let (mut id, mut value) = (String::new(), None);
+                for item in e.attributes() {
+                    let item = item.map_err(crate::xml::xml_error)?;
+                    let key = item.key.as_ref();
+                    if key != attribute && key != identity {
+                        continue;
+                    }
+                    let text = item
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(crate::xml::xml_error)?
+                        .into_owned();
+                    if key == attribute {
+                        value = Some(text);
+                    } else {
+                        id = text;
+                    }
+                }
+                let Some(value) = value else {
+                    continue;
+                };
+                // Excel ignores a style it cannot read as an unsigned 32-bit
+                // index (`abc`, `-1`, `4294967296`).
+                if value.parse::<u32>().is_ok_and(|index| index != 0) {
+                    let slot = if e.local_name().as_ref() == b"c" {
+                        &mut found.cell
+                    } else {
+                        &mut found.column
+                    };
+                    slot.get_or_insert((id, value));
+                }
+            }
+            Event::Eof => return Ok(found),
+            _ => {}
+        }
+    }
+}
+
+/// Excel opens a package without a styles part only while every cell and
+/// column uses style 0: any cell `s` or column `style` of 1 or more makes it
+/// refuse the file, so import refuses it too. (Row styles are ignored and
+/// dropped by the worksheet boundary.) Every worksheet part is streamed once,
+/// materialized or not.
+fn validate_styles_without_styles_part<R: io::Read + io::Seek>(
+    arv: &mut zip::ZipArchive<R>,
+    workbook_rel: &[(String, String, String)],
+) -> Result<(), XlsxError> {
+    for path in worksheet_part_paths(workbook_rel) {
+        #[cfg(test)]
+        SCANNED_SHEET_PARTS.with(|scanned| scanned.borrow_mut().push(("styles", path.clone())));
+        let used = style_use(driver::zip_by_name(arv, &path)?)?;
+        if let Some((what, (id, value))) = used
+            .cell
+            .map(|cell| ("cell", cell))
+            .or_else(|| used.column.map(|column| ("column", column)))
+        {
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::Xml,
+                format!(
+                    "the package has no styles part but {what} {id:?} of {path} uses style \
+                     {value:?}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Excel opens a workbook with several metadata relationships only while no
+/// cell uses the metadata; with a `cm` cell it rejects the workbook. Every
+/// worksheet part is checked, materialized or not.
+fn reject_duplicate_metadata_with_cell_use<R: io::Read + io::Seek>(
+    arv: &mut zip::ZipArchive<R>,
+    workbook_rel: &[(String, String, String)],
+) -> Result<(), XlsxError> {
+    for path in worksheet_part_paths(workbook_rel) {
+        #[cfg(test)]
+        SCANNED_SHEET_PARTS.with(|scanned| scanned.borrow_mut().push(("metadata", path.clone())));
+        let part = driver::zip_by_name(arv, &path)?;
+        if let Some(reference) = first_metadata_cell(part)? {
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::Xml,
+                format!(
+                    "workbook declares more than one spreadsheet metadata relationship while cell \
+                     {reference:?} of {path} uses cell metadata"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reads the bytes of the workbook connections part. The writer owns the
+/// output part name, so any valid input name imports; the part must exist,
+/// be declared with the connections content type and fit the size cap.
+fn read_connections_part<R: io::Read + io::Seek>(
+    arv: &mut zip::read::ZipArchive<R>,
+    book: &Workbook,
+    target: &str,
+) -> Result<Vec<u8>, XlsxError> {
+    let path = driver::join_paths("xl", target);
+    let connections_error = |message: String| XlsxError::with_message(XlsxErrorKind::Xml, message);
+    if book.package_content_types().get(&path)
+        != Some(crate::structs::cell_metadata::CONNECTIONS_CONTENT_TYPE)
+    {
+        return Err(connections_error(format!(
+            "connections part {path} is not declared with the connections content type"
+        )));
+    }
+    read_capped(arv, &path, "Workbook connections exceed the size limit")
+}
+
+/// The bytes of a package part, rejected with `message` above the metadata
+/// size cap.
+fn read_capped<R: io::Read + io::Seek>(
+    arv: &mut zip::read::ZipArchive<R>,
+    path: &str,
+    message: &'static str,
+) -> Result<Vec<u8>, XlsxError> {
+    let part = driver::zip_by_name(arv, path)?;
+    let cap = crate::structs::cell_metadata::MAX_METADATA_BYTES;
+    let too_big = || XlsxError::with_message(XlsxErrorKind::Xml, message);
+    if part.size() > cap {
+        return Err(too_big());
+    }
+    let mut xml = Vec::new();
+    io::Read::read_to_end(&mut io::Read::take(part, cap + 1), &mut xml)?;
+    if xml.len() as u64 > cap {
+        return Err(too_big());
+    }
+    Ok(xml)
+}
 
 /// read spreadsheet from arbitrary reader.
 /// # Arguments
@@ -90,29 +376,45 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
     jsa_project_bin::read(&mut arv, &mut book)?;
     content_types::read(&mut arv, &mut book)?;
     let workbook_rel = workbook_rels::read(&mut arv, &mut book)?;
+    let external_ids = workbook_rels::read_external_ids(&mut arv)?;
+    slicer::read_workbook_slicer_caches(&mut arv, &mut book, &workbook_rel, &external_ids)?;
 
+    let mut has_duplicate_metadata = false;
     for (_, rel_type, target) in &workbook_rel {
         if rel_type == crate::structs::cell_metadata::REL {
+            // Excel opens a workbook with several metadata relationships when
+            // no cell uses the metadata, and keeps one part: the first.
+            if book.cell_metadata.is_some() {
+                has_duplicate_metadata = true;
+                continue;
+            }
             let path = driver::join_paths("xl", target);
-            let mut xml = Vec::new();
-            let part = driver::zip_by_name(&mut arv, &path)?;
-            let cap = crate::structs::cell_metadata::MAX_METADATA_BYTES;
-            if part.size() > cap {
-                return Err(XlsxError::with_message(
-                    XlsxErrorKind::Xml,
-                    "Spreadsheet metadata exceeds the size limit",
-                ));
-            }
-            io::Read::read_to_end(&mut io::Read::take(part, cap + 1), &mut xml)?;
-            if xml.len() as u64 > cap {
-                return Err(XlsxError::with_message(
-                    XlsxErrorKind::Xml,
-                    "Spreadsheet metadata exceeds the size limit",
-                ));
-            }
+            let xml = read_capped(
+                &mut arv,
+                &path,
+                "Spreadsheet metadata exceeds the size limit",
+            )?;
+            // The writer owns the output part name.
             book.cell_metadata = Some(crate::structs::cell_metadata::CellMetadata::from_xml(
-                &xml, path,
+                &xml,
+                crate::structs::cell_metadata::METADATA_PATH.into(),
             )?);
+        }
+    }
+    if has_duplicate_metadata {
+        // One scan of the worksheet parts, however many relationships repeat.
+        reject_duplicate_metadata_with_cell_use(&mut arv, &workbook_rel)?;
+    }
+
+    for (_, rel_type, target) in &workbook_rel {
+        if rel_type == crate::structs::cell_metadata::CONNECTIONS_REL {
+            if book.connections.is_some() {
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::Xml,
+                    "workbook declares more than one connections relationship",
+                ));
+            }
+            book.connections = Some(read_connections_part(&mut arv, &book, target)?);
         }
     }
 
@@ -125,7 +427,10 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
     }
 
     shared_strings::read(&mut arv, &mut book)?;
-    styles::read(&mut arv, &mut book)?;
+    let has_styles_part = styles::read(&mut arv, &mut book)?;
+    if !has_styles_part {
+        validate_styles_without_styles_part(&mut arv, &workbook_rel)?;
+    }
 
     for sheet in book.sheet_collection_unchecked_mut() {
         for (rel_id, _, rel_target) in &workbook_rel {
@@ -133,6 +438,9 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
                 continue;
             }
             let mut raw_worksheet = RawWorksheet::default();
+            // Like Excel, a package without a styles part drops the row
+            // styles it ignores when the sheet is written.
+            raw_worksheet.set_drops_row_styles(!has_styles_part);
             match source_file {
                 Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file)?,
                 None => raw_worksheet.read(&mut arv, rel_target, with_sheet_read)?,
@@ -144,6 +452,7 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
     if with_sheet_read {
         materialize_eager_sheets(&mut book, &mut arv)?;
     }
+    book.validate_slicers(None)?;
 
     Ok(book)
 }
@@ -281,6 +590,11 @@ pub(crate) fn finish_worksheet_materializations(
         *book.chart_source_cache_report_mut() = report;
         return Err(error);
     }
+    if let Err(error) = book.validate_slicers(None) {
+        rollback_worksheet_materializations(book, staged, session, provider);
+        *book.chart_source_cache_report_mut() = report;
+        return Err(error);
+    }
     for (index, transaction) in staged {
         transaction.commit(&mut book.sheet_collection_unchecked_mut()[index]);
     }
@@ -330,6 +644,7 @@ pub(crate) fn prepare_worksheet_materialization(
             .map_err(|error| crate::xml::xml_error(error.to_string()))?;
         worksheet::read(&mut parsed, &raw, shared_string_table, stylesheet)?;
         raw.load_relationship_file_data_from_source()?;
+        slicer::read_worksheet_slicers(&mut parsed, &raw, &sheet_session)?;
         let mut chart_parts = std::collections::HashMap::new();
         for (list_index, relationships) in raw.relationships_list_mut().iter_mut().enumerate() {
             for (relationship_index, relationship) in
@@ -353,17 +668,49 @@ pub(crate) fn prepare_worksheet_materialization(
                 }
             }
         }
+        for target in chart_parts.keys() {
+            if let Some(relationships) = raw.relationships_of_part(target)? {
+                sheet_session.register_chart_relationships(target, relationships);
+            }
+        }
         provider.add_pending(chart_parts);
         chart_parts_added = true;
 
-        if let Some(relationships) = raw.worksheet_relationships() {
+        let sheet_xml = raw.worksheet_file().file_data();
+        let (legacy_id, header_footer_id) = if sheet_xml
+            .windows(b"legacyDrawing".len())
+            .any(|window| window == b"legacyDrawing")
+        {
+            legacy_drawing_ids(sheet_xml)?
+        } else {
+            (None, None)
+        };
+        for (element, id) in [
+            ("legacyDrawing", &legacy_id),
+            ("legacyDrawingHF", &header_footer_id),
+        ] {
+            let Some(id) = id else {
+                continue;
+            };
+            let names_vml = raw.worksheet_relationships()?.is_some_and(|rels| {
+                rels.relationship_list()
+                    .iter()
+                    .any(|rel| rel.id() == id && rel.get_type() == VML_DRAWING_NS)
+            });
+            if !names_vml {
+                return Err(crate::xml::xml_error(format!(
+                    "{element} r:id {id} does not name a VML drawing relationship"
+                )));
+            }
+        }
+        if let Some(relationships) = raw.worksheet_relationships()? {
             for relationship in relationships.relationship_list() {
                 match relationship.get_type() {
                     DRAWINGS_NS => {
                         drawing::read(
                             &mut parsed,
                             relationship.raw_file(),
-                            raw.drawing_relationships(),
+                            raw.relationships_of_part(relationship.raw_file().file_target())?,
                             &mut sheet_session,
                             provider,
                         )?;
@@ -377,25 +724,41 @@ pub(crate) fn prepare_worksheet_materialization(
                         pivot_table::read(
                             &mut parsed,
                             relationship.raw_file(),
-                            raw.pivot_table_relationships(),
-                            raw.pivot_cache_relationships(),
+                            &raw,
+                            &sheet_session,
                         )?;
                     }
                     _ => {}
                 }
             }
             for relationship in relationships.relationship_list() {
-                if relationship.get_type() == VML_DRAWING_NS {
-                    vml_drawing::read(
-                        &mut parsed,
-                        relationship.raw_file(),
-                        raw.vml_drawing_relationships(),
-                    )?;
+                if relationship.get_type() != VML_DRAWING_NS {
+                    continue;
+                }
+                // A VML part is bound only through the element that names it.
+                // Like Excel, a part named by neither element is left unbound.
+                for (id, header_footer) in [(&legacy_id, false), (&header_footer_id, true)] {
+                    if id.as_deref() == Some(relationship.id()) {
+                        vml_drawing::read(
+                            &mut parsed,
+                            relationship.raw_file(),
+                            raw.relationships_of_part(relationship.raw_file().file_target())?,
+                            header_footer,
+                            &sheet_session,
+                        )?;
+                    }
                 }
             }
         }
-        drawing_parts =
-            crate::structs::drawing_parts::DrawingParts::prepare(&raw, &parsed, &sheet_session)?;
+        drawing_parts = crate::structs::drawing_parts::DrawingParts::prepare(
+            &raw,
+            &parsed,
+            &sheet_session,
+            provider,
+        )?;
+        if let Some(prepared) = &drawing_parts {
+            prepared.bind_style_bundles(&mut parsed);
+        }
         Ok(())
     })();
     if chart_parts_added {
@@ -440,6 +803,7 @@ fn materialize_eager_sheets<R: io::Read + io::Seek>(
     let stylesheet = book.stylesheet().clone();
     let mut session = SourceCacheSession::deferred();
     session.set_content_types(book.package_content_types());
+    session.set_pivot_cache_bindings(book.pivot_cache_bindings());
     let mut provider = EagerChartPartProvider::new(archive);
     let mut staged = Vec::new();
     for index in 0..book.sheet_collection_no_check().len() {
@@ -462,4 +826,121 @@ fn materialize_eager_sheets<R: io::Read + io::Seek>(
     }
     finish_worksheet_materializations(book, staged, &mut session, &mut provider)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod metadata_scan_tests {
+    use std::io::{
+        Cursor,
+        Write,
+    };
+
+    use super::SCANNED_SHEET_PARTS;
+
+    const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    const PKG: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+    fn package(metadata_relationships: usize) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let mut workbook_rels = format!(
+            r#"<Relationship Id="s1" Type="{REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="s2" Type="{REL}/worksheet" Target="worksheets/sheet2.xml"/>"#
+        );
+        for index in 0..metadata_relationships {
+            workbook_rels.push_str(&format!(
+                r#"<Relationship Id="m{index}" Type="{REL}/sheetMetadata" Target="metadata.xml"/>"#
+            ));
+        }
+        let sheet = format!(
+            r#"<worksheet xmlns="{MAIN}"><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#
+        );
+        let parts = [
+            (
+                "[Content_Types].xml",
+                format!(
+                    r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/metadata.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml"/></Types>"#
+                ),
+            ),
+            (
+                "_rels/.rels",
+                format!(
+                    r#"<Relationships xmlns="{PKG}"><Relationship Id="o" Type="{REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#
+                ),
+            ),
+            (
+                "xl/workbook.xml",
+                format!(
+                    r#"<workbook xmlns="{MAIN}" xmlns:r="{REL}"><sheets><sheet name="A" sheetId="1" r:id="s1"/><sheet name="B" sheetId="2" r:id="s2"/></sheets></workbook>"#
+                ),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                format!(r#"<Relationships xmlns="{PKG}">{workbook_rels}</Relationships>"#),
+            ),
+            ("xl/worksheets/sheet1.xml", sheet.clone()),
+            ("xl/worksheets/sheet2.xml", sheet),
+            ("xl/metadata.xml", format!(r#"<metadata xmlns="{MAIN}"/>"#)),
+        ];
+        for (name, body) in parts {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    /// The worksheet parts scanned for `purpose`, in scan order.
+    fn scanned_parts(purpose: &str) -> Vec<String> {
+        SCANNED_SHEET_PARTS.with(|scanned| {
+            scanned
+                .borrow()
+                .iter()
+                .filter(|(scan, _)| *scan == purpose)
+                .map(|(_, path)| path.clone())
+                .collect()
+        })
+    }
+
+    /// A package without a styles part is validated with one stream per
+    /// worksheet part, whatever else is scanned.
+    #[test]
+    fn every_worksheet_part_is_scanned_once_for_styles_without_a_styles_part() {
+        for relationships in [1, 50] {
+            for eager in [true, false] {
+                SCANNED_SHEET_PARTS.with(|scanned| scanned.borrow_mut().clear());
+                super::read_reader(Cursor::new(package(relationships)), eager).unwrap();
+                let scanned = scanned_parts("styles");
+                assert_eq!(
+                    scanned,
+                    ["xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"],
+                    "{relationships} relationships eager={eager}"
+                );
+            }
+        }
+    }
+
+    /// However many metadata relationships repeat, each worksheet part is
+    /// scanned for metadata cells once, for eager and lazy import.
+    #[test]
+    fn every_worksheet_part_is_scanned_once_however_many_metadata_relationships() {
+        for relationships in [1, 2, 50] {
+            for eager in [true, false] {
+                SCANNED_SHEET_PARTS.with(|scanned| scanned.borrow_mut().clear());
+                super::read_reader(Cursor::new(package(relationships)), eager).unwrap();
+                let scanned = scanned_parts("metadata");
+                let expected: Vec<String> = if relationships > 1 {
+                    vec![
+                        "xl/worksheets/sheet1.xml".into(),
+                        "xl/worksheets/sheet2.xml".into(),
+                    ]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(
+                    scanned, expected,
+                    "{relationships} relationships eager={eager}"
+                );
+            }
+        }
+    }
 }

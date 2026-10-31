@@ -63,9 +63,14 @@ impl Stretch {
             .map(|session| session.enter_child_scope(owner))
             .transpose()?
             .flatten();
-        let scope = crate::drawing::charts::NamespaceScope::default()
-            .child(owner)
-            .map_err(crate::xml::xml_error)?;
+        let scope = match session
+            .and_then(crate::reader::xlsx::SourceCacheSession::current_namespace_scope)
+        {
+            Some(scope) => scope,
+            None => crate::drawing::charts::NamespaceScope::default()
+                .child(owner)
+                .map_err(crate::xml::xml_error)?,
+        };
         if empty {
             return Ok(());
         }

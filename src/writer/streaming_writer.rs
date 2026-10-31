@@ -55,10 +55,10 @@ use crate::{
         media,
         person,
         pivot_cache,
-        pivot_table,
         printer_settings,
         rels,
         shared_strings,
+        slicer,
         styles,
         table,
         theme,
@@ -70,6 +70,7 @@ use crate::{
         workbook_rels,
         worksheet,
         worksheet_rels,
+        write_workbook_data_parts,
     },
 };
 
@@ -77,22 +78,92 @@ pub struct StreamingWriter<W: io::Write + io::Seek> {
     writer_manager: WriterManager<W>,
     work_book:      Workbook,
 
-    available:       Vec<Worksheet>,
-    stylesheet:      Stylesheet,
-    has_macros:      bool,
-    sheet_no:        i32,
-    source_order:    HashMap<String, usize>,
-    preflight_error: Option<XlsxError>,
-    poisoned:        bool,
+    available:               Vec<Worksheet>,
+    stylesheet:              Stylesheet,
+    has_macros:              bool,
+    sheet_no:                i32,
+    source_order:            HashMap<String, usize>,
+    preflight_error:         Option<XlsxError>,
+    poisoned:                bool,
+    picture_dependencies:    HashMap<String, Option<[u8; 32]>>,
+    /// Lowercase slicer names of each sheet by sheet id, kept to check later
+    /// sheet edits against the other sheets.
+    slicer_names:            HashMap<String, Vec<String>>,
+    /// The pivot caches declared when the writer was prepared.
+    declared_caches:         pivot_cache::DeclaredCaches,
+    /// The pivot cache ids (the x14 ids slicer caches name) of the definitions
+    /// written with the sheets flushed so far.
+    written_pivot_cache_ids: HashSet<u32>,
 }
 
 impl<W: io::Write + io::Seek> StreamingWriter<W> {
     pub fn new(zip_writer: zip::ZipWriter<W>, mut work_book: Workbook) -> Self {
-        let stylesheet = work_book.stylesheet().clone();
+        let mut stylesheet = work_book.stylesheet().clone();
+        stylesheet.set_export_default_value();
         let has_macros = work_book.has_macros();
         let mut writer_manager = WriterManager::new(zip_writer);
-        let preflight_error = writer_manager.reserve_table_ids(&work_book).err();
+        // The same preparation the in-memory writer applies: sheets with pivot
+        // tables, linked by a slicer cache or holding slicers are read so the
+        // pivot caches are declared and every slicer binding can be checked.
+        let mut preflight_error =
+            match pivot_cache::prepare_workbook(&work_book).map(|prepared| match prepared {
+                std::borrow::Cow::Owned(prepared) => Some(prepared),
+                std::borrow::Cow::Borrowed(_) => None,
+            }) {
+                Ok(Some(prepared)) => {
+                    work_book = prepared;
+                    None
+                }
+                Ok(None) => None,
+                Err(error) => Some(error),
+            };
+        work_book.resolve_pivot_caches();
+        let declared_caches = match pivot_cache::declared_caches(&work_book) {
+            Ok(declared) => declared,
+            Err(error) => {
+                preflight_error.get_or_insert(error);
+                pivot_cache::DeclaredCaches::default()
+            }
+        };
+        writer_manager.reserve_pivot_caches(&declared_caches.order);
+        if preflight_error.is_none() {
+            preflight_error = writer_manager.reserve_table_ids(&work_book).err();
+        }
+        if preflight_error.is_none() {
+            preflight_error = work_book
+                .validate_slicers(Some(writer_manager.table_ids()))
+                .err();
+        }
+        let slicer_names = work_book
+            .sheet_collection_no_check()
+            .iter()
+            .map(|sheet| {
+                (
+                    sheet.sheet_id().to_owned(),
+                    sheet
+                        .slicers()
+                        .iter()
+                        .map(|slicer| slicer.name.to_lowercase())
+                        .collect(),
+                )
+            })
+            .collect();
         writer_manager.reserve_drawing_parts(&work_book);
+        if preflight_error.is_none() {
+            preflight_error = chart::validate_picture_exports(&work_book)
+                .and_then(|()| chart::prepare_picture_graph(&work_book, &mut writer_manager))
+                .err();
+        }
+        let picture_dependencies = work_book
+            .sheet_collection_no_check()
+            .iter()
+            .map(|sheet| {
+                (
+                    sheet.sheet_id().to_owned(),
+                    chart::picture_dependency_fingerprint(sheet),
+                )
+            })
+            .collect();
         let available = work_book.take_all_sheets();
         let source_order = available
             .iter()
@@ -109,6 +180,10 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
             source_order,
             preflight_error,
             poisoned: false,
+            picture_dependencies,
+            slicer_names,
+            declared_caches,
+            written_pivot_cache_ids: HashSet::new(),
         }
     }
 
@@ -123,7 +198,33 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
         if self.poisoned {
             return Err(streaming_error("cannot finish after a failed sheet flush"));
         }
+        self.work_book.validate_streamed_slicer_caches(
+            self.writer_manager.written_table_ids(),
+            &self.written_pivot_cache_ids,
+        )?;
+        // As Excel does, declare only the caches a pivot table still uses: a
+        // cache whose last pivot table was removed has no part and no
+        // declaration.
+        if !self.declared_caches.order.is_empty() {
+            let used = self
+                .declared_caches
+                .order
+                .iter()
+                .filter_map(|id| {
+                    let no = self.writer_manager.pivot_cache_number(id)?;
+                    self.writer_manager.pivot_cache_written(no).then(|| {
+                        (
+                            String::new(),
+                            id.clone(),
+                            format!("pivotCache/pivotCacheDefinition{no}.xml"),
+                        )
+                    })
+                })
+                .collect();
+            self.work_book.set_pivot_cache_collection(used);
+        }
         // from xlsx::write_zip_to_writer
+        write_workbook_data_parts(&self.work_book, &mut self.writer_manager)?;
         // Add docProps
         doc_props_app::write(&self.work_book, &mut self.writer_manager)?;
         doc_props_core::write(&self.work_book, &mut self.writer_manager)?;
@@ -140,6 +241,8 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
             &mut self.writer_manager,
         )?;
         styles::write(&self.stylesheet, &mut self.writer_manager)?;
+        let workbook_extension_parts =
+            slicer::write_caches(&self.work_book, &mut self.writer_manager)?;
         workbook::write(&self.work_book, &mut self.writer_manager)?;
 
         let has_shared_string_table = self
@@ -151,6 +254,7 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
         workbook_rels::write(
             &self.work_book,
             has_shared_string_table,
+            &workbook_extension_parts,
             &mut self.writer_manager,
         )?;
         content_types::write(&self.work_book, &mut self.writer_manager)?;
@@ -165,6 +269,8 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
 
     /// Writes and consumes a worksheet. Flushed cells are no longer available
     /// for editing.
+    /// Picture media and package dependencies are prepared at construction;
+    /// changing them after taking a sheet is explicitly rejected.
     pub fn flush_sheet(&mut self, mut worksheet: Worksheet) -> Result<(), XlsxError> {
         if let Some(error) = self.preflight_error.take() {
             self.poisoned = true;
@@ -172,6 +278,17 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
         }
         if self.poisoned {
             return Err(streaming_error("cannot flush after a failed sheet flush"));
+        }
+        let prepared = self
+            .picture_dependencies
+            .get(worksheet.sheet_id())
+            .copied()
+            .flatten();
+        if prepared != chart::picture_dependency_fingerprint(&worksheet) {
+            self.poisoned = true;
+            return Err(streaming_error(
+                "picture dependencies changed after streaming initialization",
+            ));
         }
         let name = worksheet.name().to_owned();
         if self
@@ -287,16 +404,36 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
     ) -> Result<Worksheet, XlsxError> {
         self.work_book.sheet_mut(index)?;
         let worksheet = self.work_book.sheet(index)?;
+        pivot_cache::validate_sheet_caches(worksheet, &self.declared_caches)?;
+        self.written_pivot_cache_ids.extend(
+            worksheet
+                .pivot_tables()
+                .iter()
+                .filter_map(|table| table.pivot_cache_definition().slicer_cache_id()),
+        );
         self.sheet_no += 1;
         // TODO: allow caller to specify worksheet number
         let worksheet_no = self.sheet_no;
 
+        let other_slicer_names: HashSet<String> = self
+            .slicer_names
+            .iter()
+            .filter(|(id, _)| id.as_str() != worksheet.sheet_id())
+            .flat_map(|(_, names)| names.iter().cloned())
+            .collect();
+        let names = self
+            .work_book
+            .validate_sheet_slicers(worksheet, &other_slicer_names)?;
+        self.slicer_names
+            .insert(worksheet.sheet_id().to_owned(), names);
+        let slicers = slicer::kinds(&self.work_book, worksheet)?;
         worksheet::write(
             worksheet_no,
             worksheet,
             &self.work_book.shared_string_table(),
             &mut self.stylesheet,
             self.has_macros,
+            slicers,
             &mut self.writer_manager,
         )?;
 
@@ -325,6 +462,8 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
             &rel_list,
             &mut self.writer_manager,
         )?;
+        let header_footer_vml_no =
+            vml_drawing::write_header_footer(worksheet, &mut self.writer_manager)?;
 
         // Add comments
         let comment_no = comment::write(worksheet, &mut self.writer_manager)?;
@@ -352,8 +491,12 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
         let table_no_list = table::write(worksheet, &mut self.writer_manager)?;
 
         // Add pivot tables and caches
-        let pivot_table_no_list = pivot_table::write(worksheet, &mut self.writer_manager)?;
-        let pivot_cache_no_list = pivot_cache::write(worksheet, &mut self.writer_manager)?;
+        let (pivot_table_no_list, pivot_cache_no_list) =
+            pivot_cache::write_sheet_parts(worksheet, &mut self.writer_manager)?;
+
+        // Add slicer parts
+        let slicer_parts =
+            slicer::write_worksheet_parts(&self.work_book, worksheet, &mut self.writer_manager)?;
 
         // Add worksheet relationships
         worksheet_rels::write(
@@ -361,6 +504,7 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
             &worksheet_no.to_string(),
             &drawing_no,
             &vml_drawing_no,
+            &header_footer_vml_no,
             &comment_no,
             &threaded_comment_no,
             &ole_object_no_list,
@@ -369,12 +513,14 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
             &table_no_list,
             &pivot_table_no_list,
             &pivot_cache_no_list,
+            &slicer_parts,
             &mut self.writer_manager,
         )?;
 
         let mut stub = Worksheet::default();
         stub.set_name(worksheet.name());
         stub.set_sheet_id(worksheet.sheet_id());
+        stub.mark_streamed_out();
         if worksheet.has_state() {
             stub.set_state_str(worksheet.state_str());
         }

@@ -48,6 +48,27 @@ pub struct RestoreReport {
     pub diagnostics:                Vec<String>,
 }
 
+impl RestoreReport {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.matched_series += other.matched_series;
+        self.index_matched_series += other.index_matched_series;
+        self.formula_matched_series += other.formula_matched_series;
+        self.unmatched_series += other.unmatched_series;
+        self.ambiguous_series += other.ambiguous_series;
+        self.unmatched_previous_series += other.unmatched_previous_series;
+        self.restored_points += other.restored_points;
+        self.restored_labels += other.restored_labels;
+        self.restored_caches += other.restored_caches;
+        self.recreated_owners += other.recreated_owners;
+        self.restored_owners += other.restored_owners;
+        self.added_owners += other.added_owners;
+        self.removed_owners += other.removed_owners;
+        self.incompatible_owners += other.incompatible_owners;
+        self.removed_incompatible_parts += other.removed_incompatible_parts;
+        self.diagnostics.extend(other.diagnostics);
+    }
+}
+
 pub(super) fn replace_hidden_parts<T: Clone>(
     current: &mut Option<T>,
     previous: Option<&T>,
@@ -247,6 +268,7 @@ pub(super) fn restore_text(
         if text.projected_structure_matches(old) {
             report.restored_owners += text.restore_export_parts(old)?;
         } else {
+            text.strip_export_parts();
             report.incompatible_owners += 1;
             report
                 .diagnostics
@@ -556,6 +578,9 @@ pub(super) fn discard_marker_extensions(current: &mut Marker, report: &mut Resto
 }
 
 pub(super) fn discard_text_extensions(current: &mut ChartText, report: &mut RestoreReport) {
+    if let Some(text) = current.rich_text_mut() {
+        text.strip_export_parts();
+    }
     if let Some(reference) = current.string_reference_mut() {
         discard_string_reference_extensions(reference, report);
     }
@@ -980,4 +1005,516 @@ fn same_axes(current: ChartGroupRef<'_>, previous: ChartGroupRef<'_>) -> bool {
             .map(super::AxisId::explicit_value)
             .collect::<Vec<_>>()
     })
+}
+/// Strip `ChartEx` export metadata through its typed ownership graph.
+pub(crate) fn strip_extended_space(current: &mut super::ChartExSpace) {
+    extended_export_parts::strip(current);
+}
+
+/// Reconcile every `ChartEx` metadata owner against the authoritative frame.
+pub(crate) fn restore_extended_space(
+    current: &mut super::ChartExSpace,
+    previous: &super::ChartExSpace,
+) -> Result<RestoreReport, crate::XlsxError> {
+    extended_export_parts::restore(current, previous)
+}
+
+mod extended_export_parts {
+    use super::{
+        super::{
+            ChartExArtifacts,
+            ChartExAxis,
+            ChartExAxisTitle,
+            ChartExAxisUnits,
+            ChartExAxisUnitsLabel,
+            ChartExBindings,
+            ChartExChart,
+            ChartExChartTitle,
+            ChartExColorMapping,
+            ChartExDashboard,
+            ChartExData,
+            ChartExDataCollection,
+            ChartExDataLabel,
+            ChartExDataLabels,
+            ChartExDataPoint,
+            ChartExDimension,
+            ChartExDimensionSource,
+            ChartExFormatOverride,
+            ChartExFormatOverrides,
+            ChartExGeography,
+            ChartExGridlines,
+            ChartExLayoutProperties,
+            ChartExLegend,
+            ChartExPlotArea,
+            ChartExPlotAreaRegion,
+            ChartExPlotSurface,
+            ChartExSeries,
+            ChartExSpace,
+            ChartExText,
+            ChartExTextData,
+            ChartExTickLabels,
+            ChartExTickMarks,
+            ShapeProperties,
+            TextProperties,
+        },
+        RestoreReport,
+    };
+
+    trait ExportParts {
+        fn strip(&mut self);
+
+        fn reconcile(
+            &mut self,
+            previous: Option<&Self>,
+            report: &mut RestoreReport,
+        ) -> Result<(), crate::XlsxError>;
+    }
+
+    pub(super) fn strip(current: &mut ChartExSpace) {
+        current.strip_imported_caches();
+        current.strip();
+    }
+
+    pub(super) fn restore(
+        current: &mut ChartExSpace,
+        previous: &ChartExSpace,
+    ) -> Result<RestoreReport, crate::XlsxError> {
+        let mut report = RestoreReport::default();
+        current.strip_imported_caches();
+        report
+            .diagnostics
+            .extend(current.restore_imported_caches(previous));
+        if let Some(collection) = &current.data_collection {
+            for data in &collection.data {
+                for dimension in &data.dimensions {
+                    report.restored_caches += usize::from(match dimension {
+                        ChartExDimension::String(value) => match &value.source {
+                            ChartExDimensionSource::Reference(reference) => {
+                                reference.source_cache().is_some()
+                            }
+                            ChartExDimensionSource::Literal(_) => false,
+                        },
+                        ChartExDimension::Numeric(value) => match &value.source {
+                            ChartExDimensionSource::Reference(reference) => {
+                                reference.source_cache().is_some()
+                            }
+                            ChartExDimensionSource::Literal(_) => false,
+                        },
+                    });
+                }
+            }
+        }
+        current.reconcile(Some(previous), &mut report)?;
+        Ok(report)
+    }
+
+    fn hidden<T: Clone>(current: &mut Option<T>, previous: Option<&T>, report: &mut RestoreReport) {
+        if current.is_some() {
+            report.removed_incompatible_parts += 1;
+            report
+                .diagnostics
+                .push("discarded incoming ChartEx export metadata".into());
+        }
+        report.restored_owners += usize::from(previous.is_some());
+        *current = previous.cloned();
+    }
+
+    fn optional<T: ExportParts>(
+        current: &mut Option<T>,
+        previous: Option<&T>,
+        report: &mut RestoreReport,
+    ) -> Result<(), crate::XlsxError> {
+        if let Some(current) = current {
+            current.reconcile(previous, report)?;
+        }
+        Ok(())
+    }
+
+    fn keyed<T: ExportParts, K: Clone + Eq + std::hash::Hash>(
+        current: &mut [T],
+        previous: Option<&[T]>,
+        key: impl Fn(&T) -> Option<K>,
+        report: &mut RestoreReport,
+    ) -> Result<(), crate::XlsxError> {
+        let mut counts = std::collections::HashMap::<K, usize>::new();
+        for owner in current.iter() {
+            if let Some(key) = key(owner) {
+                *counts.entry(key).or_default() += 1;
+            }
+        }
+        let mut old = std::collections::HashMap::<K, Vec<&T>>::new();
+        for owner in previous.unwrap_or_default() {
+            if let Some(key) = key(owner) {
+                old.entry(key).or_default().push(owner);
+            }
+        }
+        for owner in current {
+            let prior = key(owner).and_then(|key| {
+                if counts.get(&key) != Some(&1) {
+                    return None;
+                }
+                match old.get(&key).map(Vec::as_slice) {
+                    Some([owner]) => Some(*owner),
+                    _ => None,
+                }
+            });
+            if previous.is_some() && prior.is_none() {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("unmatched or ambiguous ChartEx metadata owner".into());
+            }
+            owner.reconcile(prior, report)?;
+        }
+        Ok(())
+    }
+
+    macro_rules! owner {
+        ($ty:ty;
+         hidden[$($hidden:ident),*];
+         children[$($child:ident),*];
+         keyed[$($items:ident => $key:expr),*]) => {
+            impl ExportParts for $ty {
+                fn strip(&mut self) {
+                    $(self.$hidden = None;)*
+                    $(if let Some(child) = &mut self.$child { child.strip(); })*
+                    $(for child in &mut self.$items { child.strip(); })*
+                }
+
+                fn reconcile(
+                    &mut self,
+                    previous: Option<&Self>,
+                    report: &mut RestoreReport,
+                ) -> Result<(), crate::XlsxError> {
+                    $(hidden(
+                        &mut self.$hidden,
+                        previous.and_then(|old| old.$hidden.as_ref()),
+                        report,
+                    );)*
+                    $(optional(
+                        &mut self.$child,
+                        previous.and_then(|old| old.$child.as_ref()),
+                        report,
+                    )?;)*
+                    $(keyed(
+                        &mut self.$items,
+                        previous.map(|old| old.$items.as_slice()),
+                        $key,
+                        report,
+                    )?;)*
+                    Ok(())
+                }
+            }
+        };
+    }
+
+    // The same typed owner table drives stripping and restoration.
+    owner!(
+        ChartExSpace;
+        hidden[extensions];
+        children[
+            data_collection,
+            chart,
+            dashboard,
+            shape_properties,
+            text_properties,
+            color_mapping,
+            format_overrides
+        ];
+        keyed[]
+    );
+    owner!(
+        ChartExDataCollection;
+        hidden[extensions];
+        children[];
+        keyed[data => |v: &ChartExData| Some(v.id)]
+    );
+    owner!(
+        ChartExData;
+        hidden[extensions];
+        children[];
+        keyed[]
+    );
+    owner!(
+        ChartExChart;
+        hidden[extensions];
+        children[title, plot_area, legend];
+        keyed[]
+    );
+    owner!(
+        ChartExChartTitle;
+        hidden[extensions];
+        children[text, shape_properties, text_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExAxisTitle;
+        hidden[extensions];
+        children[text, shape_properties, text_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExAxisUnitsLabel;
+        hidden[extensions];
+        children[text, shape_properties, text_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExText;
+        hidden[];
+        children[tx_data, rich];
+        keyed[]
+    );
+    owner!(
+        ChartExAxisUnits;
+        hidden[extensions];
+        children[units_label];
+        keyed[]
+    );
+    owner!(
+        ChartExGridlines;
+        hidden[extensions];
+        children[shape_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExTickMarks;
+        hidden[extensions];
+        children[];
+        keyed[]
+    );
+    owner!(
+        ChartExTickLabels;
+        hidden[extensions];
+        children[];
+        keyed[]
+    );
+    owner!(
+        ChartExAxis;
+        hidden[extensions];
+        children[
+            title,
+            units,
+            major_gridlines,
+            minor_gridlines,
+            major_tick_marks,
+            minor_tick_marks,
+            tick_labels,
+            shape_properties,
+            text_properties
+        ];
+        keyed[]
+    );
+    owner!(
+        ChartExLayoutProperties;
+        hidden[extensions];
+        children[geography];
+        keyed[]
+    );
+    owner!(
+        ChartExDataPoint;
+        hidden[extensions];
+        children[shape_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExDataLabel;
+        hidden[extensions];
+        children[shape_properties, text_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExDataLabels;
+        hidden[extensions];
+        children[shape_properties, text_properties];
+        keyed[data_label => |v: &ChartExDataLabel| Some(v.index)]
+    );
+    owner!(
+        ChartExSeries;
+        hidden[extensions];
+        children[text, shape_properties, data_labels, layout_properties];
+        keyed[data_points => |v: &ChartExDataPoint| Some(v.index)]
+    );
+    owner!(
+        ChartExLegend;
+        hidden[extensions];
+        children[shape_properties, text_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExPlotSurface;
+        hidden[extensions];
+        children[shape_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExPlotAreaRegion;
+        hidden[extensions];
+        children[plot_surface];
+        keyed[series => series_key]
+    );
+    owner!(
+        ChartExPlotArea;
+        hidden[extensions];
+        children[plot_area_region, shape_properties];
+        keyed[axis => |v: &ChartExAxis| Some(v.id)]
+    );
+    owner!(
+        ChartExBindings;
+        hidden[extensions];
+        children[];
+        keyed[]
+    );
+    owner!(
+        ChartExArtifacts;
+        hidden[extensions];
+        children[];
+        keyed[]
+    );
+    owner!(
+        ChartExDashboard;
+        hidden[extensions];
+        children[bindings, artifacts];
+        keyed[]
+    );
+    owner!(
+        ChartExFormatOverride;
+        hidden[extensions];
+        children[shape_properties];
+        keyed[]
+    );
+    owner!(
+        ChartExFormatOverrides;
+        hidden[];
+        children[];
+        keyed[overrides => |v: &ChartExFormatOverride| Some(v.index)]
+    );
+    owner!(
+        ChartExColorMapping;
+        hidden[extensions];
+        children[];
+        keyed[]
+    );
+
+    fn series_key(series: &ChartExSeries) -> Option<(u8, String)> {
+        if let Some(id) = &series.unique_id {
+            return (!id.is_empty()).then(|| (0, id.clone()));
+        }
+        let mut axes = series.axis_ids.clone();
+        axes.sort_unstable();
+        let context = format!("{}:{axes:?}", series.layout_id.as_str());
+        series
+            .data_id
+            .as_ref()
+            .map(|id| (2, format!("{}:{context}", id.value)))
+    }
+
+    impl ExportParts for ChartExGeography {
+        fn strip(&mut self) {
+            self.geo_cache = None;
+        }
+
+        fn reconcile(
+            &mut self,
+            previous: Option<&Self>,
+            report: &mut RestoreReport,
+        ) -> Result<(), crate::XlsxError> {
+            let compatible = previous.filter(|old| {
+                self.projection_type == old.projection_type
+                    && self.viewed_region_type == old.viewed_region_type
+                    && self.culture_language == old.culture_language
+                    && self.culture_region == old.culture_region
+                    && self.attribution == old.attribution
+            });
+            if previous.is_some() && compatible.is_none() {
+                report.incompatible_owners += 1;
+                report
+                    .diagnostics
+                    .push("incompatible ChartEx geography cache owner".into());
+            }
+            hidden(
+                &mut self.geo_cache,
+                compatible.and_then(|old| old.geo_cache.as_ref()),
+                report,
+            );
+            Ok(())
+        }
+    }
+
+    impl ExportParts for ShapeProperties {
+        fn strip(&mut self) {
+            self.projection_extensions_mut();
+        }
+
+        fn reconcile(
+            &mut self,
+            previous: Option<&Self>,
+            report: &mut RestoreReport,
+        ) -> Result<(), crate::XlsxError> {
+            super::record_supplied_extension(self.extensions().is_some(), "ChartEx spPr", report);
+            match previous {
+                Some(previous) => report.restored_owners += self.restore_export_parts(previous),
+                None => {
+                    self.projection_extensions_mut();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl ExportParts for TextProperties {
+        fn strip(&mut self) {
+            self.strip_export_parts();
+        }
+
+        fn reconcile(
+            &mut self,
+            previous: Option<&Self>,
+            report: &mut RestoreReport,
+        ) -> Result<(), crate::XlsxError> {
+            self.strip_export_parts();
+            if let Some(previous) = previous {
+                if self.projected_structure_matches(previous) {
+                    report.restored_owners += self.restore_export_parts(previous)?;
+                } else {
+                    report.incompatible_owners += 1;
+                    report
+                        .diagnostics
+                        .push("replaced ChartEx text retains no previous text supplements".into());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl ExportParts for ChartExTextData {
+        fn strip(&mut self) {
+            if let Some(formula) = self.formula() {
+                *self = Self::reference(formula.clone());
+            }
+        }
+
+        fn reconcile(
+            &mut self,
+            previous: Option<&Self>,
+            report: &mut RestoreReport,
+        ) -> Result<(), crate::XlsxError> {
+            if let Some(formula) = self.formula() {
+                let formula = formula.clone();
+                if let Some(previous) = previous.filter(|previous| {
+                    previous.formula().is_some_and(|old| {
+                        old.text() == formula.text() && old.direction() == formula.direction()
+                    })
+                }) {
+                    let mut restored = previous.clone();
+                    restored.set_formula(formula);
+                    *self = restored;
+                    report.restored_owners += 1;
+                } else {
+                    *self = Self::reference(formula);
+                }
+            }
+            Ok(())
+        }
+    }
 }

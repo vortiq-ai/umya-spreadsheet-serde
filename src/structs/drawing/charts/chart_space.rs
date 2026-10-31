@@ -64,6 +64,22 @@ struct ChartSpaceParts {
 }
 
 impl ChartSpace {
+    pub(crate) fn visit_shapes(&self, visit: &mut dyn FnMut(&ShapeProperties)) {
+        super::chart_reference_roles::visit_shapes(self, visit);
+    }
+
+    pub(crate) fn has_picture_fills(&self) -> bool {
+        let mut present = false;
+        super::chart_reference_roles::visit_shapes(self, &mut |shape| {
+            present |= shape.blip_fill().is_some();
+        });
+        present
+    }
+
+    pub(crate) fn visit_shapes_mut(&mut self, visit: &mut dyn FnMut(&mut ShapeProperties)) {
+        super::chart_reference_roles::visit_shapes_mut(self, visit);
+    }
+
     #[must_use]
     pub fn extensions(&self) -> Option<&super::ExtensionList> {
         self.parts.as_deref().map(|parts| &parts.extensions)

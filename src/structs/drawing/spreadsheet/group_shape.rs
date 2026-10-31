@@ -24,12 +24,149 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct GroupShape {
     non_visual_group_shape_properties: NonVisualGroupShapeProperties,
     group_shape_properties:            GroupShapeProperties,
     content:                           Vec<super::DrawingObject>,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for GroupShape {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = GroupShape;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("GroupShape")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Ok(GroupShape {
+                    non_visual_group_shape_properties: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                    group_shape_properties:            seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?,
+                    content:                           seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut non_visual_group_shape_properties = None;
+                let mut group_shape_properties = None;
+                let mut content = None;
+                let mut picture_collection = None;
+                let mut shape_collection = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "non_visual_group_shape_properties" => {
+                            if non_visual_group_shape_properties.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "non_visual_group_shape_properties",
+                                ));
+                            }
+                            non_visual_group_shape_properties = Some(map.next_value()?);
+                        }
+                        "group_shape_properties" => {
+                            if group_shape_properties.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "group_shape_properties",
+                                ));
+                            }
+                            group_shape_properties = Some(map.next_value()?);
+                        }
+                        "content" => {
+                            if content.is_some() {
+                                return Err(serde::de::Error::duplicate_field("content"));
+                            }
+                            content = Some(map.next_value()?);
+                        }
+                        "picture_collection" => {
+                            if picture_collection.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "picture_collection",
+                                ));
+                            }
+                            picture_collection = Some(map.next_value()?);
+                        }
+                        "shape_collection" => {
+                            if shape_collection.is_some() {
+                                return Err(serde::de::Error::duplicate_field("shape_collection"));
+                            }
+                            shape_collection = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(
+                                &key,
+                                &[
+                                    "non_visual_group_shape_properties",
+                                    "group_shape_properties",
+                                    "content",
+                                    "picture_collection",
+                                    "shape_collection",
+                                ],
+                            ));
+                        }
+                    }
+                }
+                let legacy = picture_collection.is_some() || shape_collection.is_some();
+                if content.is_some() && legacy {
+                    return Err(serde::de::Error::custom(
+                        "content and legacy collections are mutually exclusive",
+                    ));
+                }
+                let content = if legacy {
+                    let pictures: Vec<Picture> = picture_collection
+                        .ok_or_else(|| serde::de::Error::missing_field("picture_collection"))?;
+                    let shapes: Vec<Shape> = shape_collection
+                        .ok_or_else(|| serde::de::Error::missing_field("shape_collection"))?;
+                    // Match the legacy writer's pictures-then-shapes emission
+                    // order.
+                    pictures
+                        .into_iter()
+                        .map(|value| super::DrawingObject::Picture(Box::new(value)))
+                        .chain(
+                            shapes
+                                .into_iter()
+                                .map(|value| super::DrawingObject::Shape(Box::new(value))),
+                        )
+                        .collect()
+                } else {
+                    content.ok_or_else(|| serde::de::Error::missing_field("content"))?
+                };
+                Ok(GroupShape {
+                    non_visual_group_shape_properties: non_visual_group_shape_properties
+                        .ok_or_else(|| {
+                            serde::de::Error::missing_field("non_visual_group_shape_properties")
+                        })?,
+                    group_shape_properties: group_shape_properties
+                        .ok_or_else(|| serde::de::Error::missing_field("group_shape_properties"))?,
+                    content,
+                })
+            }
+        }
+        deserializer.deserialize_struct(
+            "GroupShape",
+            &[
+                "non_visual_group_shape_properties",
+                "group_shape_properties",
+                "content",
+            ],
+            Visitor,
+        )
+    }
 }
 
 impl GroupShape {

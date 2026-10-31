@@ -23,14 +23,13 @@ use crate::writer::driver::{
     write_start_tag,
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct GradientStop {
     #[cfg_attr(feature = "serde", serde(default))]
     hsl_color:                  Option<Box<HslColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
     rgb_color_model_percentage: Option<Box<RgbColorModelPercentage>>,
-    #[cfg_attr(feature = "serde", serde(deserialize_with = "deserialize_position"))]
     pub(super) position:        Box<str>,
     scheme_color:               Option<Box<SchemeColor>>,
     rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
@@ -55,13 +54,170 @@ impl Default for GradientStop {
 }
 
 #[cfg(feature = "serde")]
-fn deserialize_position<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Box<str>, D::Error> {
-    let value: Box<str> = serde::Deserialize::deserialize(deserializer)?;
-    super::color_transform::validate_positive_fixed_percentage(&value)
-        .map_err(serde::de::Error::custom)?;
-    Ok(value)
+impl<'de> serde::Deserialize<'de> for GradientStop {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "hsl_color",
+            "rgb_color_model_percentage",
+            "position",
+            "scheme_color",
+            "rgb_color_model_hex",
+            "preset_color",
+            "system_color",
+        ];
+        struct MapPosition;
+        impl<'de> serde::de::DeserializeSeed<'de> for MapPosition {
+            type Value = Box<str>;
+
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                struct PositionVisitor;
+                impl serde::de::Visitor<'_> for PositionVisitor {
+                    type Value = Box<str>;
+
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a gradient percentage string or legacy integer")
+                    }
+
+                    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                        super::color_transform::validate_positive_fixed_percentage(value)
+                            .map_err(E::custom)?;
+                        Ok(value.into())
+                    }
+
+                    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                        self.visit_str(&value.to_string())
+                    }
+
+                    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                        self.visit_str(&value.to_string())
+                    }
+                }
+                // Only map values use self-describing token dispatch. The
+                // sequence visitor below reads the current string field.
+                deserializer.deserialize_any(PositionVisitor)
+            }
+        }
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = GradientStop;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("GradientStop")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let hsl_color = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let rgb_color_model_percentage = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let position: Box<str> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
+                super::color_transform::validate_positive_fixed_percentage(&position)
+                    .map_err(serde::de::Error::custom)?;
+                Ok(GradientStop {
+                    hsl_color,
+                    rgb_color_model_percentage,
+                    position,
+                    scheme_color: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?,
+                    rgb_color_model_hex: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?,
+                    preset_color: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?,
+                    system_color: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut hsl_color = None;
+                let mut rgb_color_model_percentage = None;
+                let mut position = None;
+                let mut scheme_color = None;
+                let mut rgb_color_model_hex = None;
+                let mut preset_color = None;
+                let mut system_color = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "hsl_color" => {
+                            if hsl_color.is_some() {
+                                return Err(serde::de::Error::duplicate_field("hsl_color"));
+                            }
+                            hsl_color = Some(map.next_value()?);
+                        }
+                        "rgb_color_model_percentage" => {
+                            if rgb_color_model_percentage.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "rgb_color_model_percentage",
+                                ));
+                            }
+                            rgb_color_model_percentage = Some(map.next_value()?);
+                        }
+                        "position" => {
+                            if position.is_some() {
+                                return Err(serde::de::Error::duplicate_field("position"));
+                            }
+                            position = Some(map.next_value_seed(MapPosition)?);
+                        }
+                        "scheme_color" => {
+                            if scheme_color.is_some() {
+                                return Err(serde::de::Error::duplicate_field("scheme_color"));
+                            }
+                            scheme_color = Some(map.next_value()?);
+                        }
+                        "rgb_color_model_hex" => {
+                            if rgb_color_model_hex.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "rgb_color_model_hex",
+                                ));
+                            }
+                            rgb_color_model_hex = Some(map.next_value()?);
+                        }
+                        "preset_color" => {
+                            if preset_color.is_some() {
+                                return Err(serde::de::Error::duplicate_field("preset_color"));
+                            }
+                            preset_color = Some(map.next_value()?);
+                        }
+                        "system_color" => {
+                            if system_color.is_some() {
+                                return Err(serde::de::Error::duplicate_field("system_color"));
+                            }
+                            system_color = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                Ok(GradientStop {
+                    hsl_color:                  hsl_color.unwrap_or(None),
+                    rgb_color_model_percentage: rgb_color_model_percentage.unwrap_or(None),
+                    position:                   position
+                        .ok_or_else(|| serde::de::Error::missing_field("position"))?,
+                    scheme_color:               scheme_color.unwrap_or(None),
+                    rgb_color_model_hex:        rgb_color_model_hex.unwrap_or(None),
+                    preset_color:               preset_color.unwrap_or(None),
+                    system_color:               system_color.unwrap_or(None),
+                })
+            }
+        }
+        deserializer.deserialize_struct("GradientStop", FIELDS, Visitor)
+    }
 }
 
 impl GradientStop {

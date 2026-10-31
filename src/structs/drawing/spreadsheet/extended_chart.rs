@@ -99,11 +99,32 @@ pub struct ExtendedChartFrame {
     macro_name:       Option<String>,
     chart_space:      ChartExSpace,
     source_part:      Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    style_bundle:     Option<ChartExStyleBundle>,
 }
+
+/// The style and colour parts a native extended chart owned in the package it
+/// was read from. They travel with the frame, so a chart moved or copied to
+/// another sheet or workbook is written with its own copies of these parts.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub(crate) struct ChartExStyleBundle {
+    pub(crate) style:  Option<Vec<u8>>,
+    pub(crate) colors: Option<Vec<u8>>,
+}
+
 impl ExtendedChartFrame {
     #[must_use]
     pub fn source_part(&self) -> Option<&str> {
         self.source_part.as_deref()
+    }
+
+    pub(crate) fn style_bundle(&self) -> Option<&ChartExStyleBundle> {
+        self.style_bundle.as_ref()
+    }
+
+    pub(crate) fn bind_style_bundle(&mut self, bundle: ChartExStyleBundle) {
+        self.style_bundle = Some(bundle);
     }
 
     pub(crate) fn clear_source_part(&mut self) {
@@ -264,8 +285,19 @@ pub struct ExtendedChart {
 impl ExtendedChart {
     #[must_use]
     pub fn new(anchor: DrawingAnchor, chart_space: ChartExSpace) -> Self {
+        // Excel wraps every native chart frame in a compatibility choice that
+        // requires the namespace of the chart kind; no fallback shape is
+        // invented, which markup compatibility permits.
+        let compatibility = chart_space
+            .insertion_namespace()
+            .map(|(prefix, uri)| ExtendedChartCompatibility {
+                required_namespaces: vec![(prefix.to_owned(), uri.to_owned())],
+                ..ExtendedChartCompatibility::default()
+            })
+            .map(Box::new);
         let mut value = Self {
             anchor,
+            compatibility,
             ..Self::default()
         };
         value.frame.chart_space = chart_space;
@@ -737,6 +769,7 @@ impl ExtendedChartFrame {
                 .map(str::to_owned),
             chart_space,
             source_part: Some(relationship.raw_file().file_target().to_owned()),
+            style_bundle: None,
         }))
     }
 }

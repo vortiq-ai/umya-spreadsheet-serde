@@ -30,6 +30,7 @@ use crate::{
         XR10_NS,
     },
     structs::{
+        SlicerListKind,
         Workbook,
         WriterManager,
     },
@@ -168,6 +169,9 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     // pivotCaches
     let pivot_cache_definition_collection = wb.pivot_caches();
     if !pivot_cache_definition_collection.is_empty() {
+        if wb.cell_metadata.is_some() {
+            index += 1;
+        }
         write_start_tag(&mut writer, "pivotCaches", vec![], false);
         for (_, val2, _) in pivot_cache_definition_collection {
             let r_id = format!("rId{index}");
@@ -181,6 +185,23 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         }
         write_end_tag(&mut writer, "pivotCaches");
     }
+
+    // extLst: slicer cache lists and the other source extensions
+    let mut pivot_ids = Vec::new();
+    let mut table_ids = Vec::new();
+    for (kind, id) in super::workbook_rels::slicer_cache_relationship_ids(wb) {
+        match kind {
+            SlicerListKind::Pivot => pivot_ids.push(id),
+            SlicerListKind::Table => table_ids.push(id),
+        }
+    }
+    crate::structs::slicer::write_workbook_extensions(
+        &mut writer,
+        &wb.extensions,
+        &pivot_ids,
+        &table_ids,
+        &super::workbook_rels::carried_relationship_ids(wb),
+    )?;
 
     write_end_tag(&mut writer, "workbook");
 

@@ -25,20 +25,66 @@ use crate::{
         PKG_WORKBOOK_RELS,
         REL_NS,
         SHARED_STRINGS_NS,
+        SLICER_CACHE_REL_NS,
         STYLES_NS,
         THEME_NS,
         VBA_PROJECT_NS,
         WORKSHEET_NS,
     },
     structs::{
+        SlicerListKind,
         Workbook,
+        WorkbookExtension,
         WriterManager,
     },
 };
 
+/// Relationship ids (and their kinds) of the workbook slicer caches, in cache
+/// order. The caches follow the pivot cache relationships, so the workbook XML
+/// can reference them by the numbers computed here.
+pub(crate) fn slicer_cache_relationship_ids(wb: &Workbook) -> Vec<(SlicerListKind, String)> {
+    let first = 1
+        + wb.sheet_collection_no_check().len()
+        + usize::from(wb.cell_metadata.is_some())
+        + wb.pivot_caches().len();
+    wb.slicer_caches()
+        .iter()
+        .enumerate()
+        .map(|(offset, cache)| {
+            (
+                SlicerListKind::of_cache(cache),
+                format!("rId{}", first + offset),
+            )
+        })
+        .collect()
+}
+
+/// Relationship ids of the parts the preserved workbook extensions carry, one
+/// list per extension in order. They follow the slicer cache relationships.
+pub(crate) fn carried_relationship_ids(wb: &Workbook) -> Vec<Vec<String>> {
+    let mut next = 1
+        + wb.sheet_collection_no_check().len()
+        + usize::from(wb.cell_metadata.is_some())
+        + wb.pivot_caches().len()
+        + wb.slicer_caches().len();
+    let mut lists = Vec::new();
+    for entry in &wb.extensions {
+        if let WorkbookExtension::Other(extension) = entry {
+            lists.push(
+                (next..next + extension.parts.len())
+                    .map(|id| format!("rId{id}"))
+                    .collect(),
+            );
+            next += extension.parts.len();
+        }
+    }
+    lists
+}
+
 pub(crate) fn write<W: io::Seek + io::Write>(
     wb: &Workbook,
     has_shared_string_table: bool,
+    carried: &[super::slicer::CarriedRelationship],
     writer_mng: &mut WriterManager<W>,
 ) -> Result<(), XlsxError> {
     let is_light = writer_mng.get_is_light();
@@ -67,16 +113,12 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         index += 1;
     }
 
-    if let Some(metadata) = &wb.cell_metadata {
-        let target = metadata.path.strip_prefix("xl/").map_or_else(
-            || format!("/{}", metadata.path.trim_start_matches('/')),
-            str::to_owned,
-        );
+    if wb.cell_metadata.is_some() {
         write_relationship(
             &mut writer,
             &index.to_string(),
             crate::structs::cell_metadata::REL,
-            &target,
+            "metadata.xml",
             "",
         );
         index += 1;
@@ -90,6 +132,34 @@ pub(crate) fn write<W: io::Seek + io::Write>(
             PIVOT_CACHE_DEF_NS,
             &pivot_cache_definition,
             "",
+        );
+        index += 1;
+    }
+
+    // relationships slicer caches
+    for (offset, _) in wb.slicer_caches().iter().enumerate() {
+        write_relationship(
+            &mut writer,
+            &index.to_string(),
+            SLICER_CACHE_REL_NS,
+            &super::slicer::cache_target(offset),
+            "",
+        );
+        index += 1;
+    }
+
+    // relationships of the preserved extension parts
+    for relationship in carried {
+        write_relationship(
+            &mut writer,
+            &index.to_string(),
+            &relationship.relationship_type,
+            &relationship.target,
+            if relationship.external {
+                "External"
+            } else {
+                ""
+            },
         );
         index += 1;
     }
@@ -151,6 +221,17 @@ pub(crate) fn write<W: io::Seek + io::Write>(
             &index.to_string(),
             PERSION_NS,
             "persons/person.xml",
+            "",
+        );
+        index += 1;
+    }
+
+    if wb.connections.is_some() {
+        write_relationship(
+            &mut writer,
+            &index.to_string(),
+            crate::structs::cell_metadata::CONNECTIONS_REL,
+            "connections.xml",
             "",
         );
     }

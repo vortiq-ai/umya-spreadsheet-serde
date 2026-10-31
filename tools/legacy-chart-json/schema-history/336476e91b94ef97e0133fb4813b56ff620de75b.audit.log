@@ -1,0 +1,7 @@
+# audited opaque Chart serde schema (source superset)
+# revision 336476e91b94ef97e0133fb4813b56ff620de75b
+# audit scope: complete structs/**/*.rs source superset (including private and nested native owners)
+# serde audit: only deserialization default attributes; no skip/rename or manual Serialize implementations
+# regeneration required for any Cargo source patch or revision change; canonical compatibility must be reviewed
+# files 502; serde_types 488; fields 1361; variants 560; serde_skip_attributes 0
+# serde_default_attributes 3

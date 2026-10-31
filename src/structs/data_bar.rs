@@ -10,11 +10,17 @@ use quick_xml::{
 };
 
 use super::{
+    BooleanValue,
     Color,
     ConditionalFormatValueObject,
+    StringValue,
 };
 use crate::{
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        get_attribute,
+        set_string_from_xml,
+        xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -26,6 +32,9 @@ use crate::{
 pub struct DataBar {
     cfvo_collection:  Vec<ConditionalFormatValueObject>,
     color_collection: Vec<Color>,
+    min_length:       StringValue,
+    max_length:       StringValue,
+    show_value:       BooleanValue,
 }
 
 impl DataBar {
@@ -79,11 +88,57 @@ impl DataBar {
         self
     }
 
+    /// The `minLength` attribute (a percentage of the cell width).
+    #[inline]
+    #[must_use]
+    pub fn min_length(&self) -> Option<&str> {
+        self.min_length
+            .has_value()
+            .then(|| self.min_length.value_str())
+    }
+
+    #[inline]
+    pub fn set_min_length<S: Into<String>>(&mut self, value: S) -> &mut Self {
+        self.min_length.set_value(value);
+        self
+    }
+
+    /// The `maxLength` attribute (a percentage of the cell width).
+    #[inline]
+    #[must_use]
+    pub fn max_length(&self) -> Option<&str> {
+        self.max_length
+            .has_value()
+            .then(|| self.max_length.value_str())
+    }
+
+    #[inline]
+    pub fn set_max_length<S: Into<String>>(&mut self, value: S) -> &mut Self {
+        self.max_length.set_value(value);
+        self
+    }
+
+    /// The `showValue` attribute.
+    #[inline]
+    #[must_use]
+    pub fn show_value(&self) -> Option<bool> {
+        self.show_value.has_value().then(|| self.show_value.value())
+    }
+
+    #[inline]
+    pub fn set_show_value(&mut self, value: bool) -> &mut Self {
+        self.show_value.set_value(value);
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) {
+        set_string_from_xml!(self, e, min_length, "minLength");
+        set_string_from_xml!(self, e, max_length, "maxLength");
+        set_string_from_xml!(self, e, show_value, "showValue");
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
@@ -113,7 +168,17 @@ impl DataBar {
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
         // dataBar
-        write_start_tag(writer, "dataBar", vec![], false);
+        let mut attributes: crate::structs::AttrCollection = Vec::new();
+        if self.min_length.has_value() {
+            attributes.push(("minLength", self.min_length.value_str()).into());
+        }
+        if self.max_length.has_value() {
+            attributes.push(("maxLength", self.max_length.value_str()).into());
+        }
+        if self.show_value.has_value() {
+            attributes.push(("showValue", self.show_value.value_string()).into());
+        }
+        write_start_tag(writer, "dataBar", attributes, false);
 
         // cfvo
         for v in &self.cfvo_collection {

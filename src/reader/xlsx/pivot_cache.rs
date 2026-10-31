@@ -1,8 +1,3 @@
-use quick_xml::{
-    Reader,
-    events::Event,
-};
-
 use crate::{
     PivotTable,
     XlsxError,
@@ -17,30 +12,8 @@ pub(crate) fn read(
     pivot_table: &mut PivotTable,
     raw_cache_records: Option<&RawFile>,
 ) -> Result<(), XlsxError> {
-    let data = std::io::Cursor::new(raw_file.file_data());
-    let mut reader = Reader::from_reader(data);
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
-    let mut pivot_cache_def = PivotCacheDefinition::default();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                if e.name().into_inner() == b"pivotCacheDefinition" {
-                    pivot_cache_def.set_attributes(&mut reader, e)?;
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                if e.name().into_inner() == b"pivotCacheDefinition" {
-                    break;
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(e.into()),
-            _ => (),
-        }
-        buf.clear();
-    }
+    let mut pivot_cache_def =
+        PivotCacheDefinition::from_xml(raw_file.file_data()).map_err(crate::xml::xml_error)?;
 
     // Preserve raw cache records if available from the template.
     if let Some(records_file) = raw_cache_records {

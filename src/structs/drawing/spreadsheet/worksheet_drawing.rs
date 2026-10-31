@@ -21,6 +21,7 @@ use super::{
     OneCellAnchor,
     Picture,
     Shape,
+    SlicerFrame,
     TwoCellAnchor,
 };
 use crate::{
@@ -62,7 +63,11 @@ pub struct WorksheetDrawing {
     #[cfg_attr(feature = "serde", serde(default))]
     absolute_anchors:           Vec<AbsoluteAnchor>,
     #[cfg_attr(feature = "serde", serde(default))]
+    slicer_frames:              Vec<SlicerFrame>,
+    #[cfg_attr(feature = "serde", serde(default))]
     object_order:               Vec<DrawingObjectKey>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    preserved_objects:          Vec<OpaqueElement>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -74,7 +79,9 @@ pub enum DrawingObjectKey {
     TwoCell(u32),
     Absolute(u32),
     ExtendedChart(u32),
+    Slicer(u32),
     Ole(u32),
+    Preserved(u32),
 }
 impl DrawingObjectKey {
     fn id(&self) -> u32 {
@@ -85,7 +92,9 @@ impl DrawingObjectKey {
             | Self::TwoCell(id)
             | Self::Absolute(id)
             | Self::ExtendedChart(id)
-            | Self::Ole(id) => *id,
+            | Self::Slicer(id)
+            | Self::Ole(id)
+            | Self::Preserved(id) => *id,
         }
     }
 }
@@ -348,7 +357,9 @@ impl WorksheetDrawing {
             || !self.one_cell_anchor_collection.is_empty()
             || !self.two_cell_anchor_collection.is_empty()
             || !self.extended_charts.is_empty()
+            || !self.slicer_frames.is_empty()
             || !self.absolute_anchors.is_empty()
+            || !self.preserved_objects.is_empty()
     }
 
     #[must_use]
@@ -552,6 +563,18 @@ impl WorksheetDrawing {
                 value.write_to(writer, rel_list)?;
             }
         }
+        for value in &self.slicer_frames {
+            if !emitted.contains(&DrawingObjectKey::Slicer(value.frame_id())) {
+                value.write_to(writer, rel_list)?;
+            }
+        }
+        for (index, value) in self.preserved_objects.iter().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|error| super::extended_chart::drawing_error(error.to_string()))?;
+            if !emitted.contains(&DrawingObjectKey::Preserved(index)) {
+                write_preserved(value, writer, rel_list)?;
+            }
+        }
         for (ole_object, shape_id) in ole_objects.ole_object().iter().zip(shape_ids) {
             let key = two_identity(ole_object.two_cell_anchor()).map(DrawingObjectKey::Ole);
             if !key.as_ref().is_some_and(|key| emitted.contains(key)) {
@@ -574,6 +597,14 @@ impl AdjustmentCoordinate for WorksheetDrawing {
     ) {
         for chart in &mut self.extended_charts {
             chart.adjustment_insert_coordinate(
+                root_col_num,
+                offset_col_num,
+                root_row_num,
+                offset_row_num,
+            );
+        }
+        for frame in &mut self.slicer_frames {
+            frame.adjustment_insert_coordinate(
                 root_col_num,
                 offset_col_num,
                 root_row_num,
@@ -623,6 +654,14 @@ impl AdjustmentCoordinate for WorksheetDrawing {
     ) {
         for chart in &mut self.extended_charts {
             chart.adjustment_remove_coordinate(
+                root_col_num,
+                offset_col_num,
+                root_row_num,
+                offset_row_num,
+            );
+        }
+        for frame in &mut self.slicer_frames {
+            frame.adjustment_remove_coordinate(
                 root_col_num,
                 offset_col_num,
                 root_row_num,
@@ -744,6 +783,14 @@ fn one_identity(value: &OneCellAnchor) -> Option<u32> {
             })
         })
         .or_else(|| {
+            value.connection_shape().map(|value| {
+                value
+                    .non_visual_connection_shape_properties()
+                    .non_visual_drawing_properties()
+                    .id()
+            })
+        })
+        .or_else(|| {
             value.picture().map(|value| {
                 value
                     .non_visual_picture_properties()
@@ -807,7 +854,17 @@ fn unique<T>(mut values: impl Iterator<Item = T>) -> Result<Option<T>, XlsxError
 impl WorksheetDrawing {
     fn available_object_id(&self) -> u32 {
         let mut ids = HashSet::new();
-        ids.extend(self.object_order.iter().map(DrawingObjectKey::id));
+        ids.extend(
+            self.object_order
+                .iter()
+                .filter(|key| !matches!(key, DrawingObjectKey::Preserved(_)))
+                .map(DrawingObjectKey::id),
+        );
+        for value in &self.preserved_objects {
+            preserved_ids(value, &mut |id| {
+                ids.insert(id);
+            });
+        }
         self.visit_drawing_properties(&mut |properties| {
             ids.insert(properties.id());
         });
@@ -825,6 +882,30 @@ impl WorksheetDrawing {
 
     pub fn extended_charts_mut(&mut self) -> &mut Vec<ExtendedChart> {
         &mut self.extended_charts
+    }
+
+    #[must_use]
+    pub fn slicer_frames(&self) -> &[SlicerFrame] {
+        &self.slicer_frames
+    }
+
+    pub fn slicer_frames_mut(&mut self) -> &mut Vec<SlicerFrame> {
+        &mut self.slicer_frames
+    }
+
+    pub fn add_slicer_frame(&mut self, mut value: SlicerFrame) -> &mut Self {
+        if !value
+            .frame_properties()
+            .non_visual_drawing_properties()
+            .has_id()
+        {
+            value
+                .frame_properties_mut()
+                .non_visual_drawing_properties_mut()
+                .set_id(self.available_object_id());
+        }
+        self.slicer_frames.push(value);
+        self
     }
 
     pub fn add_extended_chart(&mut self, mut value: ExtendedChart) -> &mut Self {
@@ -868,10 +949,32 @@ impl WorksheetDrawing {
     pub fn validate_object_order(&self) -> Result<(), XlsxError> {
         let mut ids = HashSet::new();
         for value in &self.object_order {
-            if !ids.insert(value.id()) {
+            if !matches!(value, DrawingObjectKey::Preserved(_)) && !ids.insert(value.id()) {
                 return Err(super::extended_chart::drawing_error(
                     "duplicate active drawing owner id",
                 ));
+            }
+        }
+        let mut preserved_keys = HashSet::new();
+        for key in &self.object_order {
+            if let DrawingObjectKey::Preserved(index) = key {
+                if !preserved_keys.insert(index)
+                    || self.preserved_objects.get(*index as usize).is_none()
+                {
+                    return Err(super::extended_chart::drawing_error(
+                        "invalid preserved drawing owner",
+                    ));
+                }
+            }
+        }
+        for value in &self.preserved_objects {
+            validate_preserved_id_attributes(value)?;
+            for id in preserved_owner_ids(value)? {
+                if !ids.insert(id) {
+                    return Err(super::extended_chart::drawing_error(
+                        "duplicate active drawing owner id",
+                    ));
+                }
             }
         }
         let mut frame_keys = HashSet::new();
@@ -914,6 +1017,13 @@ impl WorksheetDrawing {
         let begin = rels.len();
         let found =
             match key {
+                DrawingObjectKey::Preserved(index) => {
+                    let value = self.preserved_objects.get(*index as usize).ok_or_else(|| {
+                        super::extended_chart::drawing_error("missing preserved drawing owner")
+                    })?;
+                    write_preserved(value, writer, rels)?;
+                    true
+                }
                 DrawingObjectKey::Ole(id) => {
                     let Some((index, value)) =
                         unique(ole_objects.ole_object().iter().enumerate().filter(
@@ -999,6 +1109,18 @@ impl WorksheetDrawing {
                         false
                     }
                 }
+                DrawingObjectKey::Slicer(id) => {
+                    if let Some(value) = unique(
+                        self.slicer_frames
+                            .iter()
+                            .filter(|value| value.frame_id() == *id),
+                    )? {
+                        value.write_to(writer, rels)?;
+                        true
+                    } else {
+                        false
+                    }
+                }
             };
         if matches!(
             key,
@@ -1036,9 +1158,20 @@ impl WorksheetDrawing {
         if !root.name.is(SHEET_DRAWING_NS, "wsDr") {
             return Err(drawing_error("invalid worksheet drawing namespace"));
         }
-        let children = direct_children(&root).map_err(drawing_error)?;
+        let mut children: std::collections::VecDeque<_> =
+            direct_children(&root).map_err(drawing_error)?.into();
         let mut ole_identities = HashSet::new();
-        for child in children {
+        while let Some(mut child) = children.pop_front() {
+            if child.name.is(COMPATIBILITY_NS, "AlternateContent") && !legacy_alternate(&child)? {
+                if let Some(selected) = supported_choice(&child)? {
+                    for selected in selected.into_iter().rev() {
+                        children.push_front(selected);
+                    }
+                } else {
+                    self.preserve_object(child)?;
+                }
+                continue;
+            }
             if child.name.is(COMPATIBILITY_NS, "AlternateContent") {
                 let choices = direct_children(&child).map_err(drawing_error)?;
                 let valid_fallback = choices.len() == 2
@@ -1119,6 +1252,19 @@ impl WorksheetDrawing {
                 "oneCellAnchor" | "twoCellAnchor" | "absoluteAnchor"
             ) {
                 return Err(drawing_error("unsupported worksheet drawing child"));
+            }
+            if let Some(frame) = SlicerFrame::from_anchor(&child, session)? {
+                self.object_order
+                    .push(DrawingObjectKey::Slicer(frame.frame_id()));
+                self.slicer_frames.push(frame);
+                continue;
+            }
+            expand_anchor_choice(&mut child)?;
+            if requires_preservation(&child)? {
+                super::extended_chart::geometry(&child)?;
+                validate_preserved_anchor(&child)?;
+                self.preserve_object(child)?;
+                continue;
             }
             if let Some(chart) =
                 ExtendedChart::from_anchor(&child, relationships, session, provider)?
@@ -1262,6 +1408,12 @@ fn assign_one_identity(value: &mut OneCellAnchor, id: u32) {
             .shape_mut()
             .unwrap()
             .non_visual_shape_properties_mut()
+            .non_visual_drawing_properties_mut()
+    } else if value.connection_shape().is_some() {
+        value
+            .connection_shape_mut()
+            .unwrap()
+            .non_visual_connection_shape_properties_mut()
             .non_visual_drawing_properties_mut()
     } else if value.picture().is_some() {
         value
@@ -1509,6 +1661,13 @@ fn one_properties(value: &OneCellAnchor, visit: &mut dyn FnMut(&NonVisualDrawing
                 .non_visual_drawing_properties(),
         );
     }
+    if let Some(value) = value.connection_shape() {
+        visit(
+            value
+                .non_visual_connection_shape_properties()
+                .non_visual_drawing_properties(),
+        );
+    }
     if let Some(value) = value.picture() {
         visit(
             value
@@ -1535,6 +1694,13 @@ fn one_properties_mut(
         visit(
             value
                 .non_visual_shape_properties_mut()
+                .non_visual_drawing_properties_mut(),
+        );
+    }
+    if let Some(value) = value.connection_shape_mut() {
+        visit(
+            value
+                .non_visual_connection_shape_properties_mut()
                 .non_visual_drawing_properties_mut(),
         );
     }
@@ -1637,6 +1803,9 @@ impl WorksheetDrawing {
         for value in &self.extended_charts {
             value.visit_properties(visit);
         }
+        for value in &self.slicer_frames {
+            value.visit_properties(visit);
+        }
         for value in &self.absolute_anchors {
             if let Some(value) = value.content() {
                 value.visit_properties(visit);
@@ -1668,6 +1837,9 @@ impl WorksheetDrawing {
         for value in &mut self.extended_charts {
             value.visit_properties_mut(visit);
         }
+        for value in &mut self.slicer_frames {
+            value.visit_properties_mut(visit);
+        }
         for value in &mut self.absolute_anchors {
             if let Some(value) = value.content_mut() {
                 value.visit_properties_mut(visit);
@@ -1676,6 +1848,9 @@ impl WorksheetDrawing {
     }
 
     pub fn visit_relationships(&self, visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str)) {
+        for value in &self.preserved_objects {
+            preserved_relationships(value, visit);
+        }
         self.visit_non_visual_relationships(visit);
         self.visit_shape_properties(&mut |value| value.visit_relationships(visit));
         self.visit_picture_blips(&mut |value| value.visit_relationships(visit));
@@ -1685,6 +1860,11 @@ impl WorksheetDrawing {
         &mut self,
         visit: &mut dyn FnMut(super::DrawingRelationshipKind, &mut String),
     ) {
+        for value in &mut self.preserved_objects {
+            preserved_relationships_mut(value, &mut |id| {
+                visit(super::DrawingRelationshipKind::Extension, id);
+            });
+        }
         self.visit_non_visual_relationships_mut(visit);
         self.visit_shape_properties_mut(&mut |value| value.visit_relationships_mut(visit));
         self.visit_picture_blips_mut(&mut |value| value.visit_relationships_mut(visit));
@@ -1706,6 +1886,12 @@ impl WorksheetDrawing {
             }
             if let Some(value) = value
                 .shape()
+                .and_then(|value| value.shape_properties().blip_fill())
+            {
+                values.push(value.blip().image());
+            }
+            if let Some(value) = value
+                .connection_shape()
                 .and_then(|value| value.shape_properties().blip_fill())
             {
                 values.push(value.blip().image());
@@ -1738,12 +1924,16 @@ impl WorksheetDrawing {
                 }
             }
         }
+        values.retain(|value| !value.image_name().is_empty());
         values
     }
 }
 
 fn one_shape_properties(value: &OneCellAnchor, visit: &mut dyn FnMut(&super::ShapeProperties)) {
     if let Some(value) = value.shape() {
+        visit(value.shape_properties());
+    }
+    if let Some(value) = value.connection_shape() {
         visit(value.shape_properties());
     }
     if let Some(value) = value.picture() {
@@ -1760,6 +1950,9 @@ fn one_shape_properties_mut(
     visit: &mut dyn FnMut(&mut super::ShapeProperties),
 ) {
     if let Some(value) = value.shape_mut() {
+        visit(value.shape_properties_mut());
+    }
+    if let Some(value) = value.connection_shape_mut() {
         visit(value.shape_properties_mut());
     }
     if let Some(value) = value.picture_mut() {
@@ -2036,6 +2229,9 @@ impl WorksheetDrawing {
         for value in &self.extended_charts {
             value.visit_non_visual_relationships(visit);
         }
+        for value in &self.slicer_frames {
+            value.visit_non_visual_relationships(visit);
+        }
     }
 
     fn visit_non_visual_relationships_mut(
@@ -2069,5 +2265,501 @@ impl WorksheetDrawing {
         for value in &mut self.extended_charts {
             value.visit_non_visual_relationships_mut(visit);
         }
+        for value in &mut self.slicer_frames {
+            value.visit_non_visual_relationships_mut(visit);
+        }
     }
+}
+impl WorksheetDrawing {
+    fn preserve_object(&mut self, value: OpaqueElement) -> Result<(), XlsxError> {
+        let index = u32::try_from(self.preserved_objects.len())
+            .map_err(|error| super::extended_chart::drawing_error(error.to_string()))?;
+        self.preserved_objects.push(value);
+        self.object_order.push(DrawingObjectKey::Preserved(index));
+        Ok(())
+    }
+}
+
+fn preserved_relationships(
+    value: &OpaqueElement,
+    visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str),
+) {
+    let mut attributes = |attributes: &[(crate::drawing::charts::QName, String)]| {
+        for (name, id) in attributes {
+            if name.namespace_uri == crate::helper::const_str::REL_OFC_NS {
+                visit(super::DrawingRelationshipKind::Extension, id);
+            }
+        }
+    };
+    attributes(&value.attributes);
+    for token in &value.children {
+        if let crate::drawing::charts::OpaqueToken::Start(start) = token {
+            attributes(&start.attributes);
+        }
+    }
+}
+
+fn preserved_relationships_mut(value: &mut OpaqueElement, visit: &mut dyn FnMut(&mut String)) {
+    let mut attributes = |attributes: &mut [(crate::drawing::charts::QName, String)]| {
+        for (name, id) in attributes {
+            if name.namespace_uri == crate::helper::const_str::REL_OFC_NS {
+                visit(id);
+            }
+        }
+    };
+    attributes(&mut value.attributes);
+    for token in &mut value.children {
+        if let crate::drawing::charts::OpaqueToken::Start(start) = token {
+            attributes(&mut start.attributes);
+        }
+    }
+}
+
+fn write_preserved(
+    value: &OpaqueElement,
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    relationships: &[(String, String)],
+) -> Result<(), XlsxError> {
+    let mut value = value.clone();
+    preserved_relationships_mut(&mut value, &mut |id| {
+        super::rebind_relationship_id(id, relationships);
+    });
+    value
+        .write_to(writer, &NamespaceScope::default())
+        .map_err(super::extended_chart::drawing_error)
+}
+
+fn preserved_ids(value: &OpaqueElement, visit: &mut dyn FnMut(u32)) {
+    for token in &value.children {
+        if let crate::drawing::charts::OpaqueToken::Start(start) = token {
+            if start.name.is(SHEET_DRAWING_NS, "cNvPr") {
+                for (name, value) in &start.attributes {
+                    if name.is("", "id") {
+                        if let Ok(id) = value.parse() {
+                            visit(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn preserved_owner_ids(value: &OpaqueElement) -> Result<Vec<u32>, XlsxError> {
+    use super::extended_chart::{
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    let children = direct_children(value).map_err(drawing_error)?;
+    if value.name.is(COMPATIBILITY_NS, "AlternateContent") {
+        let active = if let Some(selected) = supported_choice(value)? {
+            selected
+        } else if let Some(fallback) = children
+            .iter()
+            .find(|child| child.name.is(COMPATIBILITY_NS, "Fallback"))
+        {
+            direct_children(fallback).map_err(drawing_error)?
+        } else {
+            Vec::new()
+        };
+        let mut ids = Vec::new();
+        for child in active {
+            ids.extend(preserved_owner_ids(&child)?);
+        }
+        return Ok(ids);
+    }
+    if value.name.namespace_uri != SHEET_DRAWING_NS {
+        return Ok(Vec::new());
+    }
+    if matches!(
+        value.name.local_name.as_str(),
+        "oneCellAnchor" | "twoCellAnchor" | "absoluteAnchor"
+    ) {
+        return children
+            .get(2)
+            .map(preserved_owner_ids)
+            .transpose()
+            .map(Option::unwrap_or_default);
+    }
+    let Some(nonvisual) = children.first() else {
+        return Ok(Vec::new());
+    };
+    let properties = direct_children(nonvisual).map_err(drawing_error)?;
+    let Some(properties) = properties
+        .iter()
+        .find(|child| child.name.is(SHEET_DRAWING_NS, "cNvPr"))
+    else {
+        if value.name.local_name == "contentPart" {
+            return Ok(Vec::new());
+        }
+        return Err(drawing_error("preserved drawing identity is missing"));
+    };
+    let id = crate::xml::parse_u32(
+        crate::xml::required_attribute(properties, "", "id").map_err(drawing_error)?,
+    )
+    .map_err(drawing_error)?;
+    Ok(vec![id])
+}
+
+fn supported_choice(value: &OpaqueElement) -> Result<Option<Vec<OpaqueElement>>, XlsxError> {
+    use super::extended_chart::{
+        CHART_EX_NS,
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    let mut choices = 0;
+    let mut fallback = false;
+    let mut selected = None;
+    for branch in direct_children(value).map_err(drawing_error)? {
+        for content in direct_children(&branch).map_err(drawing_error)? {
+            if content.name.namespace_uri == SHEET_DRAWING_NS {
+                if matches!(
+                    content.name.local_name.as_str(),
+                    "oneCellAnchor" | "twoCellAnchor" | "absoluteAnchor"
+                ) {
+                    super::extended_chart::geometry(&content)?;
+                    validate_preserved_anchor(&content)?;
+                } else {
+                    validate_preserved_object(&content)?;
+                }
+            }
+        }
+        if branch.name.is(COMPATIBILITY_NS, "Choice") && !fallback {
+            choices += 1;
+            let requires =
+                crate::xml::required_attribute(&branch, "", "Requires").map_err(drawing_error)?;
+            let scope = NamespaceScope::with_bindings(branch.namespaces.clone());
+            let mut understood = true;
+            if requires.split_ascii_whitespace().next().is_none() {
+                return Err(drawing_error("empty drawing compatibility requirements"));
+            }
+            for prefix in requires.split_ascii_whitespace() {
+                let name = scope
+                    .resolve(format!("{prefix}:required").as_bytes(), false)
+                    .map_err(drawing_error)?;
+                understood &= matches!(
+                    name.namespace_uri.as_str(),
+                    SHEET_DRAWING_NS
+                        | DRAWINGML_MAIN_NS
+                        | crate::helper::const_str::DRAWING_MAIN_NS
+                        | crate::helper::const_str::DRAWINGML_CHART_NS
+                        | CHART_EX_NS
+                        | "http://schemas.microsoft.com/office/drawing/2015/9/8/chartex"
+                        | "http://schemas.microsoft.com/office/drawing/2015/10/21/chartex"
+                        | "http://schemas.microsoft.com/office/drawing/2016/5/10/chartex"
+                );
+            }
+            if understood && selected.is_none() {
+                selected = Some(direct_children(&branch).map_err(drawing_error)?);
+            }
+        } else if branch.name.is(COMPATIBILITY_NS, "Fallback") && choices > 0 && !fallback {
+            fallback = true;
+        } else {
+            return Err(drawing_error(
+                "invalid drawing compatibility branch sequence",
+            ));
+        }
+    }
+    if choices == 0 {
+        return Err(drawing_error("drawing compatibility choice is missing"));
+    }
+    Ok(selected)
+}
+
+fn legacy_alternate(value: &OpaqueElement) -> Result<bool, XlsxError> {
+    use super::extended_chart::{
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    let branches = direct_children(value).map_err(drawing_error)?;
+    if branches.is_empty() || branches.len() > 2 || !branches[0].name.is(COMPATIBILITY_NS, "Choice")
+    {
+        return Ok(false);
+    }
+    if branches.len() == 2
+        && (!branches[1].name.is(COMPATIBILITY_NS, "Fallback")
+            || !direct_children(&branches[1])
+                .map_err(drawing_error)?
+                .is_empty())
+    {
+        return Ok(false);
+    }
+    let requirements =
+        crate::xml::required_attribute(&branches[0], "", "Requires").map_err(drawing_error)?;
+    let scope = NamespaceScope::with_bindings(branches[0].namespaces.clone());
+    if requirements.split_ascii_whitespace().next().is_none() {
+        return Ok(false);
+    }
+    for prefix in requirements.split_ascii_whitespace() {
+        let name = scope
+            .resolve(format!("{prefix}:required").as_bytes(), false)
+            .map_err(drawing_error)?;
+        if name.namespace_uri != crate::helper::const_str::DRAWING_MAIN_NS {
+            return Ok(false);
+        }
+    }
+    Ok(value.children.iter().any(|token| {
+        matches!(token,
+        crate::drawing::charts::OpaqueToken::Start(start)
+        if start.name.is(crate::helper::const_str::DRAWING_MAIN_NS, "compatExt"))
+    }))
+}
+
+fn expand_anchor_choice(value: &mut OpaqueElement) -> Result<(), XlsxError> {
+    use super::extended_chart::{
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    use crate::drawing::charts::{
+        OpaqueStart,
+        OpaqueToken,
+    };
+    let mut scopes = vec![NamespaceScope::with_bindings(value.namespaces.clone())];
+    let mut index = 0;
+    while index < value.children.len() {
+        match &value.children[index] {
+            OpaqueToken::Start(start) => {
+                let scope = NamespaceScope::with_bindings(
+                    scopes
+                        .last()
+                        .expect("root scope")
+                        .effective_bindings()
+                        .into_iter()
+                        .chain(start.namespaces.iter().cloned()),
+                );
+                if start.name.is(COMPATIBILITY_NS, "AlternateContent") {
+                    let mut depth = 1;
+                    let mut end = index + 1;
+                    while end < value.children.len() {
+                        match value.children[end] {
+                            OpaqueToken::Start(_) => depth += 1,
+                            OpaqueToken::End => depth -= 1,
+                            _ => (),
+                        }
+                        if depth == 0 {
+                            break;
+                        }
+                        end += 1;
+                    }
+                    if depth != 0 {
+                        return Err(drawing_error("unterminated drawing compatibility content"));
+                    }
+                    let alternate = OpaqueElement {
+                        name:       start.name.clone(),
+                        namespaces: scope.effective_bindings(),
+                        attributes: start.attributes.clone(),
+                        children:   value.children[index + 1..end].to_vec(),
+                    };
+                    if !can_model_chart_alternate(&alternate)? {
+                        if let Some(selected) = supported_choice(&alternate)? {
+                            let mut replacement = Vec::new();
+                            for child in selected {
+                                replacement.push(OpaqueToken::Start(Box::new(OpaqueStart {
+                                    name:       child.name,
+                                    namespaces: child.namespaces,
+                                    attributes: child.attributes,
+                                })));
+                                replacement.extend(child.children);
+                                replacement.push(OpaqueToken::End);
+                            }
+                            value.children.splice(index..=end, replacement);
+                            continue;
+                        }
+                    }
+                    index = end + 1;
+                    continue;
+                }
+                scopes.push(scope);
+            }
+            OpaqueToken::End => {
+                if scopes.len() <= 1 {
+                    return Err(drawing_error("unmatched drawing XML end"));
+                }
+                scopes.pop();
+            }
+            _ => (),
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+fn requires_preservation(value: &OpaqueElement) -> Result<bool, XlsxError> {
+    use super::extended_chart::{
+        CHART_EX_NS,
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    if value.name.is(SHEET_DRAWING_NS, "contentPart") {
+        return Ok(true);
+    }
+    if value.name.is(COMPATIBILITY_NS, "AlternateContent") {
+        return Ok(!can_model_chart_alternate(value)?);
+    }
+    if value.name.is(DRAWINGML_MAIN_NS, "graphicData") {
+        let uri = crate::xml::required_attribute(value, "", "uri").map_err(drawing_error)?;
+        return Ok(uri != crate::helper::const_str::DRAWINGML_CHART_NS && uri != CHART_EX_NS);
+    }
+    if value.name.is(SHEET_DRAWING_NS, "grpSpPr") {
+        return Ok(!value.attributes.is_empty()
+            || direct_children(value)
+                .map_err(drawing_error)?
+                .iter()
+                .any(|child| !child.name.is(DRAWINGML_MAIN_NS, "xfrm")));
+    }
+    if !value
+        .children
+        .iter()
+        .any(|token| matches!(token, crate::drawing::charts::OpaqueToken::Start(_)))
+    {
+        return Ok(false);
+    }
+    for child in direct_children(value).map_err(drawing_error)? {
+        if requires_preservation(&child)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn validate_preserved_anchor(value: &OpaqueElement) -> Result<(), XlsxError> {
+    use super::extended_chart::{
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    let children = direct_children(value).map_err(drawing_error)?;
+    let geometry = match value.name.local_name.as_str() {
+        "oneCellAnchor" => ["from", "ext"],
+        "twoCellAnchor" => ["from", "to"],
+        "absoluteAnchor" => ["pos", "ext"],
+        _ => return Err(drawing_error("invalid preserved anchor kind")),
+    };
+    if children.len() != 4
+        || !children[0].name.is(SHEET_DRAWING_NS, geometry[0])
+        || !children[1].name.is(SHEET_DRAWING_NS, geometry[1])
+        || !children[3].name.is(SHEET_DRAWING_NS, "clientData")
+    {
+        return Err(drawing_error("invalid preserved anchor child sequence"));
+    }
+    let object = &children[2];
+    if object.name.is(COMPATIBILITY_NS, "AlternateContent") {
+        supported_choice(object)?;
+        return Ok(());
+    }
+    if object.name.namespace_uri != SHEET_DRAWING_NS
+        || !matches!(
+            object.name.local_name.as_str(),
+            "sp" | "grpSp" | "graphicFrame" | "cxnSp" | "pic" | "contentPart"
+        )
+    {
+        return Err(drawing_error("invalid preserved anchor object"));
+    }
+    if object.name.local_name == "contentPart" {
+        crate::xml::required_attribute(object, crate::helper::const_str::REL_OFC_NS, "id")
+            .map_err(drawing_error)?;
+    }
+    validate_preserved_object(object)
+}
+
+fn validate_preserved_object(value: &OpaqueElement) -> Result<(), XlsxError> {
+    use super::extended_chart::{
+        COMPATIBILITY_NS,
+        drawing_error,
+    };
+    if value.name.is(COMPATIBILITY_NS, "AlternateContent") {
+        supported_choice(value)?;
+        return Ok(());
+    }
+    if value.name.namespace_uri != SHEET_DRAWING_NS {
+        return Err(drawing_error("foreign preserved drawing object"));
+    }
+    let children = direct_children(value).map_err(drawing_error)?;
+    let required: &[&str] = match value.name.local_name.as_str() {
+        "sp" => &["nvSpPr", "spPr"],
+        "pic" => &["nvPicPr", "blipFill", "spPr"],
+        "cxnSp" => &["nvCxnSpPr", "spPr"],
+        "grpSp" => &["nvGrpSpPr", "grpSpPr"],
+        "graphicFrame" => &["nvGraphicFramePr", "xfrm", "graphic"],
+        "contentPart" => {
+            crate::xml::required_attribute(value, crate::helper::const_str::REL_OFC_NS, "id")
+                .map_err(drawing_error)?;
+            return Ok(());
+        }
+        _ => return Err(drawing_error("unsupported preserved drawing object")),
+    };
+    for (index, name) in required.iter().enumerate() {
+        let namespace = if *name == "graphic" {
+            DRAWINGML_MAIN_NS
+        } else {
+            SHEET_DRAWING_NS
+        };
+        if !children
+            .get(index)
+            .is_some_and(|child| child.name.is(namespace, name))
+        {
+            return Err(drawing_error(
+                "invalid preserved drawing object child sequence",
+            ));
+        }
+    }
+    for child in &children[required.len()..] {
+        if value.name.local_name == "grpSp" {
+            validate_preserved_object(child)?;
+        } else if child.name.namespace_uri != SHEET_DRAWING_NS
+            || !matches!(child.name.local_name.as_str(), "style" | "txBody")
+            || value.name.local_name == "graphicFrame"
+        {
+            return Err(drawing_error("invalid preserved drawing object child"));
+        }
+    }
+    Ok(())
+}
+
+fn can_model_chart_alternate(value: &OpaqueElement) -> Result<bool, XlsxError> {
+    use super::extended_chart::{
+        CHART_EX_NS,
+        drawing_error,
+    };
+    let Some(selected) = supported_choice(value)? else {
+        return Ok(false);
+    };
+    if !selected.iter().any(|object| {
+        object.children.iter().any(|token| {
+            matches!(token,
+        crate::drawing::charts::OpaqueToken::Start(start) if start.name.is(CHART_EX_NS,"chart"))
+        })
+    }) {
+        return Ok(false);
+    }
+    for branch in direct_children(value).map_err(drawing_error)? {
+        for object in direct_children(&branch).map_err(drawing_error)? {
+            if object.name.namespace_uri != SHEET_DRAWING_NS
+                || !matches!(
+                    object.name.local_name.as_str(),
+                    "graphicFrame" | "sp" | "pic" | "cxnSp" | "grpSp"
+                )
+                || requires_preservation(&object)?
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn validate_preserved_id_attributes(value: &OpaqueElement) -> Result<(), XlsxError> {
+    use super::extended_chart::drawing_error;
+    for token in &value.children {
+        if let crate::drawing::charts::OpaqueToken::Start(start) = token {
+            if start.name.is(SHEET_DRAWING_NS, "cNvPr") {
+                let id = start
+                    .attributes
+                    .iter()
+                    .find(|(name, _)| name.is("", "id"))
+                    .ok_or_else(|| drawing_error("preserved drawing identity is missing"))?;
+                crate::xml::parse_u32(&id.1).map_err(drawing_error)?;
+            }
+        }
+    }
+    Ok(())
 }

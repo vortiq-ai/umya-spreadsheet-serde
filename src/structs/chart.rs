@@ -453,11 +453,18 @@ impl Chart {
     pub fn strip_export_parts(&mut self) {
         self.strip_source_caches();
         self.clear_package_bindings();
-        if let Some(frame) = self.two_cell_anchor.graphic_frame_mut() {
-            crate::drawing::charts::chart_reference_roles::strip_export_parts(
-                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
-            );
-        }
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |_, frame| {
+                crate::drawing::charts::chart_reference_roles::strip_export_parts(
+                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                );
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |_, frame| {
+                crate::drawing::charts::chart_metadata_restoration::strip_extended_space(
+                    frame.chart_space_mut(),
+                );
+            });
     }
 
     /// Restore omitted export metadata from the authoritative native
@@ -465,48 +472,135 @@ impl Chart {
     /// the true before-state separately for history. Explicit removals must
     /// already be applied to `previous`; projection omission is not removal.
     /// Ambiguous owners are reported, never paired by collection position.
+    /// If restoration fails, both charts remain unchanged.
     pub fn restore_export_parts(
         &mut self,
         previous: &Chart,
     ) -> Result<crate::drawing::charts::RestoreReport, crate::XlsxError> {
-        use crate::drawing::charts::RestoreReport;
-        // Package binding trust is independent of direct ChartSpace metadata:
-        // a group-only chart can contain native standard and ChartEx frames.
-        self.restore_package_bindings(previous);
-        let Some(previous) = previous.two_cell_anchor.graphic_frame() else {
-            self.clear_source_caches();
-            return Ok(RestoreReport {
-                incompatible_owners: 1,
-                diagnostics: vec!["previous chart has no physical graphic frame".into()],
-                ..RestoreReport::default()
-            });
-        };
-        let Some(current) = self.two_cell_anchor.graphic_frame_mut() else {
-            return Ok(RestoreReport {
-                incompatible_owners: 1,
-                diagnostics: vec!["current chart has no physical graphic frame".into()],
-                ..RestoreReport::default()
-            });
-        };
-        let identity = current
-            .non_visual_graphic_frame_properties()
-            .non_visual_drawing_properties();
-        let old_identity = previous
-            .non_visual_graphic_frame_properties()
-            .non_visual_drawing_properties();
-        if !identity.same_restore_identity(old_identity) {
-            self.clear_source_caches();
-            return Ok(RestoreReport {
-                incompatible_owners: 1,
-                diagnostics: vec!["chart graphic-frame identity does not match".into()],
-                ..RestoreReport::default()
-            });
-        }
-        let report = crate::drawing::charts::chart_metadata_restoration::restore_space(
-            current.graphic_mut().graphic_data_mut().chart_space_mut(),
-            previous.graphic().graphic_data().chart_space(),
-        )?;
+        let mut restored = self.clone();
+        let report = restored.restore_frame_export_parts(previous)?;
+        *self = restored;
         Ok(report)
+    }
+
+    fn restore_frame_export_parts(
+        &mut self,
+        previous: &Chart,
+    ) -> Result<crate::drawing::charts::RestoreReport, crate::XlsxError> {
+        use std::collections::HashMap;
+
+        use crate::drawing::charts::{
+            RestoreReport,
+            chart_metadata_restoration,
+            chart_reference_roles,
+        };
+
+        self.restore_package_bindings(previous);
+        let mut current_counts = HashMap::new();
+        let mut previous_counts = HashMap::new();
+        self.two_cell_anchor.visit_standard_frames(&mut |key, _| {
+            *current_counts.entry(key).or_insert(0usize) += 1;
+        });
+        self.two_cell_anchor.visit_extended_frames(&mut |key, _| {
+            *current_counts.entry(key).or_insert(0usize) += 1;
+        });
+        previous
+            .two_cell_anchor
+            .visit_standard_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_insert(0usize) += 1;
+            });
+        previous
+            .two_cell_anchor
+            .visit_extended_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_insert(0usize) += 1;
+            });
+        let mut result = Ok(RestoreReport::default());
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |key, frame| {
+                if result.is_err() {
+                    return;
+                }
+                let mut matched = false;
+                if current_counts.get(&key) == Some(&1) && previous_counts.get(&key) == Some(&1) {
+                    previous
+                        .two_cell_anchor
+                        .visit_standard_frames(&mut |old_key, old| {
+                            let identity = frame
+                                .non_visual_graphic_frame_properties()
+                                .non_visual_drawing_properties();
+                            let old_identity = old
+                                .non_visual_graphic_frame_properties()
+                                .non_visual_drawing_properties();
+                            if key == old_key && identity.same_restore_identity(old_identity) {
+                                matched = true;
+                                match chart_metadata_restoration::restore_space(
+                                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                                    old.graphic().graphic_data().chart_space(),
+                                ) {
+                                    Ok(restored) => {
+                                        if let Ok(report) = &mut result {
+                                            report.merge(restored);
+                                        }
+                                    }
+                                    Err(error) => result = Err(error),
+                                }
+                            }
+                        });
+                }
+                if !matched {
+                    let space = frame.graphic_mut().graphic_data_mut().chart_space_mut();
+                    crate::drawing::charts::clear_source_caches(space);
+                    chart_reference_roles::strip_export_parts(space);
+                    if let Ok(report) = &mut result {
+                        report.incompatible_owners += 1;
+                        report.diagnostics.push(format!(
+                            "discarded export metadata for unmatched/ambiguous chart frame {}",
+                            key.relationship_key()
+                        ));
+                    }
+                }
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |key, frame| {
+                if result.is_err() {
+                    return;
+                }
+                let mut matched = false;
+                if current_counts.get(&key) == Some(&1) && previous_counts.get(&key) == Some(&1) {
+                    previous
+                        .two_cell_anchor
+                        .visit_extended_frames(&mut |old_key, old| {
+                            let identity = frame.frame_properties().non_visual_drawing_properties();
+                            let old_identity =
+                                old.frame_properties().non_visual_drawing_properties();
+                            if key == old_key && identity.same_restore_identity(old_identity) {
+                                matched = true;
+                                match chart_metadata_restoration::restore_extended_space(
+                                    frame.chart_space_mut(),
+                                    old.chart_space(),
+                                ) {
+                                    Ok(restored) => {
+                                        if let Ok(report) = &mut result {
+                                            report.merge(restored);
+                                        }
+                                    }
+                                    Err(error) => result = Err(error),
+                                }
+                            }
+                        });
+                }
+                if !matched {
+                    chart_metadata_restoration::strip_extended_space(frame.chart_space_mut());
+                    if let Ok(report) = &mut result {
+                        report.incompatible_owners += 1;
+                        report.diagnostics.push(format!(
+                            "discarded export metadata for unmatched/ambiguous ChartEx frame {}",
+                            key.relationship_key()
+                        ));
+                    }
+                }
+            });
+        result
     }
 
     /// Removes the source caches of every string reference of the chart: the
@@ -515,11 +609,16 @@ impl Chart {
     /// is sent anywhere else; the chart then no longer carries them, however
     /// many its file stored.
     pub fn strip_source_caches(&mut self) {
-        if let Some(frame) = self.two_cell_anchor.graphic_frame_mut() {
-            crate::drawing::charts::clear_source_caches(
-                frame.graphic_mut().graphic_data_mut().chart_space_mut(),
-            );
-        }
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |_, frame| {
+                crate::drawing::charts::clear_source_caches(
+                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                );
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |_, frame| {
+                frame.chart_space_mut().strip_imported_caches();
+            });
     }
 
     /// Remove untrusted source caches, for example from a newly supplied chart.

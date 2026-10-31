@@ -325,7 +325,16 @@ impl TwoCellAnchor {
 
     #[inline]
     pub(crate) fn is_image(&self) -> bool {
-        self.picture.is_some() || self.group_shape.is_some()
+        let mut unembedded = false;
+        self.visit_picture_blips(&mut |blip| unembedded |= blip.image().image_name().is_empty());
+        if let Some(group) = self.group_shape() {
+            unembedded |= group
+                .content()
+                .iter()
+                .flat_map(|child| child.media_objects())
+                .any(|image| image.image_name().is_empty());
+        }
+        (self.picture.is_some() || self.group_shape.is_some()) && !unembedded
     }
 
     #[must_use]

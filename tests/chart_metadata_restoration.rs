@@ -891,7 +891,11 @@ fn nested_imported_bindings_strip_and_restore_without_replacing_edited_native_da
         rewrite_binding_values(&mut editable, false);
         current.restore_export_parts(&previous).unwrap();
         assert_eq!(nested_binding_paths(&current), trusted);
-        let mut restored = serde_json::to_value(&current).unwrap();
+        // Compare editable content after projecting the restored metadata;
+        // grouped frames now recover their authoritative supplements too.
+        let mut restored_projection = current.clone();
+        restored_projection.strip_export_parts();
+        let mut restored = serde_json::to_value(&restored_projection).unwrap();
         rewrite_binding_values(&mut restored, false);
         assert_eq!(restored, editable);
         let mut limited = previous.clone();

@@ -11,6 +11,7 @@ use quick_xml::{
 };
 
 use super::super::{
+    BlipFill,
     EffectList,
     GradientFill,
     NoFill,
@@ -52,9 +53,50 @@ pub struct ShapeProperties {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ShapePropertiesParts {
-    extensions: Option<super::ExtensionList>,
+    extensions:              Option<super::ExtensionList>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    picture_fill:            Option<Box<BlipFill>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    picture_relationship_id: Option<String>,
 }
 impl ShapeProperties {
+    #[must_use]
+    pub fn blip_fill(&self) -> Option<&BlipFill> {
+        self.parts
+            .as_ref()
+            .and_then(|parts| parts.picture_fill.as_deref())
+    }
+
+    pub fn blip_fill_mut(&mut self) -> Option<&mut BlipFill> {
+        let parts = self.parts.as_mut()?;
+        parts.picture_relationship_id = None;
+        parts.picture_fill.as_deref_mut()
+    }
+
+    pub fn set_blip_fill(&mut self, value: BlipFill) -> &mut Self {
+        self.pattern_fill = None;
+        self.solid_fill = None;
+        self.no_fill = None;
+        self.gradient_fill = None;
+        let parts = self.parts.get_or_insert_with(Default::default);
+        parts.picture_fill = Some(Box::new(value));
+        parts.picture_relationship_id = None;
+        self
+    }
+
+    fn clear_picture_fill(&mut self) {
+        if let Some(parts) = &mut self.parts {
+            parts.picture_fill = None;
+            parts.picture_relationship_id = None;
+        }
+    }
+
+    pub(crate) fn prepare_picture_relationship(&mut self, id: Option<String>) {
+        if let Some(parts) = &mut self.parts {
+            parts.picture_relationship_id = id;
+        }
+    }
+
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
         super::chart_metadata_restoration::replace_hidden_parts(
             &mut self.parts,
@@ -102,6 +144,7 @@ impl ShapeProperties {
     }
 
     pub fn set_pattern_fill(&mut self, value: PatternFill) -> &mut Self {
+        self.clear_picture_fill();
         self.solid_fill = None;
         self.no_fill = None;
         self.gradient_fill = None;
@@ -119,6 +162,7 @@ impl ShapeProperties {
     }
 
     pub fn set_gradient_fill(&mut self, value: GradientFill) -> &mut Self {
+        self.clear_picture_fill();
         self.pattern_fill = None;
         self.solid_fill = None;
         self.no_fill = None;
@@ -197,6 +241,7 @@ impl ShapeProperties {
     }
 
     pub fn set_solid_fill(&mut self, value: SolidFill) -> &mut Self {
+        self.clear_picture_fill();
         self.pattern_fill = None;
         self.no_fill = None;
         self.gradient_fill = None;
@@ -225,6 +270,7 @@ impl ShapeProperties {
     }
 
     pub fn set_no_fill(&mut self, value: NoFill) -> &mut Self {
+        self.clear_picture_fill();
         self.pattern_fill = None;
         self.solid_fill = None;
         self.gradient_fill = None;
@@ -383,7 +429,9 @@ impl ShapeProperties {
                     }
                     let name = local_name(child.name().into_inner());
                     let slot = match name {
-                        b"pattFill" | b"gradFill" | b"solidFill" | b"noFill" => Some("fill"),
+                        b"pattFill" | b"gradFill" | b"solidFill" | b"noFill" | b"blipFill" => {
+                            Some("fill")
+                        }
                         b"xfrm" => Some("transform"),
                         b"prstGeom" => Some("geometry"),
                         b"ln" => Some("outline"),
@@ -400,6 +448,14 @@ impl ShapeProperties {
                         )));
                     }
                     match name {
+                        b"blipFill" => {
+                            let session = session.ok_or_else(|| {
+                                crate::xml::xml_error(
+                                    "chart picture fills require chart package relationships",
+                                )
+                            })?;
+                            self.set_blip_fill(session.read_chart_picture(reader, child, empty)?);
+                        }
                         b"extLst" => {
                             let session = session.ok_or_else(|| {
                                 crate::xml::xml_error(
@@ -505,6 +561,7 @@ impl ShapeProperties {
             self.solid_fill.is_some(),
             self.pattern_fill.is_some(),
             self.gradient_fill.is_some(),
+            self.blip_fill().is_some(),
         ]
         .into_iter()
         .filter(|present| *present)
@@ -532,6 +589,19 @@ impl ShapeProperties {
 
         if let Some(gradient) = &self.gradient_fill {
             gradient.write_to(writer)?;
+        }
+
+        if let Some(fill) = self.blip_fill() {
+            let binding = self
+                .parts
+                .as_ref()
+                .and_then(|parts| parts.picture_relationship_id.as_deref());
+            if !fill.blip().image().image_data().is_empty() && binding.is_none() {
+                return Err(crate::xml::xml_error(
+                    "chart picture fill needs package image planning",
+                ));
+            }
+            fill.write_with_embed_id(writer, binding)?;
         }
 
         // a:solidFill

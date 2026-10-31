@@ -56,6 +56,12 @@ pub struct PivotCacheDefinition {
     hierarchies:             Option<crate::structs::PivotCacheHierarchies>,
     #[cfg_attr(feature = "serde", serde(default))]
     properties:              PivotCacheProperties,
+    #[cfg_attr(feature = "serde", serde(default))]
+    calculated_items:        Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    calculated_members:      Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    native_metadata:         Vec<crate::drawing::charts::OpaqueElement>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -505,6 +511,33 @@ impl PivotCacheDefinition {
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
+                let name = scope.child(e).map_err(xml_error)?
+                    .resolve(e.name().as_ref(), false).map_err(xml_error)?;
+                if ["kpis", "tupleCache", "dimensions", "measureGroups", "maps"]
+                    .iter().any(|local| name.is(SHEET_MAIN_NS, local))
+                {
+                    if self.native_metadata.iter()
+                        .any(|node| node.name.is(SHEET_MAIN_NS, &name.local_name))
+                    {
+                        return Err(xml_error("duplicate pivot cache metadata"));
+                    }
+                    let node = crate::drawing::charts::OpaqueElement::read_detached(
+                        reader, e, is_empty, &scope,
+                    ).map_err(xml_error)?;
+                    validate_cache_metadata(&node).map_err(xml_error)?;
+                    self.native_metadata.push(node);
+                    continue;
+                }
+                if name.is(SHEET_MAIN_NS, "calculatedItems") || name.is(SHEET_MAIN_NS, "calculatedMembers") {
+                    let target = if name.local_name == "calculatedItems" { &mut self.calculated_items } else { &mut self.calculated_members };
+                    if target.is_some() { return Err(xml_error("duplicate pivot cache calculations")); }
+                    let node = crate::drawing::charts::OpaqueElement::read_detached(
+                        reader, e, is_empty, &scope,
+                    ).map_err(xml_error)?;
+                    validate_calculations(&node).map_err(xml_error)?;
+                    *target = Some(node);
+                    continue;
+                }
                 if scope.child(e).map_err(xml_error)?.resolve(e.name().as_ref(), false).map_err(xml_error)?.is(SHEET_MAIN_NS, "extLst") {
                     let extensions = crate::structs::slicer::read_pivot_cache_extensions(
                         reader, e, is_empty, &scope,
@@ -513,9 +546,9 @@ impl PivotCacheDefinition {
                     self.extensions_present = true;
                     self.extensions = extensions;
                 }
-                if e.name().into_inner() == b"cacheSource" {
+                if name.is(SHEET_MAIN_NS, "cacheSource") {
                     let mut obj = CacheSource::default();
-                    obj.set_attributes(reader, e, is_empty);
+                    obj.set_attributes(reader, e, is_empty, &scope)?;
                     self.set_cache_source(obj);
                 }
                 if scope.child(e).map_err(xml_error)?.resolve(e.name().as_ref(),false).map_err(xml_error)?.is(SHEET_MAIN_NS,"cacheHierarchies") {
@@ -524,14 +557,16 @@ impl PivotCacheDefinition {
                         reader, e, is_empty, &scope,
                     ).map_err(xml_error)?);
                 }
-                if e.name().into_inner() == b"cacheFields" {
+                if name.is(SHEET_MAIN_NS, "cacheFields") {
                     let mut obj = CacheFields::default();
                     obj.set_attributes_scoped(reader, e, is_empty, &scope)?;
                     self.set_cache_fields(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"pivotCacheDefinition" {
+                if scope.resolve(e.name().as_ref(), false).map_err(xml_error)?
+                    .is(SHEET_MAIN_NS, "pivotCacheDefinition")
+                {
                     return Ok(())
                 }
             },
@@ -624,13 +659,51 @@ impl PivotCacheDefinition {
         write_start_tag(writer, "pivotCacheDefinition", attributes, false);
 
         // cacheSource
-        self.cache_source.write_to(writer);
+        self.cache_source.write_to(writer)?;
 
         // cacheFields
         self.cache_fields.write_to(writer)?;
 
         if let Some(hierarchies) = &self.hierarchies {
             hierarchies.write_to(writer).map_err(xml_error)?;
+        }
+        let scope = crate::drawing::charts::NamespaceScope::with_bindings([
+            (None, SHEET_MAIN_NS.into()),
+            (Some("r".into()), REL_OFC_NS.into()),
+            (Some("mc".into()), MC_NS.into()),
+            (Some("xr".into()), SHEET_MS_REVISION_NS.into()),
+        ]);
+        let mut names = std::collections::HashSet::new();
+        for node in &self.native_metadata {
+            validate_cache_metadata(node).map_err(xml_error)?;
+            if !names.insert(node.name.local_name.as_str()) {
+                return Err(xml_error("duplicate pivot cache metadata"));
+            }
+        }
+        for name in ["kpis", "tupleCache"] {
+            if let Some(node) = self
+                .native_metadata
+                .iter()
+                .find(|node| node.name.is(SHEET_MAIN_NS, name))
+            {
+                node.write_to(writer, &scope).map_err(xml_error)?;
+            }
+        }
+        for calculations in [&self.calculated_items, &self.calculated_members]
+            .into_iter()
+            .flatten()
+        {
+            validate_calculations(calculations).map_err(xml_error)?;
+            calculations.write_to(writer, &scope).map_err(xml_error)?;
+        }
+        for name in ["dimensions", "measureGroups", "maps"] {
+            if let Some(node) = self
+                .native_metadata
+                .iter()
+                .find(|node| node.name.is(SHEET_MAIN_NS, name))
+            {
+                node.write_to(writer, &scope).map_err(xml_error)?;
+            }
         }
         crate::structs::slicer::write_pivot_cache_extensions(
             writer,
@@ -641,4 +714,192 @@ impl PivotCacheDefinition {
         write_end_tag(writer, "pivotCacheDefinition");
         Ok(())
     }
+}
+
+fn validate_calculations(node: &crate::drawing::charts::OpaqueElement) -> Result<(), String> {
+    use crate::xml::{
+        attributes,
+        boolean,
+        direct_children,
+        expect,
+        required,
+        signed,
+        unsigned,
+    };
+    let qualified = &[(MC_NS, "Ignorable")];
+    attributes(node, &["count"], qualified)?;
+    let members = node.name.is(SHEET_MAIN_NS, "calculatedMembers");
+    let children = direct_children(node)?;
+    if children.is_empty()
+        || unsigned(node, "count")?.is_some_and(|count| count as usize != children.len())
+    {
+        return Err("invalid pivot cache calculation count".into());
+    }
+    for child in children {
+        if members {
+            expect(&child, SHEET_MAIN_NS, "calculatedMember")?;
+            attributes(
+                &child,
+                &[
+                    "name",
+                    "mdx",
+                    "memberName",
+                    "hierarchy",
+                    "parent",
+                    "solveOrder",
+                    "set",
+                ],
+                qualified,
+            )?;
+            required(&child, "name")?;
+            required(&child, "mdx")?;
+            signed(&child, "solveOrder")?;
+            boolean(&child, "set")?;
+        } else {
+            expect(&child, SHEET_MAIN_NS, "calculatedItem")?;
+            attributes(&child, &["field", "formula"], qualified)?;
+            unsigned(&child, "field")?;
+        }
+        let descendants = direct_children(&child)?;
+        let mut next = 0;
+        if !members {
+            let area = descendants
+                .first()
+                .ok_or("calculated item requires pivotArea")?;
+            expect(area, SHEET_MAIN_NS, "pivotArea")?;
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            area.write_to(
+                &mut writer,
+                &crate::drawing::charts::NamespaceScope::default(),
+            )?;
+            let bytes = writer.into_inner().into_inner();
+            let mut reader = Reader::from_reader(bytes.as_slice());
+            match reader.read_event().map_err(|error| error.to_string())? {
+                ref event @ (Event::Start(ref root) | Event::Empty(ref root)) => {
+                    crate::structs::PivotArea::read(
+                        &mut reader,
+                        root,
+                        matches!(event, Event::Empty(_)),
+                        &crate::drawing::charts::NamespaceScope::default(),
+                    )?;
+                }
+                _ => return Err("invalid calculated item area".into()),
+            }
+            next = 1;
+        }
+        if let Some(extension) = descendants.get(next) {
+            expect(extension, SHEET_MAIN_NS, "extLst")?;
+            next += 1;
+        }
+        if next != descendants.len() {
+            return Err("unexpected pivot cache calculation child".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_cache_metadata(node: &crate::drawing::charts::OpaqueElement) -> Result<(), String> {
+    use crate::xml::{
+        attributes,
+        boolean,
+        direct_children,
+        expect,
+        no_children,
+        required,
+        unsigned,
+    };
+    let qualified = &[(MC_NS, "Ignorable")];
+    if node.name.is(SHEET_MAIN_NS, "tupleCache") {
+        attributes(node, &[], qualified)?;
+        let order = ["entries", "sets", "queryCache", "serverFormats", "extLst"];
+        let mut next = 0;
+        for child in direct_children(node)? {
+            let index = order
+                .iter()
+                .position(|name| child.name.is(SHEET_MAIN_NS, name))
+                .ok_or("invalid tuple cache child")?;
+            if index < next {
+                return Err("duplicate or out-of-order tuple cache child".into());
+            }
+            next = index + 1;
+            if index == 4 {
+                continue;
+            }
+            attributes(&child, &["count"], qualified)?;
+            let entries = direct_children(&child)?;
+            if (index < 3 && entries.is_empty())
+                || unsigned(&child, "count")?.is_some_and(|count| count as usize != entries.len())
+            {
+                return Err("invalid tuple cache collection count".into());
+            }
+            for entry in entries {
+                let valid = match index {
+                    0 => ["m", "n", "e", "s"]
+                        .iter()
+                        .any(|name| entry.name.is(SHEET_MAIN_NS, name)),
+                    1 => entry.name.is(SHEET_MAIN_NS, "set"),
+                    2 => entry.name.is(SHEET_MAIN_NS, "query"),
+                    3 => entry.name.is(SHEET_MAIN_NS, "serverFormat"),
+                    _ => false,
+                };
+                if !valid {
+                    return Err("invalid tuple cache collection entry".into());
+                }
+            }
+        }
+        return Ok(());
+    }
+    let (entry_name, allowed, required_names): (&str, &[&str], &[&str]) =
+        if node.name.is(SHEET_MAIN_NS, "kpis") {
+            (
+                "kpi",
+                &[
+                    "uniqueName",
+                    "value",
+                    "caption",
+                    "displayFolder",
+                    "measureGroup",
+                    "parent",
+                    "goal",
+                    "status",
+                    "trend",
+                    "weight",
+                    "time",
+                ],
+                &["uniqueName", "value"],
+            )
+        } else if node.name.is(SHEET_MAIN_NS, "dimensions") {
+            (
+                "dimension",
+                &["name", "uniqueName", "caption", "measure"],
+                &["name", "uniqueName", "caption"],
+            )
+        } else if node.name.is(SHEET_MAIN_NS, "measureGroups") {
+            ("measureGroup", &["name", "caption"], &["name", "caption"])
+        } else if node.name.is(SHEET_MAIN_NS, "maps") {
+            ("map", &["measureGroup", "dimension"], &[])
+        } else {
+            return Err("unexpected pivot cache metadata owner".into());
+        };
+    attributes(node, &["count"], qualified)?;
+    let entries = direct_children(node)?;
+    if unsigned(node, "count")?.is_some_and(|count| count as usize != entries.len()) {
+        return Err("pivot cache metadata count mismatch".into());
+    }
+    for entry in entries {
+        expect(&entry, SHEET_MAIN_NS, entry_name)?;
+        attributes(&entry, allowed, qualified)?;
+        for name in required_names {
+            required(&entry, name)?;
+        }
+        if entry_name == "dimension" {
+            boolean(&entry, "measure")?;
+        }
+        if entry_name == "map" {
+            unsigned(&entry, "measureGroup")?;
+            unsigned(&entry, "dimension")?;
+        }
+        no_children(&entry)?;
+    }
+    Ok(())
 }
