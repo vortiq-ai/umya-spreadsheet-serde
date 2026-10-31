@@ -26,8 +26,10 @@ use umya_spreadsheet::{
 const RANGE_ROWS: u32 = 100_000;
 
 /// Projection size, including empty export-only slots.
-const CHART_BINCODE_BYTES: usize = 695;
-const CHART_JSON_BYTES: usize = 5705;
+// The legend's empty extension slot adds one `None` tag (1 byte) to bincode and
+// `,"parts":null` (13 bytes) to JSON.
+const CHART_BINCODE_BYTES: usize = 696;
+const CHART_JSON_BYTES: usize = 5718;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

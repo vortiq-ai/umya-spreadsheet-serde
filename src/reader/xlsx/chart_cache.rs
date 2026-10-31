@@ -4288,9 +4288,10 @@ mod tests {
         );
         assert_eq!(
             read_failure(deferred_cache_package(cache)),
-            quick_xml::escape::unescape("&bogus;")
-                .unwrap_err()
-                .to_string()
+            format!(
+                "xl/charts/chart1.xml: {}",
+                quick_xml::escape::unescape("&bogus;").unwrap_err()
+            )
         );
     }
 
@@ -4310,10 +4311,12 @@ mod tests {
         );
         assert_eq!(
             read_failure(bytes),
-            quick_xml::encoding::EncodingError::Utf8(
-                std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err()
+            format!(
+                "xl/charts/chart1.xml: {}",
+                quick_xml::encoding::EncodingError::Utf8(
+                    std::str::from_utf8(std::hint::black_box(b"a\xFFb")).unwrap_err()
+                )
             )
-            .to_string()
         );
     }
 

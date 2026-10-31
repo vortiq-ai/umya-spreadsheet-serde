@@ -335,6 +335,45 @@ impl<'a> ChartGroupMut<'a> {
         }
     }
 
+    /// Removes the group's own `c:dLbls` (the labels it applies to every series
+    /// without labels of its own), with its point labels, extension list and
+    /// hidden source parts. The group then writes no `c:dLbls`. Series-level
+    /// labels, point overrides (`c:dPt`) and all other group content are
+    /// untouched. Returns `false` when the group type has no label owner.
+    #[must_use]
+    pub fn remove_data_labels(self) -> bool {
+        match self.into_reference_role_parts().labels {
+            Some(labels) => {
+                labels.mark_group_absent();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Turns off the data labels of one series (`series_index` counts in the
+    /// group's series order) the way Excel does: a group that shows labels
+    /// needs the series to carry an explicit deleted owner, otherwise the
+    /// series simply writes no `c:dLbls`. Point overrides (`c:dPt`) are
+    /// untouched. Returns `false` when the group has no such series.
+    #[must_use]
+    pub fn remove_series_data_labels(self, series_index: usize) -> bool {
+        let parts = self.into_reference_role_parts();
+        let group_shows_labels = parts
+            .labels
+            .as_deref()
+            .is_some_and(super::DataLabels::shows_labels);
+        let Some(series) = parts.series.get_mut(series_index) else {
+            return false;
+        };
+        if group_shows_labels {
+            series.delete_data_labels();
+        } else {
+            series.remove_data_labels();
+        }
+        true
+    }
+
     #[must_use]
     pub fn kind(&self) -> ChartType {
         match self {

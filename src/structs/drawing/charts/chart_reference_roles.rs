@@ -472,9 +472,11 @@ macro_rules! reference_topology {
                 let rest=primary_title(title, Some(ReferenceIdentity::ChartTitle), "chart_title", w);
                 title_remainder(None, rest, w);
             }
-            let (legend_layout, legend_shape)=get!(fields.legend, role_parts);
-            if let Some(child)=legend_layout { layout(None, child, w); }
-            if let Some(child)=legend_shape { shape(None, child, w); }
+            let legend=get!(fields.legend, role_parts);
+            if let Some(child)=legend.layout { layout(None, child, w); }
+            if let Some(child)=legend.shape { shape(None, child, w); }
+            for child in legend.entry_extensions { list(None, child, w); }
+            if let Some(child)=legend.extensions { list(None, child, w); }
             for wall in [fields.floor.and_then(|v|get!(v, shape)),
                 fields.side_wall.and_then(|v|get!(v, shape)),
                 fields.back_wall.and_then(|v|get!(v, shape))].into_iter().flatten() {
@@ -500,9 +502,11 @@ macro_rules! reference_topology {
         }
         fn chart_tail$(<$b>)?(rest:ChartAfterPrimary<$lt>, w:&mut State<'_ $(, $b)?>) {
             if let Some(title)=rest.title { title_remainder(None, title, w); }
-            let (legend_layout, legend_shape)=get!(rest.legend, role_parts);
-            if let Some(child)=legend_layout { layout(None, child, w); }
-            if let Some(child)=legend_shape { shape(None, child, w); }
+            let legend=get!(rest.legend, role_parts);
+            if let Some(child)=legend.layout { layout(None, child, w); }
+            if let Some(child)=legend.shape { shape(None, child, w); }
+            for child in legend.entry_extensions { list(None, child, w); }
+            if let Some(child)=legend.extensions { list(None, child, w); }
             let plot=plot_remainder(rest.plot, w);
             let pivots=rest.pivot_parts.map(|parts|primary_container(parts, Some(&rest.counts), w));
             let plot=primary_plot_units(plot, w);
@@ -712,16 +716,17 @@ macro_rules! reference_topology {
             reference_extensions: Option<&'a $($m)* ExtensionList>,
             shape: Option<&'a $($m)* ShapeProperties>,
             layout: Option<&'a $($m)* Layout>,
+            extensions: Option<&'a $($m)* ExtensionList>,
         }
         pub(super) fn primary_title<'a>(owner:&'a $($m)* Title,
         id:Option<ReferenceIdentity>, role:&'static str,
         w:&mut State<'_ $(, $b)?>)->TitleRemainder<'a> {
-            let (text, shape, layout)=get!(owner, role_parts);
+            let (text, shape, layout, extensions)=get!(owner, role_parts);
             let reference_extensions=match text {
                 Some(text)=>primary_text(text, Some((id, role)), w).extensions,
                 None=>None,
             };
-            TitleRemainder { reference_extensions, shape, layout }
+            TitleRemainder { reference_extensions, shape, layout, extensions }
         }
         pub(super) fn title_remainder$(<$b>)?(base:Option<String>, rest:TitleRemainder<$lt>,
         w:&mut State<'_ $(, $b)?>) {
@@ -733,15 +738,17 @@ macro_rules! reference_topology {
                 if let Some(child)=shape_child.take() { shape(base.clone(), child, w); }
             }
             if let Some(child)=rest.layout { layout(base.clone(), child, w); }
-            if let Some(child)=shape_child { shape(base, child, w); }
+            if let Some(child)=shape_child { shape(base.clone(), child, w); }
+            if let Some(child)=rest.extensions { list(key(base.as_deref(), "title"), child, w); }
         }
         fn title$(<$b>)?(base:Option<String>,
         owner:& $($b)? $($m)* Title,
         w:&mut State<'_ $(, $b)?>) {
-            let (text, shape, layout)=get!(owner, role_parts);
+            let (text, shape, layout, extensions)=get!(owner, role_parts);
             let reference_extensions=text.and_then(|v|get!(v, stringref))
                 .and_then(|v|get!(v, ext));
-            title_remainder(base, TitleRemainder { reference_extensions, shape, layout }, w);
+            let rest = TitleRemainder { reference_extensions, shape, layout, extensions };
+            title_remainder(base, rest, w);
         }
         fn labels$(<$b>)?(base:Option<String>,
         owner:& $($b)? $($m)* DataLabels,

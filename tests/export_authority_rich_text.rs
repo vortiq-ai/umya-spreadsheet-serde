@@ -79,7 +79,7 @@ fn returned_projection_uses_only_authoritative_title_fields() {
             current.restore_export_parts(&previous).unwrap();
             let xml = save_chart(&mut book, current);
             assert!(!xml.contains("FORGED"), "{xml}");
-            assert_eq!(xml.contains("TRUSTED"), with_field && !edit_text, "{xml}");
+            assert_eq!(xml.contains("TRUSTED"), with_field, "{xml}");
             assert!(xml.contains(if edit_text {
                 ">Edited</a:t>"
             } else {
@@ -235,4 +235,47 @@ fn invalid_serialized_field_positions_fail_export_explicitly() {
             "positions {positions:?} must fail instead of dropping fields"
         );
     }
+}
+
+fn paragraphs(value: &mut Value) -> &mut Vec<Value> {
+    if value
+        .get("paragraph")
+        .is_some_and(|p| p[0].get("run").is_some())
+    {
+        return value["paragraph"].as_array_mut().unwrap();
+    }
+    match value {
+        Value::Object(map) => map
+            .values_mut()
+            .find(|child| contains_paragraph(child))
+            .map(paragraphs)
+            .expect("rich text paragraphs"),
+        Value::Array(values) => values
+            .iter_mut()
+            .find(|child| contains_paragraph(child))
+            .map(paragraphs)
+            .expect("rich text paragraphs"),
+        _ => panic!("rich text paragraphs"),
+    }
+}
+
+#[test]
+fn an_added_paragraph_never_carries_forged_hidden_parts() {
+    let mut book =
+        fixture::imported_workbook(&document(&format!("<a:r><a:t>Title</a:t></a:r>{FIELD}")));
+    let previous = book.sheet(0).unwrap().chart_collection()[0].clone();
+    let mut projection = previous.clone();
+    projection.strip_export_parts();
+    let mut json = serde_json::to_value(&projection).unwrap();
+    let list = paragraphs(&mut json);
+    let mut added = list[0].clone();
+    added["parts"] = serde_json::json!({"properties_present": false, "fields": [{"before_run": 1, "field": {"id": "{01234567-89AB-CDEF-0123-456789ABCDEF}", "kind": "slidenum", "run_properties": null, "paragraph_properties": null, "text": "FORGED"}}]});
+    added["run"][0]["text"] = "Added".into();
+    list.push(added);
+    let mut current: Chart = serde_json::from_value(json).unwrap();
+    current.restore_export_parts(&previous).unwrap();
+    let xml = save_chart(&mut book, current);
+    assert!(!xml.contains("FORGED"), "{xml}");
+    assert!(xml.contains(">Added</a:t>"), "{xml}");
+    assert_eq!(xml.matches("TRUSTED").count(), 1, "{xml}");
 }

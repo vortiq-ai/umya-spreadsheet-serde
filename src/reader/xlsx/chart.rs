@@ -20,13 +20,23 @@ use crate::{
     try_xml_read_loop,
 };
 
+/// Names the chart part an error of parsing it came from, keeping its kind.
+fn in_part(target: &str, error: &XlsxError) -> XlsxError {
+    let detail = error
+        .message()
+        .map_or_else(|| error.to_string(), str::to_owned);
+    XlsxError::with_message(error.kind(), format!("{target}: {detail}"))
+}
+
 pub(crate) fn read(
     raw_file: &RawFile,
     chart_space: &mut ChartSpace,
     session: &SourceCacheSession,
     provider: &mut dyn ChartPartProvider,
 ) -> Result<(), XlsxError> {
-    provider.with_part(raw_file.file_target(), session, &mut |data| {
+    let target = raw_file.file_target();
+    provider.with_part(target, session, &mut |data| {
+        (|| {
             let _part_guard = session.enter_chart_part(raw_file.file_target());
             session
                 .prepare_chart_namespaces(data, raw_file.file_target())
@@ -54,6 +64,8 @@ pub(crate) fn read(
                 Event::Eof => return Err(crate::xml::xml_error("missing chartSpace root in required chart part")),
             );
             Ok(())
+        })()
+        .map_err(|error| in_part(target, &error))
     })
 }
 
@@ -82,7 +94,7 @@ pub(crate) fn read_extended(
                             match reader.read_event()? {
                                 Event::Eof => return Ok(space),
                                 Event::Comment(_) | Event::PI(_) => (),
-                                Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => (),
+                                Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => {}
                                 _ => {
                                     return Err(XlsxError::with_message(
                                         XlsxErrorKind::Xml,
@@ -102,7 +114,8 @@ pub(crate) fn read_extended(
                     }
                 }
             }
-        })()?;
+        })()
+        .map_err(|error| in_part(target, &error))?;
         result = Some(space);
         Ok(())
     })?;

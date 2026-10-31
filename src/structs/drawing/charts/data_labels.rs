@@ -87,6 +87,50 @@ impl DataLabels {
         removed
     }
 
+    /// Excel's explicit "no labels" owner: `<c:dLbls><c:delete val="1"/>`.
+    pub(crate) fn deleted() -> Self {
+        let mut delete = XmlBoolean::default();
+        delete.set_value(true);
+        Self {
+            parts: Some(Box::new(DataLabelsParts {
+                delete: Some(delete),
+                owner_present: Some(true),
+                ..DataLabelsParts::default()
+            })),
+            ..Self::default()
+        }
+    }
+
+    /// A chart group's owner marked absent without any content.
+    fn absent(&self) -> bool {
+        self.parts
+            .as_deref()
+            .is_some_and(|p| p.owner_present == Some(false) && !self.has_explicit_content(p))
+    }
+
+    /// Whether this owner was explicitly removed by an edit: deleted or
+    /// absent. Restoration never brings such an owner's old labels or
+    /// extensions back.
+    fn explicitly_removed(&self) -> bool {
+        self.absent()
+            || self
+                .parts
+                .as_deref()
+                .is_some_and(|p| p.delete.as_ref().and_then(XmlBoolean::value) == Some(true))
+    }
+
+    /// Whether these labels, as an owner, make any label visible.
+    pub(crate) fn shows_labels(&self) -> bool {
+        !self.explicitly_removed()
+            && (self.show_legend_key.val()
+                || self.show_value.val()
+                || self.show_category_name.val()
+                || self.show_series_name.val()
+                || self.show_percent.val()
+                || self.show_bubble_size.val()
+                || !self.labels().is_empty())
+    }
+
     pub(crate) fn parts_for_restoration_present(&self) -> bool {
         self.parts.is_some()
     }
@@ -125,6 +169,10 @@ impl DataLabels {
         &mut self,
         previous: &Self,
     ) -> Result<usize, crate::XlsxError> {
+        // An explicit removal wins unless the basis has nothing to restore.
+        if self.explicitly_removed() && !previous.absent() {
+            return Ok(0);
+        }
         if previous.parts.is_none() {
             self.discard_untrusted_point_labels();
         }

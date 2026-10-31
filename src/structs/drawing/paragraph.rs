@@ -40,6 +40,14 @@ pub struct Paragraph {
     #[cfg_attr(feature = "serde", serde(default))]
     breaks:                  Vec<PositionedTextBreak>,
 }
+/// What a text edit removed: the number of runs and, for a removed paragraph,
+/// its fields (field index, run position it preceded).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TextEditLoss {
+    pub(crate) runs:   usize,
+    pub(crate) fields: Vec<(usize, u32)>,
+}
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct PositionedTextBreak {
@@ -264,6 +272,24 @@ impl Paragraph {
         if !self.projected_structure_matches(previous) {
             return Ok(0);
         }
+        self.restore_edited_export_parts(previous, &mut TextEditLoss::default())
+    }
+
+    /// Restores the hidden parts of `previous` after the paragraph's text may
+    /// have been edited in place, the way Excel keeps them (measured with
+    /// Excel, typing inside a title): the run at a position keeps its own
+    /// parts whatever text it now holds and positioned fields stay. Runs past
+    /// the new run count were removed by the edit and take their own parts
+    /// along; fields behind them stay after the last surviving run. `loss`
+    /// counts the removed runs. Restoration never decides that the whole text
+    /// was replaced; that is `set_text` on the complete chart.
+    pub(crate) fn restore_edited_export_parts(
+        &mut self,
+        previous: &Self,
+        loss: &mut TextEditLoss,
+    ) -> Result<usize, XlsxError> {
+        let surviving_runs = self.run.len();
+        loss.runs = previous.run.len().saturating_sub(surviving_runs);
         let mut restored = 0;
         if self.parts.is_none() {
             if let Some(parts) = &previous.parts {
@@ -311,6 +337,16 @@ impl Paragraph {
             current.fields = previous_fields.to_vec();
             restored += usize::from(changed);
         }
+        let mut fields_adjusted = false;
+        if let Some(parts) = &mut self.parts {
+            let last = run_position(surviving_runs);
+            for field in &mut parts.fields {
+                if field.before_run > last {
+                    field.before_run = last;
+                    fields_adjusted = true;
+                }
+            }
+        }
         let same_breaks = self.breaks.len() == previous.breaks.len()
             && self
                 .breaks
@@ -319,6 +355,20 @@ impl Paragraph {
                 .all(|(current, old)| {
                     current.before_run == old.before_run && current.before_field == old.before_field
                 });
+        if fields_adjusted {
+            // Removing or moving fields can leave a break outside the ranks of
+            // the fields that share its run boundary; keep it on the nearest.
+            let fields = self.fields().to_vec();
+            for text_break in &mut self.breaks {
+                let first =
+                    fields.partition_point(|field| field.before_run < text_break.before_run);
+                let end = fields.partition_point(|field| field.before_run <= text_break.before_run);
+                text_break.before_field = text_break.before_field.clamp(
+                    u32::try_from(first).expect("field rank fits the u32 positions"),
+                    u32::try_from(end).expect("field rank fits the u32 positions"),
+                );
+            }
+        }
         for (index, text_break) in self.breaks.iter_mut().enumerate() {
             if let Some(properties) = &mut text_break.run_properties {
                 let mut before = Writer::new(Cursor::new(Vec::new()));
@@ -341,7 +391,10 @@ impl Paragraph {
             .paragraph_properties
             .restore_export_parts(&previous.paragraph_properties);
         for (current, previous) in self.run.iter_mut().zip(&previous.run) {
-            restored += current.restore_export_parts(previous)?;
+            restored += current.restore_edited_export_parts(previous)?;
+        }
+        for added in self.run.iter_mut().skip(previous.run.len()) {
+            added.strip_export_parts();
         }
         if let (Some(current), Some(previous)) = (
             &mut self.end_para_run_properties,

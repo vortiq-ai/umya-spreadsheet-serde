@@ -551,6 +551,17 @@ impl Chart {
         self
     }
 
+    /// Deletes the chart title the way Excel does: no `c:title` is written and
+    /// `c:autoTitleDeleted` is set to 1, so Excel does not synthesise a title
+    /// from the series name. The title's rich text, fields, layout, shape and
+    /// every other part leave with it; a restoration against a basis that still
+    /// has the title reports the owner as removed and never brings it back.
+    pub fn remove_title(&mut self) -> &mut Self {
+        self.title = None;
+        self.auto_title_deleted.set_val(true);
+        self
+    }
+
     #[must_use]
     pub fn auto_title_deleted(&self) -> &AutoTitleDeleted {
         &self.auto_title_deleted

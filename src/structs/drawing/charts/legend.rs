@@ -10,6 +10,9 @@ use quick_xml::{
 };
 
 use super::{
+    Delete,
+    ExtensionList,
+    Index,
     Layout,
     LegendPosition,
     Overlay,
@@ -35,41 +38,189 @@ pub struct Legend {
     overlay:          Overlay,
     shape_properties: Option<Box<ShapeProperties>>,
     text_properties:  Option<Box<TextProperties>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:            Option<Box<LegendParts>>,
+}
+
+/// Source parts of a legend that no editable field models.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct LegendParts {
+    extensions: Option<ExtensionList>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    entries:    Vec<LegendEntry>,
+}
+
+/// c:legendEntry: a deleted entry or the text formatting of one entry.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub(crate) struct LegendEntry {
+    index:           Index,
+    delete:          Option<Delete>,
+    text_properties: Option<TextProperties>,
+    extensions:      Option<ExtensionList>,
+}
+
+impl LegendEntry {
+    fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<Self, crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        let mut entry = Self::default();
+        try_xml_read_loop!(
+            reader,
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                b"txPr" => {
+                    let mut obj = TextProperties::default();
+                    obj.read_with_session(reader, e, Some(session))?;
+                    entry.text_properties = Some(obj);
+                }
+                b"extLst" => {
+                    entry.extensions = Some(ExtensionList::read(reader, e, false, session)?);
+                }
+                _ => crate::reader::driver::skip_element(reader, e)?,
+            },
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                b"idx" => entry.index.set_attributes(reader, e)?,
+                b"delete" => {
+                    let mut obj = Delete::default();
+                    obj.set_attributes(reader, e)?;
+                    entry.delete = Some(obj);
+                }
+                b"extLst" => {
+                    entry.extensions = Some(ExtensionList::read(reader, e, true, session)?);
+                }
+                _ => (),
+            },
+            Event::End(ref e) => {
+                if e.name().as_ref() == owner_end {
+                    return Ok(entry);
+                }
+            },
+            Event::Eof => return Err(crate::xml::xml_error("Error: Could not find c:legendEntry end element")),
+        );
+    }
+
+    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+        write_start_tag(writer, "c:legendEntry", vec![], false);
+        self.index.write_to(writer);
+        if let Some(v) = &self.delete {
+            v.write_to(writer);
+        }
+        if let Some(v) = &self.text_properties {
+            v.write_to(writer)?;
+        }
+        if let Some(v) = &self.extensions {
+            v.write_for_owner(writer, None, "legendEntry", None)?;
+        }
+        write_end_tag(writer, "c:legendEntry");
+        Ok(())
+    }
+}
+
+/// The editable owners of a legend plus its hidden extension list.
+pub(crate) struct LegendRoleParts<'a> {
+    pub(crate) layout:           Option<&'a Layout>,
+    pub(crate) shape:            Option<&'a ShapeProperties>,
+    pub(crate) extensions:       Option<&'a ExtensionList>,
+    pub(crate) entry_extensions: Vec<&'a ExtensionList>,
+}
+
+pub(crate) struct LegendRolePartsMut<'a> {
+    pub(crate) layout:           Option<&'a mut Layout>,
+    pub(crate) shape:            Option<&'a mut ShapeProperties>,
+    pub(crate) extensions:       Option<&'a mut ExtensionList>,
+    pub(crate) entry_extensions: Vec<&'a mut ExtensionList>,
 }
 
 impl Legend {
     pub(crate) fn restore_export_parts(
         &mut self,
         previous: &Self,
+        report: &mut super::RestoreReport,
     ) -> Result<usize, crate::XlsxError> {
-        Ok(
-            match (&mut self.text_properties, &previous.text_properties) {
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions().is_some(),
+            "legend",
+            report,
+        );
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.parts
+                .iter()
+                .flat_map(|parts| &parts.entries)
+                .any(|entry| entry.extensions.is_some()),
+            "legendEntry",
+            report,
+        );
+        let restored = super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.parts,
+            previous.parts.as_ref(),
+        );
+        Ok(restored
+            + match (&mut self.text_properties, &previous.text_properties) {
                 (Some(current), Some(previous)) => current.restore_export_parts(previous)?,
                 _ => 0,
-            },
-        )
+            })
     }
 
-    pub(crate) fn reference_role_parts(&self) -> (Option<&Layout>, Option<&ShapeProperties>) {
-        (self.layout.as_deref(), self.shape_properties.as_deref())
+    pub(crate) fn reference_role_parts(&self) -> LegendRoleParts<'_> {
+        LegendRoleParts {
+            layout:           self.layout.as_deref(),
+            shape:            self.shape_properties.as_deref(),
+            extensions:       self.extensions(),
+            entry_extensions: self
+                .parts
+                .iter()
+                .flat_map(|p| &p.entries)
+                .filter_map(|entry| entry.extensions.as_ref())
+                .collect(),
+        }
     }
 
-    pub(crate) fn projection_parts_mut(
-        &mut self,
-    ) -> (Option<&mut Layout>, Option<&mut ShapeProperties>) {
+    pub(crate) fn projection_parts_mut(&mut self) -> LegendRolePartsMut<'_> {
+        self.parts = None;
         if let Some(text) = &mut self.text_properties {
             text.strip_export_parts();
         }
         self.reference_role_parts_mut()
     }
 
-    pub(crate) fn reference_role_parts_mut(
-        &mut self,
-    ) -> (Option<&mut Layout>, Option<&mut ShapeProperties>) {
-        (
-            self.layout.as_deref_mut(),
-            self.shape_properties.as_deref_mut(),
-        )
+    pub(crate) fn reference_role_parts_mut(&mut self) -> LegendRolePartsMut<'_> {
+        let (extensions, entries) = match self.parts.as_deref_mut() {
+            Some(parts) => (parts.extensions.as_mut(), Some(&mut parts.entries)),
+            None => (None, None),
+        };
+        LegendRolePartsMut {
+            layout: self.layout.as_deref_mut(),
+            shape: self.shape_properties.as_deref_mut(),
+            extensions,
+            entry_extensions: entries
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.extensions.as_mut())
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.parts.as_deref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) -> &mut Self {
+        if self.parts.is_some() || value.is_some() {
+            self.parts.get_or_insert_with(Default::default).extensions = value;
+        }
+        self
     }
 
     #[must_use]
@@ -223,6 +374,13 @@ impl Legend {
                     obj.read_with_session(reader, e, Some(session))?;
                     self.set_text_properties(obj);
                 }
+                b"legendEntry" => {
+                    let entry = LegendEntry::read(reader, e, session)?;
+                    self.parts.get_or_insert_with(Default::default).entries.push(entry);
+                }
+                b"extLst" => {
+                    self.set_extensions(Some(ExtensionList::read(reader, e, false, session)?));
+                }
                 _ => (),
             },
             Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
@@ -236,6 +394,9 @@ impl Legend {
                 }
                 b"overlay" => {
                     self.overlay.set_attributes(reader, e)?;
+                }
+                b"extLst" => {
+                    self.set_extensions(Some(ExtensionList::read(reader, e, true, session)?));
                 }
                 _ => (),
             },
@@ -258,6 +419,11 @@ impl Legend {
         // c:legendPos
         self.legend_position.write_to(writer);
 
+        // c:legendEntry
+        for entry in self.parts.iter().flat_map(|parts| &parts.entries) {
+            entry.write_to(writer)?;
+        }
+
         // c:layout
         if let Some(v) = &self.layout {
             v.write_to(writer)?;
@@ -274,6 +440,11 @@ impl Legend {
         // c:txPr
         if let Some(v) = &self.text_properties {
             v.write_to(writer)?;
+        }
+
+        // c:extLst
+        if let Some(v) = self.extensions() {
+            v.write_for_owner(writer, None, "legend", None)?;
         }
 
         write_end_tag(writer, "c:legend");

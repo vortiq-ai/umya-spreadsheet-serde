@@ -113,12 +113,14 @@ pub(crate) fn restore_space(
         &mut report,
     )?;
     restore_plot(fields.plot, old.plot, &mut report)?;
-    report.restored_owners += fields.legend.restore_export_parts(old.legend)?;
-    let (layout, legend_shape) = fields.legend.reference_role_parts_mut();
-    let (old_layout, old_legend_shape) = old.legend.reference_role_parts();
+    report.restored_owners += fields
+        .legend
+        .restore_export_parts(old.legend, &mut report)?;
+    let legend = fields.legend.reference_role_parts_mut();
+    let old_legend = old.legend.reference_role_parts();
     paired(
-        layout,
-        old_layout,
+        legend.layout,
+        old_legend.layout,
         |current, previous, report| {
             restore_layout(current, previous, report);
             Ok(())
@@ -127,8 +129,8 @@ pub(crate) fn restore_space(
         &mut report,
     )?;
     paired(
-        legend_shape,
-        old_legend_shape,
+        legend.shape,
+        old_legend.shape,
         |current, previous, report| {
             restore_shape(current, previous, report);
             Ok(())
@@ -212,8 +214,9 @@ fn restore_title(
     previous: &Title,
     report: &mut RestoreReport,
 ) -> Result<(), crate::XlsxError> {
-    let (text, shape, layout) = current.reference_role_parts_mut();
-    let (old_text, old_shape, old_layout) = previous.reference_role_parts();
+    report.restored_owners += current.restore_export_parts(previous, report)?;
+    let (text, shape, layout, _) = current.reference_role_parts_mut();
+    let (old_text, old_shape, old_layout, _) = previous.reference_role_parts();
     paired(
         text,
         old_text,
@@ -265,15 +268,7 @@ pub(super) fn restore_text(
         return Ok(());
     }
     if let (Some(text), Some(old)) = (current.rich_text_mut(), previous.rich_text()) {
-        if text.projected_structure_matches(old) {
-            report.restored_owners += text.restore_export_parts(old)?;
-        } else {
-            text.strip_export_parts();
-            report.incompatible_owners += 1;
-            report
-                .diagnostics
-                .push("replaced chart text retains no previous text supplements".into());
-        }
+        report.restored_owners += text.restore_edited_export_parts(old, report)?;
     }
     if let (Some(reference), Some(old)) =
         (current.string_reference_mut(), previous.string_reference())
@@ -587,7 +582,8 @@ pub(super) fn discard_text_extensions(current: &mut ChartText, report: &mut Rest
 }
 
 fn discard_title_extensions(current: &mut Title, report: &mut RestoreReport) {
-    let (text, shape, layout) = current.reference_role_parts_mut();
+    current.discard_extensions(report);
+    let (text, shape, layout, _) = current.reference_role_parts_mut();
     if let Some(text) = text {
         discard_text_extensions(text, report);
     }

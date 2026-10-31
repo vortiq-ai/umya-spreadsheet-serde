@@ -252,6 +252,17 @@ impl ValueAxis {
         self
     }
 
+    /// Removes the axis' display units (`c:dispUnits`) with their label
+    /// (`c:dispUnitsLbl`), extension lists and every duplicate owner, as
+    /// Excel does when the display unit is set to none. Nothing else on the
+    /// axis changes. Display units are hidden from client projections, so a
+    /// restoration only keeps this removal when it is applied to the
+    /// authoritative axis the restoration starts from.
+    pub fn remove_display_units(&mut self) -> &mut Self {
+        self.parts = None;
+        self
+    }
+
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
         &self.axis_id

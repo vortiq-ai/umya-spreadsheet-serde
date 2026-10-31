@@ -628,6 +628,26 @@ impl AreaChartSeries {
         self
     }
 
+    /// Removes the series' `c:dLbls` owner together with everything it
+    /// carries: point labels (`c:dLbl`), its extension list and its hidden
+    /// source parts. Point overrides (`c:dPt`) and every other series part are
+    /// untouched. The series then writes no `c:dLbls`, so it follows its chart
+    /// group's labels; when the group shows labels and this series must not,
+    /// use [`Self::delete_data_labels`] (Excel's form for that case).
+    pub fn remove_data_labels(&mut self) -> &mut Self {
+        self.data_labels = None;
+        self
+    }
+
+    /// Replaces the series' data labels with Excel's explicit "no labels"
+    /// owner, `<c:dLbls><c:delete val="1"/></c:dLbls>`, dropping point labels,
+    /// extensions and hidden parts. Excel writes this form when a series turns
+    /// its labels off while its chart group still shows labels. A restoration
+    /// against an older basis never brings the removed owner back.
+    pub fn delete_data_labels(&mut self) -> &mut Self {
+        self.set_data_labels(DataLabels::deleted())
+    }
+
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
         super::chart_reference_roles::collect_series_formulas_mut(self)
     }

@@ -283,13 +283,19 @@ fn every_imported_owner_roundtrips_projection_and_persistence_without_state_chan
 }
 
 #[test]
-fn changed_title_text_does_not_recreate_fields_from_the_previous_title() {
+fn changed_title_text_on_a_stripped_copy_is_an_in_place_edit_that_keeps_the_fields() {
     let previous = fixture::imported_chart(&fixture::all_owner_xml());
     let mut current = previous.clone();
     current.strip_export_parts();
     current.set_title("a new title");
     let report = current.restore_export_parts(&previous).unwrap();
-    assert!(report.incompatible_owners >= 1);
+    // A stripped copy carries no replacement intent: the retyped text is an
+    // in-place edit and, as in Excel when typing inside a title, the field
+    // stays after the text (whole replacement is `set_text` on the complete
+    // chart).
+    assert_eq!(report.incompatible_owners, 0);
+    assert_eq!(report.removed_incompatible_parts, 0);
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     let mut book = umya_spreadsheet::new_file();
     book.sheet_mut(0).unwrap().add_chart(current);
     let xml = fixture::chart_xml(&book);
@@ -301,7 +307,7 @@ fn changed_title_text_does_not_recreate_fields_from_the_previous_title() {
         .unwrap()
         .0;
     assert!(title.contains("a new title"));
-    assert!(!title.contains("a:fld"), "{title}");
+    assert!(title.contains("a:fld"), "{title}");
     assert!(!title.contains("kept text"));
 }
 

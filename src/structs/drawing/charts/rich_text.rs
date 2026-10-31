@@ -15,6 +15,7 @@ use super::{
         BodyProperties,
         ListStyle,
         Paragraph,
+        paragraph::TextEditLoss,
     },
     text_properties::TextBodyParts,
 };
@@ -63,6 +64,14 @@ impl RichText {
         if !self.projected_structure_matches(previous) {
             return Ok(0);
         }
+        let mut restored = self.restore_body_parts(previous)?;
+        for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
+            restored += current.restore_export_parts(previous)?;
+        }
+        Ok(restored)
+    }
+
+    fn restore_body_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
         let mut restored = 0;
         if self.parts.is_none() {
             if let Some(parts) = &previous.parts {
@@ -81,12 +90,82 @@ impl RichText {
             .body_properties
             .restore_export_parts(&previous.body_properties);
         restored += self.list_style.restore_export_parts(&previous.list_style);
-        for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
-            restored += current.restore_export_parts(previous)?;
+        Ok(restored)
+    }
+
+    /// Restores the hidden parts of `previous` after an edit that may have
+    /// changed the text, the way Excel keeps them (see
+    /// `Paragraph::restore_edited_export_parts`): body, list-style and
+    /// paragraph parts stay, a run keeps its own parts at its position, and
+    /// only removed runs, removed paragraphs and the fields that followed them
+    /// leave. Each removal is reported with its position. A changed text is
+    /// always an in-place edit; whole replacement is `set_text` on the
+    /// complete chart, not something restoration infers.
+    pub(crate) fn restore_edited_export_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<usize, XlsxError> {
+        let mut restored = self.restore_body_parts(previous)?;
+        let mut report_loss = |paragraph: usize, loss: &TextEditLoss| {
+            if loss.runs > 0 {
+                // The library cannot tell which run an edit removed, only how
+                // many: the runs past the new count lose their own parts.
+                report.removed_incompatible_parts += loss.runs;
+                report.diagnostics.push(format!(
+                    "text edit dropped the own parts of {} removed run(s) of paragraph:{paragraph}",
+                    loss.runs
+                ));
+            }
+            for (field, before_run) in &loss.fields {
+                report.removed_incompatible_parts += 1;
+                report.diagnostics.push(format!(
+                    "text edit dropped field:{field} before run:{before_run} of \
+                     paragraph:{paragraph}"
+                ));
+            }
+        };
+        for (index, (current, previous)) in self
+            .paragraph
+            .iter_mut()
+            .zip(&previous.paragraph)
+            .enumerate()
+        {
+            let mut loss = TextEditLoss::default();
+            restored += current.restore_edited_export_parts(previous, &mut loss)?;
+            report_loss(index, &loss);
+        }
+        // A paragraph without an authoritative counterpart keeps no hidden
+        // parts: a client cannot introduce them.
+        for added in self.paragraph.iter_mut().skip(previous.paragraph.len()) {
+            added.strip_export_parts();
+        }
+        for (index, removed) in previous
+            .paragraph
+            .iter()
+            .enumerate()
+            .skip(self.paragraph.len())
+        {
+            report_loss(
+                index,
+                &TextEditLoss {
+                    runs:   removed.run().len(),
+                    fields: removed
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(field, positioned)| (field, positioned.before_run))
+                        .collect(),
+                },
+            );
         }
         Ok(restored)
     }
 
+    /// Replaces the whole text with one run (Excel `ChartTitle.Text = ...`).
+    /// Call it on the complete chart: a stripped copy carries no intent, so a
+    /// `set_text` before `restore_export_parts` is restored as an in-place
+    /// edit and the previous fields come back.
     #[inline]
     pub fn set_text<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.paragraph.clear();

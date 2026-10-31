@@ -50,6 +50,15 @@ impl Run {
         if self.text != previous.text {
             return Ok(0);
         }
+        self.restore_edited_export_parts(previous)
+    }
+
+    /// Restores the run's own hidden parts whatever text it holds now: Excel
+    /// keeps a run's formatting when its characters are retyped.
+    pub(crate) fn restore_edited_export_parts(
+        &mut self,
+        previous: &Self,
+    ) -> Result<usize, XlsxError> {
         let mut restored = 0;
         if self.parts.is_none() {
             if let Some(parts) = &previous.parts {

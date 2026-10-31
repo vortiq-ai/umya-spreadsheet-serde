@@ -472,6 +472,9 @@ impl Chart {
     /// the true before-state separately for history. Explicit removals must
     /// already be applied to `previous`; projection omission is not removal.
     /// Ambiguous owners are reported, never paired by collection position.
+    /// A changed text in the restored copy is an in-place edit: runs keep their
+    /// parts and fields stay. Replacing a whole text (`RichText::set_text`)
+    /// must be done on the complete chart, after restoration.
     /// If restoration fails, both charts remain unchanged.
     pub fn restore_export_parts(
         &mut self,
