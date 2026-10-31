@@ -16,7 +16,11 @@ const TEXT: &str = "<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr/><a:r><a:rPr u=\
                     t>omitted paragraph properties</a:t></a:r></a:p></c:txPr>";
 
 fn imported(series: &str, group: &str, axis: &str, pivots: &str) -> Chart {
-    fixture::imported_chart(&format!("<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:u=\"urn:future\"><c:chart>{pivots}<c:plotArea><c:lineChart><c:grouping val=\"standard\"/>{series}{group}<c:axId val=\"10\"/><c:axId val=\"20\"/></c:lineChart>{axis}</c:plotArea></c:chart></c:chartSpace>"))
+    imported_on((10, 20), series, group, axis, pivots)
+}
+
+fn imported_on(axes: (u32, u32), series: &str, group: &str, axis: &str, pivots: &str) -> Chart {
+    fixture::imported_chart(&format!("<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:u=\"urn:future\"><c:chart>{pivots}<c:plotArea><c:lineChart><c:grouping val=\"standard\"/>{series}{group}<c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:lineChart>{axis}</c:plotArea></c:chart></c:chartSpace>", axes.0, axes.1))
 }
 
 fn series(index: Option<u32>, formula: &str, hidden: bool) -> String {
@@ -172,7 +176,15 @@ fn unmatched_group_drops_extensions_and_point_labels_not_label_flag_presence() {
          val=\"3\"/><c:tx><c:strRef><c:f>Injected!$G$1</c:f></c:strRef></c:tx></c:dLbl><c:showVal/\
          ><c:showPercent val=\"false\"/>{TEXT}</c:dLbls>{EXT}"
     );
-    let mut current = imported(&series(Some(44), "Data!$H$8:$H$11", false), &labels, "", "");
+    // Other axes than the basis: no group matches, even though every series was
+    // replaced.
+    let mut current = imported_on(
+        (11, 21),
+        &series(Some(44), "Data!$H$8:$H$11", false),
+        &labels,
+        "",
+        "",
+    );
     let report = current.restore_export_parts(&previous).unwrap();
     assert_eq!(report.removed_incompatible_parts, 2, "{report:?}");
     match current

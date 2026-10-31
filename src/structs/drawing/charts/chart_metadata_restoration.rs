@@ -935,6 +935,15 @@ fn match_groups(
     series: &SeriesCorrespondence,
     report: &mut RestoreReport,
 ) -> Vec<Option<usize>> {
+    // Previous groups that surviving series already identify.
+    let claimed: Vec<usize> = series
+        .current
+        .iter()
+        .filter_map(|(_, outcome)| match outcome {
+            SeriesMatch::ExplicitIndex(old) | SeriesMatch::ValuesFormula(old) => Some(old.group),
+            _ => None,
+        })
+        .collect();
     let mut candidates = Vec::new();
     for (position, group) in current.chart_groups().enumerate() {
         let members: Vec<SeriesPosition> = series
@@ -950,14 +959,20 @@ fn match_groups(
                 }
             })
             .collect();
-        // A new/ambiguous group has no stored membership to identify it.
+        // A group none of whose series survived has no stored membership: it
+        // is the same group when a single unclaimed previous group has its
+        // kind and axes (Excel keeps the group's own parts when every series
+        // is replaced by changing the source data). Several candidates do not
+        // match.
         let matches: Vec<_> = previous
             .iter()
             .enumerate()
             .filter_map(|(old_position, old)| {
                 let membership = if members.is_empty() {
-                    group.series().area_chart_series().is_empty()
-                        && old.series().area_chart_series().is_empty()
+                    let current_empty = group.series().area_chart_series().is_empty();
+                    let old_empty = old.series().area_chart_series().is_empty();
+                    (current_empty && old_empty)
+                        || (!current_empty && !old_empty && !claimed.contains(&old_position))
                 } else {
                     members.iter().all(|member| member.group == old_position)
                 };
