@@ -26,21 +26,21 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ChartLines {
-    shape_properties: Option<ShapeProperties>,
+    shape_properties: Option<Box<ShapeProperties>>,
     duplicate_shape:  bool,
 }
 impl ChartLines {
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {
-        self.shape_properties.as_ref()
+        self.shape_properties.as_deref()
     }
 
     pub fn shape_properties_mut(&mut self) -> Option<&mut ShapeProperties> {
-        self.shape_properties.as_mut()
+        self.shape_properties.as_deref_mut()
     }
 
     pub fn set_shape_properties(&mut self, value: Option<ShapeProperties>) -> &mut Self {
-        self.shape_properties = value;
+        self.shape_properties = value.map(Box::new);
         self.duplicate_shape = false;
         self
     }
@@ -74,7 +74,7 @@ impl ChartLines {
                     if !empty {
                         shape.set_attributes_with_session(reader, e, session)?;
                     }
-                    result.shape_properties = Some(shape);
+                    result.shape_properties = Some(Box::new(shape));
                     true
                 })
             },

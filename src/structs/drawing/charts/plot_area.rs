@@ -77,11 +77,11 @@ pub struct PlotArea {
     area_3d_chart:     Option<Area3DChart>,
     of_pie_chart:      Option<OfPieChart>,
     #[cfg_attr(feature = "serde", serde(default))]
-    stock_chart:       Option<StockChart>,
+    stock_chart:       Option<Box<StockChart>>,
     #[cfg_attr(feature = "serde", serde(default))]
-    surface_chart:     Option<SurfaceChart>,
+    surface_chart:     Option<Box<SurfaceChart>>,
     #[cfg_attr(feature = "serde", serde(default))]
-    surface_3d_chart:  Option<Surface3DChart>,
+    surface_3d_chart:  Option<Box<Surface3DChart>>,
     category_axis:     Vec<CategoryAxis>,
     date_axis:         Vec<DateAxis>,
     value_axis:        Vec<ValueAxis>,
@@ -149,14 +149,17 @@ macro_rules! ordered_group_views_mut {
                 .as_mut()
                 .map(ChartGroupMut::Area3DChart),
             $owner.of_pie_chart.as_mut().map(ChartGroupMut::OfPieChart),
-            $owner.stock_chart.as_mut().map(ChartGroupMut::StockChart),
+            $owner
+                .stock_chart
+                .as_deref_mut()
+                .map(ChartGroupMut::StockChart),
             $owner
                 .surface_chart
-                .as_mut()
+                .as_deref_mut()
                 .map(ChartGroupMut::SurfaceChart),
             $owner
                 .surface_3d_chart
-                .as_mut()
+                .as_deref_mut()
                 .map(ChartGroupMut::Surface3DChart),
         ];
         let entries = $owner
@@ -250,10 +253,12 @@ impl PlotArea {
             self.area_chart.as_ref().map(ChartGroupRef::AreaChart),
             self.area_3d_chart.as_ref().map(ChartGroupRef::Area3DChart),
             self.of_pie_chart.as_ref().map(ChartGroupRef::OfPieChart),
-            self.stock_chart.as_ref().map(ChartGroupRef::StockChart),
-            self.surface_chart.as_ref().map(ChartGroupRef::SurfaceChart),
+            self.stock_chart.as_deref().map(ChartGroupRef::StockChart),
+            self.surface_chart
+                .as_deref()
+                .map(ChartGroupRef::SurfaceChart),
             self.surface_3d_chart
-                .as_ref()
+                .as_deref()
                 .map(ChartGroupRef::Surface3DChart),
         ];
         let entries = self.chart_group_order.iter().map(|entry| match entry {
@@ -310,17 +315,18 @@ impl PlotArea {
             ChartGroup::OfPieChart(chart) => {
                 self.of_pie_chart.replace(chart).map(ChartGroup::OfPieChart)
             }
-            ChartGroup::StockChart(chart) => {
-                self.stock_chart.replace(chart).map(ChartGroup::StockChart)
-            }
+            ChartGroup::StockChart(chart) => self
+                .stock_chart
+                .replace(Box::new(chart))
+                .map(|chart| ChartGroup::StockChart(*chart)),
             ChartGroup::SurfaceChart(chart) => self
                 .surface_chart
-                .replace(chart)
-                .map(ChartGroup::SurfaceChart),
+                .replace(Box::new(chart))
+                .map(|chart| ChartGroup::SurfaceChart(*chart)),
             ChartGroup::Surface3DChart(chart) => self
                 .surface_3d_chart
-                .replace(chart)
-                .map(ChartGroup::Surface3DChart),
+                .replace(Box::new(chart))
+                .map(|chart| ChartGroup::Surface3DChart(*chart)),
         }
     }
 
@@ -424,13 +430,13 @@ impl PlotArea {
                 .map(|chart| Box::new(ChartGroup::OfPieChart(chart))),
             self.stock_chart
                 .take()
-                .map(|chart| Box::new(ChartGroup::StockChart(chart))),
+                .map(|chart| Box::new(ChartGroup::StockChart(*chart))),
             self.surface_chart
                 .take()
-                .map(|chart| Box::new(ChartGroup::SurfaceChart(chart))),
+                .map(|chart| Box::new(ChartGroup::SurfaceChart(*chart))),
             self.surface_3d_chart
                 .take()
-                .map(|chart| Box::new(ChartGroup::Surface3DChart(chart))),
+                .map(|chart| Box::new(ChartGroup::Surface3DChart(*chart))),
         ];
         let entries = std::mem::take(&mut self.chart_group_order)
             .into_iter()
@@ -800,11 +806,11 @@ impl PlotArea {
 
     #[must_use]
     pub fn stock_chart(&self) -> Option<&StockChart> {
-        self.stock_chart.as_ref()
+        self.stock_chart.as_deref()
     }
 
     pub fn stock_chart_mut(&mut self) -> Option<&mut StockChart> {
-        self.stock_chart.as_mut()
+        self.stock_chart.as_deref_mut()
     }
 
     pub fn set_stock_chart(&mut self, value: StockChart) -> &mut Self {
@@ -813,11 +819,11 @@ impl PlotArea {
 
     #[must_use]
     pub fn surface_chart(&self) -> Option<&SurfaceChart> {
-        self.surface_chart.as_ref()
+        self.surface_chart.as_deref()
     }
 
     pub fn surface_chart_mut(&mut self) -> Option<&mut SurfaceChart> {
-        self.surface_chart.as_mut()
+        self.surface_chart.as_deref_mut()
     }
 
     pub fn set_surface_chart(&mut self, value: SurfaceChart) -> &mut Self {
@@ -826,11 +832,11 @@ impl PlotArea {
 
     #[must_use]
     pub fn surface_3d_chart(&self) -> Option<&Surface3DChart> {
-        self.surface_3d_chart.as_ref()
+        self.surface_3d_chart.as_deref()
     }
 
     pub fn surface_3d_chart_mut(&mut self) -> Option<&mut Surface3DChart> {
-        self.surface_3d_chart.as_mut()
+        self.surface_3d_chart.as_deref_mut()
     }
 
     pub fn set_surface_3d_chart(&mut self, value: Surface3DChart) -> &mut Self {
@@ -1050,13 +1056,13 @@ impl PlotArea {
         if let Some(chart) = &mut self.of_pie_chart {
             return chart.area_chart_series_list_mut();
         }
-        if let Some(chart) = &mut self.stock_chart {
+        if let Some(chart) = self.stock_chart.as_deref_mut() {
             return chart.area_chart_series_list_mut();
         }
-        if let Some(chart) = &mut self.surface_chart {
+        if let Some(chart) = self.surface_chart.as_deref_mut() {
             return chart.area_chart_series_list_mut();
         }
-        if let Some(chart) = &mut self.surface_3d_chart {
+        if let Some(chart) = self.surface_3d_chart.as_deref_mut() {
             return chart.area_chart_series_list_mut();
         }
         panic! {"Non-ChartSeriesList."};
