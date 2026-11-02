@@ -15,7 +15,10 @@ fn fixture_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "umya-loaded-sheet-access-{}-{}.xlsx",
         process::id(),
-        std::thread::current().name().unwrap_or("test")
+        std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace("::", "-")
     ))
 }
 

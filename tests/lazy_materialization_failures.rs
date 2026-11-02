@@ -149,7 +149,10 @@ fn file_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "umya-lazy-failed-sheet-{}-{}.xlsx",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace("::", "-")
     ))
 }
 

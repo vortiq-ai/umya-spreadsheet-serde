@@ -161,8 +161,14 @@ pub fn read_deferred(bytes: &[u8]) -> Result<Workbook, XlsxError> {
 
 /// Read through the file-backed lazy reader.
 pub fn read_lazy_file(name: &str, bytes: &[u8]) -> Result<Workbook, XlsxError> {
-    let directory = scratch_directory();
-    let path = directory.join(format!("{name}-{}.xlsx", std::process::id()));
+    // Every test file that includes this fixture shares one process, so the
+    // module path and the counter keep their scratch files apart.
+    let number = NEXT_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = scratch_directory().join(format!(
+        "{}-{name}-{number}-{}.xlsx",
+        module_path!().replace("::", "-"),
+        std::process::id()
+    ));
     std::fs::write(&path, bytes).unwrap();
     let result = reader::xlsx::lazy_read(&path);
     std::fs::remove_file(&path).ok();
@@ -178,10 +184,7 @@ pub fn readers() -> Vec<(&'static str, Reader)> {
     vec![
         ("eager", read_eager),
         ("deferred", read_deferred),
-        ("lazy-file", |bytes| {
-            let number = NEXT_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            read_lazy_file(&format!("reader-{number}"), bytes)
-        }),
+        ("lazy-file", |bytes| read_lazy_file("reader", bytes)),
     ]
 }
 

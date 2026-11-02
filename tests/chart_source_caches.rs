@@ -141,7 +141,10 @@ fn malformed_chart_xml_keeps_the_existing_failure() {
     let path = std::env::temp_dir().join(format!(
         "umya-chart-malformed-{}-{}.xlsx",
         std::process::id(),
-        std::thread::current().name().unwrap_or("reader")
+        std::thread::current()
+            .name()
+            .unwrap_or("reader")
+            .replace("::", "-")
     ));
     std::fs::write(&path, &bytes).unwrap();
     assert!(
@@ -293,7 +296,10 @@ fn assert_chart_zip_name_compatibility(bytes: &[u8]) {
     let path = std::env::temp_dir().join(format!(
         "umya-chart-name-{}-{}.xlsx",
         std::process::id(),
-        std::thread::current().name().unwrap_or("reader")
+        std::thread::current()
+            .name()
+            .unwrap_or("reader")
+            .replace("::", "-")
     ));
     std::fs::write(&path, bytes).unwrap();
     let mut lazy = umya_spreadsheet::reader::xlsx::lazy_read(&path).unwrap();

@@ -523,71 +523,102 @@ fn split_elements_import_like_self_closing_elements_in_every_chart_and_drawing_f
         fixtures(Path::new(root), &mut found);
     }
     found.sort();
-    let mut checked = 0;
-    let mut charts_checked = 0;
-    let mut rejected_lazy = 0;
-    let mut rejected_relationships = 0;
-    for path in found {
-        let package = std::fs::read(&path).unwrap();
-        if !has_chart_or_drawing_part(&package) {
-            continue;
-        }
-        eprintln!("checking {}", path.display());
-        let (split, count) = split_chart_parts(&package);
-        assert!(count > 0, "{}: nothing was split", path.display());
-        let what = path.display().to_string();
-        let label = checked.to_string();
-        let source: [SourceParts; 2] = [
-            parts(&package).into_iter().collect(),
-            parts(&split).into_iter().collect(),
-        ];
-        charts_checked += usize::from(source[0].keys().any(|name| is_chart_part(name)));
-        if malformed_relationship_fixture(&path, &package) {
-            for (form, bytes) in [("original", &package), ("paired", &split)] {
-                assert_missing_relationship_attribute(
-                    eager(bytes),
-                    &format!("{what} {form} eager"),
-                );
-                assert_missing_relationship_attribute(
-                    lazy(bytes, &label),
-                    &format!("{what} {form} lazy"),
-                );
-            }
-            rejected_relationships += 1;
-        } else {
-            if checked == 0 {
-                let unchanged_source = [
-                    parts(&package).into_iter().collect(),
-                    parts(&package).into_iter().collect(),
-                ];
-                assert_same(
-                    &eager(&package).unwrap(),
-                    &eager(&package).unwrap(),
-                    &format!("{what} identical input control"),
-                    &unchanged_source,
-                );
-            }
-            assert_same(
-                &eager(&package).unwrap(),
-                &eager(&split).unwrap(),
-                &format!("{what} eager"),
-                &source,
-            );
-            if historical_export_missing_image(&path, &package, &source[0]) {
-                assert_missing_part(lazy(&package, &label), &format!("{what} original lazy"));
-                assert_missing_part(lazy(&split, &label), &format!("{what} paired lazy"));
-                rejected_lazy += 1;
-            } else {
-                assert_same(
-                    &lazy(&package, &label).unwrap(),
-                    &lazy(&split, &label).unwrap(),
-                    &format!("{what} lazy"),
-                    &source,
-                );
-            }
-        }
-        checked += 1;
-    }
+    let packages: Vec<_> = found
+        .into_iter()
+        .filter_map(|path| {
+            let package = std::fs::read(&path).unwrap();
+            has_chart_or_drawing_part(&package).then_some((path, package))
+        })
+        .collect();
+    // The fixtures are independent and this test sets the suite's wall time:
+    // check them on every core.
+    let workers = std::thread::available_parallelism().map_or(1, usize::from);
+    let [charts_checked, rejected_lazy, rejected_relationships] = std::thread::scope(|scope| {
+        let packages = &packages;
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                scope.spawn(move || {
+                    let mut counts = [0_usize; 3];
+                    for (checked, (path, package)) in
+                        packages.iter().enumerate().skip(worker).step_by(workers)
+                    {
+                        eprintln!("checking {}", path.display());
+                        let (split, count) = split_chart_parts(&package);
+                        assert!(count > 0, "{}: nothing was split", path.display());
+                        let what = path.display().to_string();
+                        let label = checked.to_string();
+                        let source: [SourceParts; 2] = [
+                            parts(&package).into_iter().collect(),
+                            parts(&split).into_iter().collect(),
+                        ];
+                        counts[0] += usize::from(source[0].keys().any(|name| is_chart_part(name)));
+                        if malformed_relationship_fixture(&path, &package) {
+                            for (form, bytes) in [("original", package), ("paired", &split)] {
+                                assert_missing_relationship_attribute(
+                                    eager(bytes),
+                                    &format!("{what} {form} eager"),
+                                );
+                                assert_missing_relationship_attribute(
+                                    lazy(bytes, &label),
+                                    &format!("{what} {form} lazy"),
+                                );
+                            }
+                            counts[2] += 1;
+                        } else {
+                            if checked == 0 {
+                                let unchanged_source = [
+                                    parts(&package).into_iter().collect(),
+                                    parts(&package).into_iter().collect(),
+                                ];
+                                assert_same(
+                                    &eager(&package).unwrap(),
+                                    &eager(&package).unwrap(),
+                                    &format!("{what} identical input control"),
+                                    &unchanged_source,
+                                );
+                            }
+                            assert_same(
+                                &eager(&package).unwrap(),
+                                &eager(&split).unwrap(),
+                                &format!("{what} eager"),
+                                &source,
+                            );
+                            if historical_export_missing_image(&path, &package, &source[0]) {
+                                assert_missing_part(
+                                    lazy(&package, &label),
+                                    &format!("{what} original lazy"),
+                                );
+                                assert_missing_part(
+                                    lazy(&split, &label),
+                                    &format!("{what} paired lazy"),
+                                );
+                                counts[1] += 1;
+                            } else {
+                                assert_same(
+                                    &lazy(&package, &label).unwrap(),
+                                    &lazy(&split, &label).unwrap(),
+                                    &format!("{what} lazy"),
+                                    &source,
+                                );
+                            }
+                        }
+                    }
+                    counts
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .fold([0; 3], |sum, counts| {
+                [sum[0] + counts[0], sum[1] + counts[1], sum[2] + counts[2]]
+            })
+    });
+    let checked = packages.len();
     assert!(
         charts_checked >= 20,
         "only {charts_checked} chart fixtures were checked"

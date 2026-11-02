@@ -21,7 +21,10 @@ fn edited(label: &str, read: Reader, edit: impl Fn(&mut Workbook)) -> Parts {
     let mut book = read(&bytes).unwrap();
     edit(&mut book);
     let saved = try_save(&book).unwrap();
-    let test = std::thread::current().name().unwrap_or("test").to_owned();
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("test")
+        .replace("::", "-");
     keep_output(&format!("structural-{test}-{label}"), &saved);
     unpack(&saved)
 }

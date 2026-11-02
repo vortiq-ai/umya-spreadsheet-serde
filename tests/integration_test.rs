@@ -15,9 +15,10 @@ use std::{
     time::Instant,
 };
 
-use umya_spreadsheet::*;
-
-use crate::helper::color;
+use umya_spreadsheet::{
+    helper::color,
+    *,
+};
 
 #[cfg(target_os = "linux")]
 fn current_process_memory_mb() -> Option<f64> {

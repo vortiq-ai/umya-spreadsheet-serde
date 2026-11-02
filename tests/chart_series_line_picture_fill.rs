@@ -92,10 +92,8 @@ fn package_with_series_line_picture(case: usize) -> Vec<u8> {
     chart = chart.replacen("<c:serLines/>", series_lines, 1);
 
     let mut book = umya_spreadsheet::new_file();
-    book.sheet_mut(0)
-        .unwrap()
-        .add_chart(crate::fixture::base_chart());
-    let mut package = crate::fixture::write_workbook(&book);
+    book.sheet_mut(0).unwrap().add_chart(fixture::base_chart());
+    let mut package = fixture::write_workbook(&book);
     package = replace_part(&package, "xl/charts/chart1.xml", chart.as_bytes());
 
     let content_types = String::from_utf8(part(&package, "[Content_Types].xml")).unwrap();

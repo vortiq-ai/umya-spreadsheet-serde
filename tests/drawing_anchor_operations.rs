@@ -591,61 +591,81 @@ fn structural_edits_match_excels_drawing_placement_in_both_writers() {
         .filter(|(name, _)| name.as_str() != "excel" && !name.ends_with("-reopened"))
         .collect();
     cases.sort_by_key(|(name, _)| !name.starts_with("size-root"));
-    for (name, measurement) in cases {
-        let measurement = opened(&measurements, name, measurement);
-        let operation = &measurement["operation"];
-        let base = operation["base"].as_str().unwrap_or(name);
-        let base_measurement = opened(&measurements, base, &measurements[base]);
-        let source = std::fs::read(directory.join(format!("{base}.xlsx"))).unwrap();
-        let source_book = reader::xlsx::read_reader(Cursor::new(source.clone()), true).unwrap();
-        let candidates = tracked_names(&source_book);
-        for (reader_name, eager) in [("eager", true), ("deferred", false)] {
-            for (owner, worksheet) in [("workbook", false), ("worksheet", true)] {
-                // A worksheet-only edit cannot release what the workbook owns,
-                // so it leaves everything unchanged where Excel
-                // removes a slicer, a timeline or a ChartEx.
-                let refused =
-                    worksheet && removes_workbook_bound_object(base_measurement, measurement);
-                let (answer, reopened) = if refused {
-                    (base_measurement, None)
-                } else {
-                    (measurement, measurements.get(&format!("{name}-reopened")))
-                };
-                let mut book =
-                    reader::xlsx::read_reader(Cursor::new(source.clone()), eager).unwrap();
-                if !operation.is_null() {
-                    edit(&mut book, operation, worksheet, eager);
+    // Each case reads, edits and writes its own files, and this test sets the
+    // suite's wall time: spread the cases over every core.
+    let workers = std::thread::available_parallelism().map_or(1, usize::from);
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            let (cases, directory, output) = (&cases, &directory, &output);
+            scope.spawn(move || {
+                for &(name, measurement) in cases.iter().skip(worker).step_by(workers) {
+                    let measurement = opened(&measurements, name, measurement);
+                    let operation = &measurement["operation"];
+                    let base = operation["base"].as_str().unwrap_or(name);
+                    let base_measurement = opened(&measurements, base, &measurements[base]);
+                    let source = std::fs::read(directory.join(format!("{base}.xlsx"))).unwrap();
+                    let source_book =
+                        reader::xlsx::read_reader(Cursor::new(source.clone()), true).unwrap();
+                    let candidates = tracked_names(&source_book);
+                    for (reader_name, eager) in [("eager", true), ("deferred", false)] {
+                        for (owner, worksheet) in [("workbook", false), ("worksheet", true)] {
+                            // A worksheet-only edit cannot release what the
+                            // workbook owns, so it leaves everything unchanged
+                            // where Excel removes a slicer, a timeline or a
+                            // ChartEx.
+                            let refused = worksheet
+                                && removes_workbook_bound_object(base_measurement, measurement);
+                            let (answer, reopened) = if refused {
+                                (base_measurement, None)
+                            } else {
+                                (measurement, measurements.get(&format!("{name}-reopened")))
+                            };
+                            let mut book =
+                                reader::xlsx::read_reader(Cursor::new(source.clone()), eager)
+                                    .unwrap();
+                            if !operation.is_null() {
+                                edit(&mut book, operation, worksheet, eager);
+                            }
+                            for (writer_name, streaming) in
+                                [("ordinary", false), ("streaming", true)]
+                            {
+                                // The Excel open check names the answer by the
+                                // file's prefix; the case name keeps refused
+                                // cases that share a base apart.
+                                let answered = if refused { base } else { name };
+                                let label = format!(
+                                    "{answered}-{owner}-{name}-{reader_name}-{writer_name}"
+                                );
+                                let bytes = write(book.clone(), streaming);
+                                std::fs::write(output.join(format!("{label}.xlsx")), &bytes)
+                                    .unwrap();
+                                assert_eq!(
+                                    comparable(name, package_geometry(&bytes)),
+                                    comparable(name, expected_geometry(answer)),
+                                    "{label}"
+                                );
+                                let reread =
+                                    reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
+                                assert_eq!(
+                                    consumer_metadata(&reread, &candidates),
+                                    expected_metadata(answer),
+                                    "{label} consumer metadata"
+                                );
+                                // Excel refreshes ChartEx fallbacks again when
+                                // it opens its own result, where its saved
+                                // rectangle was stale.
+                                assert_eq!(
+                                    comparable(name, package_geometry(&write(reread, false))),
+                                    comparable(name, expected_geometry(reopened.unwrap_or(answer))),
+                                    "{label} reread"
+                                );
+                            }
+                        }
+                    }
                 }
-                for (writer_name, streaming) in [("ordinary", false), ("streaming", true)] {
-                    // The Excel open check names the answer by the file's
-                    // prefix.
-                    let answered = if refused { base } else { name };
-                    let label = format!("{answered}-{owner}-{reader_name}-{writer_name}");
-                    let bytes = write(book.clone(), streaming);
-                    std::fs::write(output.join(format!("{label}.xlsx")), &bytes).unwrap();
-                    assert_eq!(
-                        comparable(name, package_geometry(&bytes)),
-                        comparable(name, expected_geometry(answer)),
-                        "{label}"
-                    );
-                    let reread = reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
-                    assert_eq!(
-                        consumer_metadata(&reread, &candidates),
-                        expected_metadata(answer),
-                        "{label} consumer metadata"
-                    );
-                    // Excel refreshes ChartEx fallbacks again when it opens its
-                    // own result, where its saved rectangle
-                    // was stale.
-                    assert_eq!(
-                        comparable(name, package_geometry(&write(reread, false))),
-                        comparable(name, expected_geometry(reopened.unwrap_or(answer))),
-                        "{label} reread"
-                    );
-                }
-            }
+            });
         }
-    }
+    });
 }
 
 /// The measured inputs whose ChartEx fallback rectangle the library cannot
