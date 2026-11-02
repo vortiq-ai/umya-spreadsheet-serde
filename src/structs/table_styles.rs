@@ -34,8 +34,6 @@ pub(crate) const FALLBACK_TABLE_STYLE: &str = "TableStyleMedium2";
 pub(crate) const FALLBACK_PIVOT_STYLE: &str = "PivotStyleMedium9";
 /// The slicer style a workbook without a `defaultSlicerStyle` writes.
 pub(crate) const FALLBACK_SLICER_STYLE: &str = "SlicerStyleLight1";
-/// What Excel resets a removed default pivot style to.
-pub(crate) const EXCEL_PIVOT_STYLE: &str = "PivotStyleLight16";
 
 macro_rules! style_type_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident => $xml:literal),+ $(,)? }) => {

@@ -9,7 +9,6 @@ use super::{
     TableStyleElementType,
     Workbook,
     table_styles::{
-        EXCEL_PIVOT_STYLE,
         FALLBACK_PIVOT_STYLE,
         FALLBACK_SLICER_STYLE,
         FALLBACK_TABLE_STYLE,
@@ -412,92 +411,5 @@ impl Workbook {
             elements: shadow_elements,
         });
         Ok(())
-    }
-
-    /// Delete a custom table or pivot table style, as Excel does: every table
-    /// and pivot table that used it falls back to the workbook's default
-    /// style, and a removed default style resets to Excel's own default.
-    /// Returns whether a custom style of the name existed.
-    ///
-    /// # Errors
-    /// A worksheet cannot be read.
-    pub fn remove_custom_table_style(&mut self, name: &str) -> Result<bool, String> {
-        if self
-            .table_style_record(name)
-            .is_none_or(TableStyleRecord::is_item_style)
-        {
-            return Ok(false);
-        }
-        self.try_sheet_collection_mut().map_err(|e| e.to_string())?;
-        let table_styles = self.stylesheet_mut().table_styles_mut();
-        table_styles.styles.retain(|style| style.name != name);
-        if table_styles.default_table_style.as_deref() == Some(name) {
-            table_styles.default_table_style = Some(FALLBACK_TABLE_STYLE.into());
-        }
-        if table_styles.default_pivot_style.as_deref() == Some(name) {
-            table_styles.default_pivot_style = Some(EXCEL_PIVOT_STYLE.into());
-        }
-        let table_default = self.default_table_style().to_string();
-        let pivot_default = self.default_pivot_table_style().to_string();
-        for sheet in self.sheet_collection_unchecked_mut() {
-            if !sheet.is_inspectable() {
-                continue;
-            }
-            for table in sheet.tables_mut() {
-                if let Some(info) = table.style_info().filter(|info| info.name() == name) {
-                    let mut info = info.clone();
-                    info.set_name(&table_default);
-                    table.set_style_info(Some(info));
-                }
-            }
-            for pivot in sheet.pivot_tables_mut() {
-                let style = pivot.pivot_table_definition_mut().pivot_table_style_mut();
-                if style.name() == name {
-                    style.set_name(pivot_default.clone());
-                }
-            }
-        }
-        Ok(true)
-    }
-
-    /// Delete a custom slicer style: every slicer that used it falls back to
-    /// the workbook's default slicer style, and a removed default resets to
-    /// `SlicerStyleLight1`, as in Excel. Returns whether a custom slicer style
-    /// of the name existed.
-    ///
-    /// # Errors
-    /// A worksheet cannot be read.
-    pub fn remove_custom_slicer_style(&mut self, name: &str) -> Result<bool, String> {
-        if !self
-            .stylesheet()
-            .slicer_styles()
-            .styles
-            .iter()
-            .any(|style| style.name == name)
-        {
-            return Ok(false);
-        }
-        self.try_sheet_collection_mut().map_err(|e| e.to_string())?;
-        let stylesheet = self.stylesheet_mut();
-        stylesheet
-            .table_styles_mut()
-            .styles
-            .retain(|style| style.name != name);
-        let slicer_styles = stylesheet.slicer_styles_mut();
-        slicer_styles.styles.retain(|style| style.name != name);
-        if slicer_styles.default_style.as_deref() == Some(name) {
-            slicer_styles.default_style = Some(FALLBACK_SLICER_STYLE.into());
-        }
-        for sheet in self.sheet_collection_unchecked_mut() {
-            if !sheet.is_inspectable() {
-                continue;
-            }
-            for slicer in sheet.slicers_mut() {
-                if slicer.style.as_deref() == Some(name) {
-                    slicer.style = None;
-                }
-            }
-        }
-        Ok(true)
     }
 }

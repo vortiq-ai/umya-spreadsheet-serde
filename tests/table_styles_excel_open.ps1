@@ -53,29 +53,11 @@ try {
                     $item = $book.TableStyles.Item('Chips').TableStyleElements.Item(30)
                     Check "$name slicer item fill" ($item.Interior.Color -eq 65280) "$($item.Interior.Color)"
                 }
-                'removed-in-use-fallback*' {
-                    $table = $book.Worksheets.Item('Data').ListObjects.Item(1)
-                    $pivot = $book.Worksheets.Item('Report').PivotTables(1)
-                    Check "$name table style" ($table.TableStyle.Name -eq 'DefaultKept') $table.TableStyle.Name
-                    Check "$name pivot style" ($pivot.TableStyle2.Name -eq 'DefaultKept') $pivot.TableStyle2.Name
-                }
-                'removed-table-style-in-use*' {
-                    Check "$name table style" ($book.Worksheets.Item('Data').ListObjects.Item(1).TableStyle.Name -eq 'TableStyleMedium2') ''
-                }
-                'removed-defaults-reset*' {
-                    Check "$name defaults" (($book.DefaultTableStyle.Name -eq 'TableStyleMedium2') -and ($book.DefaultPivotTableStyle.Name -eq 'PivotStyleLight16') -and ($book.DefaultSlicerStyle.Name -eq 'SlicerStyleLight1')) ''
-                }
                 'style-names-*' {
-                    $removed = $name.EndsWith('-removed')
-                    $expectedTable = if ($removed) { 'TableStyleMedium2' } else { 'Table R&D' }
-                    $expectedPivot = if ($removed) { 'PivotStyleLight16' } else { 'Pivot R&D' }
-                    $expectedSlicer = if ($removed) { 'SlicerStyleLight1' } else { 'Slicer R&D' }
-                    Check "$name defaults" (($book.DefaultTableStyle.Name -eq $expectedTable) -and ($book.DefaultPivotTableStyle.Name -eq $expectedPivot) -and ($book.DefaultSlicerStyle.Name -eq $expectedSlicer)) ''
-                    Check "$name table style" ($book.Worksheets.Item('Data').ListObjects.Item(1).TableStyle.Name -eq $expectedTable) ''
-                    Check "$name pivot style" ($book.Worksheets.Item('Report').PivotTables(1).TableStyle2.Name -eq $expectedPivot) ''
-                    if (-not $removed) {
-                        Check "$name slicer style definition" ($book.TableStyles.Item('Slicer R&D').Name -eq 'Slicer R&D') ''
-                    }
+                    Check "$name defaults" (($book.DefaultTableStyle.Name -eq 'Table R&D') -and ($book.DefaultPivotTableStyle.Name -eq 'Pivot R&D') -and ($book.DefaultSlicerStyle.Name -eq 'Slicer R&D')) ''
+                    Check "$name table style" ($book.Worksheets.Item('Data').ListObjects.Item(1).TableStyle.Name -eq 'Table R&D') ''
+                    Check "$name pivot style" ($book.Worksheets.Item('Report').PivotTables(1).TableStyle2.Name -eq 'Pivot R&D') ''
+                    Check "$name slicer style definition" ($book.TableStyles.Item('Slicer R&D').Name -eq 'Slicer R&D') ''
                 }
             }
         } catch {
