@@ -21,6 +21,24 @@ pub use self::filter_rule::*;
 mod pivot_cache_hierarchy;
 pub use self::pivot_cache_hierarchy::*;
 
+mod table_style_api;
+pub(crate) mod table_styles;
+pub use self::{
+    table_style_api::{
+        is_builtin_pivot_style,
+        is_builtin_slicer_style,
+        is_builtin_table_style,
+    },
+    table_styles::{
+        SlicerStyleDefinition,
+        SlicerStyleElementType,
+        SlicerStyleItemDefinition,
+        TableStyleDefinition,
+        TableStyleElementDefinition,
+        TableStyleElementType,
+    },
+};
+
 mod pivot_formatting;
 pub use self::pivot_formatting::*;
 

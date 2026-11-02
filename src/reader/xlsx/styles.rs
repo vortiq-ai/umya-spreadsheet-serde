@@ -42,7 +42,8 @@ pub fn read<R: io::Read + io::Seek>(
         Event::Start(ref e) => {
             if e.name().into_inner() == b"styleSheet" {
                 let mut obj = Stylesheet::default();
-                obj.set_attributes(&mut reader, e);
+                obj.set_attributes(&mut reader, e)
+                    .map_err(crate::xml::xml_error)?;
                 obj.make_style();
                 wb.set_stylesheet(obj);
             }

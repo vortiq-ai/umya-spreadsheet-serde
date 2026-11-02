@@ -27,7 +27,6 @@ use crate::{
     helper::const_str::{
         MC_NS,
         SHEET_MAIN_NS,
-        SHEET_MS_MAIN_NS,
         SHEETML_AC_NS,
     },
     reader::driver::xml_read_loop,
@@ -50,9 +49,33 @@ pub(crate) struct Stylesheet {
     differential_formats: DifferentialFormats,
     colors:               Colors,
     maked_style_list:     Vec<Style>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    table_styles:         super::table_styles::TableStyles,
+    #[cfg_attr(feature = "serde", serde(default))]
+    slicer_styles:        super::table_styles::SlicerStyles,
 }
 
 impl Stylesheet {
+    #[inline]
+    pub(crate) fn table_styles(&self) -> &super::table_styles::TableStyles {
+        &self.table_styles
+    }
+
+    #[inline]
+    pub(crate) fn table_styles_mut(&mut self) -> &mut super::table_styles::TableStyles {
+        &mut self.table_styles
+    }
+
+    #[inline]
+    pub(crate) fn slicer_styles(&self) -> &super::table_styles::SlicerStyles {
+        &self.slicer_styles
+    }
+
+    #[inline]
+    pub(crate) fn slicer_styles_mut(&mut self) -> &mut super::table_styles::SlicerStyles {
+        &mut self.slicer_styles
+    }
+
     #[inline]
     pub(crate) fn numbering_formats(&self) -> &NumberingFormats {
         &self.numbering_formats
@@ -535,7 +558,7 @@ impl Stylesheet {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
-    ) {
+    ) -> Result<(), String> {
         self.numbering_formats.build_in_formats();
 
         xml_read_loop!(
@@ -569,15 +592,30 @@ impl Stylesheet {
                     b"colors" => {
                         self.colors.set_attributes(reader, e);
                     }
+                    b"tableStyles" => {
+                        self.table_styles.read(reader, e, false)?;
+                    }
+                    b"extLst" => {
+                        self.slicer_styles.read_extension_list(reader)?;
+                    }
                     _ => (),
+                }
+            },
+            Event::Empty(ref e) => {
+                if e.name().into_inner() == b"tableStyles" {
+                    self.table_styles.read(reader, e, true)?;
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"styleSheet" {
-                    return
+                    self.table_styles.validate_dxf_references(
+                        self.differential_formats.differential_format().len(),
+                    )?;
+                    self.slicer_styles.validate_dxf_references()?;
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "styleSheet")
+            Event::Eof => return Err("styleSheet is not closed".into())
         );
     }
 
@@ -619,45 +657,15 @@ impl Stylesheet {
         // dxfs
         self.differential_formats.write_to(writer);
 
+        // tableStyles
+        self.table_styles.write_to(writer, &self.slicer_styles);
+
         // colors
         self.colors.write_to(writer);
 
-        // tableStyles
-        write_start_tag(
-            writer,
-            "tableStyles",
-            vec![
-                ("count", "0").into(),
-                ("defaultTableStyle", "TableStyleMedium2").into(),
-                ("defaultPivotStyle", "PivotStyleMedium9").into(),
-            ],
-            true,
-        );
-
         // extLst
         write_start_tag(writer, "extLst", vec![], false);
-
-        // ext
-        write_start_tag(
-            writer,
-            "ext",
-            vec![
-                ("uri", "{EB79DEF2-80B8-43e5-95BD-54CBDDF9020C}").into(),
-                ("xmlns:x14", SHEET_MS_MAIN_NS).into(),
-            ],
-            false,
-        );
-
-        // x14:slicerStyles
-        write_start_tag(
-            writer,
-            "x14:slicerStyles",
-            vec![("defaultSlicerStyle", "SlicerStyleLight1").into()],
-            true,
-        );
-
-        write_end_tag(writer, "ext");
-
+        self.slicer_styles.write_to(writer);
         write_end_tag(writer, "extLst");
 
         write_end_tag(writer, "styleSheet");

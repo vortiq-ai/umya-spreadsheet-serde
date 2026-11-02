@@ -221,21 +221,26 @@ impl DifferentialFormat {
     ) {
         xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let is_empty = matches!(event, Event::Empty(_));
                 match e.name().into_inner() {
                     b"font" => {
                         let mut obj = Font::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty {
+                            obj.set_attributes(reader, e);
+                        }
                         self.set_font(obj);
                     }
                     b"fill" => {
                         let mut obj = Fill::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty {
+                            obj.set_attributes(reader, e);
+                        }
                         self.set_fill(obj);
                     }
                     b"border" => {
                         let mut obj = Borders::default();
-                        obj.set_attributes(reader, e, false);
+                        obj.set_attributes(reader, e, is_empty);
                         self.set_borders(obj);
                     }
                     b"alignment" => {
@@ -269,13 +274,13 @@ impl DifferentialFormat {
             v.write_to(writer);
         }
 
-        // border
-        if let Some(v) = &self.borders {
+        // alignment
+        if let Some(v) = &self.alignment {
             v.write_to(writer);
         }
 
-        // alignment
-        if let Some(v) = &self.alignment {
+        // border
+        if let Some(v) = &self.borders {
             v.write_to(writer);
         }
 

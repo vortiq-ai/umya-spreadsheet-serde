@@ -1228,7 +1228,7 @@ impl PivotTableDefinition {
                 }
                 if name.is(SHEET_MAIN_NS, "pivotTableStyleInfo") {
                     let mut obj = PivotTableStyle::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e)?;
                     self.set_pivot_table_style(obj);
                 }
                 if name.is(SHEET_MAIN_NS, "pivotFields") {
@@ -1255,7 +1255,7 @@ impl PivotTableDefinition {
                         self.set_location(obj);
                     } else {
                         let mut obj = PivotTableStyle::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_pivot_table_style(obj);
                     }
                     continue;

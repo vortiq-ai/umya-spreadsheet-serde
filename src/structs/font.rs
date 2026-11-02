@@ -641,45 +641,21 @@ impl Font {
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(ref e)) => match e.name().into_inner() {
-                    b"rFont" | b"name" => {
-                        self.font_name.set_attributes(reader, e);
-                    }
-                    b"sz" => {
-                        self.font_size.set_attributes(reader, e);
-                    }
-                    b"family" => {
-                        self.font_family_numbering.set_attributes(reader, e);
-                    }
-                    b"b" => {
-                        self.font_bold.set_attributes(reader, e);
-                    }
-                    b"i" => {
-                        self.font_italic.set_attributes(reader, e);
-                    }
-                    b"u" => {
-                        self.font_underline.set_attributes(reader, e);
-                    }
-                    b"strike" => {
-                        self.font_strike.set_attributes(reader, e);
-                    }
-                    b"color" => {
-                        self.color.set_attributes(reader, e, true);
-                    }
-                    b"charset" => {
-                        self.font_char_set.set_attributes(reader, e);
-                    }
-                    b"scheme" => {
-                        self.font_scheme.set_attributes(reader, e);
-                    }
-                    b"vertAlign" => {
-                        self.vertical_text_alignment.set_attributes(reader, e);
-                    }
-                    _ => (),
-                },
-                Ok(Event::Start(ref e)) => {
-                    if e.name().into_inner() == b"color" {
-                        self.color.set_attributes(reader, e, false);
+                Ok(ref event @ (Event::Empty(ref e) | Event::Start(ref e))) => {
+                    let is_empty = matches!(event, Event::Empty(_));
+                    match e.name().into_inner() {
+                        b"rFont" | b"name" => self.font_name.set_attributes(reader, e),
+                        b"sz" => self.font_size.set_attributes(reader, e),
+                        b"family" => self.font_family_numbering.set_attributes(reader, e),
+                        b"b" => self.font_bold.set_attributes(reader, e),
+                        b"i" => self.font_italic.set_attributes(reader, e),
+                        b"u" => self.font_underline.set_attributes(reader, e),
+                        b"strike" => self.font_strike.set_attributes(reader, e),
+                        b"color" => self.color.set_attributes(reader, e, is_empty),
+                        b"charset" => self.font_char_set.set_attributes(reader, e),
+                        b"scheme" => self.font_scheme.set_attributes(reader, e),
+                        b"vertAlign" => self.vertical_text_alignment.set_attributes(reader, e),
+                        _ => (),
                     }
                 }
                 Ok(Event::End(ref e)) => match e.name().into_inner() {

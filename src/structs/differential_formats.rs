@@ -124,7 +124,7 @@ impl DifferentialFormats {
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"dxfs" {
+                if e.local_name().into_inner() == b"dxfs" {
                     return
                 }
             },
@@ -133,11 +133,15 @@ impl DifferentialFormats {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        self.write_to_named(writer, "dxfs");
+    }
+
+    /// Write the list under `tag`, such as the `x14:dxfs` of an extension.
+    pub(crate) fn write_to_named(&self, writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str) {
         if !self.differential_format.is_empty() {
-            // dxfs
             write_start_tag(
                 writer,
-                "dxfs",
+                tag,
                 vec![("count", &self.differential_format.len().to_string()).into()],
                 false,
             );
@@ -147,7 +151,7 @@ impl DifferentialFormats {
                 differential_format.write_to(writer);
             }
 
-            write_end_tag(writer, "dxfs");
+            write_end_tag(writer, tag);
         }
     }
 }

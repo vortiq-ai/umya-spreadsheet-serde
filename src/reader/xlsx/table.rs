@@ -67,7 +67,7 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                         let attr_val = get_attribute_value(&attr)?;
                         match attr.key.0 {
                             b"name" => {
-                                name = attr_val;
+                                name = quick_xml::escape::unescape(&attr_val)?.into_owned();
                             }
                             b"showFirstColumn" => {
                                 if attr_val == "1" {

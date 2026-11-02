@@ -523,6 +523,12 @@ impl TableStyleInfo {
     }
 
     #[inline]
+    pub fn set_name(&mut self, name: &str) -> &mut Self {
+        self.name = name.to_string();
+        self
+    }
+
+    #[inline]
     #[must_use]
     pub fn is_show_first_col(&self) -> bool {
         matches!(self.show_first_col, ShowColumn::Show)
