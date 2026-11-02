@@ -631,23 +631,6 @@ impl ChartSpace {
         self.remove_pivot_options()
     }
 
-    /// Follows a renamed pivot table of the sheet `sheet`.
-    pub(crate) fn rename_pivot_table(&mut self, sheet: &str, old: &str, new: &str) {
-        if let Some(source) = &mut self.pivot_source {
-            source.rename_table(sheet, old, new);
-        }
-    }
-
-    /// Whether the chart is linked to the pivot table `table` of `sheet`.
-    pub(crate) fn is_linked_to_pivot_table(&self, sheet: &str, table: &str) -> bool {
-        self.pivot_source.as_ref().is_some_and(|source| {
-            source
-                .sheet_name()
-                .is_some_and(|name| name.eq_ignore_ascii_case(sheet))
-                && source.table_name().eq_ignore_ascii_case(table)
-        })
-    }
-
     /// Whether the chart is linked to a pivot table on `sheet`.
     pub(crate) fn is_linked_to_pivot_sheet(&self, sheet: &str) -> bool {
         self.pivot_source.as_ref().is_some_and(|source| {

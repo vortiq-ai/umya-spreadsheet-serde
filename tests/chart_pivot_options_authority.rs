@@ -147,7 +147,7 @@ fn restored_opaque_pivot_options_cannot_be_overwritten_by_client_flags() {
 
 #[test]
 fn unlinking_a_pivot_chart_removes_opaque_boolean_options() {
-    for removal in ["link", "table", "sheet"] {
+    for removal in ["link", "sheet"] {
         let mut book = read(&opaque_options_fixture());
         let chart = book.sheet_by_name("Pivot").unwrap().chart_collection()[0].clone();
         book.new_sheet("Charts").unwrap().add_chart(chart);
@@ -158,9 +158,6 @@ fn unlinking_a_pivot_chart_removes_opaque_boolean_options() {
                     .chart_collection_mut()[0]
                     .chart_space_mut()
                     .remove_pivot_source();
-            }
-            "table" => {
-                book.remove_pivot_table("Pivot", "PivotTable1").unwrap();
             }
             "sheet" => {
                 let index = book

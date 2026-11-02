@@ -1,10 +1,7 @@
 #![cfg(feature = "serde")]
 
 use std::{
-    collections::{
-        BTreeMap,
-        HashSet,
-    },
+    collections::BTreeMap,
     io::{
         Cursor,
         Read,
@@ -22,8 +19,6 @@ use umya_spreadsheet::{
     Workbook,
     drawing::{
         charts::{
-            ChartExDefinedNameReference,
-            ChartExDefinedNameSource,
             ChartExDimension,
             ChartExDimensionSource,
             ChartExFormula,
@@ -576,39 +571,6 @@ fn add_chart(book: &mut Workbook, chart: ExtendedChart) {
         .add_extended_chart(chart);
 }
 
-fn named_sources(book: &Workbook) -> Vec<ChartExDefinedNameSource> {
-    let mut result = Vec::new();
-    for name in all_defined_names(book) {
-        if name.name().to_ascii_lowercase().starts_with("_xlchart.")
-            && name.address().starts_with("Sheet1!")
-            && !result
-                .iter()
-                .any(|existing: &ChartExDefinedNameSource| existing.reference.name == name.name())
-        {
-            result.push(ChartExDefinedNameSource {
-                reference: ChartExDefinedNameReference {
-                    name:            name.name().to_owned(),
-                    sheet:           None,
-                    workbook_scoped: false,
-                },
-                address:   name.address(),
-            });
-        }
-    }
-    result
-}
-
-fn remove_reported_names(book: &mut Workbook, names: &[String]) {
-    let names: HashSet<_> = names.iter().map(|name| name.to_lowercase()).collect();
-    book.defined_names_mut()
-        .retain(|name| !names.contains(&name.name().to_lowercase()));
-    for sheet in book.sheet_collection_mut() {
-        sheet
-            .defined_names_mut()
-            .retain(|name| !names.contains(&name.name().to_lowercase()));
-    }
-}
-
 fn write_detached_result(mut book: Workbook, chart: ExtendedChart, case: &Case, label: &str) {
     book.remove_sheet_by_name("Sheet1").unwrap();
     add_chart(&mut book, chart);
@@ -634,97 +596,4 @@ fn detached_direct_adjustment_matches_excel_after() {
         &source_case("direct", NAMED_SOURCE),
         "detached-direct",
     );
-}
-
-#[test]
-fn detached_named_adjustment_reports_names_to_remove_and_matches_excel_after() {
-    let mut book = read(NAMED_SOURCE, true);
-    let sources = named_sources(&book);
-    assert_eq!(
-        sources
-            .iter()
-            .map(|source| (source.reference.name.as_str(), source.address.as_str()))
-            .collect::<Vec<_>>(),
-        [
-            ("_xlchart.v1.0", "Sheet1!$A$2:$B$5"),
-            ("_xlchart.v1.1", "Sheet1!$C$1"),
-            ("_xlchart.v1.2", "Sheet1!$C$2:$C$5"),
-        ]
-    );
-    let mut chart = remove_chart(&mut book);
-    let report = chart
-        .adjust_references_with_deleted_names("ChartHost", &delete_sheet_edit(), &sources)
-        .unwrap();
-    assert_eq!(
-        report
-            .defined_names
-            .iter()
-            .map(|reference| reference.name.as_str())
-            .collect::<Vec<_>>(),
-        ["_xlchart.v1.0", "_xlchart.v1.2", "_xlchart.v1.1"]
-    );
-    assert_eq!(
-        report
-            .unused_defined_names
-            .iter()
-            .map(|reference| reference.name.as_str())
-            .collect::<HashSet<_>>(),
-        ["_xlchart.v1.0", "_xlchart.v1.1", "_xlchart.v1.2"]
-            .into_iter()
-            .collect()
-    );
-    let unused: Vec<_> = report
-        .unused_defined_names
-        .iter()
-        .map(|reference| reference.name.clone())
-        .collect();
-    remove_reported_names(&mut book, &unused);
-    write_detached_result(
-        book,
-        chart,
-        &source_case("named", NAMED_SOURCE),
-        "detached-named",
-    );
-}
-
-#[test]
-fn detached_named_adjustment_matches_excel_for_every_chart_kind_and_formula_site() {
-    for case in cases() {
-        let mut book = read_case(&case, true);
-        let sources = named_sources(&book);
-        let mut chart = remove_chart(&mut book);
-        let report = chart
-            .adjust_references_with_deleted_names("ChartHost", &delete_sheet_edit(), &sources)
-            .unwrap();
-        let unused: Vec<_> = report
-            .unused_defined_names
-            .iter()
-            .map(|reference| reference.name.clone())
-            .collect();
-        // Names the chart still reads would stay; Excel's result leaves none.
-        for name in &report.defined_names {
-            if sources
-                .iter()
-                .any(|source| source.reference.name == name.name)
-            {
-                assert!(unused.contains(&name.name), "{}: {name:?}", case.name);
-            }
-        }
-        remove_reported_names(&mut book, &unused);
-        write_detached_result(book, chart, &case, &format!("detached-{}", case.name));
-    }
-}
-
-#[test]
-fn detached_named_source_without_a_cell_range_is_rejected_before_any_change() {
-    let mut book = read(NAMED_SOURCE, true);
-    let mut sources = named_sources(&book);
-    sources[0].address = "Sheet1!SalesTotal".into();
-    let mut chart = remove_chart(&mut book);
-    let before = chart_formulas(&chart);
-    let error = chart
-        .adjust_references_with_deleted_names("ChartHost", &delete_sheet_edit(), &sources)
-        .unwrap_err();
-    assert!(error.contains("cannot preserve ChartEx levels"), "{error}");
-    assert_eq!(chart_formulas(&chart), before);
 }

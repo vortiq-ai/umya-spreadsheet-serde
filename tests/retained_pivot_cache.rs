@@ -33,7 +33,6 @@ use umya_spreadsheet::{
     },
 };
 
-const PIVOT_SLICERS: &[u8] = include_bytes!("fixtures/slicers/excel-authored/pivot-slicers.xlsx");
 const EXCEL_DIRECTORY: &str = "tests/fixtures/timelines/excel-authored";
 const SLICER_PIVOT_CACHES_URI: &str = "{876F7934-8845-4945-9796-88D515C7AA90}";
 const TIMELINE_PIVOT_CACHES_URI: &str = "{A2CB5862-8E78-49c6-8D9D-AF26E26ADB89}";
@@ -161,119 +160,6 @@ fn defined_names(parts: &Parts) -> Vec<String> {
         .collect()
 }
 
-/// The model Excel's measurement implies after both pivot tables are gone:
-/// both slicer caches and their slicers stay, unlinked, and the workbook keeps
-/// the pivot cache they read.
-fn assert_slicers_keep_their_cache(book: &Workbook, records: &str, label: &str) {
-    let report = book.sheet_by_name("Report").unwrap();
-    assert!(report.pivot_tables().is_empty(), "{label}");
-    let caches: Vec<_> = book
-        .slicer_caches()
-        .iter()
-        .map(|cache| (cache.name.as_str(), cache.linked_pivots().len()))
-        .collect();
-    assert_eq!(
-        caches,
-        [("Slicer_Team", 0), ("Slicer_Player", 0)],
-        "{label}"
-    );
-    assert_eq!(report.slicers().len(), 2, "{label}");
-    let retained: Vec<_> = book.retained_pivot_caches().collect();
-    assert_eq!(retained.len(), 1, "{label}");
-    assert_eq!(
-        retained[0].1.slicer_cache_id(),
-        Some(2_056_832_194),
-        "{label}"
-    );
-    assert_eq!(
-        retained[0].1.raw_cache_records(),
-        records.as_bytes(),
-        "{label}"
-    );
-}
-
-#[test]
-fn removing_every_pivot_table_keeps_the_slicers_and_their_pivot_cache_as_excel_does() {
-    let excel = unpack(&excel("slicers-without-pivot-tables"));
-    let source = unpack(PIVOT_SLICERS);
-    let excel_definition = {
-        let entries = retained_entries(&excel, SLICER_PIVOT_CACHES_URI);
-        assert_eq!(entries.len(), 1);
-        entries[0].1.clone()
-    };
-    let excel_records = records_of(&excel, &excel_definition);
-    assert!(!excel["xl/workbook.xml"].contains("<pivotCaches>"));
-    for name in ["Slicer_Team", "Slicer_Player"] {
-        assert!(!slicer_cache(&excel, name).contains("pivotTables"));
-    }
-    for (reader, read) in readers() {
-        let mut book = read(PIVOT_SLICERS).unwrap();
-        book.remove_pivot_table("Report", "PivotTable1").unwrap();
-        book.remove_pivot_table("Report", "PivotTable2").unwrap();
-        assert_slicers_keep_their_cache(&book, excel_records, reader);
-        for (writer, bytes) in written(&book) {
-            let label = format!("{reader} {writer}");
-            let parts = unpack(&bytes);
-            let workbook = &parts["xl/workbook.xml"];
-            assert!(!workbook.contains("<pivotCaches>"), "{label}");
-            assert_eq!(
-                ext_uris(workbook),
-                ext_uris(&excel["xl/workbook.xml"]),
-                "{label}"
-            );
-            assert!(retained_entries(&parts, TIMELINE_PIVOT_CACHES_URI).is_empty());
-            let entries = retained_entries(&parts, SLICER_PIVOT_CACHES_URI);
-            assert_eq!(entries.len(), 1, "{label}");
-            // Excel renumbers workbook cache ids on save; the library keeps
-            // the id it read (5 in pivot-slicers.xlsx).
-            assert_eq!(entries[0].0, "5", "{label}");
-            let definition = &entries[0].1;
-            assert_eq!(
-                cache_facts(&parts[definition]),
-                cache_facts(&excel[&excel_definition]),
-                "{label}"
-            );
-            assert_eq!(records_of(&parts, definition), excel_records, "{label}");
-            assert_eq!(defined_names(&parts), defined_names(&excel), "{label}");
-            for name in ["Slicer_Team", "Slicer_Player"] {
-                let ours = slicer_cache(&parts, name);
-                let theirs = slicer_cache(&excel, name);
-                assert!(!ours.contains("pivotTables"), "{label} {name}");
-                assert_eq!(
-                    attribute(tags(ours, "<tabular")[0], "pivotCacheId"),
-                    attribute(tags(theirs, "<tabular")[0], "pivotCacheId"),
-                    "{label} {name}"
-                );
-                // Excel recomputes the cross-filter `nd` flags and order of
-                // the items on save; the library keeps the items it read.
-                assert_eq!(
-                    items(ours),
-                    items(slicer_cache(&source, name)),
-                    "{label} {name}"
-                );
-            }
-            assert_eq!(
-                items(slicer_cache(&parts, "Slicer_Team")),
-                items(slicer_cache(&excel, "Slicer_Team")),
-                "{label}"
-            );
-            for (rereader, reread) in readers() {
-                let mut again = reread(&bytes).unwrap();
-                again.try_read_sheet_collection().unwrap();
-                assert_slicers_keep_their_cache(
-                    &again,
-                    excel_records,
-                    &format!("{label} {rereader}"),
-                );
-            }
-            keep_output(
-                &format!("slicers-all-pivots-removed-{reader}-{writer}"),
-                &bytes,
-            );
-        }
-    }
-}
-
 #[test]
 fn excel_files_with_retained_slicer_pivot_caches_are_read_and_written_as_excel_wrote_them() {
     // Excel lists a cache read by a slicer and by timelines in x14:pivotCaches
@@ -294,11 +180,36 @@ fn excel_files_with_retained_slicer_pivot_caches_are_read_and_written_as_excel_w
     ] {
         let source = excel(name);
         let excel = unpack(&source);
+        assert!(
+            !excel["xl/workbook.xml"].contains("<pivotCaches>"),
+            "{name}"
+        );
         let entries = retained_entries(&excel, SLICER_PIVOT_CACHES_URI);
         assert_eq!(entries.len(), 1, "{name}");
         assert!(retained_entries(&excel, TIMELINE_PIVOT_CACHES_URI).is_empty());
+        for slicer in &slicers {
+            assert!(!slicer_cache(&excel, slicer).contains("pivotTables"));
+        }
         let excel_records = records_of(&excel, &entries[0].1);
         let check = |book: &Workbook, label: &str| {
+            let sheets = book.sheet_collection_no_check();
+            assert!(
+                sheets.iter().all(|sheet| sheet.pivot_tables().is_empty()),
+                "{label}"
+            );
+            assert_eq!(
+                sheets
+                    .iter()
+                    .map(|sheet| sheet.slicers().len())
+                    .sum::<usize>(),
+                slicers.len(),
+                "{label}"
+            );
+            assert_eq!(
+                book.sheet_by_name("Report").unwrap().slicers().len(),
+                slicers.len(),
+                "{label}"
+            );
             assert_eq!(
                 book.slicer_caches()
                     .iter()
@@ -342,11 +253,24 @@ fn excel_files_with_retained_slicer_pivot_caches_are_read_and_written_as_excel_w
                 );
                 let written = retained_entries(&parts, SLICER_PIVOT_CACHES_URI);
                 assert_eq!(written.len(), 1, "{label}");
+                assert_eq!(written[0].0, entries[0].0, "{label}");
                 assert_eq!(
                     cache_facts(&parts[&written[0].1]),
                     cache_facts(&excel[&entries[0].1]),
                     "{label}"
                 );
+                assert_eq!(defined_names(&parts), defined_names(&excel), "{label}");
+                for slicer in &slicers {
+                    let ours = slicer_cache(&parts, slicer);
+                    let theirs = slicer_cache(&excel, slicer);
+                    assert!(!ours.contains("pivotTables"), "{label} {slicer}");
+                    assert_eq!(
+                        attribute(tags(ours, "<tabular")[0], "pivotCacheId"),
+                        attribute(tags(theirs, "<tabular")[0], "pivotCacheId"),
+                        "{label} {slicer}"
+                    );
+                    assert_eq!(items(ours), items(theirs), "{label} {slicer}");
+                }
                 assert_eq!(records_of(&parts, &written[0].1), excel_records, "{label}");
                 for (rereader, reread) in readers() {
                     let mut again = reread(&bytes).unwrap();

@@ -7,7 +7,6 @@ mod package;
 mod selection;
 mod xml;
 
-pub use api::*;
 pub use model::*;
 pub use selection::*;
 pub(crate) use xml::TIMELINE_STYLE_EXTENSIONS;

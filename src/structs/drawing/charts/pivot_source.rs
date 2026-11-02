@@ -89,19 +89,6 @@ impl PivotSource {
         self
     }
 
-    /// Follows a renamed pivot table of `sheet`.
-    pub(crate) fn rename_table(&mut self, sheet: &str, old: &str, new: &str) {
-        if self
-            .sheet_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case(sheet))
-            && self.table_name().eq_ignore_ascii_case(old)
-        {
-            if let Some((book, sheet, _)) = split_name(&self.name) {
-                self.name = format!("{book}{sheet}!{new}");
-            }
-        }
-    }
-
     /// Follows a renamed sheet: when the pivot table sits on `old`, the link
     /// names `new` afterwards. Sheet names compare case-insensitively.
     pub(crate) fn rename_sheet(&mut self, old: &str, new: &str) {

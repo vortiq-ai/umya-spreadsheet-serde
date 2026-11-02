@@ -83,28 +83,8 @@ $expected = @{
     'timeline-round-trip' = @(
         'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-02-29|Day/Day/level2',
         'filter|PivotTable1.Day|2024-01-01..2024-02-29')
-    'timeline-selection-march' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-03-01..2024-03-31|Day/Day/level2',
-        'filter|PivotTable1.Day|2024-03-01..2024-03-31')
-    'timeline-selection-cleared' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|..|Day/Day/level2')
-    'timeline-two-pivots-march' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-05-31|DayTl/Day/level2',
-        'cache|NativeTimeline_Ship|Ship|PivotTable1,PivotTable2|2024-03-01..2024-03-31|ShipTl/Ship/level2',
-        'filter|PivotTable1.Day|2024-01-01..2024-05-31',
-        'filter|PivotTable1.Ship|2024-03-01..2024-03-31',
-        'filter|PivotTable2.Ship|2024-03-01..2024-03-31')
-    'timeline-two-pivots-cleared' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-05-31|DayTl/Day/level2',
-        'cache|NativeTimeline_Ship|Ship|PivotTable1,PivotTable2|..|ShipTl/Ship/level2',
-        'filter|PivotTable1.Day|2024-01-01..2024-05-31')
-    'timeline-created-unfiltered' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|..|Day/Day/level2')
-    'timeline-created' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-02-29|Day/Sales days/level1',
-        'filter|PivotTable1.Day|2024-01-01..2024-02-29')
     'timeline-view-edited' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-02-29|Sales Days/My Days/level1',
+        'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-02-29|Day/My Days/level1',
         'filter|PivotTable1.Day|2024-01-01..2024-02-29')
     'timeline-custom-style' = @(
         'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-05-31|DayTl/Day/level2',
@@ -112,37 +92,6 @@ $expected = @{
         'filter|PivotTable1.Day|2024-01-01..2024-05-31',
         'filter|PivotTable1.Ship|2024-02-01..2024-09-30',
         'filter|PivotTable2.Ship|2024-02-01..2024-09-30')
-    'timeline-connected' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-03-01..2024-03-31|T/Day/level2,T2/Day/level2',
-        'filter|PivotTable1.Day|2024-03-01..2024-03-31')
-    'timeline-disconnected' = @(
-        'cache|NativeTimeline_Day|Day||2024-03-01..2024-03-31|T/Day/level2,T2/Day/level2',
-        'filter|PivotTable1.Day|2024-03-01..2024-03-31')
-    'timeline-one-view-left' = @(
-        'cache|NativeTimeline_Day|Day||2024-01-01..2024-02-29|T2/Day/level2',
-        'filter|PivotTable1.Day|2024-01-01..2024-02-29')
-    'timeline-views-removed' = @(
-        'filter|PivotTable1.Day|2024-01-01..2024-02-29')
-    'timeline-adopted-range' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2024-01-01..2024-02-29|Day/Day/level2',
-        'filter|PivotTable1.Day|2024-01-01..2024-02-29')
-    'timeline-created-fallback-one-cell' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|..|Day/Day/level2')
-    'timeline-created-fallback-two-cell' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|..|Day/Day/level2')
-    'timeline-pivot-removed' = @(
-        'cache|NativeTimeline_Day|Day||2024-01-01..2024-05-31|DayTl/Day/level2',
-        'cache|NativeTimeline_Ship|Ship|PivotTable2|2024-02-01..2024-09-30|ShipTl/Ship/level2',
-        'filter|PivotTable2.Ship|2024-02-01..2024-09-30')
-    'timeline-selection-outside-2022' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2022-01-01..2030-12-31|Day/Day/level2',
-        'filter|PivotTable1.Day|2022-01-01..2030-12-31')
-    'timeline-selection-outside-2023' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2023-03-01..2024-02-29|Day/Day/level2',
-        'filter|PivotTable1.Day|2023-03-01..2024-02-29')
-    'timeline-selection-outside-2028' = @(
-        'cache|NativeTimeline_Day|Day|PivotTable1|2028-01-01..2028-06-30|Day/Day/level2',
-        'filter|PivotTable1.Day|2028-01-01..2028-06-30')
     'timeline-pivot-sheet-removed' = @()
 }
 

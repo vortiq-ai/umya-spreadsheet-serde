@@ -834,67 +834,6 @@ impl Workbook {
         self.try_read_sheet_collection().map(|_| ())
     }
 
-    /// Follow the rename of the pivot table `old` of sheet `sheet_id`: the
-    /// slicer and timeline caches that list it keep listing it, as in Excel.
-    pub(crate) fn reconcile_slicers_after_pivot_table_rename(
-        &mut self,
-        sheet_id: Option<u32>,
-        old: &str,
-        new: &str,
-    ) {
-        let rename = |link: &mut SlicerPivotTable| {
-            if Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(old) {
-                new.clone_into(&mut link.name);
-            }
-        };
-        for cache in self.slicer_caches_mut() {
-            cache
-                .pivot_tables
-                .iter_mut()
-                .flatten()
-                .chain(
-                    cache
-                        .extensions
-                        .iter_mut()
-                        .filter_map(|extension| match extension {
-                            SlicerCacheExtension::PivotTables { tables, .. } => Some(tables),
-                            _ => None,
-                        })
-                        .flatten(),
-                )
-                .for_each(rename);
-        }
-        for cache in self.timeline_caches_mut() {
-            cache.pivot_tables.iter_mut().flatten().for_each(rename);
-        }
-    }
-
-    /// Follow the removal of the pivot table `name` of sheet `sheet_id` the
-    /// way Excel does: it leaves every slicer cache and timeline cache that
-    /// listed it, and each cache stays with its slicers or views, its
-    /// selection and its defined name, also when it lists no pivot table any
-    /// more.
-    pub(crate) fn reconcile_slicers_after_pivot_table_removal(
-        &mut self,
-        sheet_id: Option<u32>,
-        name: &str,
-    ) {
-        let leaves = |link: &SlicerPivotTable| {
-            Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(name)
-        };
-        for cache in self.slicer_caches_mut() {
-            unlink_pivot_tables(cache, leaves);
-        }
-        for cache in self.timeline_caches_mut() {
-            if let Some(links) = &mut cache.pivot_tables {
-                links.retain(|link| !leaves(link));
-                if links.is_empty() {
-                    cache.pivot_tables = None;
-                }
-            }
-        }
-    }
-
     /// Follow the removal of `removed` the way Excel does: the slicers of the
     /// sheet go with it, its pivot tables leave the pivot slicer caches that
     /// listed them, a pivot slicer cache left without pivot tables and a table

@@ -33,7 +33,7 @@ try {
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
-    foreach ($operation in 'table', 'sheet', 'rename', 'rename-table', 'rename-sheet') {
+    foreach ($operation in 'sheet', 'rename', 'rename-sheet') {
         $book = $null
         try {
             $book = $excel.Workbooks.Open($SourcePath, 0, $true)
@@ -47,9 +47,7 @@ try {
             $null = $charts.Paste()
             $chart = $charts.ChartObjects(1).Chart
             Record-Series "before-$operation" $chart
-            if ($operation -in 'table', 'rename-table') {
-                $pivot.PivotTables('PivotTable1').TableRange2.Clear()
-            } elseif ($operation -in 'sheet', 'rename-sheet') {
+            if ($operation -in 'sheet', 'rename-sheet') {
                 $pivot.Delete()
             }
             Record-Series "after-$operation" $chart
@@ -60,14 +58,12 @@ try {
         }
     }
     if ($PackageDirectory) {
-        $packages = @('pivot-table-frozen', 'pivot-table-frozen-light', 'pivot-sheet-frozen', 'pivot-sheet-frozen-light')
+        $packages = @('pivot-sheet-frozen', 'pivot-sheet-frozen-light')
         foreach ($kind in 'hierarchy', 'dates') {
-            foreach ($operation in 'table', 'sheet') {
-                $packages += "pivot-$kind-$operation-frozen"
-                $packages += "pivot-$kind-$operation-frozen-light"
-            }
+            $packages += "pivot-$kind-sheet-frozen"
+            $packages += "pivot-$kind-sheet-frozen-light"
         }
-        foreach ($operation in 'export', 'table', 'sheet') {
+        foreach ($operation in 'export', 'sheet') {
             foreach ($eager in 'false', 'true') {
                 foreach ($writer in 'normal', 'light') {
                     $packages += "pivot-sheet-renamed-$operation-$eager-$writer"

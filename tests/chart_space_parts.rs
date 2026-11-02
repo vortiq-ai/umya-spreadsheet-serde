@@ -1663,35 +1663,7 @@ fn pivot_options_keep_other_extensions_and_survive_the_projection() {
     );
 }
 
-// ---- pivot table rename and delete ----------------------------------------
-
-#[test]
-fn renaming_a_pivot_table_keeps_the_chart_linked() {
-    let mut book = read(fixture!("pivotchart"), false);
-    assert!(
-        book.rename_pivot_table("Nowhere", "PivotTable1", "X")
-            .is_err()
-    );
-    assert!(book.rename_pivot_table("Pivot", "Missing", "X").is_err());
-    book.rename_pivot_table("Pivot", "PivotTable1", "SalesPivot")
-        .unwrap();
-    let output = write(&book);
-    // Excel writes the new name after the unquoted sheet name.
-    assert!(
-        subtree(&chart_xml(&output), "c:pivotSource").contains("[pivotchart.xlsx]Pivot!SalesPivot")
-    );
-    assert!(part(&output, "xl/pivotTables/pivotTable1.xml").contains("name=\"SalesPivot\""));
-}
-
-#[test]
-fn removing_a_pivot_table_turns_its_chart_into_an_ordinary_chart() {
-    let mut book = read(fixture!("pivotchart"), false);
-    book.remove_pivot_table("Pivot", "PivotTable1").unwrap();
-    let xml = chart_xml(&write(&book));
-    assert!(!xml.contains("c:pivotSource") && !xml.contains("pivotOptions"));
-    // Excel keeps the pivot formats of the chart.
-    assert!(xml.contains("<c:pivotFmts>"));
-}
+// ---- pivot sheet delete ---------------------------------------------------
 
 #[test]
 fn deleting_the_pivot_sheet_unlinks_charts_on_other_sheets() {
@@ -1792,117 +1764,105 @@ fn a_copied_chart_keeps_its_in_chart_shapes_in_both_writers() {
 }
 
 #[test]
-fn deleting_a_pivot_freezes_its_saved_series_in_both_writers() {
-    // Excel COM, opening this saved fixture before either deletion, produces
+fn deleting_a_pivot_sheet_freezes_its_saved_series_in_both_writers() {
+    // Excel COM, opening this saved fixture before the deletion, produces
     // a/b, E/N/S, and these sales totals as literals (see the sibling script).
-    for remove_sheet in [false, true] {
-        let mut source = read(fixture!("pivotchart"), false);
-        let chart = pivot_sheet(&source).chart_collection()[0].clone();
-        source.new_sheet("Charts").unwrap().add_chart(chart);
-        let input = write(&source);
-        for lazy in [false, true] {
-            let mut book = reader::xlsx::read_reader(Cursor::new(input.clone()), !lazy).unwrap();
-            if remove_sheet {
-                book.remove_sheet_by_name("Pivot").unwrap();
+    let mut source = read(fixture!("pivotchart"), false);
+    let chart = pivot_sheet(&source).chart_collection()[0].clone();
+    source.new_sheet("Charts").unwrap().add_chart(chart);
+    let input = write(&source);
+    for lazy in [false, true] {
+        let mut book = reader::xlsx::read_reader(Cursor::new(input.clone()), !lazy).unwrap();
+        book.remove_sheet_by_name("Pivot").unwrap();
+        for light in [false, true] {
+            let mut output = Cursor::new(Vec::new());
+            if light {
+                writer::xlsx::write_writer_light(&book, &mut output).unwrap();
             } else {
-                book.remove_pivot_table("Pivot", "PivotTable1").unwrap();
+                writer::xlsx::write_writer(&book, &mut output).unwrap();
             }
-            for light in [false, true] {
-                let mut output = Cursor::new(Vec::new());
-                if light {
-                    writer::xlsx::write_writer_light(&book, &mut output).unwrap();
-                } else {
-                    writer::xlsx::write_writer(&book, &mut output).unwrap();
-                }
-                let output = output.into_inner();
-                let reread = read(&output, false);
-                let space =
-                    reread.sheet_by_name("Charts").unwrap().chart_collection()[0].chart_space();
-                assert!(space.pivot_source().is_none());
-                let series = space
-                    .chart()
-                    .plot_area()
-                    .chart_groups()
-                    .next()
-                    .unwrap()
-                    .series()
-                    .area_chart_series();
-                assert_eq!(series.len(), 2);
-                for (series, (name, expected)) in series
-                    .iter()
-                    .zip([("a", ["15", "10", "30"]), ("b", ["25", "20", "40"])])
-                {
-                    let text = series.chart_text().unwrap();
-                    assert!(text.string_reference().is_none());
-                    assert_eq!(
-                        text.numeric_value().unwrap().text(),
-                        name,
-                        "remove_sheet={remove_sheet}, lazy={lazy}, light={light}"
-                    );
-                    let category = series.category_axis_data().unwrap();
-                    assert!(category.string_reference().is_none());
-                    let category = category.string_literal().unwrap();
-                    assert_eq!(category.point_count().unwrap().val(), Some(3));
-                    assert_eq!(
-                        category
-                            .string_point_list()
-                            .iter()
-                            .map(|point| point.numeric_value().text())
-                            .collect::<Vec<_>>(),
-                        ["E", "N", "S"]
-                    );
-                    let values = series.values().unwrap().number_literal().unwrap();
-                    assert_eq!(values.format_code(), Some("General"));
-                    assert_eq!(values.point_count().unwrap().val(), Some(3));
-                    assert_eq!(
-                        values
-                            .points()
-                            .iter()
-                            .map(|point| (point.index().val().unwrap(), point.value().unwrap()))
-                            .collect::<Vec<_>>(),
-                        expected
-                            .into_iter()
-                            .enumerate()
-                            .map(|(at, value)| (at as u32, value))
-                            .collect::<Vec<_>>()
-                    );
-                }
-                // A second export must keep literals, with no dead/live pivot
-                // references.
-                let second = write(&reread);
-                let mut archive = zip::ZipArchive::new(Cursor::new(&second)).unwrap();
-                let names: Vec<_> = archive
-                    .file_names()
-                    .map(|name| name.unwrap().into_owned())
-                    .filter(|name| {
-                        name.strip_prefix("xl/charts/chart")
-                            .and_then(|name| name.strip_suffix(".xml"))
-                            .is_some_and(|number| {
-                                !number.is_empty()
-                                    && number.bytes().all(|byte| byte.is_ascii_digit())
-                            })
-                    })
-                    .collect();
-                assert_eq!(names.len(), if remove_sheet { 1 } else { 2 });
-                for name in names {
-                    let mut xml = String::new();
-                    archive
-                        .by_name(&name)
-                        .unwrap()
-                        .read_to_string(&mut xml)
-                        .unwrap();
-                    assert!(!xml.contains("<c:f>"), "{name}: {xml}");
-                    assert_eq!(xml.matches("<c:numLit>").count(), 2);
-                }
-                emit(
-                    &format!(
-                        "pivot-{}-frozen{}",
-                        if remove_sheet { "sheet" } else { "table" },
-                        if light { "-light" } else { "" }
-                    ),
-                    &output,
+            let output = output.into_inner();
+            let reread = read(&output, false);
+            let space = reread.sheet_by_name("Charts").unwrap().chart_collection()[0].chart_space();
+            assert!(space.pivot_source().is_none());
+            let series = space
+                .chart()
+                .plot_area()
+                .chart_groups()
+                .next()
+                .unwrap()
+                .series()
+                .area_chart_series();
+            assert_eq!(series.len(), 2);
+            for (series, (name, expected)) in series
+                .iter()
+                .zip([("a", ["15", "10", "30"]), ("b", ["25", "20", "40"])])
+            {
+                let text = series.chart_text().unwrap();
+                assert!(text.string_reference().is_none());
+                assert_eq!(
+                    text.numeric_value().unwrap().text(),
+                    name,
+                    "lazy={lazy}, light={light}"
+                );
+                let category = series.category_axis_data().unwrap();
+                assert!(category.string_reference().is_none());
+                let category = category.string_literal().unwrap();
+                assert_eq!(category.point_count().unwrap().val(), Some(3));
+                assert_eq!(
+                    category
+                        .string_point_list()
+                        .iter()
+                        .map(|point| point.numeric_value().text())
+                        .collect::<Vec<_>>(),
+                    ["E", "N", "S"]
+                );
+                let values = series.values().unwrap().number_literal().unwrap();
+                assert_eq!(values.format_code(), Some("General"));
+                assert_eq!(values.point_count().unwrap().val(), Some(3));
+                assert_eq!(
+                    values
+                        .points()
+                        .iter()
+                        .map(|point| (point.index().val().unwrap(), point.value().unwrap()))
+                        .collect::<Vec<_>>(),
+                    expected
+                        .into_iter()
+                        .enumerate()
+                        .map(|(at, value)| (at as u32, value))
+                        .collect::<Vec<_>>()
                 );
             }
+            // A second export must keep literals, with no dead/live pivot
+            // references.
+            let second = write(&reread);
+            let mut archive = zip::ZipArchive::new(Cursor::new(&second)).unwrap();
+            let names: Vec<_> = archive
+                .file_names()
+                .map(|name| name.unwrap().into_owned())
+                .filter(|name| {
+                    name.strip_prefix("xl/charts/chart")
+                        .and_then(|name| name.strip_suffix(".xml"))
+                        .is_some_and(|number| {
+                            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                })
+                .collect();
+            assert_eq!(names.len(), 1);
+            for name in names {
+                let mut xml = String::new();
+                archive
+                    .by_name(&name)
+                    .unwrap()
+                    .read_to_string(&mut xml)
+                    .unwrap();
+                assert!(!xml.contains("<c:f>"), "{name}: {xml}");
+                assert_eq!(xml.matches("<c:numLit>").count(), 2);
+            }
+            emit(
+                &format!("pivot-sheet-frozen{}", if light { "-light" } else { "" }),
+                &output,
+            );
         }
     }
 }
@@ -1926,87 +1886,80 @@ fn pivot_deletion_keeps_hierarchy_labels_and_date_formats_without_totals() {
         ),
     ] {
         for lazy in [false, true] {
-            for remove_sheet in [false, true] {
-                let mut source = read(input, false);
-                let chart = pivot_sheet(&source).chart_collection()[0].clone();
-                source.new_sheet("Charts").unwrap().add_chart(chart);
-                let input = write(&source);
-                let mut book = reader::xlsx::read_reader(Cursor::new(input), !lazy).unwrap();
-                if remove_sheet {
-                    book.remove_sheet_by_name("Pivot").unwrap();
+            let mut source = read(input, false);
+            let chart = pivot_sheet(&source).chart_collection()[0].clone();
+            source.new_sheet("Charts").unwrap().add_chart(chart);
+            let input = write(&source);
+            let mut book = reader::xlsx::read_reader(Cursor::new(input), !lazy).unwrap();
+            book.remove_sheet_by_name("Pivot").unwrap();
+            for light in [false, true] {
+                let mut output = Vec::new();
+                if light {
+                    writer::xlsx::write_writer_light(&book, &mut output).unwrap();
                 } else {
-                    book.remove_pivot_table("Pivot", "PivotTable1").unwrap();
+                    writer::xlsx::write_writer(&book, &mut output).unwrap();
                 }
-                for light in [false, true] {
-                    let mut output = Vec::new();
-                    if light {
-                        writer::xlsx::write_writer_light(&book, &mut output).unwrap();
-                    } else {
-                        writer::xlsx::write_writer(&book, &mut output).unwrap();
-                    }
-                    let reread = read(&output, false);
-                    let chart = &reread.sheet_by_name("Charts").unwrap().chart_collection()[0];
-                    let series = chart
-                        .chart_space()
-                        .chart()
-                        .plot_area()
-                        .chart_groups()
-                        .next()
+                let reread = read(&output, false);
+                let chart = &reread.sheet_by_name("Charts").unwrap().chart_collection()[0];
+                let series = chart
+                    .chart_space()
+                    .chart()
+                    .plot_area()
+                    .chart_groups()
+                    .next()
+                    .unwrap()
+                    .series()
+                    .area_chart_series();
+                assert_eq!(series.len(), names.len());
+                for (at, series) in series.iter().enumerate() {
+                    assert_eq!(
+                        series.chart_text().unwrap().numeric_value().unwrap().text(),
+                        names[at],
+                        "lazy={lazy}, light={light}"
+                    );
+                    let category = series
+                        .category_axis_data()
                         .unwrap()
-                        .series()
-                        .area_chart_series();
-                    assert_eq!(series.len(), names.len());
-                    for (at, series) in series.iter().enumerate() {
-                        assert_eq!(
-                            series.chart_text().unwrap().numeric_value().unwrap().text(),
-                            names[at],
-                            "remove_sheet={remove_sheet}, lazy={lazy}, light={light}"
-                        );
-                        let category = series
-                            .category_axis_data()
-                            .unwrap()
-                            .string_literal()
-                            .unwrap();
-                        assert_eq!(
-                            category.point_count().unwrap().val(),
-                            Some(labels.len() as u32)
-                        );
-                        assert_eq!(
-                            category
-                                .string_point_list()
-                                .iter()
-                                .map(|point| point.numeric_value().text())
-                                .collect::<Vec<_>>(),
-                            labels
-                        );
-                        let literal = series.values().unwrap().number_literal().unwrap();
-                        assert_eq!(
-                            literal.point_count().unwrap().val(),
-                            Some(values[at].len() as u32)
-                        );
-                        assert_eq!(
-                            literal
-                                .points()
-                                .iter()
-                                .map(|point| point.value().unwrap())
-                                .collect::<Vec<_>>(),
-                            values[at]
-                        );
-                    }
-                    emit(
-                        &format!(
-                            "pivot-{}-{}-frozen{}",
-                            if names.len() == 1 {
-                                "hierarchy"
-                            } else {
-                                "dates"
-                            },
-                            if remove_sheet { "sheet" } else { "table" },
-                            if light { "-light" } else { "" }
-                        ),
-                        &output,
+                        .string_literal()
+                        .unwrap();
+                    assert_eq!(
+                        category.point_count().unwrap().val(),
+                        Some(labels.len() as u32)
+                    );
+                    assert_eq!(
+                        category
+                            .string_point_list()
+                            .iter()
+                            .map(|point| point.numeric_value().text())
+                            .collect::<Vec<_>>(),
+                        labels
+                    );
+                    let literal = series.values().unwrap().number_literal().unwrap();
+                    assert_eq!(
+                        literal.point_count().unwrap().val(),
+                        Some(values[at].len() as u32)
+                    );
+                    assert_eq!(
+                        literal
+                            .points()
+                            .iter()
+                            .map(|point| point.value().unwrap())
+                            .collect::<Vec<_>>(),
+                        values[at]
                     );
                 }
+                emit(
+                    &format!(
+                        "pivot-{}-sheet-frozen{}",
+                        if names.len() == 1 {
+                            "hierarchy"
+                        } else {
+                            "dates"
+                        },
+                        if light { "-light" } else { "" }
+                    ),
+                    &output,
+                );
             }
         }
     }
@@ -2018,45 +1971,36 @@ fn failed_pivot_deletion_keeps_charts_on_every_host_unchanged() {
         ChartText,
         StringReference,
     };
-    for remove_sheet in [false, true] {
-        let mut book = read(fixture!("pivotchart"), false);
-        let chart = pivot_sheet(&book).chart_collection()[0].clone();
-        book.new_sheet("First").unwrap().add_chart(chart.clone());
-        book.new_sheet("Last").unwrap().add_chart(chart);
-        let mut text = ChartText::default();
-        let mut reference = StringReference::default();
-        reference.formula_mut().set_address_str("Missing!$A$1");
-        text.set_string_reference(reference);
-        first_chart_mut(&mut book, "Last")
-            .chart_space_mut()
-            .chart_mut()
-            .plot_area_mut()
-            .chart_groups_mut()
-            .next()
-            .unwrap()
-            .series_mut()
-            .area_chart_series_mut()[0]
-            .set_chart_text(text);
-        let before: Vec<_> = ["Pivot", "First", "Last"]
-            .iter()
-            .map(|name| {
-                serde_json::to_value(&book.sheet_by_name(name).unwrap().chart_collection()[0])
-                    .unwrap()
-            })
-            .collect();
-        let result = if remove_sheet {
-            book.remove_sheet_by_name("Pivot")
-        } else {
-            book.remove_pivot_table("Pivot", "PivotTable1")
-        };
-        assert!(result.is_err());
-        assert_eq!(book.sheet_by_name("Pivot").unwrap().pivot_tables().len(), 1);
-        for (name, expected) in ["Pivot", "First", "Last"].iter().zip(before) {
-            assert_eq!(
-                serde_json::to_value(&book.sheet_by_name(name).unwrap().chart_collection()[0])
-                    .unwrap(),
-                expected
-            );
-        }
+    let mut book = read(fixture!("pivotchart"), false);
+    let chart = pivot_sheet(&book).chart_collection()[0].clone();
+    book.new_sheet("First").unwrap().add_chart(chart.clone());
+    book.new_sheet("Last").unwrap().add_chart(chart);
+    let mut text = ChartText::default();
+    let mut reference = StringReference::default();
+    reference.formula_mut().set_address_str("Missing!$A$1");
+    text.set_string_reference(reference);
+    first_chart_mut(&mut book, "Last")
+        .chart_space_mut()
+        .chart_mut()
+        .plot_area_mut()
+        .chart_groups_mut()
+        .next()
+        .unwrap()
+        .series_mut()
+        .area_chart_series_mut()[0]
+        .set_chart_text(text);
+    let before: Vec<_> = ["Pivot", "First", "Last"]
+        .iter()
+        .map(|name| {
+            serde_json::to_value(&book.sheet_by_name(name).unwrap().chart_collection()[0]).unwrap()
+        })
+        .collect();
+    assert!(book.remove_sheet_by_name("Pivot").is_err());
+    assert_eq!(book.sheet_by_name("Pivot").unwrap().pivot_tables().len(), 1);
+    for (name, expected) in ["Pivot", "First", "Last"].iter().zip(before) {
+        assert_eq!(
+            serde_json::to_value(&book.sheet_by_name(name).unwrap().chart_collection()[0]).unwrap(),
+            expected
+        );
     }
 }

@@ -18,12 +18,15 @@ use sha2::{
     Sha256,
 };
 use umya_spreadsheet::{
-    NewTimeline,
+    DefinedName,
     PivotCacheSlicerProperties,
+    SlicerPivotTable,
+    Timeline,
     Workbook,
     drawing::spreadsheet::{
         DrawingAnchor,
         Extent,
+        SlicerFrame,
     },
     writer::streaming_writer::StreamingWriter,
 };
@@ -118,7 +121,7 @@ fn assert_excel_orphan_cache(book: &Workbook, records: &[u8]) {
 }
 
 #[test]
-fn a_new_live_pivot_cache_has_an_identity_distinct_from_retained_timeline_caches() {
+fn a_live_pivot_cache_and_a_retained_timeline_cache_are_written_apart() {
     for (reader, read) in readers() {
         let mut book = read(FIXTURE).unwrap();
         book.try_read_sheet_collection().unwrap();
@@ -134,38 +137,50 @@ fn a_new_live_pivot_cache_has_an_identity_distinct_from_retained_timeline_caches
             .set_cache_id(7);
         pivot
             .pivot_cache_definition_mut()
-            .set_slicer_properties(PivotCacheSlicerProperties::default());
+            .set_slicer_properties(PivotCacheSlicerProperties {
+                // An x14 id distinct from the retained cache's 953075119,
+                // set by hand.
+                pivot_cache_id: Some(953_075_120),
+                ..PivotCacheSlicerProperties::default()
+            });
         book.sheet_by_name_mut("Report")
             .unwrap()
             .pivot_tables_mut()
             .push(pivot);
         let mut extent = Extent::default();
         extent.set_cx(3_810_000).set_cy(1_397_000);
-        book.add_timeline(&NewTimeline {
-            sheet:       "Report",
-            name:        "LiveTimeline",
-            pivot_sheet: "Report",
-            pivot_table: "LivePivot",
-            field:       "Day",
-            anchor:      DrawingAnchor::OneCell {
-                from: Default::default(),
-                extent,
-            },
-        })
-        .unwrap();
-        // The Excel fixture's x14 id is 953075119; allocation must include it,
-        // even though its last pivot table no longer exists.
-        assert_eq!(book.timeline_caches().len(), 2, "{reader}");
-        assert_eq!(
-            book.timeline_caches()[1].state.pivot_cache_id,
-            953_075_120,
-            "{reader}"
-        );
-        assert_eq!(
-            book.timeline_caches()[1].name,
-            "NativeTimeline_Day1",
-            "{reader}"
-        );
+        let mut address = DefinedName::default();
+        address.set_name("NativeTimeline_Day1");
+        address.set_address("#N/A");
+        book.defined_names_mut().push(address);
+        let mut cache = book.timeline_caches()[0].clone();
+        cache.name = "NativeTimeline_Day1".to_owned();
+        cache.uid = None;
+        cache.pivot_tables = Some(vec![SlicerPivotTable {
+            sheet_id: 2,
+            name:     "LivePivot".to_owned(),
+        }]);
+        cache.state.pivot_cache_id = 953_075_120;
+        cache.state.selection = None;
+        "unknown".clone_into(&mut cache.state.filter_type);
+        cache.pivot_filter = None;
+        book.timeline_caches_mut().push(cache);
+        let report = book.sheet_by_name_mut("Report").unwrap();
+        report.timelines_mut().push(Timeline {
+            name: "LiveTimeline".to_owned(),
+            cache: "NativeTimeline_Day1".to_owned(),
+            caption: Some("Day".to_owned()),
+            ..Timeline::default()
+        });
+        report
+            .worksheet_drawing_mut()
+            .add_slicer_frame(SlicerFrame::new_timeline(
+                DrawingAnchor::OneCell {
+                    from: Default::default(),
+                    extent,
+                },
+                "LiveTimeline",
+            ));
         let normal = save(&book);
         let streamed = stream(book);
         for (writer, bytes) in [("normal", normal), ("streaming", streamed)] {
@@ -556,143 +571,6 @@ fn inserting_past_the_grid_edge_changes_nothing() {
                 after.remove("xl/sharedStrings.xml");
                 assert_eq!(before, after, "{reader} {edit}");
             }
-        }
-    }
-}
-
-#[test]
-fn removing_the_final_timeline_releases_its_orphan_pivot_cache() {
-    for (reader, read) in readers() {
-        let mut book = read(FIXTURE).unwrap();
-        book.remove_timeline("DayTl").unwrap();
-        assert_eq!(book.retained_pivot_caches().count(), 0);
-        assert!(book.timeline_caches().is_empty());
-        let normal = save(&book);
-        let streamed = stream(book);
-        for (writer, bytes) in [("normal", normal), ("streaming", streamed)] {
-            let parts = unpack(&bytes);
-            assert!(
-                parts
-                    .keys()
-                    .all(|path| !path.starts_with("xl/pivotCache/") && !path.contains("/timeline")),
-                "{reader} {writer}"
-            );
-            let workbook = &parts["xl/workbook.xml"];
-            assert!(!workbook.contains("timelineCachePivotCaches"));
-            assert!(!workbook.contains("{A2CB5862-8E78-49c6-8D9D-AF26E26ADB89}"));
-            assert!(!workbook.contains("NativeTimeline_Day"));
-            assert!(!parts["xl/_rels/workbook.xml.rels"].contains("/pivotCacheDefinition"));
-            assert!(!parts["[Content_Types].xml"].contains("pivotCacheRecords+xml"));
-            for (_, reread) in readers() {
-                let mut again = reread(&bytes).unwrap();
-                again.try_read_sheet_collection().unwrap();
-                assert_eq!(again.retained_pivot_caches().count(), 0);
-                assert!(again.timeline_caches().is_empty());
-            }
-            keep_output(
-                &format!("timeline-orphan-cache-removed-{reader}-{writer}"),
-                &bytes,
-            );
-        }
-    }
-}
-
-#[test]
-fn reusing_a_removed_timeline_cache_identity_does_not_restore_its_orphan_definition() {
-    const SOURCE: &[u8] =
-        include_bytes!("fixtures/timelines/excel-authored/pivot-without-timeline.xlsx");
-    let source_records = unpack(SOURCE)[RECORDS_PATH].clone();
-    for (reader, read) in readers() {
-        let mut book = read(FIXTURE).unwrap();
-        book.remove_timeline("DayTl").unwrap();
-        let mut source = read(SOURCE).unwrap();
-        source.try_read_sheet_collection().unwrap();
-        let mut pivot = source.sheet_by_name("Report").unwrap().pivot_tables()[0].clone();
-        pivot
-            .pivot_table_definition_mut()
-            .set_name("LivePivot")
-            .set_cache_id(7);
-        pivot
-            .pivot_cache_definition_mut()
-            .set_slicer_properties(PivotCacheSlicerProperties {
-                pivot_cache_id: Some(953_075_119),
-                ..PivotCacheSlicerProperties::default()
-            });
-        book.sheet_by_name_mut("Report")
-            .unwrap()
-            .pivot_tables_mut()
-            .push(pivot);
-        let mut extent = Extent::default();
-        extent.set_cx(3_810_000).set_cy(1_397_000);
-        book.add_timeline(&NewTimeline {
-            sheet:       "Report",
-            name:        "LiveTimeline",
-            pivot_sheet: "Report",
-            pivot_table: "LivePivot",
-            field:       "Day",
-            anchor:      DrawingAnchor::OneCell {
-                from: Default::default(),
-                extent,
-            },
-        })
-        .unwrap();
-        assert_eq!(book.retained_pivot_caches().count(), 0, "{reader}");
-        assert_eq!(book.timeline_caches().len(), 1, "{reader}");
-        assert_eq!(book.timeline_caches()[0].name, "NativeTimeline_Day");
-        let normal = save(&book);
-        let streamed = stream(book);
-        for (writer, bytes) in [("normal", normal), ("streaming", streamed)] {
-            let parts = unpack(&bytes);
-            let workbook = &parts["xl/workbook.xml"];
-            assert!(
-                !workbook.contains("timelineCachePivotCaches"),
-                "{reader} {writer}"
-            );
-            let declarations = tags(workbook, "<pivotCache");
-            assert_eq!(declarations.len(), 1, "{reader} {writer}");
-            assert_eq!(attribute(declarations[0], "cacheId").as_deref(), Some("7"));
-            let definitions: Vec<_> = parts
-                .keys()
-                .filter(|name| {
-                    name.starts_with("xl/pivotCache/pivotCacheDefinition") && name.ends_with(".xml")
-                })
-                .map(String::as_str)
-                .collect();
-            assert_eq!(
-                definitions,
-                ["xl/pivotCache/pivotCacheDefinition1.xml"],
-                "{reader} {writer}"
-            );
-            let records: Vec<_> = parts
-                .keys()
-                .filter(|name| {
-                    name.starts_with("xl/pivotCache/pivotCacheRecords") && name.ends_with(".xml")
-                })
-                .map(String::as_str)
-                .collect();
-            assert_eq!(records, [RECORDS_PATH], "{reader} {writer}");
-            assert_eq!(parts[RECORDS_PATH], source_records, "{reader} {writer}");
-            for (_, reread) in readers() {
-                let mut again = reread(&bytes).unwrap();
-                again.try_read_sheet_collection().unwrap();
-                assert_eq!(again.retained_pivot_caches().count(), 0);
-                let pivots = again.sheet_by_name("Report").unwrap().pivot_tables();
-                assert_eq!(pivots.len(), 1);
-                assert_eq!(pivots[0].pivot_table_definition().name(), "LivePivot");
-                assert_eq!(pivots[0].pivot_table_definition().cache_id(), 7);
-                assert_eq!(
-                    pivots[0].pivot_cache_definition().slicer_cache_id(),
-                    Some(953_075_119)
-                );
-                assert_eq!(again.timeline_caches().len(), 1);
-                assert_eq!(again.timeline_caches()[0].name, "NativeTimeline_Day");
-                assert_eq!(again.timeline_caches()[0].state.pivot_cache_id, 953_075_119);
-                assert_eq!(
-                    again.sheet_by_name("Report").unwrap().timelines()[0].name,
-                    "LiveTimeline"
-                );
-            }
-            keep_output(&format!("timeline-cache-reused-{reader}-{writer}"), &bytes);
         }
     }
 }

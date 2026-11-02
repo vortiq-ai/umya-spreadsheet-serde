@@ -8,17 +8,7 @@ use std::io::{
     Write,
 };
 
-use chrono::NaiveDate;
 use fixture::*;
-use umya_spreadsheet::{
-    NewTimeline,
-    TimelineLevel,
-    TimelineSelection,
-    drawing::spreadsheet::{
-        DrawingAnchor,
-        Extent,
-    },
-};
 use zip::{
     ZipWriter,
     write::SimpleFileOptions,
@@ -116,75 +106,5 @@ fn timeline_style_names_are_literal_xml_strings() {
         let view = again.timeline_mut("ShipTl").unwrap();
         assert_eq!(view.style.as_deref(), Some(NAME), "{label}");
         assert_eq!(view.caption.as_deref(), Some("Shipping dates"), "{label}");
-    }
-}
-
-#[test]
-fn new_timeline_views_use_the_existing_selection_level() {
-    // Excel's level mapping: one day is 3 (Days), a whole year is 0 (Years).
-    for (end_month, end_day, expected, xml_level) in [
-        (1, 1, TimelineLevel::Days, "3"),
-        (12, 31, TimelineLevel::Years, "0"),
-    ] {
-        for (label, read) in readers() {
-            let mut book = read(&fixture("pivot-without-timeline")).unwrap();
-            let mut extent = Extent::default();
-            extent.set_cx(3_810_000).set_cy(1_397_000);
-            let mut new = NewTimeline {
-                sheet:       "Report",
-                name:        "FirstTimeline",
-                pivot_sheet: "Report",
-                pivot_table: "PivotTable1",
-                field:       "Day",
-                anchor:      DrawingAnchor::OneCell {
-                    from: Default::default(),
-                    extent,
-                },
-            };
-            book.add_timeline(&new).unwrap();
-            book.set_timeline_selection(
-                "NativeTimeline_Day",
-                TimelineSelection::Range {
-                    start: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                    end:   NaiveDate::from_ymd_opt(2024, end_month, end_day).unwrap(),
-                },
-            )
-            .unwrap();
-            new.name = "SecondTimeline";
-            book.add_timeline(&new).unwrap();
-            assert_eq!(
-                book.timeline_mut("SecondTimeline").unwrap().selection_level,
-                expected,
-                "{label}"
-            );
-            let bytes = save(&book);
-            keep_output(
-                &format!("timeline-new-view-level-{xml_level}-{label}"),
-                &bytes,
-            );
-            let parts = unpack(&bytes);
-            let views: Vec<_> = parts
-                .values()
-                .flat_map(|xml| tags(xml, "<timeline"))
-                .collect();
-            assert_eq!(views.len(), 2, "{label}");
-            for view in views {
-                assert_eq!(
-                    attribute(view, "selectionLevel").as_deref(),
-                    Some(xml_level),
-                    "{label}"
-                );
-            }
-            let mut again = read(&bytes).unwrap();
-            assert_eq!(
-                again
-                    .timeline_mut("SecondTimeline")
-                    .unwrap()
-                    .selection_level,
-                expected,
-                "{label}"
-            );
-            assert_eq!(again.timeline_caches().len(), 1, "{label}");
-        }
     }
 }

@@ -539,10 +539,6 @@ impl PivotTableDefinition {
         self.filters.as_ref()
     }
 
-    pub(crate) fn set_filters(&mut self, value: Option<crate::drawing::charts::OpaqueElement>) {
-        self.filters = value;
-    }
-
     #[inline]
     #[must_use]
     pub fn multiple_field_filters(&self) -> bool {

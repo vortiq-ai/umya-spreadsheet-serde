@@ -51,12 +51,12 @@ pub struct ChartExDefinedNameReference {
     pub workbook_scoped: bool,
 }
 
-/// A caller-resolved name operand whose definition points at a sheet being
-/// deleted. The address is used to retain the dimension's number of levels.
+/// A `_xlchart.*` defined-name operand whose formula reads the sheet being
+/// deleted, built by sheet removal. The address is used to retain the
+/// dimension's number of levels.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChartExDefinedNameSource {
-    /// Exact operand identity, usually copied from `defined_names` in the
-    /// preceding adjustment report.
+pub(crate) struct ChartExDefinedNameSource {
+    /// Exact operand identity.
     pub reference: ChartExDefinedNameReference,
     /// Original defined-name formula, used to retain the dimension's levels.
     pub address:   String,
@@ -68,9 +68,9 @@ pub struct ChartExReferenceAdjustmentReport {
     /// Each name/scope identity occurs once, in formula traversal order.
     /// Definitions are neither resolved nor rewritten by detached chart edits.
     pub defined_names:        Vec<ChartExDefinedNameReference>,
-    /// Names of `deleted_names` that no formula of the chart refers to any
-    /// more after a sheet deletion. The caller owns removal of their
-    /// definitions.
+    /// Names whose sheet is being deleted and that no formula of the chart
+    /// refers to any more. Only sheet removal fills it; `adjust_references`
+    /// leaves it empty. The caller owns removal of their definitions.
     pub unused_defined_names: Vec<ChartExDefinedNameReference>,
 }
 
@@ -368,10 +368,9 @@ impl ChartExSpace {
     /// source row or column, whatever cached points it held), the series and
     /// chart, axis and units-label texts that read it are removed, and a
     /// dimension name formula that reads it is dropped. Only a direct operand
-    /// is recognised here; for a name operand use
-    /// `adjust_references_with_deleted_names`. A deleted source whose level
-    /// count cannot be read from a plain cell range fails with "cannot
-    /// preserve `ChartEx` levels" before anything changes.
+    /// is recognised here. A deleted source whose level count cannot be read
+    /// from a plain cell range fails with "cannot preserve `ChartEx` levels"
+    /// before anything changes.
     pub fn adjust_references(
         &mut self,
         host_sheet: &str,
@@ -384,7 +383,7 @@ impl ChartExSpace {
     /// supplies the exact name operands the caller resolved to that sheet,
     /// with their original definition formulas. Converted dimensions become
     /// literal empty levels and the report identifies names now unused.
-    pub fn adjust_references_with_deleted_names(
+    pub(crate) fn adjust_references_with_deleted_names(
         &mut self,
         host_sheet: &str,
         edit: &ChartReferenceEdit,
@@ -415,10 +414,9 @@ impl ExtendedChart {
     /// source row or column, whatever cached points it held), the series and
     /// chart, axis and units-label texts that read it are removed, and a
     /// dimension name formula that reads it is dropped. Only a direct operand
-    /// is recognised here; for a name operand use
-    /// `adjust_references_with_deleted_names`. A deleted source whose level
-    /// count cannot be read from a plain cell range fails with "cannot
-    /// preserve `ChartEx` levels" before anything changes.
+    /// is recognised here. A deleted source whose level count cannot be read
+    /// from a plain cell range fails with "cannot preserve `ChartEx` levels"
+    /// before anything changes.
     pub fn adjust_references(
         &mut self,
         host_sheet: &str,
@@ -432,7 +430,7 @@ impl ExtendedChart {
     /// together with their original formulas. The report's
     /// `unused_defined_names` identifies the operands the caller can now
     /// remove from its name table.
-    pub fn adjust_references_with_deleted_names(
+    pub(crate) fn adjust_references_with_deleted_names(
         &mut self,
         host_sheet: &str,
         edit: &ChartReferenceEdit,
