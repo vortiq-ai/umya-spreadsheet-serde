@@ -1,4 +1,8 @@
 // pivotTableDefinition
+#[cfg(test)]
+#[path = "../../tests/support/model_pivot_geometry.rs"]
+mod geometry_tests;
+
 use std::io::Cursor;
 
 use quick_xml::{

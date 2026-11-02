@@ -246,6 +246,89 @@ impl DefinedName {
         write_end_tag(writer, "definedName");
     }
 }
+/// Delete table operands using the same lexer as chart and cell references.
+/// Partial structured ranges require a surviving-column plan before mutation.
+pub(crate) fn remove_table_references(
+    formula: &str,
+    removed: &[(String, Option<String>)],
+) -> Result<Option<String>, String> {
+    let mut replacements = Vec::new();
+    for operand in crate::helper::formula::chart_formula_operands(formula) {
+        let bracket = operand.text.find('[').unwrap_or(operand.text.len());
+        for (table, column) in removed {
+            if !operand.text[..bracket].eq_ignore_ascii_case(table) {
+                continue;
+            }
+            if let Some(column) = column {
+                if structured_column_spans(operand.text, bracket, column).is_empty() {
+                    continue;
+                }
+                if operand.text.contains("]:[") {
+                    return Err("deleting part of a structured column range requires a \
+                                surviving-column plan"
+                        .into());
+                }
+            }
+            replacements.push(operand.span);
+            break;
+        }
+    }
+    if replacements.is_empty() {
+        return Ok(None);
+    }
+    let mut result = formula.to_owned();
+    for span in replacements.into_iter().rev() {
+        result.replace_range(span, "#REF!");
+    }
+    Ok(Some(result))
+}
+
+fn structured_column_spans(
+    operand: &str,
+    bracket: usize,
+    old_name: &str,
+) -> Vec<std::ops::Range<usize>> {
+    let mut replacements = Vec::new();
+    let mut leaf_start = None;
+    let mut escaped = false;
+    for (index, ch) in operand[bracket..].char_indices() {
+        let index = index + bracket;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\'' => escaped = true,
+            '[' => leaf_start = Some(index + 1),
+            ']' => {
+                if let Some(start) = leaf_start.take() {
+                    let start = start + usize::from(operand[start..index].starts_with('@'));
+                    let leaf = &operand[start..index];
+                    if leaf.starts_with('#') {
+                        continue;
+                    }
+                    let mut decoded = String::new();
+                    let mut chars = leaf.chars();
+                    while let Some(ch) = chars.next() {
+                        if ch == '\'' {
+                            if let Some(next) = chars.next() {
+                                decoded.push(next);
+                            }
+                        } else {
+                            decoded.push(ch);
+                        }
+                    }
+                    if decoded.eq_ignore_ascii_case(old_name) {
+                        replacements.push(start..index);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    replacements
+}
+
 impl AdjustmentCoordinateWithSheet for DefinedName {
     fn adjustment_insert_coordinate_with_sheet(
         &mut self,

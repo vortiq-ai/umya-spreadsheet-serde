@@ -9,6 +9,7 @@ use super::{
 use crate::{
     AutoFilter,
     helper::coordinate::CellCoordinates,
+    traits::AdjustmentCoordinate,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -27,6 +28,217 @@ pub struct Table {
     id:               Option<u32>,
 }
 impl Table {
+    /// Plan on a clone before moving cells; commit only after every affected
+    /// object accepts the edit. New column headers must also be written to
+    /// the cells by the worksheet owner.
+    pub(crate) fn insert_geometry(
+        &mut self,
+        root_col: u32,
+        col_count: u32,
+        root_row: u32,
+        row_count: u32,
+    ) -> Result<(), String> {
+        if self.geometry_edit_is_after(root_col, col_count, root_row, row_count) {
+            return Ok(());
+        }
+        self.check_geometry_edit(root_col, col_count, root_row, row_count)?;
+        let mut next = self.clone();
+        if col_count != 0 && root_col > self.area.0.col_num() && root_col <= self.area.1.col_num() {
+            let index = (root_col - self.area.0.col_num()) as usize;
+            // Preserve imported identities and allocate missing in-memory IDs
+            // in the same order as table serialization before inserting.
+            let mut reserved = std::collections::HashSet::new();
+            for id in next.columns.iter().filter_map(TableColumn::id) {
+                if !reserved.insert(id) {
+                    return Err("duplicate table column ID".into());
+                }
+            }
+            let mut candidate = 1_u32;
+            for column in &mut next.columns {
+                if column.id.is_none() {
+                    while reserved.contains(&candidate) {
+                        candidate = candidate.checked_add(1).ok_or("table column ID overflow")?;
+                    }
+                    column.set_id(candidate);
+                    reserved.insert(candidate);
+                }
+            }
+            for offset in 0..col_count {
+                let mut id = 1_u32;
+                while next.columns.iter().any(|column| column.id == Some(id)) {
+                    id = id.checked_add(1).ok_or("table column ID overflow")?;
+                }
+                let mut suffix = 1_u32;
+                while next
+                    .columns
+                    .iter()
+                    .any(|column| column.name.eq_ignore_ascii_case(&format!("Column{suffix}")))
+                {
+                    suffix = suffix.checked_add(1).ok_or("table column name overflow")?;
+                }
+                let mut column = TableColumn::new(&format!("Column{suffix}"));
+                column.set_id(id);
+                next.columns.insert(index + offset as usize, column);
+            }
+        }
+        next.area
+            .0
+            .adjustment_insert_coordinate(root_col, col_count, root_row, row_count);
+        next.area
+            .1
+            .adjustment_insert_coordinate(root_col, col_count, root_row, row_count);
+        next.auto_filter
+            .adjustment_insert_coordinate(root_col, col_count, root_row, row_count);
+        // Inserting immediately above totals grows the filter's data range
+        // even though the insertion is beyond its old trailing endpoint.
+        if self.filter_matches_data_area() {
+            next.set_data_filter_range();
+        }
+        if next.area.1.col_num() > 16_384 || next.area.1.row_num() > 1_048_576 {
+            return Err("table insertion exceeds the worksheet grid".into());
+        }
+        *self = next;
+        Ok(())
+    }
+
+    /// Returns true when the table is wholly deleted. Refused edits and
+    /// removals leave this value untouched, so the owner can preflight the
+    /// whole workbook before changing cells or dependent consumers.
+    pub(crate) fn remove_geometry(
+        &mut self,
+        root_col: u32,
+        col_count: u32,
+        root_row: u32,
+        row_count: u32,
+    ) -> Result<bool, String> {
+        if self.geometry_edit_is_after(root_col, col_count, root_row, row_count) {
+            return Ok(false);
+        }
+        self.check_geometry_edit(root_col, col_count, root_row, row_count)?;
+        let covered = |start: u32, end: u32, root: u32, count: u32| {
+            count != 0 && root <= start && u64::from(root) + u64::from(count) > u64::from(end)
+        };
+        if covered(
+            self.area.0.col_num(),
+            self.area.1.col_num(),
+            root_col,
+            col_count,
+        ) || covered(
+            self.area.0.row_num(),
+            self.area.1.row_num(),
+            root_row,
+            row_count,
+        ) {
+            return Ok(true);
+        }
+        let contains = |value: u32, root: u32, count: u32| {
+            count != 0 && value >= root && u64::from(value) < u64::from(root) + u64::from(count)
+        };
+        if contains(self.area.0.row_num(), root_row, row_count) {
+            return Err("cannot delete a table header without deleting the whole table".into());
+        }
+        let boundary = |value: u32, root: u32, count: u32, trailing: bool| {
+            if count == 0 || value < root {
+                value
+            } else if u64::from(value) >= u64::from(root) + u64::from(count) {
+                value - count
+            } else if trailing {
+                root - 1
+            } else {
+                root
+            }
+        };
+        let mut next = self.clone();
+        next.columns = (self.area.0.col_num()..=self.area.1.col_num())
+            .zip(&self.columns)
+            .filter(|(column, _)| !contains(*column, root_col, col_count))
+            .map(|(_, column)| column.clone())
+            .collect();
+        next.area
+            .0
+            .set_col_num(boundary(self.area.0.col_num(), root_col, col_count, false));
+        next.area
+            .1
+            .set_col_num(boundary(self.area.1.col_num(), root_col, col_count, true));
+        next.area
+            .0
+            .set_row_num(boundary(self.area.0.row_num(), root_row, row_count, false));
+        next.area
+            .1
+            .set_row_num(boundary(self.area.1.row_num(), root_row, row_count, true));
+        if self.totals_row_count() != 0 && contains(self.area.1.row_num(), root_row, row_count) {
+            next.totals_row_count = UInt32Value::default();
+            next.totals_row_shown.set_value(false);
+            for column in &mut next.columns {
+                column.totals_row_label.remove_value();
+                column.totals_row_function = EnumValue::default();
+            }
+        }
+        // Excel retains one blank data row when the last data row is
+        // deleted. The owner must preserve/move the totals cells accordingly.
+        next.area.1.set_row_num(
+            next.area
+                .1
+                .row_num()
+                .max(next.area.0.row_num() + 1 + next.totals_row_count()),
+        );
+        next.auto_filter
+            .adjustment_remove_coordinate(root_col, col_count, root_row, row_count);
+        if self.filter_matches_data_area() {
+            next.set_data_filter_range();
+        }
+        *self = next;
+        Ok(false)
+    }
+
+    fn geometry_edit_is_after(&self, col: u32, cols: u32, row: u32, rows: u32) -> bool {
+        (cols == 0 || (col > 0 && col <= 16_384 && cols <= 16_385 - col))
+            && (rows == 0 || (row > 0 && row <= 1_048_576 && rows <= 1_048_577 - row))
+            && (cols == 0 || col > self.area.1.col_num())
+            && (rows == 0 || row > self.area.1.row_num())
+    }
+
+    fn check_geometry_edit(
+        &self,
+        root_col: u32,
+        col_count: u32,
+        root_row: u32,
+        row_count: u32,
+    ) -> Result<(), String> {
+        if !self.is_ok()
+            || self.area.1.col_num() > 16_384
+            || self.area.1.row_num() > 1_048_576
+            || self.totals_row_count() > 1
+            || self.totals_row_count() > self.area.1.row_num() - self.area.0.row_num()
+            || self.columns.len() != (self.area.1.col_num() - self.area.0.col_num() + 1) as usize
+        {
+            return Err("invalid table geometry or column count".into());
+        }
+        for (root, count, limit) in [
+            (root_col, col_count, 16_384_u32),
+            (root_row, row_count, 1_048_576),
+        ] {
+            if count != 0
+                && (root == 0 || u64::from(root) + u64::from(count) > u64::from(limit) + 1)
+            {
+                return Err("table edit is outside the worksheet grid".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn filter_matches_data_area(&self) -> bool {
+        let mut end = self.area.1.clone();
+        end.set_row_num(end.row_num() - self.totals_row_count());
+        self.auto_filter.range().range() == format!("{}:{end}", self.area.0)
+    }
+
+    fn set_data_filter_range(&mut self) {
+        let mut end = self.area.1.clone();
+        end.set_row_num(end.row_num() - self.totals_row_count());
+        self.auto_filter.set_range(format!("{}:{end}", self.area.0));
+    }
+
     #[inline]
     #[must_use]
     pub fn id(&self) -> Option<u32> {
@@ -301,6 +513,10 @@ impl Table {
         coord
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/model_table_geometry.rs"]
+mod model_geometry_tests;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]

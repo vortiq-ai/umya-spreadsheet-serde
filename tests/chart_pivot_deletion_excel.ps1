@@ -5,10 +5,51 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
 $excel = $null
 $lines = [System.Collections.Generic.List[string]]::new()
 $failures = 0
+$results = [Collections.Generic.List[object]]::new()
+
+function Chart-Parts($path) {
+    $zip = [IO.Compression.ZipFile]::OpenRead($path)
+    try {
+        return @($zip.Entries | Where-Object FullName -Match '^xl/charts/chart\d+\.xml$' | ForEach-Object {
+            $reader = [IO.StreamReader]::new($_.Open())
+            try { $xml = [xml]$reader.ReadToEnd() } finally { $reader.Dispose() }
+            [ordered]@{
+                part = $_.FullName
+                pivotSource = @($xml.SelectNodes('//*[local-name()="pivotSource"]') | ForEach-Object OuterXml)
+                formulas = @($xml.SelectNodes('//*[local-name()="f"]') | ForEach-Object InnerText)
+                numericCaches = @($xml.SelectNodes('//*[local-name()="numCache"]') | ForEach-Object OuterXml)
+                numericLiterals = @($xml.SelectNodes('//*[local-name()="numLit"]') | ForEach-Object OuterXml)
+                categoryCaches = @($xml.SelectNodes('//*[local-name()="strCache" or local-name()="multiLvlStrCache"]') | ForEach-Object OuterXml)
+                categoryLiterals = @($xml.SelectNodes('//*[local-name()="strLit" or local-name()="multiLvlStrLit"]') | ForEach-Object OuterXml)
+            }
+        })
+    } finally { $zip.Dispose() }
+}
+
+function Chart-State($sheet) {
+    $result = @()
+    foreach ($object in $sheet.ChartObjects()) {
+        $chart = $object.Chart
+        $series = @()
+        for ($index = 1; $index -le $chart.SeriesCollection().Count; $index++) {
+            $item = $chart.SeriesCollection($index)
+            $series += [ordered]@{
+                name = $item.Name
+                formula = $item.Formula
+                values = @($item.Values)
+                categories = @($item.XValues)
+            }
+        }
+        $result += [ordered]@{name = $object.Name; groups = $chart.ChartGroups().Count; pivotLinked = ($null -ne $chart.PivotLayout); series = $series}
+    }
+    return $result
+}
+
 
 function Record-Series($label, $chart) {
     $series = @()
@@ -57,6 +98,66 @@ try {
             if ($null -ne $book) { $book.Close($false) }
         }
     }
+    foreach ($operation in 'rows', 'columns') {
+        $book = $null
+        try {
+            $book = $excel.Workbooks.Open($SourcePath, 0, $false)
+            $pivotSheet = $book.Worksheets.Item('Pivot')
+            $charts = $book.Worksheets.Add()
+            $charts.Name = 'Charts'
+            $null = $pivotSheet.ChartObjects(1).Copy()
+            $null = $charts.Paste()
+            $before = @(Chart-State $charts)
+            $refused = $null
+            try {
+                if ($operation -eq 'rows') { $null = $pivotSheet.Rows.Item('3:8').Delete() }
+                else { $null = $pivotSheet.Range('A:D').EntireColumn.Delete() }
+            } catch { $refused = $_.Exception.Message }
+            $path = Join-Path $EvidenceDirectory "excel-pivot-whole-$operation.xlsx"
+            $book.SaveAs($path, 51)
+            $result = [ordered]@{
+                operation = $operation
+                refused = $refused
+                remainingPivots = $pivotSheet.PivotTables().Count
+                before = $before
+                copiedChart = @(Chart-State $charts)
+                originalChart = @(Chart-State $pivotSheet)
+                saved = $path
+                parts = $null
+            }
+        } finally {
+            if ($null -ne $book) { $book.Close($false); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($book) }
+        }
+        $result.parts = @(Chart-Parts $path)
+        $results.Add($result)
+    }
+
+    $naming = [Collections.Generic.List[object]]::new()
+    foreach ($scenario in 'moved', 'combo') {
+        foreach ($operation in 'rows', 'columns') {
+            $book = $excel.Workbooks.Open($SourcePath, 0, $false)
+            try {
+                $pivotSheet = $book.Worksheets.Item('Pivot')
+                $charts = $book.Worksheets.Add()
+                $charts.Name = 'Charts'
+                $comboError = $null
+                if ($scenario -eq 'moved') {
+                    $null = $pivotSheet.ChartObjects(1).Chart.Location(2, 'Charts')
+                } else {
+                    try { $pivotSheet.ChartObjects(1).Chart.SeriesCollection(2).ChartType = 4 } catch { $comboError = $_.Exception.Message }
+                }
+                $basePath = Join-Path $EvidenceDirectory "pivot-$scenario-base.xlsx"
+                $book.SaveCopyAs($basePath)
+                $before = @(Chart-State $pivotSheet) + @(Chart-State $charts)
+                if ($operation -eq 'rows') { $null = $pivotSheet.Rows.Item('3:8').Delete() }
+                else { $null = $pivotSheet.Columns.Item('A:D').Delete() }
+                $path = Join-Path $EvidenceDirectory "excel-pivot-$scenario-$operation.xlsx"
+                $book.SaveAs($path, 51)
+                $naming.Add([ordered]@{scenario=$scenario;operation=$operation;comboError=$comboError;base=$basePath;before=$before;after=@(Chart-State $pivotSheet)+@(Chart-State $charts);saved=$path})
+            } finally { $book.Close($false) }
+        }
+    }
+    [ordered]@{excel="$($excel.Version) build $($excel.Build)";source=$SourcePath;results=@($results);naming=@($naming)} | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'pivot-chart-deletion.json')
     if ($PackageDirectory) {
         $packages = @('pivot-sheet-frozen', 'pivot-sheet-frozen-light')
         foreach ($kind in 'hierarchy', 'dates') {

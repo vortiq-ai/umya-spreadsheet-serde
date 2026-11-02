@@ -7,7 +7,10 @@
 mod fixture;
 
 use fixture::*;
-use umya_spreadsheet::Workbook;
+use umya_spreadsheet::{
+    Workbook,
+    writer,
+};
 
 const SAMPLE: &str = "tests/fixtures/slicers/excel-authored/sheet-extensions.xlsx";
 
@@ -122,11 +125,99 @@ fn removing_a_row_drops_the_sparkline_in_it_and_keeps_the_others() {
     }
 }
 
+fn sparkline_removal_answers() -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(include_str!(
+        "fixtures/model_operations/pivot-known-answers.json"
+    ))
+    .unwrap()["extensionOperations"]
+        .clone()
+}
+
+#[test]
+fn removing_sparkline_rows_that_cut_a_pivot_is_refused_without_changes() {
+    let answers = sparkline_removal_answers();
+    let expected = &answers[0];
+    assert_eq!(expected["refused"], true);
+    for (label, read) in readers() {
+        let mut book = read(&std::fs::read(SAMPLE).unwrap()).unwrap();
+        book.try_read_sheet_collection().unwrap();
+        let before = format!("{book:?}");
+        book.remove_row(
+            "Report",
+            expected["start"].as_u64().unwrap() as u32,
+            expected["count"].as_u64().unwrap() as u32,
+        );
+        assert_eq!(format!("{book:?}"), before);
+        for light in [false, true] {
+            let mut saved = Vec::new();
+            if light {
+                writer::xlsx::write_writer_light(&book, &mut saved).unwrap();
+            } else {
+                writer::xlsx::write_writer(&book, &mut saved).unwrap();
+            }
+            keep_output(
+                &format!("structural-pivot-cut-refused-{label}-{light}"),
+                &saved,
+            );
+            let reread = read_eager(&saved).unwrap();
+            for model in [&book, &reread] {
+                let pivots = model.sheet_by_name("Report").unwrap().pivot_tables();
+                assert_eq!(
+                    pivots.len() as u64,
+                    expected["remainingPivots"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    pivots[0].pivot_table_definition().location().reference(),
+                    expected["pivotRef"].as_str().unwrap()
+                );
+            }
+            for bytes in [&saved, &save(&reread)] {
+                let parts = unpack(bytes);
+                let report = sheet_xml(&parts, "Report");
+                assert_eq!(
+                    report.matches("<x14:sparkline>").count() as u64,
+                    expected["sparklineCount"].as_u64().unwrap()
+                );
+                let targets = expected["targets"].as_array().unwrap();
+                assert_eq!(report.matches("<xm:sqref>").count(), targets.len());
+                for target in targets {
+                    has(
+                        report,
+                        &format!("<xm:sqref>{}</xm:sqref>", target.as_str().unwrap()),
+                        label,
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn removing_every_sparkline_row_drops_the_extension_and_its_empty_list() {
+    let answers = sparkline_removal_answers();
+    let expected = &answers[1];
+    assert_eq!(expected["refused"], false);
+    assert!(expected["pivotRef"].is_null());
+    assert!(expected["targets"].as_array().unwrap().is_empty());
     for (label, read) in readers() {
-        let parts = edited(label, read, |book| book.remove_row("Report", 2, 2));
+        // Excel refuses rows 2:3 because they cut Report's pivot A3:B6.
+        // Whole coverage 2:6 deletes both the pivot and every sparkline.
+        let parts = edited(label, read, |book| {
+            book.remove_row(
+                "Report",
+                expected["start"].as_u64().unwrap() as u32,
+                expected["count"].as_u64().unwrap() as u32,
+            );
+            assert_eq!(
+                book.sheet_by_name("Report").unwrap().pivot_tables().len() as u64,
+                expected["remainingPivots"].as_u64().unwrap()
+            );
+        });
         let report = sheet_xml(&parts, "Report");
+        assert_eq!(
+            report.matches("<x14:sparkline>").count() as u64,
+            expected["sparklineCount"].as_u64().unwrap()
+        );
         lacks(report, "05C60535-1F16-4fd2-B633-F4F36F0B64E0", label);
         lacks(report, "sparkline", label);
         lacks(report, "<extLst", label);

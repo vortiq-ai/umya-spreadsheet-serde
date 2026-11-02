@@ -17,6 +17,10 @@ mod sheet_chart_names;
 
 #[path = "workbook_deleted_drawing_names.rs"]
 mod deleted_drawing_names;
+#[path = "model_geometry.rs"]
+mod model_geometry;
+#[path = "table_reference_removal.rs"]
+mod table_reference_removal;
 
 use crate::{
     StringValue,
@@ -1793,14 +1797,17 @@ impl Workbook {
         &self,
         hosts: &[usize],
         sheet: &str,
+        include: impl Fn(&crate::drawing::charts::ChartSpace) -> bool,
     ) -> Result<FrozenPivotCharts, XlsxError> {
         let mut snapshots = Vec::new();
         for &host in hosts {
             let mut frozen = Vec::new();
             self.work_sheet_collection[host].visit_chart_spaces(&mut |space| {
-                frozen.push(space.is_linked_to_pivot_sheet(sheet).then(|| {
-                    crate::drawing::charts::pivot_chart_data::FrozenPivotChart::new(space, self)
-                }));
+                frozen.push(
+                    (space.is_linked_to_pivot_sheet(sheet) && include(space)).then(|| {
+                        crate::drawing::charts::pivot_chart_data::FrozenPivotChart::new(space, self)
+                    }),
+                );
             });
             snapshots.push((
                 host,
@@ -1813,12 +1820,31 @@ impl Workbook {
         Ok(snapshots)
     }
 
-    fn apply_frozen_pivot_charts(&mut self, snapshots: FrozenPivotCharts) {
+    fn apply_frozen_pivot_charts(
+        &mut self,
+        snapshots: FrozenPivotCharts,
+        local_sheet: Option<&str>,
+    ) {
         for (host, frozen) in snapshots {
+            let local =
+                local_sheet.is_some_and(|id| self.work_sheet_collection[host].sheet_id() == id);
             let mut frozen = frozen.into_iter();
             self.work_sheet_collection[host].visit_chart_spaces_mut(&mut |space| {
                 if let Some(Some(frozen)) = frozen.next() {
                     frozen.apply(space);
+                    if local && space.chart().plot_area().chart_groups().count() == 1 {
+                        let mut index = 0;
+                        for group in space.chart_mut().plot_area_mut().chart_groups_mut() {
+                            for series in group.series_mut().area_chart_series_mut() {
+                                index += 1;
+                                let mut text = crate::drawing::charts::ChartText::default();
+                                let mut value = crate::drawing::charts::NumericValue::default();
+                                value.set_text(format!("Series{index}"));
+                                text.set_numeric_value(value);
+                                series.set_chart_text(text);
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -1859,11 +1885,11 @@ impl Workbook {
         let hosts = self.prepare_reference_hosts(&[&name], &edit)?;
         // Freeze while the pivot cells and their references still exist.
         self.try_read_sheet(index)?;
-        let frozen = self.prepare_frozen_pivot_charts(&hosts, &name)?;
+        let frozen = self.prepare_frozen_pivot_charts(&hosts, &name, |_| true)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
         let chart_ex = self.prepare_chart_ex_sheet_deletion(&hosts, index, &edit)?;
         self.apply_workbook_reference_adjustment(plan, &edit);
-        self.apply_frozen_pivot_charts(frozen);
+        self.apply_frozen_pivot_charts(frozen, None);
         self.apply_chart_ex_sheet_deletion(chart_ex);
         let mut deleted_locals = Vec::new();
         for names in std::iter::once(&mut self.defined_names).chain(
@@ -2557,6 +2583,17 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         if hosts.is_empty() {
             return;
         }
+        let Some(mut model_geometry) = self.prepare_workbook_model_geometry(
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            false,
+        ) else {
+            return;
+        };
+        model_geometry.adjust_reference_edits(&mut edits);
         let Ok(prepared) = edits
             .iter()
             .map(crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new)
@@ -2567,30 +2604,27 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         let Ok(pivot_cache_sources) = self.prepare_pivot_cache_source_adjustments(&prepared) else {
             return;
         };
+        model_geometry.apply_table_reference_removal(self);
+        model_geometry.apply_frozen_charts(self);
         self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
         self.adjust_global_and_raw_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {
-                worksheet.adjustment_insert_geometry(
-                    root_col_num,
-                    offset_col_num,
-                    root_row_num,
-                    offset_row_num,
+                model_geometry.adjust_geometry(
+                    worksheet,
+                    (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                    false,
                 );
             }
-            worksheet.adjust_reference_semantics(
-                &crate::drawing::charts::CoordinateChange {
-                    sheet:     sheet_name,
-                    root_col:  root_col_num,
-                    col_count: offset_col_num,
-                    root_row:  root_row_num,
-                    row_count: offset_row_num,
-                    remove:    false,
-                },
-                &prepared,
+            model_geometry.adjust_sheet_references(
+                worksheet,
+                sheet_name,
+                (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                false,
             );
         }
+        self.finish_workbook_model_geometry(&model_geometry);
     }
 
     fn adjustment_remove_coordinate_with_sheet(
@@ -2633,6 +2667,17 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         if hosts.is_empty() {
             return;
         }
+        let Some(mut model_geometry) = self.prepare_workbook_model_geometry(
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            true,
+        ) else {
+            return;
+        };
+        model_geometry.adjust_reference_edits(&mut edits);
         let Ok(prepared) = edits
             .iter()
             .map(crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new)
@@ -2643,31 +2688,27 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         let Ok(pivot_cache_sources) = self.prepare_pivot_cache_source_adjustments(&prepared) else {
             return;
         };
+        model_geometry.apply_table_reference_removal(self);
+        model_geometry.apply_frozen_charts(self);
         self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
         self.adjust_global_and_raw_defined_names(&prepared);
         let mut removed = crate::drawing::spreadsheet::DrawingRemovals::default();
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {
-                let geometry = worksheet.adjustment_remove_geometry(
-                    root_col_num,
-                    offset_col_num,
-                    root_row_num,
-                    offset_row_num,
+                let geometry = model_geometry.adjust_geometry(
+                    worksheet,
+                    (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                    true,
                 );
                 removed.caches.extend(geometry.caches);
                 removed.chart_formulas.extend(geometry.chart_formulas);
             }
-            worksheet.adjust_reference_semantics(
-                &crate::drawing::charts::CoordinateChange {
-                    sheet:     sheet_name,
-                    root_col:  root_col_num,
-                    col_count: offset_col_num,
-                    root_row:  root_row_num,
-                    row_count: offset_row_num,
-                    remove:    true,
-                },
-                &prepared,
+            model_geometry.adjust_sheet_references(
+                worksheet,
+                sheet_name,
+                (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                true,
             );
         }
         if !removed.caches.is_empty() || !removed.chart_formulas.is_empty() {
@@ -2680,6 +2721,7 @@ impl AdjustmentCoordinateWithSheet for Workbook {
             self.reconcile_removed_drawing_caches(&removed.caches.into_iter().collect());
             self.reconcile_removed_drawing_chart_names(sheet_name, &removed.chart_formulas);
         }
+        self.finish_workbook_model_geometry(&model_geometry);
     }
 }
 

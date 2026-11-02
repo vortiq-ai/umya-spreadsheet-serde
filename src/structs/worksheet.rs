@@ -1972,8 +1972,7 @@ impl Worksheet {
     #[inline]
     pub fn insert_new_row(&mut self, row_index: u32, num_rows: u32) {
         let title = self.title.clone();
-        self.adjustment_insert_geometry(0, 0, row_index, num_rows);
-        self.adjustment_insert_coordinate_with_sheet(&title, 0, 0, row_index, num_rows);
+        self.adjust_model_coordinates(&title, (0, 0, row_index, num_rows), false);
     }
 
     /// Adjust for references to other sheets.
@@ -1984,8 +1983,7 @@ impl Worksheet {
         row_index: u32,
         num_rows: u32,
     ) {
-        self.adjustment_insert_geometry(0, 0, row_index, num_rows);
-        self.adjustment_insert_coordinate_with_sheet(sheet_name, 0, 0, row_index, num_rows);
+        self.adjust_model_coordinates(sheet_name, (0, 0, row_index, num_rows), false);
     }
 
     /// Insert new columns.
@@ -2031,8 +2029,7 @@ impl Worksheet {
     #[inline]
     pub fn insert_new_column_by_index(&mut self, column_index: u32, num_columns: u32) {
         let title = self.title.clone();
-        self.adjustment_insert_geometry(column_index, num_columns, 0, 0);
-        self.adjustment_insert_coordinate_with_sheet(&title, column_index, num_columns, 0, 0);
+        self.adjust_model_coordinates(&title, (column_index, num_columns, 0, 0), false);
     }
 
     /// Adjust for references to other sheets.
@@ -2043,8 +2040,7 @@ impl Worksheet {
         column_index: u32,
         num_columns: u32,
     ) {
-        self.adjustment_insert_geometry(column_index, num_columns, 0, 0);
-        self.adjustment_insert_coordinate_with_sheet(sheet_name, column_index, num_columns, 0, 0);
+        self.adjust_model_coordinates(sheet_name, (column_index, num_columns, 0, 0), false);
     }
 
     /// Remove rows.
@@ -2063,18 +2059,16 @@ impl Worksheet {
             return;
         }
         let title = self.title.clone();
-        self.adjustment_remove_geometry(0, 0, row_index, num_rows);
-        self.adjustment_remove_coordinate_with_sheet(&title, 0, 0, row_index, num_rows);
+        self.adjust_model_coordinates(&title, (0, 0, row_index, num_rows), true);
     }
 
     /// Adjust for references to other sheets.
     #[inline]
     pub fn remove_row_from_other_sheet(&mut self, sheet_name: &str, row_index: u32, num_rows: u32) {
-        if self.removal_needs_workbook((0, 0), (row_index, num_rows)) {
+        if sheet_name == self.name() && self.removal_needs_workbook((0, 0), (row_index, num_rows)) {
             return;
         }
-        self.adjustment_remove_geometry(0, 0, row_index, num_rows);
-        self.adjustment_remove_coordinate_with_sheet(sheet_name, 0, 0, row_index, num_rows);
+        self.adjust_model_coordinates(sheet_name, (0, 0, row_index, num_rows), true);
     }
 
     /// Remove columns.
@@ -2124,8 +2118,7 @@ impl Worksheet {
             return;
         }
         let title = self.title.clone();
-        self.adjustment_remove_geometry(column_index, num_columns, 0, 0);
-        self.adjustment_remove_coordinate_with_sheet(&title, column_index, num_columns, 0, 0);
+        self.adjust_model_coordinates(&title, (column_index, num_columns, 0, 0), true);
     }
 
     /// Adjust for references to other sheets.
@@ -2136,11 +2129,12 @@ impl Worksheet {
         column_index: u32,
         num_columns: u32,
     ) {
-        if self.removal_needs_workbook((column_index, num_columns), (0, 0)) {
+        if sheet_name == self.name()
+            && self.removal_needs_workbook((column_index, num_columns), (0, 0))
+        {
             return;
         }
-        self.adjustment_remove_geometry(column_index, num_columns, 0, 0);
-        self.adjustment_remove_coordinate_with_sheet(sheet_name, column_index, num_columns, 0, 0);
+        self.adjust_model_coordinates(sheet_name, (column_index, num_columns, 0, 0), true);
     }
 
     /// Get Code Name.
@@ -4825,13 +4819,10 @@ impl AdjustmentCoordinate for Worksheet {
         offset_row_num: u32,
     ) {
         let host = self.name().to_owned();
-        self.adjustment_insert_geometry(root_col_num, offset_col_num, root_row_num, offset_row_num);
-        self.adjustment_insert_coordinate_with_sheet(
+        self.adjust_model_coordinates(
             &host,
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+            (root_col_num, offset_col_num, root_row_num, offset_row_num),
+            false,
         );
     }
 
@@ -4849,13 +4840,10 @@ impl AdjustmentCoordinate for Worksheet {
             return;
         }
         let host = self.name().to_owned();
-        self.adjustment_remove_geometry(root_col_num, offset_col_num, root_row_num, offset_row_num);
-        self.adjustment_remove_coordinate_with_sheet(
+        self.adjust_model_coordinates(
             &host,
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+            (root_col_num, offset_col_num, root_row_num, offset_row_num),
+            true,
         );
     }
 }

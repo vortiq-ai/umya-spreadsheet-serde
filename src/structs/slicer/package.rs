@@ -899,6 +899,46 @@ impl Workbook {
         self.retain_pivot_caches_of(removed.pivot_tables());
     }
 
+    /// Whole row/column coverage removes the model, keeping disconnected
+    /// pivot consumers and their caches as Excel does.
+    pub(crate) fn reconcile_consumers_after_model_removal(
+        &mut self,
+        removed_sheet_id: &str,
+        removed_tables: &[crate::Table],
+        removed_pivots: &[crate::PivotTable],
+    ) {
+        let table_ids: HashSet<_> = removed_tables.iter().filter_map(crate::Table::id).collect();
+        let sheet_id = removed_sheet_id.parse::<u32>().ok();
+        let leaves = |link: &SlicerPivotTable| {
+            Some(link.sheet_id) == sheet_id
+                && removed_pivots
+                    .iter()
+                    .any(|pivot| pivot.pivot_table_definition().name() == link.name)
+        };
+        let mut dropped = HashSet::new();
+        self.slicer_caches_mut().retain_mut(|cache| {
+            let removed_table = matches!(&cache.source, Some(SlicerSource::Table(source))
+                if table_ids.contains(&source.table_id));
+            if removed_table {
+                dropped.insert(cache.name.to_lowercase());
+                false
+            } else {
+                unlink_pivot_tables(cache, leaves);
+                true
+            }
+        });
+        for cache in self.timeline_caches_mut() {
+            if let Some(tables) = &mut cache.pivot_tables {
+                tables.retain(|link| !leaves(link));
+                if tables.is_empty() {
+                    cache.pivot_tables = None;
+                }
+            }
+        }
+        self.remove_slicer_caches_named(&dropped);
+        self.retain_pivot_caches_of(removed_pivots);
+    }
+
     /// The list that declares a pivot cache kept without a pivot table, by
     /// what still reads it: `Slicer` when a pivot slicer cache does, else
     /// `Timeline` when a timeline cache does, else none (Excel then drops the
