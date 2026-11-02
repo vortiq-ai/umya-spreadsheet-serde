@@ -574,6 +574,48 @@ impl Worksheet {
         spaces
     }
 
+    pub(crate) fn prepare_chart_ex_sheet_deletion(
+        &self,
+        host: &str,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+        deleted_names: &[crate::drawing::charts::ChartExDefinedNameSource],
+    ) -> Result<
+        Vec<(
+            crate::drawing::charts::ChartExSpace,
+            crate::drawing::charts::ChartExReferenceAdjustmentReport,
+        )>,
+        String,
+    > {
+        let mut spaces = Vec::new();
+        self.worksheet_drawing()
+            .visit_extended_spaces(&mut |space| spaces.push(space.clone()));
+        spaces
+            .into_iter()
+            .map(|mut space| {
+                let report =
+                    space.adjust_references_with_deleted_names(host, edit, deleted_names)?;
+                Ok((space, report))
+            })
+            .collect()
+    }
+
+    pub(crate) fn apply_chart_ex_sheet_deletion(
+        &mut self,
+        spaces: Vec<crate::drawing::charts::ChartExSpace>,
+    ) {
+        let mut spaces = spaces.into_iter();
+        self.worksheet_drawing_mut()
+            .visit_extended_spaces_mut(&mut |space| {
+                *space = spaces
+                    .next()
+                    .expect("ChartEx frames changed after reference preflight");
+            });
+        assert!(
+            spaces.next().is_none(),
+            "ChartEx frames changed after reference preflight"
+        );
+    }
+
     pub(crate) fn apply_chart_space_edits(
         &mut self,
         spaces: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,

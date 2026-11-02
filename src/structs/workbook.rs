@@ -124,6 +124,12 @@ struct SheetReferencePlan {
     charts:             Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
     extension_formulas: Vec<Option<String>>,
 }
+// Prepared ChartEx results of a sheet deletion: the converted charts of the
+// remaining hosts and the `_xlchart` names no chart refers to any more.
+struct ChartExSheetDeletion {
+    charts:        Vec<(usize, Vec<crate::drawing::charts::ChartExSpace>)>,
+    removed_names: Vec<(String, Option<u32>)>,
+}
 
 #[cfg(test)]
 mod reference_adjustment_tests {
@@ -227,6 +233,32 @@ mod reference_adjustment_tests {
                 .is_err()
         );
         assert_eq!(book.sheet(0).unwrap().cell((3, 2)).unwrap().value(), "b");
+    }
+
+    fn four_sheet_book(active: u32) -> crate::Workbook {
+        let mut book = crate::new_file();
+        book.set_sheet_name(0, "A").unwrap();
+        for name in ["B", "C", "D"] {
+            book.new_sheet(name).unwrap();
+        }
+        book.workbook_view_mut().set_active_tab(active);
+        book
+    }
+
+    #[test]
+    fn removing_an_earlier_sheet_keeps_the_same_sheet_active() {
+        let mut book = four_sheet_book(2);
+        book.remove_sheet_by_name("A").unwrap();
+        assert_eq!(book.workbook_view().active_tab(), 1);
+        assert_eq!(book.sheet(1).unwrap().name(), "C");
+    }
+
+    #[test]
+    fn removing_the_active_last_sheet_activates_the_previous_one() {
+        let mut book = four_sheet_book(3);
+        book.remove_sheet_by_name("D").unwrap();
+        assert_eq!(book.workbook_view().active_tab(), 2);
+        assert_eq!(book.sheet(2).unwrap().name(), "C");
     }
 }
 
@@ -368,6 +400,123 @@ impl Workbook {
             }
             sheet.apply_chart_space_edits(sheet_plan.charts, edit);
             sheet.apply_extension_formula_edits(sheet_plan.extension_formulas);
+        }
+    }
+
+    /// Excel's result for a deleted chart source sheet: the dimensions and
+    /// texts that read it are removed (`ChartExSpace::adjust_references`), and
+    /// so are the hidden `_xlchart` names that no remaining formula uses.
+    fn prepare_chart_ex_sheet_deletion(
+        &self,
+        hosts: &[usize],
+        deleted: usize,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) -> Result<ChartExSheetDeletion, XlsxError> {
+        use crate::drawing::charts::{
+            ChartExDefinedNameReference,
+            ChartExDefinedNameSource,
+            reference_edit_engine::{
+                PreparedReferenceEdit,
+                edit_prepared_formula_text,
+            },
+        };
+        let prepared = PreparedReferenceEdit::new(edit).map_err(|error| {
+            XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("reference edit: {error:?}"),
+            )
+        })?;
+        let mut candidates: Vec<(ChartExDefinedNameSource, Option<u32>)> = Vec::new();
+        let global = self.defined_names.iter().map(|name| {
+            let host = if name.has_local_sheet_id() {
+                self.work_sheet_collection
+                    .get(name.local_sheet_id() as usize)
+                    .map_or("", Worksheet::name)
+            } else {
+                ""
+            };
+            (name, host)
+        });
+        let on_sheets = self.work_sheet_collection.iter().flat_map(|sheet| {
+            sheet
+                .defined_names()
+                .iter()
+                .map(|name| (name, sheet.name()))
+        });
+        for (name, host) in global.chain(on_sheets) {
+            let scope = name.has_local_sheet_id().then(|| name.local_sheet_id());
+            if name.name().to_ascii_lowercase().starts_with("_xlchart.")
+                && edit_prepared_formula_text(&name.address(), host, &prepared, false).invalidated
+                    > 0
+                && !candidates.iter().any(|(known, known_scope)| {
+                    name_eq_ignore_case(&known.reference.name, name.name()) && *known_scope == scope
+                })
+            {
+                candidates.push((
+                    ChartExDefinedNameSource {
+                        reference: ChartExDefinedNameReference {
+                            name:            name.name().to_owned(),
+                            sheet:           None,
+                            workbook_scoped: false,
+                        },
+                        address:   name.address(),
+                    },
+                    scope,
+                ));
+            }
+        }
+        let sources: Vec<_> = candidates
+            .iter()
+            .map(|(source, _)| source.clone())
+            .collect();
+        let mut charts = Vec::with_capacity(hosts.len());
+        let mut still_used = std::collections::HashSet::new();
+        for &host in hosts.iter().filter(|&&host| host != deleted) {
+            let sheet = &self.work_sheet_collection[host];
+            let results = sheet
+                .prepare_chart_ex_sheet_deletion(sheet.name(), edit, &sources)
+                .map_err(|error| {
+                    XlsxError::with_message(
+                        XlsxErrorKind::InvalidArgument,
+                        format!("ChartEx reference edit: {error}"),
+                    )
+                })?;
+            let mut spaces = Vec::with_capacity(results.len());
+            for (space, report) in results {
+                still_used.extend(
+                    report
+                        .defined_names
+                        .iter()
+                        .filter(|name| !report.unused_defined_names.contains(name))
+                        .map(|name| name.name.to_lowercase()),
+                );
+                spaces.push(space);
+            }
+            charts.push((host, spaces));
+        }
+        Ok(ChartExSheetDeletion {
+            charts,
+            removed_names: candidates
+                .into_iter()
+                .filter(|(source, _)| !still_used.contains(&source.reference.name.to_lowercase()))
+                .map(|(source, scope)| (source.reference.name, scope))
+                .collect(),
+        })
+    }
+
+    fn apply_chart_ex_sheet_deletion(&mut self, deletion: ChartExSheetDeletion) {
+        for (host, spaces) in deletion.charts {
+            self.work_sheet_collection[host].apply_chart_ex_sheet_deletion(spaces);
+        }
+        let removed = |name: &DefinedName| {
+            deletion.removed_names.iter().any(|(removed, scope)| {
+                name_eq_ignore_case(removed, name.name())
+                    && *scope == name.has_local_sheet_id().then(|| name.local_sheet_id())
+            })
+        };
+        self.defined_names.retain(|name| !removed(name));
+        for sheet in &mut self.work_sheet_collection {
+            sheet.defined_names_mut().retain(|name| !removed(name));
         }
     }
 
@@ -1606,8 +1755,10 @@ impl Workbook {
         self.try_read_sheet(index)?;
         let frozen = self.prepare_frozen_pivot_charts(&hosts, &name, None)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
+        let chart_ex = self.prepare_chart_ex_sheet_deletion(&hosts, index, &edit)?;
         self.apply_workbook_reference_adjustment(plan, &edit);
         self.apply_frozen_pivot_charts(frozen);
+        self.apply_chart_ex_sheet_deletion(chart_ex);
         let mut deleted_locals = Vec::new();
         for names in std::iter::once(&mut self.defined_names).chain(
             self.work_sheet_collection
@@ -1663,6 +1814,14 @@ impl Workbook {
                     name.set_local_sheet_id(name.local_sheet_id() - 1);
                 }
             }
+        }
+        // An active tab past the last sheet makes Excel refuse the file.
+        let active = self.workbook_view().active_tab();
+        let last =
+            u32::try_from(self.work_sheet_collection.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let kept = (active - u32::from(index < active as usize)).min(last);
+        if kept != active {
+            self.workbook_view_mut().set_active_tab(kept);
         }
         Ok(())
     }

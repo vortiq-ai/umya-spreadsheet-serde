@@ -738,6 +738,41 @@ mod tests {
         formulas
     }
 
+    fn native_literal_point_counts(book: &Workbook, host: usize) -> Vec<Vec<u32>> {
+        use crate::drawing::charts::{
+            ChartExDimension,
+            ChartExDimensionSource,
+        };
+        let mut dimensions = Vec::new();
+        book.sheet(host)
+            .unwrap()
+            .worksheet_drawing()
+            .visit_extended_spaces(&mut |space| {
+                for dimension in space
+                    .data_collection
+                    .iter()
+                    .flat_map(|collection| &collection.data)
+                    .flat_map(|data| &data.dimensions)
+                {
+                    dimensions.push(match dimension {
+                        ChartExDimension::String(value) => match &value.source {
+                            ChartExDimensionSource::Literal(levels) => {
+                                levels.iter().map(|level| level.point_count).collect()
+                            }
+                            ChartExDimensionSource::Reference(_) => panic!("reference dimension"),
+                        },
+                        ChartExDimension::Numeric(value) => match &value.source {
+                            ChartExDimensionSource::Literal(levels) => {
+                                levels.iter().map(|level| level.point_count).collect()
+                            }
+                            ChartExDimensionSource::Reference(_) => panic!("reference dimension"),
+                        },
+                    });
+                }
+            });
+        dimensions
+    }
+
     #[test]
     fn native_chart_discovery_finds_aliased_value_and_name_formulas() {
         let edit = ChartReferenceEdit::InsertRows {
@@ -889,7 +924,7 @@ mod tests {
             let reread = saved_native_book(&book, true);
             assert_eq!(native_formulas(&reread, 1), native_formulas(&book, 1));
             book.remove_sheet_by_name("Bob's Data").unwrap();
-            assert_eq!(native_formulas(&book, 0), ["#REF!", "#REF!", "#REF!"]);
+            assert!(native_formulas(&book, 0).is_empty());
         }
     }
 
@@ -1115,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn native_chart_deleted_sources_roundtrip_with_explicit_error_formulas() {
+    fn native_chart_deleted_sources_roundtrip_with_literal_levels() {
         for delete_sheet in [true, false] {
             let mut book = saved_native_book(&native_chart_book(), true);
             let host = if delete_sheet {
@@ -1125,14 +1160,16 @@ mod tests {
                 book.remove_row("Target", 1, 3);
                 1
             };
-            let expected = if delete_sheet {
-                "#REF!"
-            } else {
-                "Target!#REF!"
-            };
-            assert_eq!(native_formulas(&book, host), [expected; 3]);
             let reread = saved_native_book(&book, true);
-            assert_eq!(native_formulas(&reread, host), [expected; 3]);
+            for book in [&book, &reread] {
+                if delete_sheet {
+                    // One level per source column, both without points.
+                    assert!(native_formulas(book, host).is_empty());
+                    assert_eq!(native_literal_point_counts(book, host), [[0], [0]]);
+                } else {
+                    assert_eq!(native_formulas(book, host), ["Target!#REF!"; 3]);
+                }
+            }
         }
     }
 }

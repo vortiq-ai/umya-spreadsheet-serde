@@ -42,7 +42,7 @@ fn edits() -> Vec<(ChartReferenceEdit, &'static str)> {
                 sheet:       "Data".into(),
                 sheet_order: vec!["Host".into(), "Data".into(), "Other".into()],
             },
-            "#REF!",
+            "",
         ),
         (
             ChartReferenceEdit::InsertRows {
@@ -129,26 +129,48 @@ fn detached_direct_references_follow_structural_edits_and_roundtrip() {
             assert_eq!(report.adjustments.changed, 1);
             assert_eq!(
                 report.adjustments.invalidated,
-                usize::from(expected.contains("#REF!"))
+                usize::from(
+                    matches!(&edit, ChartReferenceEdit::DeleteSheet { .. })
+                        || expected.contains("#REF!")
+                )
             );
             assert!(report.defined_names.is_empty());
-            assert_eq!(formulas(&detached), [expected], "{edit:?}");
+            if matches!(&edit, ChartReferenceEdit::DeleteSheet { .. }) {
+                assert!(formulas(&detached).is_empty(), "{edit:?}");
+                assert_deleted_source_is_literal(&detached);
+            } else {
+                assert_eq!(formulas(&detached), [expected], "{edit:?}");
+            }
             host.worksheet_drawing_mut().add_extended_chart(detached);
             let mut output = Vec::new();
             writer::xlsx::write_writer(&book, &mut output).unwrap();
             let reread = reader::xlsx::read_reader(Cursor::new(output), true).unwrap();
-            assert_eq!(
-                formulas(
-                    &reread
-                        .sheet(0)
-                        .unwrap()
-                        .worksheet_drawing()
-                        .extended_charts()[0]
-                ),
-                [expected]
-            );
+            let reread_chart = &reread
+                .sheet(0)
+                .unwrap()
+                .worksheet_drawing()
+                .extended_charts()[0];
+            if matches!(&edit, ChartReferenceEdit::DeleteSheet { .. }) {
+                assert!(formulas(reread_chart).is_empty(), "{edit:?}");
+                assert_deleted_source_is_literal(reread_chart);
+            } else {
+                assert_eq!(formulas(reread_chart), [expected]);
+            }
         }
     }
+}
+
+fn assert_deleted_source_is_literal(chart: &ExtendedChart) {
+    let dimension = &chart.chart_space().data().unwrap().data[0].dimensions[0];
+    let ChartExDimension::Numeric(dimension) = dimension else {
+        panic!("numeric dimension")
+    };
+    let ChartExDimensionSource::Literal(levels) = &dimension.source else {
+        panic!("deleted source must remain as literal levels")
+    };
+    assert_eq!(levels.len(), 1);
+    assert_eq!(levels[0].point_count, 0);
+    assert!(levels[0].points.is_empty());
 }
 
 #[test]
