@@ -239,6 +239,10 @@ impl Cell {
         self
     }
 
+    pub(crate) fn remove_hyperlink(&mut self) {
+        self.hyperlink = None;
+    }
+
     #[inline]
     #[must_use]
     pub fn cell_meta_index(&self) -> u32 {

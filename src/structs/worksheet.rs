@@ -3420,7 +3420,6 @@ impl Worksheet {
 
     // Moving or copying a section of the sheet
     #[inline]
-    #[allow(clippy::cast_sign_loss)]
     fn move_or_copy_range(
         &mut self,
         range: &str,
@@ -3428,44 +3427,910 @@ impl Worksheet {
         column: i32,
         is_move: bool,
     ) -> &mut Self {
-        // Check to ensure coordinates to move are within range (eg: moving A1
-        // cells to the left is impossible)
-        let (row_start, row_end, col_start, col_end) = get_start_and_end_point(range);
-        if (num_traits::cast::<_, i32>(col_start).unwrap() + column) < 1
-            || (num_traits::cast::<_, i32>(row_start).unwrap() + row) < 1
-            || (num_traits::cast::<_, i32>(col_end).unwrap() + column) > 16384
-            || (num_traits::cast::<_, i32>(row_end).unwrap() + row) > 1_048_576
-        {
-            panic!("Out of Range.");
-        }
+        use crate::drawing::charts::{
+            ChartReferenceEdit,
+            ReferenceCell,
+            ReferenceRect,
+            reference_edit_engine::PreparedReferenceEdit,
+        };
 
-        // Iterate row by row, collecting cell information (do I copy)
+        let (row_start, row_end, col_start, col_end) = get_start_and_end_point(range);
+        let source = ReferenceRect {
+            first: ReferenceCell {
+                column: col_start,
+                row:    row_start,
+            },
+            last:  ReferenceCell {
+                column: col_end,
+                row:    row_end,
+            },
+        };
+        let destination = ReferenceCell {
+            column: col_start.checked_add_signed(column).expect("Out of Range."),
+            row:    row_start.checked_add_signed(row).expect("Out of Range."),
+        };
+        let edit = ChartReferenceEdit::MoveRange {
+            source_sheet: self.name().into(),
+            source,
+            destination_sheet: self.name().into(),
+            destination,
+        };
+        let prepared = PreparedReferenceEdit::new(&edit).expect("Out of Range.");
+        if row == 0 && column == 0 {
+            return self;
+        }
+        let target = ReferenceRect {
+            first: destination,
+            last:  ReferenceCell {
+                column: col_end.checked_add_signed(column).expect("Out of Range."),
+                row:    row_end.checked_add_signed(row).expect("Out of Range."),
+            },
+        };
+        let mut array_copies = Vec::new();
+        for cell in self.cells.iter_collection() {
+            if let Some(formula) = cell.cell_value().formula_obj() {
+                if formula.formula_type() == &crate::structs::CellFormulaValues::Array {
+                    let mut range = Range::default();
+                    range.set_range(formula.reference());
+                    let owned = Self::range_rectangle(&range);
+                    let selected = Self::range_intersection(owned, source);
+                    let overwritten = Self::range_intersection(owned, target);
+                    assert!(
+                        (!is_move || selected.is_none_or(|part| part == owned))
+                            && ((is_move && selected == Some(owned))
+                                || overwritten.is_none_or(|part| part == owned)),
+                        "Cannot change part of an array."
+                    );
+                    if !is_move {
+                        if let Some(selected) = selected.filter(|part| *part != owned) {
+                            array_copies.push((owned, selected, formula.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        let host = self.name().to_owned();
+        // A cut can split a shared group or remove its master. Resolve the
+        // existing text views before changing the group's cell geometry.
+        for cell in self.cells.collection_mut() {
+            if let Some(formula) = cell.cell_value().formula_obj() {
+                if formula.formula_type() == &crate::structs::CellFormulaValues::Shared {
+                    let text = formula.text().to_owned();
+                    cell.cell_value_mut().set_formula(text);
+                }
+            }
+        }
         let mut copy_cells: Vec<Cell> = self
             .cells
             .iter_all_cells_by_range_sorted_by_row(range)
             .flatten()
             .cloned()
             .collect();
-
-        // Delete cell information as iterating through in move mode
-        if is_move {
-            for (col_num, row_num) in &get_coordinate_list(range) {
-                self.cells.remove(*col_num, *row_num);
-                self.cells.remove(
-                    *col_num + num_traits::cast::<_, u32>(column).unwrap(),
-                    *row_num + num_traits::cast::<_, u32>(row).unwrap(),
-                );
-            }
+        for (owned, selected, mut formula) in array_copies {
+            // A partial array copy starts a new array at the pasted corner,
+            // including when the selected source cell was not its master.
+            let text = Self::copy_range_formula(
+                formula.text(),
+                i32::try_from(selected.first.row - owned.first.row).unwrap(),
+                i32::try_from(selected.first.column - owned.first.column).unwrap(),
+            );
+            formula.set_text(&text).set_text_view(text);
+            formula.set_reference(Self::rectangle_range(selected).range());
+            let coordinate = (selected.first.column, selected.first.row);
+            let index = copy_cells
+                .iter()
+                .position(|cell| {
+                    (cell.coordinate().col_num(), cell.coordinate().row_num()) == coordinate
+                })
+                .unwrap_or_else(|| {
+                    let mut cell = Cell::default();
+                    cell.coordinate_mut()
+                        .set_col_num(coordinate.0)
+                        .set_row_num(coordinate.1);
+                    copy_cells.push(cell);
+                    copy_cells.len() - 1
+                });
+            copy_cells[index].cell_value_mut().set_formula_obj(formula);
         }
 
-        // repaste by setting cell values
-        for cell in &mut copy_cells {
+        // Snapshot before clearing: source and destination may overlap, and
+        // source blanks overwrite destination values and formatting too.
+        let removed: Vec<_> = self
+            .cells
+            .iter_coordinates_sorted_by_row_column()
+            .filter(|&(col, row)| {
+                Self::range_contains_cell(target, col, row)
+                    || (is_move && Self::range_contains_cell(source, col, row))
+            })
+            .collect();
+        for (col, row) in removed {
+            self.cells.remove(col, row);
+        }
+        if is_move {
+            for cell in self.cells.collection_mut() {
+                Self::move_range_cell_formula(cell, &host, &prepared, false);
+            }
+            self.adjust_defined_names_for_prepared(&prepared);
+            let extensions = self.prepare_extension_formula_edits(&host, &prepared);
+            self.apply_extension_formula_edits(extensions);
+            let charts = self.prepare_chart_space_edits(&host, &prepared);
+            self.apply_chart_space_edits(charts, &edit);
+        }
+        for mut cell in copy_cells {
+            if !is_move
+                && Self::range_contains_cell(
+                    target,
+                    cell.coordinate().col_num(),
+                    cell.coordinate().row_num(),
+                )
+            {
+                // Excel clears links whose source anchors are overwritten by
+                // an overlapping copy, even when their displayed text copies.
+                cell.remove_hyperlink();
+            }
+            if is_move {
+                Self::move_range_cell_formula(&mut cell, &host, &prepared, true);
+            } else if let Some(original) = cell.cell_value().formula_obj() {
+                let mut formula = original.clone();
+                let text = Self::copy_range_formula(original.text(), row, column);
+                formula.set_text(&text).set_text_view(text);
+                cell.cell_value_mut()
+                    .set_formula_obj(formula)
+                    .set_formula_result_blank();
+            }
+            if let Some(original) = cell.cell_value().formula_obj() {
+                if !original.reference().is_empty() {
+                    let mut formula = original.clone();
+                    let mut owned = Range::default();
+                    owned.set_range(original.reference());
+                    Self::offset_range(&mut owned, row, column);
+                    formula.set_reference(owned.range());
+                    cell.cell_value_mut().set_formula_obj(formula);
+                }
+            }
             cell.coordinate_mut().offset_col_num(column);
             cell.coordinate_mut().offset_row_num(row);
-            self.set_cell(cell.clone());
+            self.set_cell(cell);
         }
-
+        self.relocate_range_merges(source, target, row, column, is_move);
+        self.relocate_range_comments(source, target, row, column, is_move);
+        self.relocate_range_rules(source, target, &prepared, is_move);
+        self.relocate_range_drawings(source, row, column, is_move);
         self
+    }
+
+    fn range_contains_cell(
+        rect: crate::drawing::charts::ReferenceRect,
+        col: u32,
+        row: u32,
+    ) -> bool {
+        (rect.first.column..=rect.last.column).contains(&col)
+            && (rect.first.row..=rect.last.row).contains(&row)
+    }
+
+    fn move_range_cell_formula(
+        cell: &mut Cell,
+        host: &str,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+        moved: bool,
+    ) {
+        if let Some(original) = cell.cell_value().formula_obj() {
+            let mut formula = original.clone();
+            let changed = formula.adjust_reference_texts_prepared(host, prepared, moved);
+            cell.cell_value_mut().set_formula_obj(formula);
+            if changed && !matches!(cell.raw_value(), crate::structs::CellRawValue::Error(_)) {
+                cell.cell_value_mut().set_formula_result_blank();
+            }
+        }
+    }
+
+    fn copy_range_formula(text: &str, row: i32, column: i32) -> String {
+        use crate::{
+            drawing::charts::reference_edit_engine::is_native_coordinate_operand,
+            helper::{
+                address::split_reference_address,
+                formula::{
+                    adjustment_formula_coordinate,
+                    parse_to_tokens,
+                    render,
+                },
+            },
+        };
+        let mut tokens = parse_to_tokens(format!("={text}"));
+        for token in &mut tokens {
+            let (_, address) = split_reference_address(token.get_value());
+            if token.get_token_sub_type() != &crate::helper::formula::FormulaTokenSubTypes::Range
+                || !is_native_coordinate_operand(address)
+            {
+                continue;
+            }
+            adjustment_formula_coordinate(std::slice::from_mut(token), column, row);
+            let (_, address) = split_reference_address(token.get_value());
+            if address != "#REF!" && !is_native_coordinate_operand(address) {
+                token.set_value("#REF!");
+            }
+        }
+        render(&tokens)
+    }
+
+    fn range_rectangle(range: &Range) -> crate::drawing::charts::ReferenceRect {
+        use crate::drawing::charts::{
+            ReferenceCell,
+            ReferenceRect,
+        };
+        ReferenceRect {
+            first: ReferenceCell {
+                column: range
+                    .coordinate_start_col()
+                    .map_or(1, super::ColumnReference::num),
+                row:    range
+                    .coordinate_start_row()
+                    .map_or(1, super::RowReference::num),
+            },
+            last:  ReferenceCell {
+                column: range
+                    .coordinate_end_col()
+                    .or(range.coordinate_start_col())
+                    .map_or(16_384, super::ColumnReference::num),
+                row:    range
+                    .coordinate_end_row()
+                    .or(range.coordinate_start_row())
+                    .map_or(1_048_576, super::RowReference::num),
+            },
+        }
+    }
+
+    fn rectangle_range(rect: crate::drawing::charts::ReferenceRect) -> Range {
+        let mut range = Range::default();
+        range.set_range(format!(
+            "{}:{}",
+            coordinate_from_index(rect.first.column, rect.first.row),
+            coordinate_from_index(rect.last.column, rect.last.row)
+        ));
+        range.collapse_single_cell();
+        range
+    }
+
+    fn range_intersection(
+        left: crate::drawing::charts::ReferenceRect,
+        right: crate::drawing::charts::ReferenceRect,
+    ) -> Option<crate::drawing::charts::ReferenceRect> {
+        use crate::drawing::charts::{
+            ReferenceCell,
+            ReferenceRect,
+        };
+        let first = ReferenceCell {
+            column: left.first.column.max(right.first.column),
+            row:    left.first.row.max(right.first.row),
+        };
+        let last = ReferenceCell {
+            column: left.last.column.min(right.last.column),
+            row:    left.last.row.min(right.last.row),
+        };
+        (first.column <= last.column && first.row <= last.row)
+            .then_some(ReferenceRect { first, last })
+    }
+
+    fn subtract_range(range: &Range, removed: crate::drawing::charts::ReferenceRect) -> Vec<Range> {
+        use crate::drawing::charts::{
+            ReferenceCell,
+            ReferenceRect,
+        };
+        let rect = Self::range_rectangle(range);
+        let Some(cut) = Self::range_intersection(rect, removed) else {
+            return vec![range.clone()];
+        };
+        let mut pieces = Vec::new();
+        if rect.first.row < cut.first.row {
+            pieces.push(ReferenceRect {
+                first: rect.first,
+                last:  ReferenceCell {
+                    column: rect.last.column,
+                    row:    cut.first.row - 1,
+                },
+            });
+        }
+        if cut.last.row < rect.last.row {
+            pieces.push(ReferenceRect {
+                first: ReferenceCell {
+                    column: rect.first.column,
+                    row:    cut.last.row + 1,
+                },
+                last:  rect.last,
+            });
+        }
+        if rect.first.column < cut.first.column {
+            pieces.push(ReferenceRect {
+                first: ReferenceCell {
+                    column: rect.first.column,
+                    row:    cut.first.row,
+                },
+                last:  ReferenceCell {
+                    column: cut.first.column - 1,
+                    row:    cut.last.row,
+                },
+            });
+        }
+        if cut.last.column < rect.last.column {
+            pieces.push(ReferenceRect {
+                first: ReferenceCell {
+                    column: cut.last.column + 1,
+                    row:    cut.first.row,
+                },
+                last:  ReferenceCell {
+                    column: rect.last.column,
+                    row:    cut.last.row,
+                },
+            });
+        }
+        pieces.into_iter().map(Self::rectangle_range).collect()
+    }
+
+    fn offset_range(range: &mut Range, row: i32, column: i32) {
+        if let Some(v) = range.coordinate_start_col_mut() {
+            v.set_num(v.num().checked_add_signed(column).expect("Out of Range."));
+        }
+        if let Some(v) = range.coordinate_end_col_mut() {
+            v.set_num(v.num().checked_add_signed(column).expect("Out of Range."));
+        }
+        if let Some(v) = range.coordinate_start_row_mut() {
+            v.set_num(v.num().checked_add_signed(row).expect("Out of Range."));
+        }
+        if let Some(v) = range.coordinate_end_row_mut() {
+            v.set_num(v.num().checked_add_signed(row).expect("Out of Range."));
+        }
+    }
+
+    fn relocate_range_merges(
+        &mut self,
+        source: crate::drawing::charts::ReferenceRect,
+        target: crate::drawing::charts::ReferenceRect,
+        row: i32,
+        column: i32,
+        is_move: bool,
+    ) {
+        let mut copies = Vec::new();
+        self.merge_cells.range_collection_mut().retain(|range| {
+            let rect = Self::range_rectangle(range);
+            let inside = Self::range_intersection(rect, source) == Some(rect);
+            let overwritten = Self::range_intersection(rect, target).is_some();
+            if inside && !overwritten {
+                let mut copy = range.clone();
+                Self::offset_range(&mut copy, row, column);
+                copies.push(copy);
+            }
+            !(overwritten || inside && is_move)
+        });
+        self.merge_cells.range_collection_mut().extend(copies);
+    }
+
+    fn relocate_range_comments(
+        &mut self,
+        source: crate::drawing::charts::ReferenceRect,
+        target: crate::drawing::charts::ReferenceRect,
+        row: i32,
+        column: i32,
+        is_move: bool,
+    ) {
+        let mut copies = Vec::new();
+        self.comments.retain(|comment| {
+            let coordinate = comment.coordinate();
+            let inside =
+                Self::range_contains_cell(source, coordinate.col_num(), coordinate.row_num());
+            if inside {
+                let mut copy = comment.clone();
+                copy.coordinate_mut().offset_col_num(column);
+                copy.coordinate_mut().offset_row_num(row);
+                let anchor = copy.anchor_mut();
+                // Excel keeps the note box's size when its translated
+                // top/left corner would leave the grid.
+                let left = anchor.left_column().saturating_add_signed(column);
+                let top = anchor.top_row().saturating_add_signed(row);
+                let width = anchor.right_column() - anchor.left_column();
+                let height = anchor.bottom_row() - anchor.top_row();
+                anchor.set_left_column(left).set_right_column(left + width);
+                anchor.set_top_row(top).set_bottom_row(top + height);
+                let col = copy.coordinate().col_num() - 1;
+                let row = copy.coordinate().row_num() - 1;
+                let client = copy.shape_mut().client_data_mut();
+                if let Some(value) = client.comment_column_target_mut() {
+                    value.set_value(col);
+                }
+                if let Some(value) = client.comment_row_target_mut() {
+                    value.set_value(row);
+                }
+                copies.push(copy);
+            }
+            !(inside && is_move
+                || Self::range_contains_cell(target, coordinate.col_num(), coordinate.row_num()))
+        });
+        self.comments.extend(copies);
+    }
+
+    fn relocated_rule_ranges(
+        ranges: &[Range],
+        source: crate::drawing::charts::ReferenceRect,
+        target: crate::drawing::charts::ReferenceRect,
+        is_move: bool,
+    ) -> (Vec<Range>, Vec<Range>) {
+        let row =
+            i32::try_from(target.first.row).unwrap() - i32::try_from(source.first.row).unwrap();
+        let column = i32::try_from(target.first.column).unwrap()
+            - i32::try_from(source.first.column).unwrap();
+        let mut copies = Vec::new();
+        let mut remaining = Vec::new();
+        for range in ranges {
+            if let Some(rect) = Self::range_intersection(Self::range_rectangle(range), source) {
+                let mut copy = Self::rectangle_range(rect);
+                Self::offset_range(&mut copy, row, column);
+                copies.push(copy);
+            }
+            let pieces = if is_move {
+                Self::subtract_range(range, source)
+            } else {
+                vec![range.clone()]
+            };
+            remaining.extend(
+                pieces
+                    .iter()
+                    .flat_map(|range| Self::subtract_range(range, target)),
+            );
+        }
+        (remaining, copies)
+    }
+
+    fn relocate_range_rules(
+        &mut self,
+        source: crate::drawing::charts::ReferenceRect,
+        target: crate::drawing::charts::ReferenceRect,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+        is_move: bool,
+    ) {
+        use crate::drawing::charts::{
+            ReferenceCell,
+            reference_edit_engine::edit_prepared_formula_text,
+        };
+        let host = self.name().to_owned();
+        let row =
+            i32::try_from(target.first.row).unwrap() - i32::try_from(source.first.row).unwrap();
+        let column = i32::try_from(target.first.column).unwrap()
+            - i32::try_from(source.first.column).unwrap();
+        let formula_text = |text: &str, mut before: ReferenceCell, after: ReferenceCell| {
+            let text = if is_move {
+                let edited = edit_prepared_formula_text(text, &host, prepared, false).text;
+                if Self::range_contains_cell(source, before.column, before.row) {
+                    before.column = before.column.checked_add_signed(column).unwrap();
+                    before.row = before.row.checked_add_signed(row).unwrap();
+                }
+                edited
+            } else {
+                text.to_owned()
+            };
+            let row = i32::try_from(after.row).unwrap() - i32::try_from(before.row).unwrap();
+            let column =
+                i32::try_from(after.column).unwrap() - i32::try_from(before.column).unwrap();
+            if row == 0 && column == 0 {
+                text
+            } else {
+                Self::copy_range_formula(&text, row, column)
+            }
+        };
+        if let Some(validations) = &mut self.data_validations {
+            let mut result = Vec::new();
+            for validation in validations.data_validation_list() {
+                let ranges = validation.sequence_of_references().range_collection();
+                let Some(first) = ranges.first() else {
+                    continue;
+                };
+                let before = Self::range_rectangle(first).first;
+                let (mut remaining, mut copies) =
+                    Self::relocated_rule_ranges(ranges, source, target, is_move);
+                if is_move {
+                    remaining.append(&mut copies);
+                }
+                for ranges in [remaining, copies] {
+                    if let Some(first) = ranges.first() {
+                        let after = Self::range_rectangle(first).first;
+                        let mut value = validation.clone();
+                        value
+                            .sequence_of_references_mut()
+                            .set_range_collection(ranges);
+                        value.set_formula1(formula_text(validation.formula1(), before, after));
+                        value.set_formula2(formula_text(validation.formula2(), before, after));
+                        result.push(value);
+                    }
+                }
+            }
+            validations.set_data_validation_list(result);
+            if validations.data_validation_list().is_empty() {
+                self.data_validations = None;
+            }
+        }
+        let mut originals = Vec::new();
+        let mut copies = Vec::new();
+        for formatting in &self.conditional_formatting_collection {
+            let ranges = formatting.sequence_of_references().range_collection();
+            let Some(first) = ranges.first() else {
+                continue;
+            };
+            let before = Self::range_rectangle(first).first;
+            let (mut remaining, mut transported) =
+                Self::relocated_rule_ranges(ranges, source, target, is_move);
+            if is_move {
+                remaining.append(&mut transported);
+            } else {
+                remaining = ranges.to_vec();
+            }
+            // Overlapping copies of the same rule extend its applicability.
+            if !is_move && remaining.len() == 1 && transported.len() == 1 {
+                let left = Self::range_rectangle(&remaining[0]);
+                let right = Self::range_rectangle(&transported[0]);
+                if Self::range_intersection(left, right).is_some()
+                    && ((left.first.column == right.first.column
+                        && left.last.column == right.last.column)
+                        || (left.first.row == right.first.row && left.last.row == right.last.row))
+                {
+                    let mut combined = left;
+                    combined.first.column = left.first.column.min(right.first.column);
+                    combined.first.row = left.first.row.min(right.first.row);
+                    combined.last.column = left.last.column.max(right.last.column);
+                    combined.last.row = left.last.row.max(right.last.row);
+                    remaining = vec![Self::rectangle_range(combined)];
+                    transported.clear();
+                }
+            }
+            for (ranges, copied) in [(remaining, false), (transported, true)] {
+                let Some(first) = ranges.first() else {
+                    continue;
+                };
+                let after = Self::range_rectangle(first).first;
+                let mut value = formatting.clone();
+                value
+                    .sequence_of_references_mut()
+                    .set_range_collection(ranges);
+                for rule in value.conditional_collection_mut() {
+                    if let Some(original) = rule.formula() {
+                        let mut formula = original.clone();
+                        formula.set_address_str(formula_text(
+                            &original.address_str(),
+                            before,
+                            after,
+                        ));
+                        rule.set_formula(formula);
+                    }
+                    for formula in rule.further_formulas_mut() {
+                        formula.set_address_str(formula_text(
+                            &formula.address_str(),
+                            before,
+                            after,
+                        ));
+                    }
+                }
+                if copied {
+                    copies.push(value);
+                } else {
+                    originals.push(value);
+                }
+            }
+        }
+        let added = i32::try_from(
+            copies
+                .iter()
+                .map(|value| value.conditional_collection().len())
+                .sum::<usize>(),
+        )
+        .unwrap();
+        if added != 0 {
+            for value in &mut originals {
+                for rule in value.conditional_collection_mut() {
+                    rule.set_priority(rule.priority() + added);
+                }
+            }
+            let mut priority = 1;
+            for value in &mut copies {
+                for rule in value.conditional_collection_mut() {
+                    rule.set_priority(priority);
+                    priority += 1;
+                }
+            }
+        }
+        copies.extend(originals);
+        self.conditional_formatting_collection = copies;
+    }
+
+    fn range_contains_marker(
+        source: crate::drawing::charts::ReferenceRect,
+        marker: &super::drawing::spreadsheet::MarkerType,
+    ) -> bool {
+        marker.col() >= source.first.column - 1
+            && marker.col() < source.last.column
+            && marker.row() >= source.first.row - 1
+            && marker.row() < source.last.row
+    }
+
+    fn range_contains_end_marker(
+        source: crate::drawing::charts::ReferenceRect,
+        marker: &super::drawing::spreadsheet::MarkerType,
+    ) -> bool {
+        marker.col() >= source.first.column - 1
+            && (marker.col() < source.last.column
+                || marker.col() == source.last.column && marker.col_off() == 0)
+            && marker.row() >= source.first.row - 1
+            && (marker.row() < source.last.row
+                || marker.row() == source.last.row && marker.row_off() == 0)
+    }
+
+    fn offset_range_marker(
+        marker: &mut super::drawing::spreadsheet::MarkerType,
+        row: i32,
+        column: i32,
+    ) {
+        let col = marker
+            .col()
+            .checked_add_signed(column)
+            .expect("Out of Range.");
+        let row = marker.row().checked_add_signed(row).expect("Out of Range.");
+        assert!(
+            (col < 16_384 || col == 16_384 && marker.col_off() == 0)
+                && (row < 1_048_576 || row == 1_048_576 && marker.row_off() == 0),
+            "Out of Range."
+        );
+        marker.set_col(col).set_row(row);
+    }
+
+    fn relocate_range_two_cell_anchor(
+        anchor: &mut super::drawing::spreadsheet::TwoCellAnchor,
+        source: crate::drawing::charts::ReferenceRect,
+        row: i32,
+        column: i32,
+    ) -> bool {
+        if !Self::range_contains_marker(source, anchor.from_marker())
+            || !Self::range_contains_end_marker(source, anchor.to_marker())
+        {
+            return false;
+        }
+        Self::offset_range_marker(anchor.from_marker_mut(), row, column);
+        Self::offset_range_marker(anchor.to_marker_mut(), row, column);
+        true
+    }
+
+    fn relocate_range_drawing_anchor(
+        anchor: &mut super::drawing::spreadsheet::DrawingAnchor,
+        source: crate::drawing::charts::ReferenceRect,
+        row: i32,
+        column: i32,
+    ) -> bool {
+        use super::drawing::spreadsheet::DrawingAnchor;
+        match anchor {
+            DrawingAnchor::TwoCell { from, to, .. }
+                if Self::range_contains_marker(source, from)
+                    && Self::range_contains_end_marker(source, to) =>
+            {
+                Self::offset_range_marker(from, row, column);
+                Self::offset_range_marker(to, row, column);
+                true
+            }
+            DrawingAnchor::OneCell { from, .. } if Self::range_contains_marker(source, from) => {
+                Self::offset_range_marker(from, row, column);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn range_drawing_uid() -> String {
+        use std::fmt::Write;
+        let mut bytes = [0_u8; 16];
+        rand::fill(&mut bytes);
+        let mut hex = String::with_capacity(32);
+        for byte in bytes {
+            write!(&mut hex, "{byte:02X}").expect("writing to a string cannot fail");
+        }
+        format!(
+            "{{{}-{}-{}-{}-{}}}",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..]
+        )
+    }
+
+    fn next_range_drawing_id(&self) -> u32 {
+        let mut maximum = 0;
+        self.worksheet_drawing
+            .visit_drawing_properties(&mut |properties| {
+                maximum = maximum.max(properties.id());
+            });
+        maximum
+            .checked_add(1)
+            .expect("drawing object IDs exhausted")
+    }
+
+    fn relocate_range_drawings(
+        &mut self,
+        source: crate::drawing::charts::ReferenceRect,
+        row: i32,
+        column: i32,
+        is_move: bool,
+    ) {
+        let mut copies = WorksheetDrawing::default();
+        let drawing = &mut self.worksheet_drawing;
+        for chart in drawing.chart_collection_mut() {
+            let mut relocated = chart.clone();
+            if Self::relocate_range_two_cell_anchor(
+                relocated.two_cell_anchor_mut(),
+                source,
+                row,
+                column,
+            ) {
+                if is_move {
+                    *chart = relocated;
+                } else {
+                    copies.chart_collection_mut().push(relocated);
+                }
+            }
+        }
+        for image in drawing.image_collection_mut() {
+            let mut relocated = image.clone();
+            let selected = if let Some(anchor) = relocated.two_cell_anchor_mut() {
+                Self::relocate_range_two_cell_anchor(anchor, source, row, column)
+            } else if let Some(anchor) = relocated.one_cell_anchor_mut() {
+                if Self::range_contains_marker(source, anchor.from_marker()) {
+                    Self::offset_range_marker(anchor.from_marker_mut(), row, column);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if selected {
+                if is_move {
+                    *image = relocated;
+                } else {
+                    copies.image_collection_mut().push(relocated);
+                }
+            }
+        }
+        for anchor in drawing.one_cell_anchor_collection_mut() {
+            if Self::range_contains_marker(source, anchor.from_marker()) {
+                let mut relocated = anchor.clone();
+                Self::offset_range_marker(relocated.from_marker_mut(), row, column);
+                if is_move {
+                    *anchor = relocated;
+                } else {
+                    copies.one_cell_anchor_collection_mut().push(relocated);
+                }
+            }
+        }
+        for anchor in drawing.two_cell_anchor_collection_mut() {
+            let mut relocated = anchor.clone();
+            if Self::relocate_range_two_cell_anchor(&mut relocated, source, row, column) {
+                if is_move {
+                    *anchor = relocated;
+                } else {
+                    copies.two_cell_anchor_collection_mut().push(relocated);
+                }
+            }
+        }
+        for chart in drawing.extended_charts_mut() {
+            let mut relocated = chart.clone();
+            if Self::relocate_range_drawing_anchor(relocated.anchor_mut(), source, row, column) {
+                if is_move {
+                    *chart = relocated;
+                } else {
+                    copies.extended_charts_mut().push(relocated);
+                }
+            }
+        }
+        let mut frames = Vec::new();
+        for frame in self.worksheet_drawing.slicer_frames_mut() {
+            let mut relocated = frame.clone();
+            if Self::relocate_range_drawing_anchor(relocated.anchor_mut(), source, row, column) {
+                if is_move {
+                    *frame = relocated;
+                } else {
+                    frames.push(relocated);
+                }
+            }
+        }
+        for mut frame in frames {
+            let mut suffix = 1_u32;
+            let name = loop {
+                let candidate = format!("{} {suffix}", frame.slicer_name());
+                if !self
+                    .slicers
+                    .iter()
+                    .any(|view| view.name.eq_ignore_ascii_case(&candidate))
+                    && !self
+                        .timelines
+                        .iter()
+                        .any(|view| view.name.eq_ignore_ascii_case(&candidate))
+                {
+                    break candidate;
+                }
+                suffix = suffix.checked_add(1).expect("slicer view names exhausted");
+            };
+            match frame.kind() {
+                super::drawing::spreadsheet::SlicerFrameKind::Slicer => {
+                    let mut view = self
+                        .slicers
+                        .iter()
+                        .find(|view| view.name == frame.slicer_name())
+                        .expect("slicer drawing has no worksheet view")
+                        .clone();
+                    view.name.clone_from(&name);
+                    view.uid = Some(Self::range_drawing_uid());
+                    self.slicers.push(view);
+                }
+                super::drawing::spreadsheet::SlicerFrameKind::Timeline => {
+                    let mut view = self
+                        .timelines
+                        .iter()
+                        .find(|view| view.name == frame.slicer_name())
+                        .expect("timeline drawing has no worksheet view")
+                        .clone();
+                    view.name.clone_from(&name);
+                    view.uid = Some(Self::range_drawing_uid());
+                    self.timelines.push(view);
+                }
+            }
+            frame.set_slicer_name(name.clone());
+            frame
+                .frame_properties_mut()
+                .non_visual_drawing_properties_mut()
+                .set_name(name);
+            copies.slicer_frames_mut().push(frame);
+        }
+        if !copies.has_drawing_object() {
+            return;
+        }
+        let mut next_id = self.next_range_drawing_id();
+        let mut copied_ids = HashMap::new();
+        copies.visit_drawing_properties_mut(&mut |properties| {
+            copied_ids.insert(properties.id(), next_id);
+            properties.set_id(next_id);
+            next_id = next_id
+                .checked_add(1)
+                .expect("drawing object IDs exhausted");
+        });
+        let drawing = &mut self.worksheet_drawing;
+        let mut order = drawing.object_order().to_vec();
+        order.extend(drawing.object_order().iter().filter_map(|key| {
+            use super::drawing::spreadsheet::DrawingObjectKey;
+            let (id, owner): (&u32, fn(u32) -> DrawingObjectKey) = match key {
+                DrawingObjectKey::Chart(id) => (id, DrawingObjectKey::Chart),
+                DrawingObjectKey::Image(id) => (id, DrawingObjectKey::Image),
+                DrawingObjectKey::OneCell(id) => (id, DrawingObjectKey::OneCell),
+                DrawingObjectKey::TwoCell(id) => (id, DrawingObjectKey::TwoCell),
+                DrawingObjectKey::ExtendedChart(id) => (id, DrawingObjectKey::ExtendedChart),
+                DrawingObjectKey::Slicer(id) => (id, DrawingObjectKey::Slicer),
+                DrawingObjectKey::Absolute(_)
+                | DrawingObjectKey::Ole(_)
+                | DrawingObjectKey::Preserved(_) => return None,
+            };
+            copied_ids.get(id).copied().map(owner)
+        }));
+        drawing.set_object_order(order);
+        drawing
+            .chart_collection_mut()
+            .append(copies.chart_collection_mut());
+        drawing
+            .image_collection_mut()
+            .append(copies.image_collection_mut());
+        drawing
+            .one_cell_anchor_collection_mut()
+            .append(copies.one_cell_anchor_collection_mut());
+        drawing
+            .two_cell_anchor_collection_mut()
+            .append(copies.two_cell_anchor_collection_mut());
+        drawing
+            .extended_charts_mut()
+            .append(copies.extended_charts_mut());
+        drawing
+            .slicer_frames_mut()
+            .append(copies.slicer_frames_mut());
     }
 
     /// Remove invisible garbage data.
