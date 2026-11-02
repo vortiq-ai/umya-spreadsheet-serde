@@ -179,6 +179,78 @@ fn empty_category_choice_reports_missing_required_child() {
 }
 
 #[test]
+fn empty_category_wrappers_keep_presence_in_both_xml_forms() {
+    for xml in ["<c:cat/>", "<c:cat></c:cat>"] {
+        assert_conflict(xml, SeriesPartConflictReason::MissingRequiredChild);
+        let book = source(ChartType::BarChart, xml);
+        assert!(series(&book).category_axis_data().is_some());
+    }
+}
+
+#[test]
+fn empty_category_reference_choices_keep_their_native_choice_in_both_xml_forms() {
+    for (index, name) in ["strRef", "numRef", "multiLvlStrRef"]
+        .into_iter()
+        .enumerate()
+    {
+        for child in [format!("<c:{name}/>"), format!("<c:{name}></c:{name}>")] {
+            for book in stored(&source(
+                ChartType::BarChart,
+                &format!("<c:cat>{child}</c:cat>"),
+            )) {
+                let categories = series(&book).category_axis_data().unwrap();
+                assert_eq!(categories.string_reference().is_some(), index == 0);
+                assert_eq!(categories.number_reference().is_some(), index == 1);
+                assert_eq!(
+                    categories.multi_level_string_reference().is_some(),
+                    index == 2
+                );
+                assert!(categories.string_literal().is_none());
+                assert_eq!(
+                    series(&book)
+                        .values()
+                        .unwrap()
+                        .number_reference()
+                        .formula()
+                        .address_str(),
+                    "Sheet1!$B$1:$B$3"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_numeric_series_wrappers_keep_presence_without_consuming_following_values() {
+    for (kind, name) in [
+        (ChartType::ScatterChart, "val"),
+        (ChartType::BarChart, "xVal"),
+        (ChartType::BarChart, "yVal"),
+        (ChartType::BarChart, "bubbleSize"),
+    ] {
+        for xml in [format!("<c:{name}/>"), format!("<c:{name}></c:{name}>")] {
+            for book in stored(&source(kind, &xml)) {
+                let series = series(&book);
+                let reference = match name {
+                    "val" => series.values().unwrap().number_reference(),
+                    "xVal" => series.x_values().unwrap().number_reference(),
+                    "yVal" => series.y_values().unwrap().number_reference(),
+                    "bubbleSize" => series.bubble_size().unwrap().number_reference(),
+                    _ => unreachable!(),
+                };
+                assert!(reference.formula().address_str().is_empty());
+                let following = if name == "val" {
+                    series.x_values().unwrap().number_reference()
+                } else {
+                    series.values().unwrap().number_reference()
+                };
+                assert_eq!(following.formula().address_str(), "Sheet1!$B$1:$B$3");
+            }
+        }
+    }
+}
+
+#[test]
 fn multiple_modeled_category_choices_report_conflicting_choice() {
     assert_conflict(
         "<c:cat><c:strRef><c:f>Sheet1!$A$1:$A$3</c:f></c:strRef><c:strLit><c:ptCount \

@@ -77,10 +77,8 @@ impl BandFormat {
                     b"idx" => {
                         let mut value = Index::default();
                         value.set_attributes(reader, e)?;
-                        if !empty {
-                            crate::reader::driver::skip_element(reader, e)?;
-                        }
                         store_once(&mut index, value, "c:idx")?;
+                        return Ok(false);
                     }
                     b"spPr" => {
                         let mut shape = ShapeProperties::default();

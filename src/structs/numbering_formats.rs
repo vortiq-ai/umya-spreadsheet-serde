@@ -1,6 +1,9 @@
 // numFmts
 use std::{
-    collections::HashMap,
+    collections::{
+        BTreeMap,
+        HashMap,
+    },
     io::Cursor,
 };
 
@@ -133,7 +136,7 @@ impl NumberingFormats {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        let formats_to_write: HashMap<_, _> = self
+        let formats_to_write: BTreeMap<_, _> = self
             .numbering_format
             .iter()
             .filter(|(_, v)| !v.is_build_in())
@@ -159,6 +162,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn custom_formats_are_written_in_numeric_id_order() {
+        for ids in [(176..192).collect::<Vec<_>>(), (176..192).rev().collect()] {
+            let mut formats = NumberingFormats::default();
+            for id in ids {
+                let mut format = NumberingFormat::default();
+                format.set_format_code(format!("0.{id}"));
+                format.set_number_format_id_crate(id);
+                formats.set_numbering_format(format);
+            }
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            formats.write_to(&mut writer);
+            let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+            let children = (176..192)
+                .map(|id| format!("<numFmt numFmtId=\"{id}\" formatCode=\"0.{id}\"/>"))
+                .collect::<String>();
+            assert_eq!(xml, format!("<numFmts count=\"16\">{children}</numFmts>"));
+        }
+    }
+
+    #[test]
     fn set_style() {
         let mut obj = NumberingFormats::default();
 
@@ -169,21 +192,15 @@ mod tests {
         assert_eq!(obj.set_style(&style), 49);
 
         let mut style = Style::default();
-        style
-            .number_format_mut()
-            .set_format_code("test-yyyy-mm-dd");
+        style.number_format_mut().set_format_code("test-yyyy-mm-dd");
         assert_eq!(obj.set_style(&style), 176);
 
         let mut style = Style::default();
-        style
-            .number_format_mut()
-            .set_format_code("test-yyyy/mm/dd");
+        style.number_format_mut().set_format_code("test-yyyy/mm/dd");
         assert_eq!(obj.set_style(&style), 177);
 
         let mut style = Style::default();
-        style
-            .number_format_mut()
-            .set_format_code("test-yyyy-mm-dd");
+        style.number_format_mut().set_format_code("test-yyyy-mm-dd");
         assert_eq!(obj.set_style(&style), 176);
 
         let mut style = Style::default();

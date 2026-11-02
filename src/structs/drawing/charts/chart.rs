@@ -911,6 +911,24 @@ impl Chart {
                     self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
                         .read_extensions(reader, e, true, session)?;
                 }
+                b"title" => {
+                    self.set_title(Title::default());
+                }
+                b"view3D" => {
+                    self.set_view_3d(View3D::default());
+                }
+                b"floor" => {
+                    self.set_floor(Floor::default());
+                }
+                b"sideWall" => {
+                    self.set_side_wall(SideWall::default());
+                }
+                b"backWall" => {
+                    self.set_back_wall(BackWall::default());
+                }
+                b"legend" => {
+                    self.legend_present = true;
+                }
                 b"autoTitleDeleted" => {
                     self.auto_title_deleted.set_attributes(reader, e)?;
                 }

@@ -1,6 +1,6 @@
 // a:lstStyle
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     io::Cursor,
 };
 
@@ -31,7 +31,90 @@ use crate::{
 #[derive(Clone, Default, Debug)]
 pub struct ListStyle {
     effect_list:                    Option<Box<EffectList>>,
-    text_paragraph_properties_type: HashMap<Box<str>, Box<TextParagraphPropertiesType>>,
+    text_paragraph_properties_type: BTreeMap<Box<str>, Box<TextParagraphPropertiesType>>,
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serialization_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct LegacyListStyle {
+        effect_list:                    Option<Box<EffectList>>,
+        text_paragraph_properties_type: HashMap<Box<str>, Box<TextParagraphPropertiesType>>,
+    }
+
+    #[test]
+    fn list_style_leaves_keep_role_order_through_json_and_binary() {
+        let roles = [
+            "defPPr", "lvl1pPr", "lvl2pPr", "lvl3pPr", "lvl4pPr", "lvl5pPr", "lvl6pPr", "lvl7pPr",
+            "lvl8pPr", "lvl9pPr",
+        ];
+        let keys = [
+            "def", "lv1", "lv2", "lv3", "lv4", "lv5", "lv6", "lv7", "lv8", "lv9",
+        ];
+        let mut leaves = roles
+            .iter()
+            .enumerate()
+            .map(|(index, role)| {
+                format!(
+                    "<a:{role} rtl=\"{}\"><a:spcBef><a:spcPts val=\"{}\"/></a:spcBef></a:{role}>",
+                    index % 2,
+                    (index + 1) * 100
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut expected_binary = None;
+        for _ in 0..2 {
+            let xml = format!(
+                "<a:lstStyle xmlns:a=\"{NS_A}\">{}</a:lstStyle>",
+                leaves.concat()
+            );
+            let mut reader = Reader::from_str(&xml);
+            let Event::Start(root) = reader.read_event().unwrap() else {
+                panic!("missing list style")
+            };
+            let mut style = ListStyle::default();
+            style.set_attributes(&mut reader, &root).unwrap();
+            style.set_effect_list(EffectList::default());
+            assert_eq!(
+                style
+                    .text_paragraph_properties_type
+                    .keys()
+                    .map(Box::as_ref)
+                    .collect::<Vec<_>>(),
+                keys
+            );
+            for (index, key) in keys.iter().enumerate() {
+                let properties = &style.text_paragraph_properties_type[*key];
+                assert_eq!(properties.right_to_left(), index % 2 == 1);
+                assert_eq!(
+                    properties.space_before().unwrap().spacing_points(),
+                    Some((index as i32 + 1) * 100)
+                );
+            }
+            let binary = bincode::serialize(&style).unwrap();
+            if let Some(expected) = &expected_binary {
+                assert_eq!(&binary, expected);
+            }
+            expected_binary = Some(binary.clone());
+            let json = serde_json::to_value(&style).unwrap();
+            let restored: ListStyle = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(bincode::serialize(&restored).unwrap(), binary);
+
+            // The previous HashMap representation used the same wire fields.
+            let legacy: LegacyListStyle = serde_json::from_value(json.clone()).unwrap();
+            let imported: ListStyle =
+                bincode::deserialize(&bincode::serialize(&legacy).unwrap()).unwrap();
+            assert_eq!(serde_json::to_value(&imported).unwrap(), json);
+            assert_eq!(bincode::serialize(&imported).unwrap(), binary);
+            let legacy: LegacyListStyle = bincode::deserialize(&binary).unwrap();
+            assert_eq!(serde_json::to_value(legacy).unwrap(), json);
+            leaves.reverse();
+        }
+    }
 }
 
 impl ListStyle {

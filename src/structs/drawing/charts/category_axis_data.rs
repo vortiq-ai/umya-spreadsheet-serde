@@ -285,50 +285,43 @@ impl CategoryAxisData {
         let end = owner.name().into_inner().to_vec();
         try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
                 match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().into_inner())} else {b""} {
                     b"multiLvlStrRef" => {
                         let mut obj = MultiLevelStringReference::default();
-                        obj.set_attributes_with_session(reader, e, session)?;
+                        if !empty {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
                         self.set_multi_level_string_reference(obj);
                     }
                     b"strRef" => {
                         let mut obj = StringReference::default();
-                        obj.set_attributes(reader, e, session)?;
+                        if !empty {
+                            obj.set_attributes(reader, e, session)?;
+                        }
                         self.set_string_reference(obj);
                     }
                     b"strLit" => {
-                        let mut obj = StringLiteral::default();
-                        obj.set_attributes_with_session(reader, e, session)?;
+                        let obj = StringLiteral::read_with_session(reader, e, empty, session)?;
                         self.set_string_literal(obj);
                     }
                     b"numRef" => {
                         let mut obj = NumberReference::default();
-                        obj.set_attributes_with_session(reader, e, session)?;
+                        if !empty {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
                         self.set_number_reference(obj);
                     }
                     b"numLit" => {
                         self.set_number_literal(NumericData::read_with_session(
-                            reader, e, false, session,
+                            reader, e, empty, session,
                         )?);
                     }
-                    _ => skip_element(reader, e)?,
-                }
-            },
-            Event::Empty(ref e) => {
-                if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
-                    match local_name(e.name().into_inner()) {
-                        b"strLit" => {
-                            let literal =
-                                StringLiteral::read_with_session(reader, e, true, session)?;
-                            self.set_string_literal(literal);
+                    _ => {
+                        if !empty {
+                            skip_element(reader, e)?;
                         }
-                        b"numLit" => {
-                            self.set_number_literal(NumericData::read_with_session(
-                                reader, e, true, session,
-                            )?);
-                        }
-                        _ => (),
                     }
                 }
             },

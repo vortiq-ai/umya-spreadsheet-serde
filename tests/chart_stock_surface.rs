@@ -954,8 +954,32 @@ fn start_and_end_tag_leaves_import_like_empty_elements() {
                     expected,
                     "{name} eager={eager} {mode}"
                 );
+                emit(&format!("paired-{name}-{mode}"), &output);
             }
         }
+    }
+}
+
+#[test]
+fn comments_inside_stock_and_surface_leaves_preserve_values() {
+    for name in ["stock-ohlc", "surface"] {
+        let bytes = fixture(name);
+        let expected = owned_plot_parts(&chart_part(&write(&read(&bytes))));
+        let expanded = with_chart_part(&bytes, |xml| {
+            let xml = expand_empty_elements(&xml)
+                .replace("></c:idx>", "> <!--leaf--> </c:idx>")
+                .replace("></c:gapWidth>", "> <!--leaf--> </c:gapWidth>");
+            assert!(xml.contains(" <!--leaf--> </c:idx>"), "{name}");
+            if name == "stock-ohlc" {
+                assert!(xml.contains(" <!--leaf--> </c:gapWidth>"), "{name}");
+            }
+            xml
+        });
+        assert_eq!(
+            owned_plot_parts(&chart_part(&write(&read(&expanded)))),
+            expected,
+            "{name}"
+        );
     }
 }
 

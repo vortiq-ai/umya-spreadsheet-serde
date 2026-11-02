@@ -110,6 +110,245 @@ pub(crate) fn skip_element<R: io::BufRead>(
     Ok(())
 }
 
+/// Rewrites attribute-only chart leaves whose start tag is immediately followed
+/// by its end tag (`<c:grouping val="x"></c:grouping>`) into the self-closing
+/// form, outside extension and raw string-cache owners.
+///
+/// The chart and drawing readers match many leaves only as `Event::Empty`, so
+/// the paired form would be skipped and its value would fall back to the
+/// default. The rewrite keeps the byte length (the freed bytes become blanks
+/// inside the tag, before the new `/>`), so every offset the readers record
+/// still indexes the original part. Comments, processing instructions, CDATA
+/// and `extLst` content are left alone, including typed extension content.
+/// String-cache readers already handle both forms; their first pass and
+/// deferred replay must see the same original cache grammar. The input is
+/// borrowed unless a rewrite is needed. Empty containers retain their Start/End
+/// events so readers preserve their presence, even when they have attributes.
+pub(crate) fn collapse_empty_pairs(data: &[u8]) -> Cow<'_, [u8]> {
+    let mut rewritten: Option<Vec<u8>> = None;
+    let mut i = 0;
+    let mut preserved_depth = 0;
+    let mut parents = Vec::new();
+    while let Some(offset) = data[i..].iter().position(|&b| b == b'<') {
+        i += offset;
+        let rest = &data[i..];
+        let skip_to = |terminator: &[u8]| {
+            rest.windows(terminator.len())
+                .position(|w| w == terminator)
+                .map_or(data.len(), |p| i + p + terminator.len())
+        };
+        if rest.starts_with(b"<!--") {
+            i = skip_to(b"-->");
+            continue;
+        }
+        if rest.starts_with(b"<![CDATA[") {
+            i = skip_to(b"]]>");
+            continue;
+        }
+        if rest.starts_with(b"<?") {
+            i = skip_to(b"?>");
+            continue;
+        }
+        // Find the closing `>` of this tag, past quoted attribute values.
+        let mut quote = None;
+        let mut close = None;
+        for (p, &b) in rest.iter().enumerate().skip(1) {
+            match (quote, b) {
+                (Some(q), b) if b == q => quote = None,
+                (None, b'"' | b'\'') => quote = Some(b),
+                (None, b'>') => {
+                    close = Some(i + p);
+                    break;
+                }
+                _ => (),
+            }
+        }
+        let Some(close) = close else { break };
+        let start = i;
+        i = close + 1;
+        if rest[1] == b'/' {
+            parents.pop();
+            if preserved_depth > 0 {
+                preserved_depth -= 1;
+            }
+            continue;
+        }
+        if rest[1] == b'!' || data[close - 1] == b'/' {
+            continue;
+        }
+        let name_len = rest[1..]
+            .iter()
+            .position(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'>'))
+            .unwrap_or(0);
+        let name = &data[start + 1..start + 1 + name_len];
+        let parent = parents.last().copied().map(local_name);
+        parents.push(name);
+        if preserved_depth > 0 || matches!(local_name(name), b"extLst" | b"strCache") {
+            // Preserve source-owned XML, including nested owners and comments
+            // spelling an end tag.
+            preserved_depth += 1;
+            continue;
+        }
+        if !is_chart_attribute_leaf(local_name(name), parent) {
+            continue;
+        }
+        let tail = &data[i..];
+        if !(tail.starts_with(b"</") && tail[2..].starts_with(name)) {
+            continue;
+        }
+        let after_name = &tail[2 + name_len..];
+        let blanks = after_name
+            .iter()
+            .take_while(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+            .count();
+        if after_name.get(blanks) == Some(&b'>') {
+            let end_len = 2 + name_len + blanks + 1;
+            let out = rewritten.get_or_insert_with(|| data.to_vec());
+            out[close..close + end_len - 1].fill(b' ');
+            out[close + end_len - 1] = b'/';
+            out[close + end_len] = b'>';
+            i += end_len;
+            parents.pop();
+        }
+    }
+    rewritten.map_or(Cow::Borrowed(data), Cow::Owned)
+}
+
+// Attribute-only chart leaves from dml-chart.xsd. Everything else keeps its
+// Start/End events, since readers use those events to retain empty owners.
+// Three local names have both scalar and container grammars.
+fn is_chart_attribute_leaf(name: &[u8], parent: Option<&[u8]>) -> bool {
+    match name {
+        b"marker" => parent == Some(b"lineChart"),
+        b"val" => parent == Some(b"errBars"),
+        b"data" => parent == Some(b"protection"),
+        _ => matches!(
+            name,
+            b"applyToEnd"
+                | b"applyToFront"
+                | b"applyToSides"
+                | b"auto"
+                | b"autoTitleDeleted"
+                | b"autoUpdate"
+                | b"axId"
+                | b"axPos"
+                | b"backward"
+                | b"barDir"
+                | b"baseTimeUnit"
+                | b"bubble3D"
+                | b"bubbleScale"
+                | b"builtInUnit"
+                | b"chartObject"
+                | b"crossAx"
+                | b"crossBetween"
+                | b"crosses"
+                | b"crossesAt"
+                | b"custUnit"
+                | b"dLblPos"
+                | b"date1904"
+                | b"delete"
+                | b"depthPercent"
+                | b"dispBlanksAs"
+                | b"dispEq"
+                | b"dispRSqr"
+                | b"errBarType"
+                | b"errDir"
+                | b"errValType"
+                | b"explosion"
+                | b"firstSliceAng"
+                | b"fmtId"
+                | b"formatting"
+                | b"forward"
+                | b"gapDepth"
+                | b"gapWidth"
+                | b"grouping"
+                | b"h"
+                | b"hMode"
+                | b"hPercent"
+                | b"holeSize"
+                | b"idx"
+                | b"intercept"
+                | b"invertIfNegative"
+                | b"lang"
+                | b"layoutTarget"
+                | b"lblAlgn"
+                | b"lblOffset"
+                | b"legacyDrawingHF"
+                | b"legendPos"
+                | b"logBase"
+                | b"majorTickMark"
+                | b"majorTimeUnit"
+                | b"majorUnit"
+                | b"max"
+                | b"min"
+                | b"minorTickMark"
+                | b"minorTimeUnit"
+                | b"minorUnit"
+                | b"noEndCap"
+                | b"noMultiLvlLbl"
+                | b"numFmt"
+                | b"ofPieType"
+                | b"order"
+                | b"orientation"
+                | b"overlap"
+                | b"overlay"
+                | b"pageMargins"
+                | b"pageSetup"
+                | b"period"
+                | b"perspective"
+                | b"pictureFormat"
+                | b"pictureStackUnit"
+                | b"plotVisOnly"
+                | b"ptCount"
+                | b"rAngAx"
+                | b"radarStyle"
+                | b"rotX"
+                | b"rotY"
+                | b"roundedCorners"
+                | b"scatterStyle"
+                | b"secondPiePt"
+                | b"secondPieSize"
+                | b"selection"
+                | b"shape"
+                | b"showBubbleSize"
+                | b"showCatName"
+                | b"showDLblsOverMax"
+                | b"showHorzBorder"
+                | b"showKeys"
+                | b"showLeaderLines"
+                | b"showLegendKey"
+                | b"showNegBubbles"
+                | b"showOutline"
+                | b"showPercent"
+                | b"showSerName"
+                | b"showVal"
+                | b"showVertBorder"
+                | b"size"
+                | b"sizeRepresents"
+                | b"smooth"
+                | b"splitPos"
+                | b"splitType"
+                | b"style"
+                | b"symbol"
+                | b"thickness"
+                | b"tickLblPos"
+                | b"tickLblSkip"
+                | b"tickMarkSkip"
+                | b"trendlineType"
+                | b"userInterface"
+                | b"userShapes"
+                | b"varyColors"
+                | b"w"
+                | b"wMode"
+                | b"wireframe"
+                | b"x"
+                | b"xMode"
+                | b"y"
+                | b"yMode"
+        ),
+    }
+}
+
 pub(crate) fn normalize_path(path: &str) -> PathBuf {
     let path = Path::new(path);
     let mut components = path.components().peekable();
@@ -561,5 +800,166 @@ mod attribute_tests {
         }
         let missing = quick_xml::events::BytesStart::new("leaf");
         assert!(require_attribute(&missing, b"val").is_err());
+    }
+}
+
+#[cfg(test)]
+mod collapse_empty_pairs_tests {
+    use super::collapse_empty_pairs;
+
+    #[test]
+    fn empty_owners_keep_their_start_and_end_events_even_with_attributes() {
+        for name in [
+            "lineChart",
+            "line3DChart",
+            "pieChart",
+            "pie3DChart",
+            "doughnutChart",
+            "scatterChart",
+            "barChart",
+            "bar3DChart",
+            "radarChart",
+            "bubbleChart",
+            "areaChart",
+            "area3DChart",
+            "ofPieChart",
+            "stockChart",
+            "surfaceChart",
+            "surface3DChart",
+            "chart",
+            "title",
+            "legend",
+            "view3D",
+            "floor",
+            "sideWall",
+            "backWall",
+            "spPr",
+            "txPr",
+            "dLbls",
+            "dPt",
+            "ser",
+            "marker",
+            "val",
+            "data",
+            "layout",
+            "manualLayout",
+            "p",
+            "rPr",
+            "gradFill",
+        ] {
+            for attributes in ["", " xmlns:c=\"urn:chart\"", " custom=\"value\""] {
+                let xml = format!("<c:{name}{attributes}></c:{name}>");
+                assert!(
+                    matches!(
+                        collapse_empty_pairs(xml.as_bytes()),
+                        std::borrow::Cow::Borrowed(_)
+                    ),
+                    "owner was collapsed: {xml}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_leaves_and_contextual_scalar_names_still_collapse() {
+        let xml = b"<c:lineChart><c:marker></c:marker><c:varyColors></c:varyColors><c:ser><c:marker></c:marker><c:val></c:val></c:ser></c:lineChart><c:errBars><c:val val=\"2\"></c:val></c:errBars>";
+        let out = collapse_empty_pairs(xml);
+        assert_eq!(out.len(), xml.len());
+        let mut reader = quick_xml::Reader::from_reader(out.as_ref());
+        let mut leaves = Vec::new();
+        while let Ok(event) = reader.read_event() {
+            match event {
+                quick_xml::events::Event::Empty(element) => {
+                    leaves.push(element.name().as_ref().to_vec())
+                }
+                quick_xml::events::Event::Eof => break,
+                _ => (),
+            }
+        }
+        assert_eq!(
+            leaves,
+            [
+                b"c:marker".to_vec(),
+                b"c:varyColors".to_vec(),
+                b"c:val".to_vec()
+            ]
+        );
+        assert!(
+            std::str::from_utf8(&out)
+                .unwrap()
+                .contains("<c:ser><c:marker></c:marker><c:val></c:val></c:ser>")
+        );
+    }
+
+    #[test]
+    fn a_start_tag_followed_by_its_end_tag_becomes_self_closing_at_the_same_length() {
+        let xml = b"<a><c:x val=\"1>2\"></c:x><y></y ><y>t</y><b></c></b></a>";
+        let out = collapse_empty_pairs(xml);
+        assert_eq!(out.len(), xml.len());
+        assert_eq!(
+            std::str::from_utf8(&out).unwrap(),
+            "<a><c:x val=\"1>2\"     /><y    /><y>t</y><b></c></b></a>"
+        );
+    }
+
+    #[test]
+    fn comments_cdata_and_instructions_are_not_rewritten() {
+        let xml = b"<?p <a></a>?><!-- <a></a> --><t><![CDATA[<a></a>]]></t><e/>";
+        assert!(matches!(
+            collapse_empty_pairs(xml),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn a_longer_name_sharing_the_prefix_is_not_a_match() {
+        let xml = b"<x></xy>";
+        assert!(matches!(
+            collapse_empty_pairs(xml),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn extension_payloads_stay_verbatim_until_their_matching_end() {
+        let xml = b"<a:extLst><!-- </a:extLst> --><a:ext><a:extLst><x></x></a:extLst><y></y></a:ext></a:extLst><x></x>";
+        let out = collapse_empty_pairs(xml);
+        let extension_end = xml.len() - b"<x></x>".len();
+        assert_eq!(&out[..extension_end], &xml[..extension_end]);
+        assert_eq!(&out[extension_end..], b"<x   />");
+        assert_eq!(out.len(), xml.len());
+    }
+
+    #[test]
+    fn string_cache_first_pass_keeps_the_deferred_replays_original_xml() {
+        for cache in [
+            b"<c:strCache/>".as_slice(),
+            b"<c:strCache></c:strCache>",
+            b"<c:strCache><c:ptCount val=\"1\"></c:ptCount><!-- </c:strCache> --><c:pt idx=\"0\"><c:v></c:v></c:pt></c:strCache>",
+        ] {
+            let xml = [cache, b"<x></x>"].concat();
+            let out = collapse_empty_pairs(&xml);
+            assert_eq!(&out[..cache.len()], cache);
+            assert_eq!(&out[cache.len()..], b"<x   />");
+            assert_eq!(out.len(), xml.len());
+        }
+    }
+
+    #[test]
+    fn text_whitespace_and_comments_between_tags_are_preserved() {
+        for xml in [
+            b"<x> </x>".as_slice(),
+            b"<x><!--comment--></x>",
+            b"<x>text</x>",
+            b"<x><b/></x>",
+            b"<a:extLst><x></x></a:extLst>",
+            b"<x></x\x0b>",
+            b"<x></x\x0c>",
+        ] {
+            assert!(matches!(
+                collapse_empty_pairs(xml),
+                std::borrow::Cow::Borrowed(_)
+            ));
+        }
     }
 }

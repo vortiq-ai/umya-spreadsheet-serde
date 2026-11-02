@@ -146,10 +146,8 @@ impl UpDownBars {
                     b"gapWidth" => {
                         let mut value = GapWidth::default();
                         value.set_attributes(reader, e)?;
-                        if !empty {
-                            crate::reader::driver::skip_element(reader, e)?;
-                        }
                         store_once(&mut result.gap_width, value, "c:gapWidth")?;
+                        return Ok(false);
                     }
                     b"upBars" => {
                         let value = read_chart_lines(reader, e, empty, session, "c:upBars")?;

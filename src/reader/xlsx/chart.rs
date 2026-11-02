@@ -20,6 +20,10 @@ use crate::{
     try_xml_read_loop,
 };
 
+#[cfg(all(test, feature = "serde"))]
+#[path = "chart/empty_pairs_tests.rs"]
+mod empty_pairs_tests;
+
 /// Names the chart part an error of parsing it came from, keeping its kind.
 fn in_part(target: &str, error: &XlsxError) -> XlsxError {
     let detail = error
@@ -41,6 +45,8 @@ pub(crate) fn read(
             session
                 .prepare_chart_namespaces(data, raw_file.file_target())
                 .map_err(|error| XlsxError::with_message(XlsxErrorKind::Xml, error))?;
+            let data = crate::reader::driver::collapse_empty_pairs(data);
+            let data = data.as_ref();
             let data = std::io::Cursor::new(data);
             let mut reader = Reader::from_reader(data);
             reader.config_mut().trim_text(true);
@@ -81,6 +87,8 @@ pub(crate) fn read_extended(
             session
                 .prepare_chart_namespaces(data, target)
                 .map_err(crate::xml::xml_error)?;
+            let data = crate::reader::driver::collapse_empty_pairs(data);
+            let data = data.as_ref();
             let mut reader = Reader::from_reader(data);
             loop {
                 match reader.read_event()? {

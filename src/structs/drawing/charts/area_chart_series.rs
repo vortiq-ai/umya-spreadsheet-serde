@@ -758,40 +758,38 @@ impl AreaChartSeries {
                         self.set_shape_properties(obj);
                     }
                     b"cat" => {
-                        // `continue` here would skip the loop's `buf.clear()`.
+                        let mut obj = CategoryAxisData::default();
                         if !is_empty_element {
-                            let mut obj = CategoryAxisData::default();
                             obj.set_attributes(reader, e, session)?;
-                            self.set_category_axis_data(obj);
                         }
+                        self.set_category_axis_data(obj);
                     }
                     b"val" => {
-                        // `continue` here would skip the loop's `buf.clear()`.
+                        let mut obj = Values::default();
                         if !is_empty_element {
-                            let mut obj = Values::default();
                             obj.set_attributes_with_session(reader, e, session)?;
-                            self.set_values(obj);
                         }
+                        self.set_values(obj);
                     }
                     b"xVal" => {
-                        // `continue` here would skip the loop's `buf.clear()`.
+                        let mut obj = XValues::default();
                         if !is_empty_element {
-                            let mut obj = XValues::default();
                             obj.set_attributes_with_session(reader, e, session)?;
-                            self.set_x_values(obj);
                         }
+                        self.set_x_values(obj);
                     }
                     b"yVal" => {
-                        // `continue` here would skip the loop's `buf.clear()`.
+                        let mut obj = YValues::default();
                         if !is_empty_element {
-                            let mut obj = YValues::default();
                             obj.set_attributes_with_session(reader, e, session)?;
-                            self.set_y_values(obj);
                         }
+                        self.set_y_values(obj);
                     }
                     b"bubbleSize" => {
                         let mut obj = BubbleSize::default();
-                        obj.set_attributes_with_session(reader, e, session)?;
+                        if !is_empty_element {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
                         self.set_bubble_size(obj);
                     }
                     b"dLbls" => {
