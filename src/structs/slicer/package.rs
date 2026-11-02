@@ -834,6 +834,39 @@ impl Workbook {
         self.try_read_sheet_collection().map(|_| ())
     }
 
+    /// Remove caches whose last view was deleted with its drawing. All view
+    /// hosts must be read before checking whether a cache still has a view.
+    pub(crate) fn reconcile_removed_drawing_caches(&mut self, candidates: &HashSet<String>) {
+        if candidates.is_empty() {
+            return;
+        }
+        let surviving: HashSet<String> = self
+            .sheet_collection_no_check()
+            .iter()
+            .flat_map(|sheet| {
+                sheet
+                    .slicers()
+                    .iter()
+                    .map(|view| view.cache.to_lowercase())
+                    .chain(
+                        sheet
+                            .timelines()
+                            .iter()
+                            .map(|view| view.cache.to_lowercase()),
+                    )
+            })
+            .collect();
+        let dropped: HashSet<String> = candidates.difference(&surviving).cloned().collect();
+        if !dropped.is_empty() {
+            self.slicer_caches_mut()
+                .retain(|cache| !dropped.contains(&cache.name.to_lowercase()));
+            self.timeline_caches_mut()
+                .retain(|cache| !dropped.contains(&cache.name.to_lowercase()));
+            self.remove_slicer_caches_named(&dropped);
+            self.remove_unused_retained_pivot_caches();
+        }
+    }
+
     /// Follow the removal of `removed` the way Excel does: the slicers of the
     /// sheet go with it, its pivot tables leave the pivot slicer caches that
     /// listed them, a pivot slicer cache left without pivot tables and a table

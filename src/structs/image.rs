@@ -14,22 +14,19 @@ use base64::{
 };
 use quick_xml::Writer;
 
-use crate::{
-    structs::{
-        MediaObject,
-        drawing::{
-            FillRectangle,
-            PresetGeometry,
-            Stretch,
-            spreadsheet::{
-                MarkerType,
-                OneCellAnchor,
-                Picture,
-                TwoCellAnchor,
-            },
+use crate::structs::{
+    MediaObject,
+    drawing::{
+        FillRectangle,
+        PresetGeometry,
+        Stretch,
+        spreadsheet::{
+            MarkerType,
+            OneCellAnchor,
+            Picture,
+            TwoCellAnchor,
         },
     },
-    traits::AdjustmentCoordinate,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -415,91 +412,5 @@ impl Image {
             anchor.write_to(writer, rel_list)?;
         }
         Ok(())
-    }
-}
-impl AdjustmentCoordinate for Image {
-    #[inline]
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        // one_cell_anchor
-        if let Some(anchor) = self.one_cell_anchor.as_mut() {
-            anchor.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-
-        // two_cell_anchor
-        if let Some(anchor) = self.two_cell_anchor.as_mut() {
-            anchor.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-    }
-
-    #[inline]
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        // one_cell_anchor
-        if let Some(anchor) = self.one_cell_anchor.as_mut() {
-            anchor.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-
-        // two_cell_anchor
-        if let Some(anchor) = self.two_cell_anchor.as_mut() {
-            anchor.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-    }
-
-    #[inline]
-    fn is_remove_coordinate(
-        &self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) -> bool {
-        if let Some(anchor) = self.one_cell_anchor.as_ref() {
-            return anchor.is_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        if let Some(anchor) = self.two_cell_anchor.as_ref() {
-            return anchor.is_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        false
     }
 }

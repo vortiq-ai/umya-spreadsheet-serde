@@ -507,12 +507,6 @@ impl AdjustmentCoordinate for ClientData {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.anchor.adjustment_insert_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
         if let Some(v) = &mut self.comment_column_target {
             v.adjustment_insert_value(root_col_num, offset_col_num);
         }
@@ -529,12 +523,6 @@ impl AdjustmentCoordinate for ClientData {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.anchor.adjustment_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
         if let Some(v) = &mut self.comment_column_target {
             v.adjustment_remove_value(root_col_num, offset_col_num);
         }

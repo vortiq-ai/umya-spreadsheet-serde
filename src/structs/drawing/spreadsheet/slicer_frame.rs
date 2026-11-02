@@ -38,7 +38,6 @@ use crate::{
         TIMELINE_DRAWING_NS,
         XlsxError,
     },
-    traits::AdjustmentCoordinate,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -429,30 +428,6 @@ impl SlicerFrame {
         self.client_data.write_to(writer);
         write_end_tag(writer, end);
         Ok(())
-    }
-}
-
-impl AdjustmentCoordinate for SlicerFrame {
-    fn adjustment_insert_coordinate(
-        &mut self,
-        col: u32,
-        col_offset: u32,
-        row: u32,
-        row_offset: u32,
-    ) {
-        self.anchor
-            .adjustment_insert_coordinate(col, col_offset, row, row_offset);
-    }
-
-    fn adjustment_remove_coordinate(
-        &mut self,
-        col: u32,
-        col_offset: u32,
-        row: u32,
-        row_offset: u32,
-    ) {
-        self.anchor
-            .adjustment_remove_coordinate(col, col_offset, row, row_offset);
     }
 }
 

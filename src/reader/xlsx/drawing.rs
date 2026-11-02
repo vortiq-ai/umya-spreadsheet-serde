@@ -21,7 +21,10 @@ use crate::{
         XlsxErrorKind,
         drawing::{
             charts::NamespaceScope,
-            spreadsheet::WorksheetDrawing,
+            spreadsheet::{
+                WorksheetDrawing,
+                drawing_anchor::DrawingGrid,
+            },
         },
         drawing_parts::DrawingParts,
         raw::{
@@ -60,6 +63,9 @@ pub(crate) fn read(
                     provider,
                 )?;
                 session.hydrate_image_frames(&mut obj, provider)?;
+                if !obj.extended_charts().is_empty() {
+                    obj.refresh_extended_fallbacks(&DrawingGrid::new(worksheet));
+                }
                 let mut preserved_ids = std::collections::HashSet::new();
                 obj.visit_relationships(&mut |_, id| { preserved_ids.insert(id.to_owned()); });
                 let mut files = Vec::new();

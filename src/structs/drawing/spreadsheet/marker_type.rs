@@ -12,13 +12,9 @@ use quick_xml::{
 
 use crate::{
     helper::coordinate::{
-        adjustment_insert_coordinate,
-        adjustment_remove_coordinate,
         coordinate_from_index,
         index_from_coordinate,
-        is_remove_coordinate,
     },
-    traits::AdjustmentCoordinate,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -247,40 +243,43 @@ impl MarkerType {
         write_end_tag(writer, tag_name);
     }
 }
-impl AdjustmentCoordinate for MarkerType {
-    #[inline]
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.col = adjustment_insert_coordinate(self.col + 1, root_col_num, offset_col_num) - 1;
-        self.row = adjustment_insert_coordinate(self.row + 1, root_row_num, offset_row_num) - 1;
+
+impl MarkerType {
+    /// An end marker with no offset on the first inserted line stays: the
+    /// object ends where the insertion begins, and Excel does not grow it.
+    pub(crate) fn adjust_end_axis(&mut self, column: bool, insert: bool, root: u32, count: u32) {
+        let (index, offset) = if column {
+            (self.col, self.col_off)
+        } else {
+            (self.row, self.row_off)
+        };
+        if insert && offset == 0 && root != 0 && index == root - 1 {
+            return;
+        }
+        self.adjust_axis(column, insert, root, count);
     }
 
-    #[inline]
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.col = adjustment_remove_coordinate(self.col + 1, root_col_num, offset_col_num) - 1;
-        self.row = adjustment_remove_coordinate(self.row + 1, root_row_num, offset_row_num) - 1;
-    }
-
-    #[inline]
-    fn is_remove_coordinate(
-        &self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) -> bool {
-        is_remove_coordinate(self.col + 1, root_col_num, offset_col_num)
-            || is_remove_coordinate(self.row + 1, root_row_num, offset_row_num)
+    pub(crate) fn adjust_axis(&mut self, column: bool, insert: bool, root: u32, count: u32) {
+        if root == 0 || count == 0 {
+            return;
+        }
+        let (index, offset, limit) = if column {
+            (&mut self.col, &mut self.col_off, 16_384)
+        } else {
+            (&mut self.row, &mut self.row_off, 1_048_576)
+        };
+        let first = root - 1;
+        if *index < first {
+            return;
+        }
+        if insert {
+            *index = index.saturating_add(count).min(limit - 1);
+        } else if *index < first.saturating_add(count) {
+            // Excel clips a deleted edge to the beginning of the deleted band.
+            *index = first.min(limit - 1);
+            *offset = 0;
+        } else {
+            *index = index.saturating_sub(count);
+        }
     }
 }

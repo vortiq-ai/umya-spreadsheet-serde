@@ -15,6 +15,9 @@ mod sheet_copy;
 #[path = "workbook_sheet_chart_names.rs"]
 mod sheet_chart_names;
 
+#[path = "workbook_deleted_drawing_names.rs"]
+mod deleted_drawing_names;
+
 use crate::{
     StringValue,
     XlsxError,
@@ -637,7 +640,7 @@ impl Workbook {
             .map(|(source, _)| source.clone())
             .collect();
         let mut charts = Vec::with_capacity(hosts.len());
-        let mut still_used = std::collections::HashSet::new();
+        let mut surviving = Vec::new();
         for &host in hosts.iter().filter(|&&host| host != deleted) {
             let sheet = &self.work_sheet_collection[host];
             let results = sheet
@@ -649,23 +652,28 @@ impl Workbook {
                     )
                 })?;
             let mut spaces = Vec::with_capacity(results.len());
-            for (space, report) in results {
-                still_used.extend(
-                    report
-                        .defined_names
-                        .iter()
-                        .filter(|name| !report.unused_defined_names.contains(name))
-                        .map(|name| name.name.to_lowercase()),
-                );
+            for (space, _) in results {
+                space.visit_formulas(&mut |formula| {
+                    surviving.push((sheet.name().to_owned(), formula.address_str()));
+                });
                 spaces.push(space);
             }
             charts.push((host, spaces));
         }
+        let unused = self.generated_names_without_chart_ex_consumer(
+            candidates
+                .iter()
+                .map(|(source, scope)| (source.reference.name.to_lowercase(), *scope))
+                .collect(),
+            &surviving,
+        );
         Ok(ChartExSheetDeletion {
             charts,
             removed_names: candidates
                 .into_iter()
-                .filter(|(source, _)| !still_used.contains(&source.reference.name.to_lowercase()))
+                .filter(|(source, scope)| {
+                    unused.contains(&(source.reference.name.to_lowercase(), *scope))
+                })
                 .map(|(source, scope)| (source.reference.name, scope))
                 .collect(),
         })
@@ -2637,15 +2645,18 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         };
         self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
         self.adjust_global_and_raw_defined_names(&prepared);
+        let mut removed = crate::drawing::spreadsheet::DrawingRemovals::default();
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {
-                worksheet.adjustment_remove_geometry(
+                let geometry = worksheet.adjustment_remove_geometry(
                     root_col_num,
                     offset_col_num,
                     root_row_num,
                     offset_row_num,
                 );
+                removed.caches.extend(geometry.caches);
+                removed.chart_formulas.extend(geometry.chart_formulas);
             }
             worksheet.adjust_reference_semantics(
                 &crate::drawing::charts::CoordinateChange {
@@ -2658,6 +2669,16 @@ impl AdjustmentCoordinateWithSheet for Workbook {
                 },
                 &prepared,
             );
+        }
+        if !removed.caches.is_empty() || !removed.chart_formulas.is_empty() {
+            // The views and ChartEx that still use what was released can be on
+            // any sheet. Like the host discovery above, this void API keeps
+            // the reader's panic-on-I/O boundary.
+            self.try_read_sheet_collection().unwrap_or_else(|error| {
+                panic!("cannot read sheets to release drawing bindings: {error}")
+            });
+            self.reconcile_removed_drawing_caches(&removed.caches.into_iter().collect());
+            self.reconcile_removed_drawing_chart_names(sheet_name, &removed.chart_formulas);
         }
     }
 }

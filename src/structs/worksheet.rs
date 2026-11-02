@@ -2059,6 +2059,9 @@ impl Worksheet {
     /// ```
     #[inline]
     pub fn remove_row(&mut self, row_index: u32, num_rows: u32) {
+        if self.removal_needs_workbook((0, 0), (row_index, num_rows)) {
+            return;
+        }
         let title = self.title.clone();
         self.adjustment_remove_geometry(0, 0, row_index, num_rows);
         self.adjustment_remove_coordinate_with_sheet(&title, 0, 0, row_index, num_rows);
@@ -2067,6 +2070,9 @@ impl Worksheet {
     /// Adjust for references to other sheets.
     #[inline]
     pub fn remove_row_from_other_sheet(&mut self, sheet_name: &str, row_index: u32, num_rows: u32) {
+        if self.removal_needs_workbook((0, 0), (row_index, num_rows)) {
+            return;
+        }
         self.adjustment_remove_geometry(0, 0, row_index, num_rows);
         self.adjustment_remove_coordinate_with_sheet(sheet_name, 0, 0, row_index, num_rows);
     }
@@ -2114,6 +2120,9 @@ impl Worksheet {
     /// ```
     #[inline]
     pub fn remove_column_by_index(&mut self, column_index: u32, num_columns: u32) {
+        if self.removal_needs_workbook((column_index, num_columns), (0, 0)) {
+            return;
+        }
         let title = self.title.clone();
         self.adjustment_remove_geometry(column_index, num_columns, 0, 0);
         self.adjustment_remove_coordinate_with_sheet(&title, column_index, num_columns, 0, 0);
@@ -2127,6 +2136,9 @@ impl Worksheet {
         column_index: u32,
         num_columns: u32,
     ) {
+        if self.removal_needs_workbook((column_index, num_columns), (0, 0)) {
+            return;
+        }
         self.adjustment_remove_geometry(column_index, num_columns, 0, 0);
         self.adjustment_remove_coordinate_with_sheet(sheet_name, column_index, num_columns, 0, 0);
     }
@@ -4490,12 +4502,93 @@ impl Worksheet {
         );
     }
 }
+use crate::drawing::spreadsheet::DrawingRemovals;
+
 fn valid_structural_origin(col: u32, col_count: u32, row: u32, row_count: u32) -> bool {
     (col_count == 0 || ((1..=16_384).contains(&col) && col_count <= 16_384))
         && (row_count == 0 || ((1..=1_048_576).contains(&row) && row_count <= 1_048_576))
 }
 
 impl Worksheet {
+    fn adjust_drawing_geometry(
+        &mut self,
+        before: Option<&crate::drawing::spreadsheet::drawing_anchor::DrawingGrid>,
+        insert: bool,
+        columns: (u32, u32),
+        rows: (u32, u32),
+    ) -> DrawingRemovals {
+        use crate::drawing::spreadsheet::{
+            SlicerFrameKind,
+            drawing_anchor::{
+                DrawingEdit,
+                DrawingGrid,
+            },
+        };
+        let Some(before) = before else {
+            return DrawingRemovals::default();
+        };
+        let after = DrawingGrid::new(self);
+        let mut removed = self.worksheet_drawing.adjust_geometry(&DrawingEdit {
+            before,
+            after: &after,
+            insert,
+            column: columns.0,
+            columns: columns.1,
+            row: rows.0,
+            rows: rows.1,
+        });
+        let caches = &mut removed.caches;
+        for (kind, name) in &removed.frames {
+            match kind {
+                SlicerFrameKind::Slicer => self.slicers.retain(|view| {
+                    if view.name == *name {
+                        caches.push(view.cache.to_lowercase());
+                        false
+                    } else {
+                        true
+                    }
+                }),
+                SlicerFrameKind::Timeline => self.timelines.retain(|view| {
+                    if view.name == *name {
+                        caches.push(view.cache.to_lowercase());
+                        false
+                    } else {
+                        true
+                    }
+                }),
+            }
+        }
+        removed
+    }
+
+    /// A worksheet-only edit cannot release what the workbook owns: the
+    /// caches of slicers and timelines and the generated `_xlchart` names of a
+    /// `ChartEx`. When the edit would remove such a drawing object entirely,
+    /// the caller leaves the whole operation unchanged.
+    fn removal_needs_workbook(&self, columns: (u32, u32), rows: (u32, u32)) -> bool {
+        use crate::drawing::spreadsheet::drawing_anchor::{
+            DrawingEdit,
+            DrawingGrid,
+        };
+        if !valid_structural_origin(columns.0, columns.1, rows.0, rows.1)
+            || !self.worksheet_drawing.has_cell_anchors()
+        {
+            return false;
+        }
+        // Whole removal is decided on the grid before the edit.
+        let grid = DrawingGrid::new(self);
+        self.worksheet_drawing
+            .removes_workbook_bound_objects(&DrawingEdit {
+                before:  &grid,
+                after:   &grid,
+                insert:  false,
+                column:  columns.0,
+                columns: columns.1,
+                row:     rows.0,
+                rows:    rows.1,
+            })
+    }
+
     pub(crate) fn adjustment_insert_geometry(
         &mut self,
         root_col_num: u32,
@@ -4506,15 +4599,39 @@ impl Worksheet {
         if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) {
             return;
         }
+        let drawing_grid = self
+            .worksheet_drawing
+            .has_cell_anchors()
+            .then(|| crate::drawing::spreadsheet::drawing_anchor::DrawingGrid::new(self));
         if offset_col_num != 0 {
+            let inherited_width = root_col_num
+                .checked_sub(1)
+                .and_then(|index| self.columns.column(index))
+                .map(Column::width);
             // column dimensions
             self.columns
                 .adjustment_insert_value(root_col_num, offset_col_num);
+            if let Some(width) = inherited_width {
+                for index in root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385) {
+                    self.columns.column_mut(index).set_width(width);
+                }
+            }
         }
         if offset_row_num != 0 {
+            let inherited_height = root_row_num
+                .checked_sub(1)
+                .and_then(|index| self.rows.row_dimension(index))
+                .and_then(Row::height_opt);
             // row dimensions
             self.row_dimensions_crate_mut()
                 .adjustment_insert_value(root_row_num, offset_row_num);
+            if let Some(height) = inherited_height {
+                for index in
+                    root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577)
+                {
+                    self.rows.row_dimension_mut(index).set_height(height);
+                }
+            }
         }
         if offset_col_num == 0 && offset_row_num == 0 {
             return;
@@ -4529,11 +4646,11 @@ impl Worksheet {
         );
 
         // worksheet_drawing
-        self.worksheet_drawing.adjustment_insert_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+        self.adjust_drawing_geometry(
+            drawing_grid.as_ref(),
+            true,
+            (root_col_num, offset_col_num),
+            (root_row_num, offset_row_num),
         );
 
         // comments
@@ -4592,10 +4709,14 @@ impl Worksheet {
         offset_col_num: u32,
         root_row_num: u32,
         offset_row_num: u32,
-    ) {
+    ) -> DrawingRemovals {
         if !valid_structural_origin(root_col_num, offset_col_num, root_row_num, offset_row_num) {
-            return;
+            return DrawingRemovals::default();
         }
+        let drawing_grid = self
+            .worksheet_drawing
+            .has_cell_anchors()
+            .then(|| crate::drawing::spreadsheet::drawing_anchor::DrawingGrid::new(self));
         if offset_col_num != 0 {
             // column dimensions
             self.columns
@@ -4607,7 +4728,7 @@ impl Worksheet {
                 .adjustment_remove_value(root_row_num, offset_row_num);
         }
         if offset_col_num == 0 && offset_row_num == 0 {
-            return;
+            return DrawingRemovals::default();
         }
 
         // cell
@@ -4619,11 +4740,11 @@ impl Worksheet {
         );
 
         // worksheet_drawing
-        self.worksheet_drawing_mut().adjustment_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
+        let removed = self.adjust_drawing_geometry(
+            drawing_grid.as_ref(),
+            false,
+            (root_col_num, offset_col_num),
+            (root_row_num, offset_row_num),
         );
 
         // comments
@@ -4692,6 +4813,7 @@ impl Worksheet {
                 offset_row_num,
             );
         }
+        removed
     }
 }
 impl AdjustmentCoordinate for Worksheet {
@@ -4720,6 +4842,12 @@ impl AdjustmentCoordinate for Worksheet {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        if self.removal_needs_workbook(
+            (root_col_num, offset_col_num),
+            (root_row_num, offset_row_num),
+        ) {
+            return;
+        }
         let host = self.name().to_owned();
         self.adjustment_remove_geometry(root_col_num, offset_col_num, root_row_num, offset_row_num);
         self.adjustment_remove_coordinate_with_sheet(

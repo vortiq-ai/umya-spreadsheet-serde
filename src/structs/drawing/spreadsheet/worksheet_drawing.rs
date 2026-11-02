@@ -40,10 +40,7 @@ use crate::{
         XlsxError,
         raw::RawRelationships,
     },
-    traits::{
-        AdjustmentCoordinate,
-        AdjustmentCoordinateWithSheet,
-    },
+    traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -99,7 +96,111 @@ impl DrawingObjectKey {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct DrawingRemovals {
+    pub(crate) frames:         Vec<(super::SlicerFrameKind, String)>,
+    pub(crate) chart_formulas: Vec<String>,
+    /// Lower-cased slicer and timeline caches whose view was removed. Filled
+    /// by the worksheet, which owns the views.
+    pub(crate) caches:         Vec<String>,
+}
+
 impl WorksheetDrawing {
+    /// Whether any object is anchored to cells, so a structural edit has
+    /// geometry to follow. Absolute anchors keep their position.
+    pub(crate) fn has_cell_anchors(&self) -> bool {
+        !(self.extended_charts.is_empty()
+            && self.slicer_frames.is_empty()
+            && self.one_cell_anchor_collection.is_empty()
+            && self.two_cell_anchor_collection.is_empty()
+            && self.chart_collection.is_empty()
+            && self.image_collection.is_empty())
+    }
+
+    /// Excel refreshes every `ChartEx` compatibility fallback rectangle from
+    /// the sheet's grid when it opens the workbook.
+    pub(crate) fn refresh_extended_fallbacks(&mut self, grid: &super::drawing_anchor::DrawingGrid) {
+        for chart in &mut self.extended_charts {
+            chart.refresh_grid_fallback(grid);
+        }
+    }
+
+    /// Whether the edit would remove an object whose bindings the workbook
+    /// owns: a slicer or timeline, or a `ChartEx` that reads a generated
+    /// `_xlchart` name.
+    pub(crate) fn removes_workbook_bound_objects(
+        &self,
+        edit: &super::drawing_anchor::DrawingEdit<'_>,
+    ) -> bool {
+        let mut has_chart_ex = false;
+        self.visit_extended_frames(&mut |_, _| has_chart_ex = true);
+        if self.slicer_frames.is_empty() && !has_chart_ex {
+            return false;
+        }
+        let removed = self.clone().adjust_geometry(edit);
+        !removed.frames.is_empty()
+            || removed
+                .chart_formulas
+                .iter()
+                .any(|text| crate::helper::formula::mentions_generated_chart_name(text))
+    }
+
+    pub(crate) fn adjust_geometry(
+        &mut self,
+        edit: &super::drawing_anchor::DrawingEdit<'_>,
+    ) -> DrawingRemovals {
+        let mut removed = DrawingRemovals::default();
+        let mut charts = Vec::new();
+        if !edit.insert {
+            self.visit_extended_frames(&mut |key, frame| {
+                let mut formulas = Vec::new();
+                frame
+                    .chart_space()
+                    .visit_formulas(&mut |formula| formulas.push(formula.address_str()));
+                charts.push((key, formulas));
+            });
+        }
+        self.extended_charts
+            .retain_mut(|chart| edit.anchor(chart.anchor_mut()));
+        self.slicer_frames.retain_mut(|frame| {
+            let keep = edit.anchor(frame.anchor_mut());
+            if !keep {
+                removed
+                    .frames
+                    .push((frame.kind(), frame.slicer_name().to_owned()));
+            }
+            keep
+        });
+        for anchor in &mut self.one_cell_anchor_collection {
+            anchor.adjust_geometry(edit);
+        }
+        self.two_cell_anchor_collection
+            .retain_mut(|anchor| anchor.adjust_geometry(edit));
+        self.chart_collection
+            .retain_mut(|chart| chart.two_cell_anchor_mut().adjust_geometry(edit));
+        self.image_collection.retain_mut(|image| {
+            if let Some(anchor) = image.one_cell_anchor_mut() {
+                anchor.adjust_geometry(edit);
+            }
+            image
+                .two_cell_anchor_mut()
+                .is_none_or(|anchor| anchor.adjust_geometry(edit))
+        });
+        if !charts.is_empty() {
+            let mut remaining = HashSet::new();
+            self.visit_extended_frames(&mut |key, _| {
+                remaining.insert(key);
+            });
+            removed.chart_formulas.extend(
+                charts
+                    .into_iter()
+                    .filter(|(key, _)| !remaining.contains(key))
+                    .flat_map(|(_, formulas)| formulas),
+            );
+        }
+        removed
+    }
+
     #[inline]
     #[must_use]
     pub fn image_collection(&self) -> &[Image] {
@@ -585,133 +686,6 @@ impl WorksheetDrawing {
         }
         write_end_tag(writer, "xdr:wsDr");
         Ok(())
-    }
-}
-impl AdjustmentCoordinate for WorksheetDrawing {
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        for chart in &mut self.extended_charts {
-            chart.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        for frame in &mut self.slicer_frames {
-            frame.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        for anchor in &mut self.one_cell_anchor_collection {
-            anchor.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        for anchor in &mut self.two_cell_anchor_collection {
-            anchor.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        for chart in &mut self.chart_collection {
-            chart.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        for image in &mut self.image_collection {
-            image.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-    }
-
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        for chart in &mut self.extended_charts {
-            chart.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        for frame in &mut self.slicer_frames {
-            frame.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        self.one_cell_anchor_collection.retain(|k| {
-            !(k.is_remove_coordinate(root_col_num, offset_col_num, root_row_num, offset_row_num))
-        });
-        for anchor in &mut self.one_cell_anchor_collection {
-            anchor.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        self.two_cell_anchor_collection.retain(|k| {
-            !(k.is_remove_coordinate(root_col_num, offset_col_num, root_row_num, offset_row_num))
-        });
-        for anchor in &mut self.two_cell_anchor_collection {
-            anchor.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        self.chart_collection.retain(|k| {
-            !(k.is_remove_coordinate(root_col_num, offset_col_num, root_row_num, offset_row_num))
-        });
-        for chart in &mut self.chart_collection {
-            chart.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        self.image_collection.retain(|k| {
-            !(k.is_remove_coordinate(root_col_num, offset_col_num, root_row_num, offset_row_num))
-        });
-        for image in &mut self.image_collection {
-            image.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
     }
 }
 impl AdjustmentCoordinateWithSheet for WorksheetDrawing {

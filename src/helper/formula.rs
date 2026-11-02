@@ -233,6 +233,14 @@ pub(crate) fn parse_chart_formula_tokens(formula: &str) -> Vec<FormulaToken> {
     tokens
 }
 
+/// Whether `text` can read a generated `_xlchart` name at all, so tokenizing
+/// it is worthwhile.
+pub(crate) fn mentions_generated_chart_name(text: &str) -> bool {
+    text.as_bytes()
+        .windows(b"_xlchart".len())
+        .any(|window| window.eq_ignore_ascii_case(b"_xlchart"))
+}
+
 /// Project mandatory raw spans emitted by the SAME lexer. Reference
 /// classification reuses its ordinary token finalization; no Option/Result
 /// conversion can discard an otherwise editable reference with a missing span.

@@ -67,7 +67,7 @@ pub use self::one_cell_anchor::*;
 mod extent;
 pub use self::extent::*;
 
-mod drawing_anchor;
+pub(crate) mod drawing_anchor;
 pub use self::drawing_anchor::*;
 
 mod marker_type;

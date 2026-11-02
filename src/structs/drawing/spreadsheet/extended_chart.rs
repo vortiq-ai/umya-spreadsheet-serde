@@ -32,7 +32,6 @@ use crate::{
         XlsxError,
         XlsxErrorKind,
     },
-    traits::AdjustmentCoordinate,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -283,6 +282,26 @@ pub struct ExtendedChart {
     client_data:   DrawingClientData,
 }
 impl ExtendedChart {
+    pub(crate) fn refresh_grid_fallback(&mut self, grid: &super::drawing_anchor::DrawingGrid) {
+        let ((x, width), (y, height)) = grid.rectangle(&self.anchor);
+        let Some(super::DrawingObject::Shape(shape)) = self
+            .compatibility
+            .as_deref_mut()
+            .and_then(|compatibility| compatibility.fallback.as_deref_mut())
+        else {
+            return;
+        };
+        let Some(transform) = shape.shape_properties_mut().transform2d_mut() else {
+            return;
+        };
+        // Excel refreshes a ChartEx fallback rectangle from the grid when it
+        // opens the workbook. Other object transforms stay untouched.
+        transform.offset_mut().set_x(x);
+        transform.extents_mut().set_cx(width);
+        transform.offset_mut().set_y(y);
+        transform.extents_mut().set_cy(height);
+    }
+
     #[must_use]
     pub fn new(anchor: DrawingAnchor, chart_space: ChartExSpace) -> Self {
         // Excel wraps every native chart frame in a compatibility choice that
@@ -431,29 +450,6 @@ impl ExtendedChart {
         self.client_data.write_to(writer);
         write_end_tag(writer, end);
         Ok(())
-    }
-}
-impl AdjustmentCoordinate for ExtendedChart {
-    fn adjustment_insert_coordinate(
-        &mut self,
-        col: u32,
-        col_offset: u32,
-        row: u32,
-        row_offset: u32,
-    ) {
-        self.anchor
-            .adjustment_insert_coordinate(col, col_offset, row, row_offset);
-    }
-
-    fn adjustment_remove_coordinate(
-        &mut self,
-        col: u32,
-        col_offset: u32,
-        row: u32,
-        row_offset: u32,
-    ) {
-        self.anchor
-            .adjustment_remove_coordinate(col, col_offset, row, row_offset);
     }
 }
 
@@ -1619,7 +1615,11 @@ mod absolute_tests {
         extent.set_cx(4572000).set_cy(2743200);
         let mut drawing = WorksheetDrawing::default();
         drawing.add_absolute_anchor(AbsoluteAnchor::new(position, extent, content));
-        drawing.adjustment_insert_coordinate(1, 10, 1, 20);
+        let mut book = crate::new_file();
+        book.sheet_mut(0).unwrap().set_worksheet_drawing(drawing);
+        book.insert_new_row("Sheet1", 1, 20);
+        book.insert_new_column_by_index("Sheet1", 1, 10);
+        let drawing = book.sheet_mut(0).unwrap().worksheet_drawing_mut();
         drawing.absolute_anchors_mut()[0]
             .position_mut()
             .set_x(-1800);
