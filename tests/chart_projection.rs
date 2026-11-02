@@ -418,20 +418,42 @@ fn compatible_default_display_unit_restores_label_without_fabricating_unit_attri
     }
 }
 
-fn assert_export_slots_empty(value: &serde_json::Value, path: &str) {
+fn assert_export_slots_empty(value: &serde_json::Value, path: &str, inside_text_properties: bool) {
     match value {
         serde_json::Value::Object(values) => {
             for (key, value) in values {
+                let inside_text_properties =
+                    inside_text_properties || is_axis_text_properties(path, key);
                 let path = format!("{path}/{key}");
-                if key == "parts" || key == "extensions" || key == "source" {
+                if key == "parts" && inside_text_properties {
+                    if let Some(fields) = value.get("fields") {
+                        assert_eq!(
+                            fields,
+                            &serde_json::json!([]),
+                            "text fields survived at {path}"
+                        );
+                    }
+                    assert_export_slots_empty(value, &path, inside_text_properties);
+                } else if key == "fields" && inside_text_properties {
+                    assert_eq!(
+                        value,
+                        &serde_json::json!([]),
+                        "text fields survived at {path}"
+                    );
+                } else if key == "parts" || key == "extensions" || key == "source" {
                     assert!(value.is_null(), "export slot survived at {path}: {value}");
+                } else {
+                    assert_export_slots_empty(value, &path, inside_text_properties);
                 }
-                assert_export_slots_empty(value, &path);
             }
         }
         serde_json::Value::Array(values) => {
             for (index, value) in values.iter().enumerate() {
-                assert_export_slots_empty(value, &format!("{path}/{index}"));
+                assert_export_slots_empty(
+                    value,
+                    &format!("{path}/{index}"),
+                    inside_text_properties,
+                );
             }
         }
         _ => {}
@@ -441,8 +463,8 @@ fn assert_export_slots_empty(value: &serde_json::Value, path: &str) {
 #[test]
 fn projection_reaches_titles_axis_legend_and_all_detachable_owner_slots() {
     // Hand-authored XML is independent of the projection. This
-    // fixture deliberately uses no scalar/literal supplements: every parts
-    // slot present here is detachable export metadata.
+    // fixture deliberately uses no scalar/literal supplements. Text formatting
+    // and paragraph presence remain editable; positioned fields are detached.
     let xml = fixture::all_owner_xml();
     let previous = imported_chart(&xml);
     let plot = previous.chart_space().chart().plot_area();
@@ -451,7 +473,7 @@ fn projection_reaches_titles_axis_legend_and_all_detachable_owner_slots() {
     assert!(plot.value_axis()[0].display_units().is_some());
     let mut current = previous.clone();
     current.strip_export_parts();
-    assert_export_slots_empty(&serde_json::to_value(&current).unwrap(), "chart");
+    assert_export_slots_empty(&serde_json::to_value(&current).unwrap(), "chart", false);
     let plot = current.chart_space().chart().plot_area();
     assert_eq!(plot.chart_groups().count(), 2);
     assert_eq!(
@@ -502,7 +524,7 @@ fn projection_detaches_supplements_for_each_supported_group_kind() {
             "{group}"
         );
         current.strip_export_parts();
-        assert_export_slots_empty(&serde_json::to_value(&current).unwrap(), group);
+        assert_export_slots_empty(&serde_json::to_value(&current).unwrap(), group, false);
         assert_eq!(
             current
                 .chart_space()
@@ -515,23 +537,46 @@ fn projection_detaches_supplements_for_each_supported_group_kind() {
     }
 }
 
-fn null_export_slots(value: &mut serde_json::Value) {
+fn is_axis_text_properties(parent_path: &str, key: &str) -> bool {
+    if key != "text_properties" {
+        return false;
+    }
+    ["category_axis", "date_axis", "value_axis", "series_axis"]
+        .into_iter()
+        .any(|axis| {
+            parent_path
+                .rsplit_once(&format!("/{axis}/"))
+                .is_some_and(|(_, index)| !index.contains('/'))
+        })
+}
+
+fn null_export_slots(value: &mut serde_json::Value, path: &str, inside_text_properties: bool) {
     match value {
         serde_json::Value::Object(values) => {
             for (key, value) in values {
-                if matches!(
+                let inside_text_properties =
+                    inside_text_properties || is_axis_text_properties(path, key);
+                let path = format!("{path}/{key}");
+                if key == "parts" && inside_text_properties {
+                    if let Some(fields) = value.get_mut("fields") {
+                        *fields = serde_json::json!([]);
+                    }
+                    null_export_slots(value, &path, inside_text_properties);
+                } else if key == "fields" && inside_text_properties {
+                    *value = serde_json::json!([]);
+                } else if matches!(
                     key.as_str(),
                     "parts" | "extensions" | "source" | "source_parts"
                 ) {
                     *value = serde_json::Value::Null;
                 } else {
-                    null_export_slots(value);
+                    null_export_slots(value, &path, inside_text_properties);
                 }
             }
         }
         serde_json::Value::Array(values) => {
-            for value in values {
-                null_export_slots(value);
+            for (index, value) in values.iter_mut().enumerate() {
+                null_export_slots(value, &format!("{path}/{index}"), inside_text_properties);
             }
         }
         _ => {}
@@ -545,8 +590,12 @@ fn projection_preserves_full_content_outside_selected_export_slots() {
     projected.strip_export_parts();
     let mut expected = serde_json::to_value(&complete).unwrap();
     let actual = serde_json::to_value(&projected).unwrap();
-    null_export_slots(&mut expected);
+    null_export_slots(&mut expected, "", false);
     for path in [
+        concat!(
+            "/two_cell_anchor/graphic_frame/graphic/graphic_data/chart_space/chart/plot_area/",
+            "category_axis/0/numbering_format/source_linked/value"
+        ),
         concat!(
             "/two_cell_anchor/graphic_frame/graphic/graphic_data/chart_space/chart/plot_area/",
             "date_axis/0/numbering_format/source_linked/value"

@@ -223,6 +223,8 @@ pub use self::value_axis::*;
 
 mod major_gridlines;
 pub use self::major_gridlines::*;
+mod minor_gridlines;
+pub use self::minor_gridlines::*;
 
 mod numbering_format;
 pub use self::numbering_format::*;
@@ -473,6 +475,7 @@ pub use self::time_unit_values::*;
 mod base_time_unit;
 pub use self::base_time_unit::*;
 
+mod axis_scalar;
 mod xml_scalar;
 pub use self::xml_scalar::*;
 mod picture_options;

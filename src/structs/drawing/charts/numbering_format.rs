@@ -109,6 +109,12 @@ impl NumberingFormat {
         }
     }
 
+    /// Drop lexical metadata supplied by a projection client while keeping
+    /// the typed value that the client can edit.
+    pub(crate) fn discard_incoming_export_parts(&mut self) {
+        self.parts = None;
+    }
+
     #[must_use]
     pub fn format_code(&self) -> &str {
         self.format_code.value_str()

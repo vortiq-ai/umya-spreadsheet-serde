@@ -125,11 +125,13 @@ pub(crate) struct PlotParts<'a> {
 }
 
 pub(crate) struct AxisParts<'a> {
-    pub(crate) id:            Option<u32>,
-    pub(crate) title:         Option<&'a super::Title>,
-    pub(crate) shape:         Option<&'a super::ShapeProperties>,
-    pub(crate) gridlines:     Option<&'a super::MajorGridlines>,
-    pub(crate) display_parts: Option<&'a super::ValueAxisParts>,
+    pub(crate) id:              Option<u32>,
+    pub(crate) title:           Option<&'a super::Title>,
+    pub(crate) shape:           Option<&'a super::ShapeProperties>,
+    pub(crate) gridlines:       Option<&'a super::MajorGridlines>,
+    pub(crate) minor_gridlines: Option<&'a super::MinorGridlines>,
+    pub(crate) extensions:      Vec<&'a super::ExtensionList>,
+    pub(crate) display_parts:   Option<&'a super::ValueAxisParts>,
 }
 
 pub(crate) struct ChartPartsMut<'a> {
@@ -153,11 +155,13 @@ pub(crate) struct PlotPartsMut<'a> {
 }
 
 pub(crate) struct AxisPartsMut<'a> {
-    pub(crate) id:            Option<u32>,
-    pub(crate) title:         Option<&'a mut super::Title>,
-    pub(crate) shape:         Option<&'a mut super::ShapeProperties>,
-    pub(crate) gridlines:     Option<&'a mut super::MajorGridlines>,
-    pub(crate) display_parts: Option<&'a mut super::ValueAxisParts>,
+    pub(crate) id:              Option<u32>,
+    pub(crate) title:           Option<&'a mut super::Title>,
+    pub(crate) shape:           Option<&'a mut super::ShapeProperties>,
+    pub(crate) gridlines:       Option<&'a mut super::MajorGridlines>,
+    pub(crate) minor_gridlines: Option<&'a mut super::MinorGridlines>,
+    pub(crate) extensions:      Vec<&'a mut super::ExtensionList>,
+    pub(crate) display_parts:   Option<&'a mut super::ValueAxisParts>,
 }
 
 pub(crate) struct GroupParts<'a> {
@@ -435,6 +439,9 @@ macro_rules! reference_topology {
             let rest=primary_axis(fields, display_id, w);
             let rest=axis_title_remainder(rest, w);
             if let Some(grid)=rest.gridlines {
+                if let Some(child)=get!(grid, shape) { shape(None, child, w); }
+            }
+            if let Some(grid)=rest.minor_gridlines {
                 if let Some(child)=get!(grid, shape) { shape(None, child, w); }
             }
             if let Some(child)=rest.shape { shape(None, child, w); }
@@ -1184,20 +1191,24 @@ macro_rules! reference_topology {
             title: Option<TitleRemainder<'a>>,
             shape: Option<&'a $($m)* ShapeProperties>,
             gridlines: Option<&'a $($m)* MajorGridlines>,
+            minor_gridlines: Option<&'a $($m)* MinorGridlines>,
             display_parts: Option<&'a $($m)* ValueAxisParts>,
         }
         struct AxisAfterTitle<'a> {
             display_id: Option<u32>,
             shape: Option<&'a $($m)* ShapeProperties>,
             gridlines: Option<&'a $($m)* MajorGridlines>,
+            minor_gridlines: Option<&'a $($m)* MinorGridlines>,
             display_parts: Option<&'a $($m)* ValueAxisParts>,
         }
         fn primary_axis<'a>(fields:NativeAxisParts<'a>, display_id:Option<u32>,
         w:&mut State<'_ $(, $b)?>)->AxisAfterPrimary<'a> {
             let title=fields.title.map(|title|primary_title(title,
                 fields.id.map(ReferenceIdentity::AxisTitle), "axis_title", w));
+            for child in fields.extensions { list(None, child, w); }
             AxisAfterPrimary { id:fields.id, display_id, title, shape:fields.shape,
-                gridlines:fields.gridlines, display_parts:fields.display_parts }
+                gridlines:fields.gridlines, minor_gridlines:fields.minor_gridlines,
+                display_parts:fields.display_parts }
         }
         fn axis_title_remainder<'a>(rest:AxisAfterPrimary<'a>,
         w:&mut State<'_ $(, $b)?>)->AxisAfterTitle<'a> {
@@ -1205,7 +1216,8 @@ macro_rules! reference_topology {
                 title_remainder(rest.id.map(|id|format!("axis:{id}")), title, w);
             }
             AxisAfterTitle { display_id:rest.display_id, shape:rest.shape,
-                gridlines:rest.gridlines, display_parts:rest.display_parts }
+                gridlines:rest.gridlines, minor_gridlines:rest.minor_gridlines,
+                display_parts:rest.display_parts }
         }
         pub(super) struct PlotAfterPrimary<'a> {
             layout: &'a $($m)* Layout,
@@ -1480,6 +1492,7 @@ macro_rules! reference_topology {
         struct AxisAfterUnits<'a> {
             shape: Option<&'a $($m)* ShapeProperties>,
             gridlines: Option<&'a $($m)* MajorGridlines>,
+            minor_gridlines: Option<&'a $($m)* MinorGridlines>,
             units: Vec<UnitsRemainder<'a>>,
         }
         fn primary_axis_units<'a>(rest:AxisAfterTitle<'a>,
@@ -1492,7 +1505,8 @@ macro_rules! reference_topology {
                 }
                 for owner in extras { units.push(primary_units(owner, None, w)); }
             }
-            AxisAfterUnits { shape:rest.shape, gridlines:rest.gridlines, units }
+            AxisAfterUnits { shape:rest.shape, gridlines:rest.gridlines,
+                minor_gridlines:rest.minor_gridlines, units }
         }
         pub(super) struct PlotAfterDirect<'a> {
             category_axes: Vec<AxisAfterTitle<'a>>,
@@ -1510,6 +1524,7 @@ macro_rules! reference_topology {
         struct LateAxis<'a> {
             shape: Option<&'a $($m)* ShapeProperties>,
             gridlines: Option<&'a $($m)* MajorGridlines>,
+            minor_gridlines: Option<&'a $($m)* MinorGridlines>,
         }
         pub(super) struct PlotLate<'a> {
             category_axes: Vec<LateAxis<'a>>,
@@ -1522,24 +1537,29 @@ macro_rules! reference_topology {
             let mut value_axes=Vec::new();
             for axis in rest.value_axes {
                 for units in axis.units { units_remainder(units, w); }
-                value_axes.push(LateAxis { shape:axis.shape, gridlines:axis.gridlines });
+                value_axes.push(LateAxis { shape:axis.shape, gridlines:axis.gridlines,
+                    minor_gridlines:axis.minor_gridlines });
             }
             PlotLate {
                 category_axes:rest.category_axes.into_iter().map(|axis|LateAxis {
-                    shape:axis.shape, gridlines:axis.gridlines }).collect(),
+                    shape:axis.shape, gridlines:axis.gridlines,
+                    minor_gridlines:axis.minor_gridlines }).collect(),
                 date_axes:rest.date_axes.into_iter().map(|axis|LateAxis {
-                    shape:axis.shape, gridlines:axis.gridlines }).collect(),
+                    shape:axis.shape, gridlines:axis.gridlines,
+                    minor_gridlines:axis.minor_gridlines }).collect(),
                 value_axes,
                 series_axes:rest.series_axes.into_iter().map(|axis|LateAxis {
-                    shape:axis.shape, gridlines:axis.gridlines }).collect(),
+                    shape:axis.shape, gridlines:axis.gridlines,
+                    minor_gridlines:axis.minor_gridlines }).collect(),
             }
         }
         fn late_axis_shapes<'a>(axes:Vec<LateAxis<'a>>,
-        w:&mut State<'_ $(, $b)?>)->Vec<Option<&'a $($m)* MajorGridlines>> {
+        w:&mut State<'_ $(, $b)?>)->Vec<(Option<&'a $($m)* MajorGridlines>,
+        Option<&'a $($m)* MinorGridlines>)> {
             let mut grids=Vec::new();
             for axis in axes {
                 if let Some(child)=axis.shape { shape(None, child, w); }
-                grids.push(axis.gridlines);
+                grids.push((axis.gridlines, axis.minor_gridlines));
             }
             grids
         }
@@ -1549,8 +1569,13 @@ macro_rules! reference_topology {
             let value=late_axis_shapes(rest.value_axes, w);
             let series=late_axis_shapes(rest.series_axes, w);
             for axes in [category, date, value, series] {
-                for grid in axes.into_iter().flatten() {
-                    if let Some(child)=get!(grid, shape) { shape(None, child, w); }
+                for (major, minor) in axes {
+                    if let Some(grid)=major {
+                        if let Some(child)=get!(grid, shape) { shape(None, child, w); }
+                    }
+                    if let Some(grid)=minor {
+                        if let Some(child)=get!(grid, shape) { shape(None, child, w); }
+                    }
                 }
             }
         }
@@ -1842,6 +1867,7 @@ mod borrowed {
             Legend,
             MajorGridlines,
             Marker,
+            MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
             NumericDataSource,
@@ -1922,6 +1948,7 @@ mod mutable {
             Legend,
             MajorGridlines,
             Marker,
+            MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
             NumericDataSource,
@@ -2002,6 +2029,7 @@ mod projection {
             Legend,
             MajorGridlines,
             Marker,
+            MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
             NumericDataSource,
@@ -2082,6 +2110,7 @@ mod retaining {
             Legend,
             MajorGridlines,
             Marker,
+            MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
             NumericDataSource,

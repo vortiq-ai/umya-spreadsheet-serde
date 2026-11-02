@@ -45,6 +45,20 @@ pub struct TextBodyParts {
 }
 
 impl TextProperties {
+    /// Incoming structural metadata cannot suppress editable formatting.
+    pub(crate) fn discard_incoming_export_parts(&mut self) {
+        self.parts = None;
+        for paragraph in &mut self.paragraph {
+            paragraph.discard_incoming_export_parts();
+        }
+    }
+
+    pub(crate) fn discard_fields(&mut self) {
+        for paragraph in &mut self.paragraph {
+            paragraph.discard_fields();
+        }
+    }
+
     pub(crate) fn strip_export_parts(&mut self) {
         self.parts = None;
         self.body_properties.strip_export_parts();

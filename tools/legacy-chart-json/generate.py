@@ -79,7 +79,11 @@ def main():
         database = cache / 'git/db/umya-spreadsheet-serde-9fe1804e6d3f6879'
         database.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', 'init', '--bare', '-q', str(database)], check=True)
-        (database / 'objects/info/alternates').write_bytes(((REPO / '.git/objects').as_posix() + '\n').encode())
+        objects = subprocess.check_output(
+            ['git', '-C', str(REPO), 'rev-parse', '--path-format=absolute', '--git-path', 'objects'],
+            text=True,
+        ).strip()
+        (database / 'objects/info/alternates').write_bytes((Path(objects).as_posix() + '\n').encode())
         subprocess.run(['git', '--git-dir=' + str(database), 'config', 'core.longpaths', 'true'], check=True)
         subprocess.run(['git', '--git-dir=' + str(database), 'update-ref', 'HEAD', revision], check=True)
         registry = Path.home() / '.cargo/registry'

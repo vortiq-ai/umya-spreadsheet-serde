@@ -259,6 +259,23 @@ impl Paragraph {
         }
     }
 
+    pub(crate) fn discard_fields(&mut self) {
+        if let Some(parts) = &mut self.parts {
+            parts.fields.clear();
+        }
+        for text_break in &mut self.breaks {
+            text_break.before_field = 0;
+        }
+    }
+
+    pub(crate) fn discard_incoming_export_parts(&mut self) {
+        self.parts = None;
+        self.discard_fields();
+        for run in &mut self.run {
+            run.discard_incoming_export_parts();
+        }
+    }
+
     pub(crate) fn projected_structure_matches(&self, previous: &Self) -> bool {
         self.run.len() == previous.run.len()
             && self
@@ -266,6 +283,27 @@ impl Paragraph {
                 .iter()
                 .zip(&previous.run)
                 .all(|(current, previous)| current.text() == previous.text())
+    }
+
+    /// Axis projection clears field ranks. Recover unchanged boundary groups
+    /// independently of break additions or removals at other boundaries.
+    pub(crate) fn restore_break_field_ranks(&mut self, previous: &Self) {
+        for group in self
+            .breaks
+            .chunk_by_mut(|a, b| a.before_run == b.before_run)
+        {
+            let boundary = group[0].before_run;
+            let old_start = previous.breaks.partition_point(|v| v.before_run < boundary);
+            let old_end = previous
+                .breaks
+                .partition_point(|v| v.before_run <= boundary);
+            let old_group = &previous.breaks[old_start..old_end];
+            if group.len() == old_group.len() {
+                for (current, old) in group.iter_mut().zip(old_group) {
+                    current.before_field = old.before_field;
+                }
+            }
+        }
     }
 
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
@@ -337,17 +375,16 @@ impl Paragraph {
             current.fields = previous_fields.to_vec();
             restored += usize::from(changed);
         }
-        let mut fields_adjusted = false;
         if let Some(parts) = &mut self.parts {
             let last = run_position(surviving_runs);
             for field in &mut parts.fields {
-                if field.before_run > last {
-                    field.before_run = last;
-                    fields_adjusted = true;
-                }
+                field.before_run = field.before_run.min(last);
             }
         }
-        let same_breaks = self.breaks.len() == previous.breaks.len()
+        // Hidden formatting needs an unchanged topology, even when surviving
+        // groups can recover their field ranks after a break is added or
+        // removed.
+        let unchanged_break_topology = self.breaks.len() == previous.breaks.len()
             && self
                 .breaks
                 .iter()
@@ -355,34 +392,29 @@ impl Paragraph {
                 .all(|(current, old)| {
                     current.before_run == old.before_run && current.before_field == old.before_field
                 });
-        if fields_adjusted {
-            // Removing or moving fields can leave a break outside the ranks of
-            // the fields that share its run boundary; keep it on the nearest.
-            let fields = self.fields().to_vec();
-            for text_break in &mut self.breaks {
-                let first =
-                    fields.partition_point(|field| field.before_run < text_break.before_run);
-                let end = fields.partition_point(|field| field.before_run <= text_break.before_run);
-                text_break.before_field = text_break.before_field.clamp(
-                    u32::try_from(first).expect("field rank fits the u32 positions"),
-                    u32::try_from(end).expect("field rank fits the u32 positions"),
-                );
-            }
-        }
+        let fields = self.fields().to_vec();
         for (index, text_break) in self.breaks.iter_mut().enumerate() {
+            let boundary = text_break.before_run;
+            let first = fields.partition_point(|field| field.before_run < boundary);
+            let end = fields.partition_point(|field| field.before_run <= boundary);
+            text_break.before_field = text_break.before_field.clamp(
+                u32::try_from(first).expect("field rank fits the u32 positions"),
+                u32::try_from(end).expect("field rank fits the u32 positions"),
+            );
             if let Some(properties) = &mut text_break.run_properties {
                 let mut before = Writer::new(Cursor::new(Vec::new()));
                 properties.write_to_rpr(&mut before)?;
                 properties.strip_export_parts();
-                if same_breaks {
-                    if let Some(old) = &previous.breaks[index].run_properties {
-                        if properties.restore_export_parts(old) > 0 {
-                            let mut after = Writer::new(Cursor::new(Vec::new()));
-                            properties.write_to_rpr(&mut after)?;
-                            restored += usize::from(
-                                before.into_inner().into_inner() != after.into_inner().into_inner(),
-                            );
-                        }
+                if let Some(old) = unchanged_break_topology
+                    .then(|| previous.breaks[index].run_properties.as_ref())
+                    .flatten()
+                {
+                    if properties.restore_export_parts(old) > 0 {
+                        let mut after = Writer::new(Cursor::new(Vec::new()));
+                        properties.write_to_rpr(&mut after)?;
+                        restored += usize::from(
+                            before.into_inner().into_inner() != after.into_inner().into_inner(),
+                        );
                     }
                 }
             }

@@ -16,14 +16,24 @@ use super::{
     Crosses,
     CrossingAxis,
     Delete,
+    ExtensionList,
     MajorGridlines,
     MajorTickMark,
+    MinorGridlines,
     MinorTickMark,
+    NumberingFormat,
     Scaling,
     ShapeProperties,
     TextProperties,
     TickLabelPosition,
     Title,
+    axis_scalar::{
+        read_double,
+        read_skip,
+        write_double,
+        write_skip,
+    },
+    extension_registry::NS_C,
 };
 use crate::{
     Workbook,
@@ -53,9 +63,21 @@ pub struct SeriesAxis {
     crossing_axis:       CrossingAxis,
     crosses:             Crosses,
     #[cfg_attr(feature = "serde", serde(default))]
+    minor_gridlines:     Option<Box<MinorGridlines>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    numbering_format:    NumberingFormat,
+    #[cfg_attr(feature = "serde", serde(default))]
     shape_properties:    Option<ShapeProperties>,
     #[cfg_attr(feature = "serde", serde(default))]
     text_properties:     Option<TextProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    crosses_at:          Option<f64>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    tick_label_skip:     Option<u32>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    tick_mark_skip:      Option<u32>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:          Option<ExtensionList>,
 }
 
 impl SeriesAxis {
@@ -64,47 +86,70 @@ impl SeriesAxis {
         previous: &Self,
         report: &mut super::RestoreReport,
     ) -> Result<usize, crate::XlsxError> {
-        let mut restored = 0;
-        // Incoming text carries no export parts of its own: strip them first,
-        // then restore only into a body of the same structure.
-        if let Some(current) = &mut self.text_properties {
-            current.strip_export_parts();
-            if let Some(previous) = &previous.text_properties {
-                if current.projected_structure_matches(previous) {
-                    restored += current.restore_export_parts(previous)?;
-                } else {
-                    report.incompatible_owners += 1;
-                    report
-                        .diagnostics
-                        .push("replaced series-axis text body retains no old fields".into());
-                }
-            }
-        }
+        self.numbering_format.discard_incoming_export_parts();
+        let mut restored = self
+            .numbering_format
+            .restore_export_parts(&previous.numbering_format);
+        restored += self.scaling.restore_export_parts(&previous.scaling, report);
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "serAx",
+            report,
+        );
+        restored += super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        );
+        restored += super::chart_metadata_restoration::restore_axis_text(
+            &mut self.text_properties,
+            previous.text_properties.as_ref(),
+            "series",
+            report,
+        )?;
         Ok(restored)
     }
 
     /// An axis without an old counterpart keeps no incoming text export parts.
-    pub(crate) fn discard_text_export_parts(&mut self, _report: &mut super::RestoreReport) {
+    pub(crate) fn discard_untrusted_export_parts(&mut self, _report: &mut super::RestoreReport) {
+        self.numbering_format.discard_incoming_export_parts();
         if let Some(text) = &mut self.text_properties {
-            text.strip_export_parts();
+            text.discard_incoming_export_parts();
         }
+    }
+
+    pub(crate) fn discard_extensions(&mut self, report: &mut super::RestoreReport) {
+        self.scaling.discard_extensions(report);
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "serAx",
+            report,
+        );
+        self.extensions = None;
     }
 
     pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
         super::chart_reference_roles::AxisParts {
-            id:            self.axis_id.explicit_value(),
-            title:         self.title.as_ref(),
-            shape:         self.shape_properties.as_ref(),
-            gridlines:     self.major_gridlines.as_deref(),
-            display_parts: None,
+            id:              self.axis_id.explicit_value(),
+            title:           self.title.as_ref(),
+            shape:           self.shape_properties.as_ref(),
+            gridlines:       self.major_gridlines.as_deref(),
+            minor_gridlines: self.minor_gridlines.as_deref(),
+            extensions:      [self.scaling.extensions(), self.extensions()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            display_parts:   None,
         }
     }
 
     pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        self.extensions = None;
+        self.scaling.strip_export_parts();
+        self.numbering_format.strip_export_parts();
         if let Some(text) = &mut self.text_properties {
-            text.strip_export_parts();
+            text.discard_fields();
         }
         self.reference_role_parts_mut()
     }
@@ -113,11 +158,18 @@ impl SeriesAxis {
         &mut self,
     ) -> super::chart_reference_roles::AxisPartsMut<'_> {
         super::chart_reference_roles::AxisPartsMut {
-            id:            self.axis_id.explicit_value(),
-            title:         self.title.as_mut(),
-            shape:         self.shape_properties.as_mut(),
-            gridlines:     self.major_gridlines.as_deref_mut(),
-            display_parts: None,
+            id:              self.axis_id.explicit_value(),
+            title:           self.title.as_mut(),
+            shape:           self.shape_properties.as_mut(),
+            gridlines:       self.major_gridlines.as_deref_mut(),
+            minor_gridlines: self.minor_gridlines.as_deref_mut(),
+            extensions:      self
+                .scaling
+                .extensions_mut()
+                .into_iter()
+                .chain(self.extensions.iter_mut())
+                .collect(),
+            display_parts:   None,
         }
     }
 
@@ -243,6 +295,142 @@ impl SeriesAxis {
 
     pub fn set_major_gridlines(&mut self, value: MajorGridlines) -> &mut SeriesAxis {
         self.major_gridlines = Some(Box::new(value));
+        self
+    }
+
+    pub fn remove_major_gridlines(&mut self) -> &mut Self {
+        self.major_gridlines = None;
+        self
+    }
+
+    #[must_use]
+    pub fn minor_gridlines(&self) -> Option<&MinorGridlines> {
+        self.minor_gridlines.as_deref()
+    }
+
+    pub fn minor_gridlines_mut(&mut self) -> Option<&mut MinorGridlines> {
+        self.minor_gridlines.as_deref_mut()
+    }
+
+    pub fn set_minor_gridlines(&mut self, value: MinorGridlines) -> &mut Self {
+        self.minor_gridlines = Some(Box::new(value));
+        self
+    }
+
+    pub fn remove_minor_gridlines(&mut self) -> &mut Self {
+        self.minor_gridlines = None;
+        self
+    }
+
+    /// Number format of the series labels (`c:numFmt`); written only when it
+    /// has a format code.
+    #[must_use]
+    pub fn numbering_format(&self) -> &NumberingFormat {
+        &self.numbering_format
+    }
+
+    pub fn numbering_format_mut(&mut self) -> &mut NumberingFormat {
+        &mut self.numbering_format
+    }
+
+    pub fn set_numbering_format(&mut self, value: NumberingFormat) -> &mut Self {
+        self.numbering_format = value;
+        self
+    }
+
+    /// Drops the series label number format.
+    pub fn remove_numbering_format(&mut self) -> &mut Self {
+        self.numbering_format = NumberingFormat::default();
+        self
+    }
+
+    #[must_use]
+    pub fn shape_properties(&self) -> Option<&ShapeProperties> {
+        self.shape_properties.as_ref()
+    }
+
+    pub fn shape_properties_mut(&mut self) -> Option<&mut ShapeProperties> {
+        self.shape_properties.as_mut()
+    }
+
+    pub fn set_shape_properties(&mut self, value: ShapeProperties) -> &mut Self {
+        self.shape_properties = Some(value);
+        self
+    }
+
+    pub fn remove_shape_properties(&mut self) -> &mut Self {
+        self.shape_properties = None;
+        self
+    }
+
+    #[must_use]
+    pub fn text_properties(&self) -> Option<&TextProperties> {
+        self.text_properties.as_ref()
+    }
+
+    pub fn text_properties_mut(&mut self) -> Option<&mut TextProperties> {
+        self.text_properties.as_mut()
+    }
+
+    pub fn set_text_properties(&mut self, value: TextProperties) -> &mut Self {
+        self.text_properties = Some(value);
+        self
+    }
+
+    pub fn remove_text_properties(&mut self) -> &mut Self {
+        self.text_properties = None;
+        self
+    }
+
+    /// Series number, on the crossing axis, where this axis crosses it
+    /// (`c:crossesAt`). When present it is written instead of `c:crosses`.
+    #[must_use]
+    pub fn crosses_at(&self) -> Option<f64> {
+        self.crosses_at
+    }
+
+    pub fn set_crosses_at(&mut self, value: f64) -> &mut Self {
+        self.crosses_at = Some(value);
+        self
+    }
+
+    /// Back to the `c:crosses` position.
+    pub fn remove_crosses_at(&mut self) -> &mut Self {
+        self.crosses_at = None;
+        self
+    }
+
+    /// Interval between labels (`c:tickLblSkip`, at least 1); `None` is
+    /// automatic.
+    #[must_use]
+    pub fn tick_label_skip(&self) -> Option<u32> {
+        self.tick_label_skip
+    }
+
+    pub fn set_tick_label_skip(&mut self, value: u32) -> &mut Self {
+        self.tick_label_skip = Some(value);
+        self
+    }
+
+    pub fn remove_tick_label_skip(&mut self) -> &mut Self {
+        self.tick_label_skip = None;
+        self
+    }
+
+    /// Interval between tick marks (`c:tickMarkSkip`, at least 1); `None` is
+    /// automatic.
+    #[must_use]
+    pub fn tick_mark_skip(&self) -> Option<u32> {
+        self.tick_mark_skip
+    }
+
+    pub fn set_tick_mark_skip(&mut self, value: u32) -> &mut Self {
+        self.tick_mark_skip = Some(value);
+        self
+    }
+
+    pub fn remove_tick_mark_skip(&mut self) -> &mut Self {
+        self.tick_mark_skip = None;
         self
     }
 
@@ -383,6 +571,7 @@ impl SeriesAxis {
     }
 
     pub fn crosses_mut(&mut self) -> &mut Crosses {
+        self.crosses_at = None;
         &mut self.crosses
     }
 
@@ -391,37 +580,59 @@ impl SeriesAxis {
         self.crosses_mut()
     }
 
+    /// `c:crosses` and `c:crossesAt` are alternatives: this drops any
+    /// `crosses_at` value.
     pub fn set_crosses(&mut self, value: Crosses) -> &mut SeriesAxis {
         self.crosses = value;
+        self.crosses_at = None;
         self
     }
 
+    /// The hidden `c:extLst` of this element (extensions Excel or other
+    /// producers stored); not part of the client projection.
     #[must_use]
-    pub fn shape_properties(&self) -> Option<&ShapeProperties> {
-        self.shape_properties.as_ref()
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.extensions.as_ref()
     }
 
-    pub fn shape_properties_mut(&mut self) -> Option<&mut ShapeProperties> {
-        self.shape_properties.as_mut()
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.extensions.as_mut()
     }
 
-    pub fn set_shape_properties(&mut self, value: ShapeProperties) -> &mut Self {
-        self.shape_properties = Some(value);
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) -> &mut Self {
+        self.extensions = value;
         self
     }
 
-    #[must_use]
-    pub fn text_properties(&self) -> Option<&TextProperties> {
-        self.text_properties.as_ref()
-    }
-
-    pub fn text_properties_mut(&mut self) -> Option<&mut TextProperties> {
-        self.text_properties.as_mut()
-    }
-
-    pub fn set_text_properties(&mut self, value: TextProperties) -> &mut Self {
-        self.text_properties = Some(value);
-        self
+    /// Reads the scalar leaves the axis models, whether the source wrote
+    /// them as `<c:x val=".."/>` or as `<c:x val=".."></c:x>`.
+    fn read_leaf<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        crosses_seen: &mut bool,
+        native: bool,
+    ) -> Result<(), crate::XlsxError> {
+        match if native { local_name(e.name().0) } else { b"" } {
+            b"numFmt" => {
+                self.numbering_format.set_attributes(reader, e)?;
+            }
+            b"crosses" => {
+                *crosses_seen = true;
+                self.crosses.set_attributes(reader, e)?;
+            }
+            b"crossesAt" => {
+                self.crosses_at = Some(read_double(e, "c:crossesAt")?);
+            }
+            b"tickLblSkip" => {
+                self.tick_label_skip = Some(read_skip(e, "c:tickLblSkip")?);
+            }
+            b"tickMarkSkip" => {
+                self.tick_mark_skip = Some(read_skip(e, "c:tickMarkSkip")?);
+            }
+            _ => (),
+        }
+        Ok(())
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
@@ -432,12 +643,13 @@ impl SeriesAxis {
     ) -> Result<(), crate::XlsxError> {
         let owner_end = owner.name().as_ref().to_vec();
         let _scope_guard = session.enter_child_scope(owner)?;
+        let mut crosses_seen = false;
         try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                match if session.accepts_child_namespace(e,NS_C)?{local_name(e.name().0)}else{b""} {
                     b"scaling" => {
-                        self.scaling.set_attributes(reader, e)?;
+                        self.scaling.set_attributes(reader, e, session)?;
                     }
                     b"title" => {
                         let mut obj = Title::default();
@@ -449,6 +661,11 @@ impl SeriesAxis {
                         obj.set_attributes_with_session(reader, e, false, session)?;
                         self.set_major_gridlines(obj);
                     }
+                    b"minorGridlines" => {
+                        let mut obj = MinorGridlines::default();
+                        obj.set_attributes_with_session(reader, e, false, session)?;
+                        self.set_minor_gridlines(obj);
+                    }
                     b"spPr" => {
                         let mut obj = ShapeProperties::default();
                         obj.set_attributes_with_session(reader, e, session)?;
@@ -459,11 +676,18 @@ impl SeriesAxis {
                         obj.read_with_session(reader, e, Some(session))?;
                         self.set_text_properties(obj);
                     }
-                    _ => skip_element(reader, e)?,
+                    b"extLst" => {
+                        self.extensions = Some(ExtensionList::read(reader, e, false, session)?);
+                    }
+                    _ => {
+                        let native = session.accepts_child_namespace(e, NS_C)?;
+                        self.read_leaf(reader, e, &mut crosses_seen, native)?;
+                        skip_element(reader, e)?;
+                    }
                 }
             },
             Event::Empty(ref e) => {
-                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                match if session.accepts_child_namespace(e,NS_C)?{local_name(e.name().0)}else{b""} {
                     b"axId" => {
                         self.axis_id.set_attributes(reader, e)?;
                     }
@@ -478,6 +702,11 @@ impl SeriesAxis {
                         obj.set_attributes_with_session(reader, e, true, session)?;
                         self.set_major_gridlines(obj);
                     }
+                    b"minorGridlines" => {
+                        let mut obj = MinorGridlines::default();
+                        obj.set_attributes_with_session(reader, e, true, session)?;
+                        self.set_minor_gridlines(obj);
+                    }
                     b"majorTickMark" => {
                         self.major_tick_mark.set_attributes(reader, e)?;
                     }
@@ -490,14 +719,22 @@ impl SeriesAxis {
                     b"crossAx" => {
                         self.crossing_axis.set_attributes(reader, e)?;
                     }
-                    b"crosses" => {
-                        self.crosses.set_attributes(reader, e)?;
+                    b"extLst" => {
+                        self.extensions = Some(ExtensionList::read(reader, e, true, session)?);
                     }
-                    _ => (),
+                    _ => {
+                        let native = session.accepts_child_namespace(e, NS_C)?;
+                        self.read_leaf(reader, e, &mut crosses_seen, native)?;
+                    }
                 }
             },
             Event::End(ref e) => {
                 if e.name().as_ref() == owner_end {
+                    if crosses_seen && self.crosses_at.is_some() {
+                        return Err(crate::xml::xml_error(
+                            "c:serAx holds both c:crosses and c:crossesAt",
+                        ));
+                    }
                     return Ok(());
                 }
             },
@@ -517,7 +754,7 @@ impl SeriesAxis {
         self.axis_id.write_to(writer);
 
         // c:scaling
-        self.scaling.write_to(writer);
+        self.scaling.write_to(writer, wb)?;
 
         // c:delete
         self.delete.write_to(writer);
@@ -530,10 +767,18 @@ impl SeriesAxis {
             v.write_to(writer)?;
         }
 
+        // c:minorGridlines
+        if let Some(v) = &self.minor_gridlines {
+            v.write_to(writer)?;
+        }
+
         // c:title
         if let Some(v) = &self.title {
             v.write_to(writer, wb)?;
         }
+
+        // c:numFmt
+        self.numbering_format.write_to(writer);
 
         // c:majorTickMark
         self.major_tick_mark.write_to(writer);
@@ -557,8 +802,26 @@ impl SeriesAxis {
         // c:crossAx
         self.crossing_axis.write_to(writer);
 
-        // c:crosses
-        self.crosses.write_to(writer);
+        // c:crosses | c:crossesAt
+        match self.crosses_at {
+            Some(v) => write_double(writer, "c:crossesAt", v)?,
+            None => self.crosses.write_to(writer),
+        }
+
+        // c:tickLblSkip
+        if let Some(v) = self.tick_label_skip {
+            write_skip(writer, "c:tickLblSkip", v)?;
+        }
+
+        // c:tickMarkSkip
+        if let Some(v) = self.tick_mark_skip {
+            write_skip(writer, "c:tickMarkSkip", v)?;
+        }
+
+        // c:extLst
+        if let Some(v) = &self.extensions {
+            v.write_for_owner(writer, Some(wb), "serAx", None)?;
+        }
 
         write_end_tag(writer, "c:serAx");
 

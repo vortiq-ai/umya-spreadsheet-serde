@@ -82,6 +82,75 @@ fn same_run_boundary_breaks_keep_their_order_around_fields_after_restoration() {
 }
 
 #[test]
+fn title_break_moves_across_fields_preserve_edits_and_drop_hidden_formatting() {
+    let north = "<a:r><a:t>North</a:t></a:r>";
+    let south = "<a:r><a:t>South</a:t></a:r>";
+    let field = field("FIELD");
+    let original_break = "<a:br><a:rPr b=\"1\" u=\"dbl\"/></a:br>";
+    for original_rank in [0, 1] {
+        for move_break in [false, true] {
+            let content = if original_rank == 0 {
+                format!("{north}{original_break}{field}{south}")
+            } else {
+                format!("{north}{field}{original_break}{south}")
+            };
+            let xml = format!(
+                "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" \
+                 xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><c:chart>\
+                 <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p>{content}</a:p>\
+                 </c:rich></c:tx></c:title><c:plotArea><c:lineChart><c:grouping \
+                 val=\"standard\"/></c:lineChart></c:plotArea></c:chart></c:chartSpace>"
+            );
+            let mut book = fixture::imported_workbook(&xml);
+            let previous = book.sheet(0).unwrap().chart_collection()[0].clone();
+            let mut projected = previous.clone();
+            projected.strip_export_parts();
+            let paragraph = paragraph_mut(&mut projected);
+            assert!(paragraph.fields().is_empty());
+            assert_eq!(paragraph.breaks()[0].before_field, original_rank);
+            let rank = if move_break {
+                1 - original_rank
+            } else {
+                original_rank
+            };
+            let text_break = &mut paragraph.breaks_mut()[0];
+            text_break.before_field = rank;
+            text_break.run_properties.as_mut().unwrap().set_bold("0");
+            let mut restored: Chart =
+                serde_json::from_value(serde_json::to_value(&projected).unwrap()).unwrap();
+            restored.restore_export_parts(&previous).unwrap();
+            let expected_paragraph = serde_json::to_value(paragraph_mut(&mut restored)).unwrap();
+            book.sheet_mut(0).unwrap().chart_collection_mut()[0] = restored;
+            let xml = fixture::chart_xml(&book);
+            let expected_break = if move_break {
+                "<a:br><a:rPr b=\"0\"/></a:br>"
+            } else {
+                "<a:br><a:rPr b=\"0\" u=\"dbl\"/></a:br>"
+            };
+            let expected = if rank == 0 {
+                format!("<a:p>{north}{expected_break}{field}{south}</a:p>")
+            } else {
+                format!("<a:p>{north}{field}{expected_break}{south}</a:p>")
+            };
+            let start = xml.find("<a:p>").unwrap();
+            let end = start + xml[start..].find("</a:p>").unwrap() + "</a:p>".len();
+            assert_eq!(&xml[start..end], expected);
+            let reread = umya_spreadsheet::reader::xlsx::read_reader(
+                Cursor::new(fixture::write_workbook(&book)),
+                true,
+            )
+            .unwrap();
+            let mut chart = reread.sheet(0).unwrap().chart_collection()[0].clone();
+            assert_eq!(
+                serde_json::to_value(paragraph_mut(&mut chart)).unwrap(),
+                expected_paragraph
+            );
+            assert_eq!(fixture::chart_xml(&reread), xml);
+        }
+    }
+}
+
+#[test]
 fn serialized_break_field_ranks_outside_the_run_boundary_fail_export() {
     for (index, field_rank) in [(0, 0), (1, 3), (1, u32::MAX)] {
         let mut book = fixture::imported_workbook(&document());

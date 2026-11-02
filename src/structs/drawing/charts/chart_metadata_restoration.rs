@@ -86,6 +86,34 @@ pub(super) fn replace_hidden_parts<T: Clone>(
     restored
 }
 
+/// Axis text: incoming export parts are never authoritative, so they are
+/// stripped first; the old ones come back only into a structurally equal body.
+pub(super) fn restore_axis_text(
+    current: &mut Option<super::TextProperties>,
+    previous: Option<&super::TextProperties>,
+    axis: &str,
+    report: &mut RestoreReport,
+) -> Result<usize, crate::XlsxError> {
+    let Some(current) = current else {
+        return Ok(0);
+    };
+    current.discard_incoming_export_parts();
+    let Some(previous) = previous else {
+        return Ok(0);
+    };
+    if current.projected_structure_matches(previous) {
+        for (current, previous) in current.paragraph_mut().iter_mut().zip(previous.paragraph()) {
+            current.restore_break_field_ranks(previous);
+        }
+        return current.restore_export_parts(previous);
+    }
+    report.incompatible_owners += 1;
+    report.diagnostics.push(format!(
+        "replaced {axis}-axis text body retains no old fields"
+    ));
+    Ok(0)
+}
+
 pub(super) fn record_supplied_extension(present: bool, path: &str, report: &mut RestoreReport) {
     if present {
         report.removed_incompatible_parts += 1;
@@ -706,6 +734,12 @@ fn discard_axis_extensions(current: AxisPartsMut<'_>, report: &mut RestoreReport
     {
         discard_shape_extensions(value, report);
     }
+    if let Some(value) = current
+        .minor_gridlines
+        .and_then(|lines| lines.shape_properties_mut())
+    {
+        discard_shape_extensions(value, report);
+    }
 }
 
 fn restore_shape_pair(
@@ -888,6 +922,8 @@ fn restore_plot(
                         report,
                     )?;
                 } else {
+                    axis.discard_extensions(report);
+                    axis.discard_untrusted_export_parts(report);
                     $(axis.$discard(report);)?
                     discard_axis_extensions(axis.reference_role_parts_mut(), report);
                     report.incompatible_owners += 1;
@@ -906,7 +942,7 @@ fn restore_plot(
     );
     axes!(date_axis, date_axis_mut, "date", restore_export_parts);
     axes!(value_axis, value_axis_mut, "value", restore_export_parts; discard_untrusted_display_units);
-    axes!(series_axis, series_axis_mut, "series", restore_export_parts; discard_text_export_parts);
+    axes!(series_axis, series_axis_mut, "series", restore_export_parts);
 
     let fields = current.reference_role_parts_mut();
     let old = previous.reference_role_parts();
@@ -1062,6 +1098,20 @@ fn restore_axis(
             .and_then(|lines| lines.shape_properties_mut()),
         previous
             .gridlines
+            .and_then(|lines| lines.shape_properties()),
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
+        discard_shape_extensions,
+        report,
+    )?;
+    paired(
+        current
+            .minor_gridlines
+            .and_then(|lines| lines.shape_properties_mut()),
+        previous
+            .minor_gridlines
             .and_then(|lines| lines.shape_properties()),
         |current, previous, report| {
             restore_shape(current, previous, report);

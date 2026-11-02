@@ -244,7 +244,7 @@ fn unmatched_value_axis_drops_units_and_duplicates_not_editable_text() {
         "kern=\"1200\"",
         "<a:pPr/>",
         "<a:endParaRPr/>",
-        "<a:p><a:r><a:t>omitted paragraph properties</a:t>",
+        "<a:p><a:pPr/><a:r><a:rPr/><a:t>omitted paragraph properties</a:t>",
     ] {
         assert!(xml.contains(editable), "lost {editable}: {xml}");
     }
@@ -409,7 +409,7 @@ fn matched_value_axis_without_authoritative_units_rejects_incoming_units() {
     let before = bincode::serialize(&previous).unwrap();
     let axis = format!(
         "<c:valAx><c:axId val=\"20\"/><c:numFmt formatCode=\"0.00\" \
-         sourceLinked=\"false\"/>{TEXT}<c:dispUnits><c:builtInUnit \
+         sourceLinked=\"0\"/>{TEXT}<c:dispUnits><c:builtInUnit \
          val=\"thousands\"/><c:dispUnitsLbl><c:tx><c:strRef><c:f>Injected!$C$1</c:f></c:strRef></\
          c:tx></c:dispUnitsLbl></c:dispUnits></c:valAx>"
     );
@@ -421,18 +421,24 @@ fn matched_value_axis_without_authoritative_units_rejects_incoming_units() {
             .display_units()
             .is_none()
     );
-    let (xml, _) = exported_and_reloaded(current);
+    let (xml, reloaded) = exported_and_reloaded(current);
     for editable in [
         "formatCode=\"0.00\"",
-        "sourceLinked=\"false\"",
+        "sourceLinked=\"0\"",
         "u=\"dbl\"",
         "kern=\"1200\"",
         "<a:pPr/>",
         "<a:endParaRPr/>",
-        "<a:p><a:r><a:t>omitted paragraph properties</a:t>",
+        "<a:p><a:pPr/><a:r><a:rPr/><a:t>omitted paragraph properties</a:t>",
     ] {
         assert!(xml.contains(editable), "lost {editable}: {xml}");
     }
+    assert_eq!(
+        reloaded.chart_space().chart().plot_area().value_axis()[0]
+            .numbering_format()
+            .source_linked_value(),
+        Some(false)
+    );
     assert_eq!(bincode::serialize(&previous).unwrap(), before);
 }
 
@@ -496,7 +502,7 @@ fn matched_value_axis_with_authoritative_empty_parts_rejects_incoming_units() {
     ];
     let incoming_axis = format!(
         "<c:valAx><c:axId val=\"20\"/><c:numFmt formatCode=\"0.00\" \
-         sourceLinked=\"false\"/>{TEXT}<c:dispUnits><c:builtInUnit \
+         sourceLinked=\"0\"/>{TEXT}<c:dispUnits><c:builtInUnit \
          val=\"thousands\"/><c:dispUnitsLbl><c:tx><c:strRef><c:f>Injected!$C$1</c:f></c:strRef></\
          c:tx></c:dispUnitsLbl></c:dispUnits></c:valAx>"
     );
@@ -548,15 +554,21 @@ fn matched_value_axis_with_authoritative_empty_parts_rejects_incoming_units() {
         );
         for editable in [
             "formatCode=\"0.00\"",
-            "sourceLinked=\"false\"",
+            "sourceLinked=\"0\"",
             "u=\"dbl\"",
             "kern=\"1200\"",
             "<a:pPr/>",
             "<a:endParaRPr/>",
-            "<a:p><a:r><a:t>omitted paragraph properties</a:t>",
+            "<a:p><a:pPr/><a:r><a:rPr/><a:t>omitted paragraph properties</a:t>",
         ] {
             assert!(xml.contains(editable), "lost {editable}: {xml}");
         }
+        assert_eq!(
+            reloaded.chart_space().chart().plot_area().value_axis()[0]
+                .numbering_format()
+                .source_linked_value(),
+            Some(false)
+        );
         assert_eq!(bincode::serialize(&basis).unwrap(), before);
     }
     assert_eq!(bincode::serialize(&previous).unwrap(), encoded);

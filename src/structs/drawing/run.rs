@@ -42,8 +42,12 @@ impl Run {
     }
 
     pub(crate) fn strip_export_parts(&mut self) {
-        self.parts = None;
+        self.discard_incoming_export_parts();
         self.run_properties.strip_export_parts();
+    }
+
+    pub(crate) fn discard_incoming_export_parts(&mut self) {
+        self.parts = None;
     }
 
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
