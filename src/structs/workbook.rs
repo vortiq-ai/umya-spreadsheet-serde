@@ -1542,6 +1542,55 @@ impl Workbook {
         Ok(Workbook::add_new_sheet_crate(self, sheet_id, v.clone()))
     }
 
+    /// Set a worksheet's stable `sheetId` by its zero-based index.
+    ///
+    /// The ID must be a positive base-10 `u32` that is not used by another
+    /// worksheet. It is stored in its normalized decimal form.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] if `index` does not identify a
+    /// worksheet, or [`XlsxErrorKind::InvalidArgument`] if the ID is invalid
+    /// or already used by another worksheet.
+    pub fn set_sheet_id<S: Into<String>>(
+        &mut self,
+        index: usize,
+        sheet_id: S,
+    ) -> Result<(), XlsxError> {
+        self.work_sheet_collection
+            .get(index)
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
+
+        let parsed_id = sheet_id
+            .into()
+            .parse::<u32>()
+            .ok()
+            .filter(|id| *id != 0)
+            .ok_or_else(|| {
+                XlsxError::with_message(
+                    XlsxErrorKind::InvalidArgument,
+                    "invalid worksheet id: expected a positive integer",
+                )
+            })?;
+
+        for (other_index, worksheet) in self.work_sheet_collection.iter().enumerate() {
+            if other_index == index {
+                continue;
+            }
+            let other_id = worksheet.sheet_id().parse::<u32>().map_err(|_| {
+                XlsxError::with_message(XlsxErrorKind::InvalidArgument, "invalid worksheet id")
+            })?;
+            if other_id == parsed_id {
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::InvalidArgument,
+                    "duplicate worksheet id",
+                ));
+            }
+        }
+
+        self.work_sheet_collection[index].set_sheet_id(parsed_id.to_string());
+        Ok(())
+    }
+
     fn next_sheet_id(&self) -> Result<String, XlsxError> {
         let ids = self
             .work_sheet_collection

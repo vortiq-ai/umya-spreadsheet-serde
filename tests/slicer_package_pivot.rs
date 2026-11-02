@@ -1,3 +1,5 @@
+use std::io::Cursor;
+
 #[path = "support/slicer_package_fixture.rs"]
 mod fixture;
 
@@ -6,11 +8,29 @@ use umya_spreadsheet::{
     SlicerSource,
     Workbook,
     XlsxError,
+    XlsxErrorKind,
     drawing::spreadsheet::DrawingObjectKey,
 };
 
 fn materialize(book: &mut Workbook) {
     book.try_read_sheet_collection().unwrap();
+}
+
+fn stream(book: Workbook) -> Vec<u8> {
+    let names: Vec<String> = book
+        .sheet_collection_no_check()
+        .iter()
+        .map(|sheet| sheet.name().to_owned())
+        .collect();
+    let mut writer = umya_spreadsheet::writer::streaming_writer::StreamingWriter::new(
+        zip::ZipWriter::new(Cursor::new(Vec::new())),
+        book,
+    );
+    for name in names {
+        let sheet = writer.take_sheet(&name).expect("sheet available");
+        writer.flush_sheet(sheet).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
 }
 
 fn assert_model(book: &Workbook, label: &str) {
@@ -253,17 +273,77 @@ fn slicer_edits_are_written() {
 #[test]
 fn tab_ids_follow_the_exported_sheet_ids() {
     let input = pack(pivot_package());
-    let book = read_eager(&input).unwrap();
-    let parts = unpack(&save(&book));
-    let id = sheet_id_of(&parts, "Pie Charts");
-    let cache = parts
-        .iter()
-        .find(|(name, xml)| name.starts_with("xl/slicerCaches/") && xml.contains("Slicer_Team"))
-        .unwrap()
-        .1;
-    for tag in tags(cache, "<pivotTable") {
-        assert_eq!(attribute(tag, "tabId").as_deref(), Some(id.as_str()));
+    let mut book = read_eager(&input).unwrap();
+    book.set_sheet_id(0, "8").unwrap();
+    for cache in book.slicer_caches_mut() {
+        for pivot in cache.pivot_tables.as_mut().unwrap() {
+            if pivot.sheet_id == 3 {
+                pivot.sheet_id = 8;
+            }
+        }
     }
+    assert_eq!(book.new_sheet("Notes").unwrap().sheet_id(), "2");
+
+    let normal = save(&book);
+    let streamed = stream(book);
+    keep_output("sheet-id-normal", &normal);
+    keep_output("sheet-id-streaming", &streamed);
+
+    for (label, bytes) in [("normal", normal), ("streaming", streamed)] {
+        let parts = unpack(&bytes);
+        assert_eq!(sheet_id_of(&parts, "Pie Charts"), "8", "{label}");
+        assert_eq!(sheet_id_of(&parts, "Raw Data"), "1", "{label}");
+        assert_eq!(sheet_id_of(&parts, "Notes"), "2", "{label}");
+
+        let linked_pivots: Vec<_> = parts
+            .iter()
+            .filter(|(name, _)| name.starts_with("xl/slicerCaches/"))
+            .flat_map(|(_, xml)| tags(xml, "<pivotTable"))
+            .collect();
+        assert_eq!(linked_pivots.len(), 3, "{label}");
+        for tag in linked_pivots {
+            assert_eq!(attribute(tag, "tabId").as_deref(), Some("8"), "{label}");
+        }
+
+        let reread = read_eager(&bytes).unwrap();
+        assert_eq!(reread.sheet_by_name("Pie Charts").unwrap().sheet_id(), "8");
+        assert_eq!(reread.sheet_by_name("Raw Data").unwrap().sheet_id(), "1");
+        assert_eq!(reread.sheet_by_name("Notes").unwrap().sheet_id(), "2");
+        assert!(
+            reread
+                .slicer_caches()
+                .iter()
+                .flat_map(|cache| cache.pivot_tables.as_ref().unwrap())
+                .all(|pivot| pivot.sheet_id == 8)
+        );
+    }
+}
+
+#[test]
+fn sheet_id_rejects_duplicate_zero_and_non_numeric_values() {
+    let mut book = umya_spreadsheet::new_file();
+    book.new_sheet("Second").unwrap();
+
+    let duplicate = book.set_sheet_id(1, "1").unwrap_err();
+    assert_eq!(duplicate.kind(), XlsxErrorKind::InvalidArgument);
+    assert_eq!(book.sheet(1).unwrap().sheet_id(), "2");
+
+    let zero = book.set_sheet_id(1, "0").unwrap_err();
+    assert_eq!(zero.kind(), XlsxErrorKind::InvalidArgument);
+    assert_eq!(book.sheet(1).unwrap().sheet_id(), "2");
+
+    let non_numeric = book.set_sheet_id(1, "two").unwrap_err();
+    assert_eq!(non_numeric.kind(), XlsxErrorKind::InvalidArgument);
+    assert_eq!(book.sheet(1).unwrap().sheet_id(), "2");
+}
+
+#[test]
+fn new_sheet_uses_the_smallest_unused_id_after_custom_sheet_ids() {
+    let mut book = umya_spreadsheet::new_file();
+    book.new_sheet("Second").unwrap();
+    book.set_sheet_id(0, "17").unwrap();
+    assert_eq!(book.new_sheet("Third").unwrap().sheet_id(), "1");
+    assert_eq!(book.new_sheet("Fourth").unwrap().sheet_id(), "3");
 }
 
 fn load_and_save(parts: Parts) -> Result<Vec<u8>, XlsxError> {
