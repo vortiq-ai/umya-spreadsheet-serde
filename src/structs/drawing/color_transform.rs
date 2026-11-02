@@ -438,6 +438,10 @@ pub(super) fn validate_positive_fixed_percentage(value: &str) -> Result<(), Xlsx
     validate_percentage(value, PercentageRange::PositiveFixed)
 }
 
+pub(super) fn validate_positive_percentage(value: &str) -> Result<(), XlsxError> {
+    validate_percentage(value, PercentageRange::Positive)
+}
+
 fn validate_percentage(value: &str, restriction: PercentageRange) -> Result<(), XlsxError> {
     SourceRectangle::validate_percentage(value)?;
     if let Some(percent) = value.strip_suffix('%') {

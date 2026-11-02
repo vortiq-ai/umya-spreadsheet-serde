@@ -13,6 +13,10 @@ use std::{
     path::PathBuf,
 };
 
+#[path = "support/canonical_xml.rs"]
+mod canonical_xml;
+
+use canonical_xml::canonical_xml;
 use quick_xml::{
     Reader,
     events::Event,
@@ -899,6 +903,29 @@ fn foreign_print_settings_children_cannot_replace_native_parts() {
 // ---------------------------------------------------------
 
 #[test]
+fn drawing_comparison_resolves_namespaces_and_preserves_inner_text() {
+    let drawing = r#"<cdr:userShapes xmlns:cdr="urn:chart-drawing" xmlns:a="urn:drawing"><cdr:sp a:flag="yes"><a:t>Note inside</a:t></cdr:sp></cdr:userShapes>"#;
+    let with_prolog = format!("<?xml version=\"1.0\"?>\n \t{drawing}\r\n");
+    assert_eq!(
+        canonical_xml(drawing.as_bytes()),
+        canonical_xml(with_prolog.as_bytes())
+    );
+    for (original, replacement) in [
+        ("urn:chart-drawing", "urn:wrong-chart-drawing"),
+        ("urn:drawing", "urn:wrong-drawing"),
+        ("Note inside", " Note inside "),
+        ("<cdr:sp", " \n<cdr:sp"),
+        ("a:flag=\"yes\"", "a:flag=\"no\""),
+    ] {
+        assert_ne!(
+            canonical_xml(drawing.as_bytes()),
+            canonical_xml(drawing.replace(original, replacement).as_bytes()),
+            "{original} -> {replacement}"
+        );
+    }
+}
+
+#[test]
 fn in_chart_shapes_stay_linked_to_their_drawing_part() {
     for lazy in [false, true] {
         let book = read(fixture!("textbox-in-chart"), lazy);
@@ -911,8 +938,8 @@ fn in_chart_shapes_stay_linked_to_their_drawing_part() {
         let children = chart_space_children(&written);
         let position = |name: &str| children.iter().position(|c| c == name).unwrap();
         assert!(position("c:printSettings") < position("c:userShapes"));
-        // The relationship still points at the preserved drawing part and the
-        // part is unchanged.
+        // The relationship points at the drawing part the chart's drawing
+        // model wrote, which holds Excel's shapes unchanged.
         let rels = part(&output, "xl/charts/_rels/chart1.xml.rels");
         let user_shapes = rels
             .split("<Relationship ")
@@ -931,7 +958,10 @@ fn in_chart_shapes_stay_linked_to_their_drawing_part() {
             .unwrap()
             .to_owned();
         let source_part = part(fixture!("textbox-in-chart"), "xl/drawings/drawing2.xml");
-        assert_eq!(part(&output, &format!("xl/drawings/{target}")), source_part);
+        assert_eq!(
+            canonical_xml(part(&output, &format!("xl/drawings/{target}")).as_bytes()),
+            canonical_xml(source_part.as_bytes())
+        );
         assert!(
             part(&output, "[Content_Types].xml").contains(
                 "application/vnd.openxmlformats-officedocument.drawingml.chartshapes+xml"
@@ -949,17 +979,29 @@ fn light_writer_keeps_the_in_chart_shapes_linked_too() {
     let output = out.into_inner();
     assert!(chart_xml(&output).contains("<c:userShapes r:id=\"rId3\""));
     assert_eq!(
-        part(&output, "xl/drawings/drawing2.xml"),
-        part(fixture!("textbox-in-chart"), "xl/drawings/drawing2.xml")
+        canonical_xml(part(&output, "xl/drawings/drawing2.xml").as_bytes()),
+        canonical_xml(part(fixture!("textbox-in-chart"), "xl/drawings/drawing2.xml").as_bytes())
     );
 }
 
 #[test]
 fn in_chart_shapes_without_their_relationship_fail_the_export() {
-    // A chart moved to a workbook that lacks the chart part's relationships
-    // cannot write an id that points nowhere.
+    // A chart whose shapes are only its preserved drawing part (persisted
+    // before the drawing model existed), moved to a workbook that lacks the
+    // chart part's relationships, cannot write an id that points nowhere. A
+    // chart with its drawing model gets a fresh part (tests/chart_drawing.rs).
     let book = read(fixture!("textbox-in-chart"), false);
     let chart = book.sheet_by_name("Sheet1").unwrap().chart_collection()[0].clone();
+    let mut value = serde_json::to_value(&chart).unwrap();
+    let space = find_key_mut(&mut value, "chart_space")
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    assert!(space.remove("chart_drawing").is_some());
+    assert!(space.remove("chart_drawing_parts").is_some());
+    let chart: umya_spreadsheet::Chart = serde_json::from_value(value).unwrap();
+    assert!(chart.chart_space().chart_drawing().is_none());
+    assert!(chart.chart_space().user_shapes().is_some());
     let mut target = umya_spreadsheet::new_file();
     target.sheet_mut(0).unwrap().add_chart(chart);
     let mut out = Cursor::new(Vec::new());
@@ -1735,8 +1777,10 @@ fn a_copied_chart_keeps_its_in_chart_shapes_in_both_writers() {
                     .unwrap()
                     .replace("../", "xl/");
                 assert_eq!(
-                    part(&output, &target),
-                    part(fixture!("textbox-in-chart"), "xl/drawings/drawing2.xml")
+                    canonical_xml(part(&output, &target).as_bytes()),
+                    canonical_xml(
+                        part(fixture!("textbox-in-chart"), "xl/drawings/drawing2.xml").as_bytes()
+                    )
                 );
                 targets.push(target);
             }

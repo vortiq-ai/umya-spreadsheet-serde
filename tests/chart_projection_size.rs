@@ -42,8 +42,16 @@ const RANGE_ROWS: u32 = 100_000;
 // The one series adds three more `None` tags (picture options, shape, and the
 // literal slot of its categories) and, to JSON, `,"picture_options":null,
 // "shape":null` (36 bytes) plus `,"number_literal":null` (22 bytes).
-const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3;
-const CHART_JSON_BYTES: usize = 5718 + 527 + 265 + 36 + 22;
+// The two optional chart-drawing fields each add one bincode None tag. Their
+// JSON cost is exactly the field names, separators, and null literals below.
+const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3 + 2;
+const CHART_JSON_BYTES: usize = 5718
+    + 527
+    + 265
+    + 36
+    + 22
+    + r#","chart_drawing":null"#.len()
+    + r#","chart_drawing_parts":null"#.len();
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

@@ -157,8 +157,8 @@ pub(crate) fn restore_space(
     let mut report = RestoreReport::default();
     let restored = current.restore_export_parts(previous, &mut report)?;
     report.restored_owners += restored;
-    let (chart, shape, _) = current.reference_role_parts_mut();
-    let (old_chart, old_shape, _) = previous.reference_role_parts();
+    let (chart, shape, ..) = current.reference_role_parts_mut();
+    let (old_chart, old_shape, ..) = previous.reference_role_parts();
     let restored = chart.restore_export_parts(old_chart, &mut report)?;
     report.restored_owners += restored;
     let fields = chart.reference_role_parts_mut();

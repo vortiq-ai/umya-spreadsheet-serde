@@ -32,6 +32,7 @@ use crate::{
             is_address,
             split_reference_address,
         },
+        const_str::CHART_DRAWING_NS,
         formula::{
             FormulaTokenSubTypes,
             FormulaTokenTypes,
@@ -121,6 +122,7 @@ fn may_depend(
 enum PartKind {
     Worksheet,
     Chart,
+    ChartDrawing,
 }
 
 /// A pivot table a chart may be linked to: its sheet and, when known, its name.
@@ -178,6 +180,22 @@ fn scan_part(
                     buffer.clear();
                     continue;
                 };
+                if matches!(kind, PartKind::ChartDrawing)
+                    && name.is(CHART_DRAWING_NS, "sp")
+                    && scopes.len() >= 2
+                    && scopes[0].1 == CHART_NS
+                    && scopes[0].2 == "userShapes"
+                    && scopes[1].1 == CHART_DRAWING_NS
+                    && matches!(scopes[1].2.as_str(), "relSizeAnchor" | "absSizeAnchor")
+                    && scopes[2..]
+                        .iter()
+                        .all(|(_, uri, local)| uri == CHART_DRAWING_NS && local == "grpSp")
+                    && crate::reader::driver::read_attribute(element, b"textlink")?.is_some_and(
+                        |text| !text.is_empty() && may_depend(&text, host, prepared, false),
+                    )
+                {
+                    return Ok(true);
+                }
                 let target = match kind {
                     PartKind::Worksheet => {
                         (name.namespace_uri == SHEET_NS
@@ -197,6 +215,7 @@ fn scan_part(
                                 || (name.namespace_uri == C15_NS && name.local_name == "sqref")
                                 || (name.namespace_uri == CX_NS && name.local_name == "nf"))
                     }
+                    PartKind::ChartDrawing => false,
                 };
                 if target {
                     // Shared-formula followers and other empty formula owners
@@ -295,15 +314,19 @@ pub(super) fn discover(
         let mut dependent = false;
         for rels in raw.relationships_list() {
             for relationship in rels.relationship_list() {
-                if matches!(
-                    relationship.get_type(),
-                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS
-                ) && relationship.target_mode() != "External"
+                let kind = match relationship.get_type() {
+                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS => {
+                        PartKind::Chart
+                    }
+                    crate::helper::const_str::CHART_USER_SHAPES_NS => PartKind::ChartDrawing,
+                    _ => continue,
+                };
+                if relationship.target_mode() != "External"
                     && scan_part(
                         &part_bytes(relationship.raw_file())?,
                         sheet.name(),
                         Some(&prepared),
-                        PartKind::Chart,
+                        kind,
                         pivot_link,
                     )?
                 {
@@ -379,6 +402,23 @@ mod tests {
         Chart,
         ChartType,
     };
+
+    #[test]
+    fn chart_drawing_links_respect_shape_and_extension_namespaces() {
+        let edit = ChartReferenceEdit::RenameSheet {
+            old: "Data".into(),
+            new: "Renamed".into(),
+        };
+        let prepared = PreparedReferenceEdit::new(&edit).unwrap();
+        for object in [
+            "<foreign:sp xmlns:foreign='urn:foreign' textlink='Data!A2'/>",
+            "<cdr:sp xmlns:foreign='urn:foreign' foreign:textlink='Data!A2'/>",
+            "<cdr:sp textlink=''><cdr:nvSpPr><cdr:cNvPr><a:extLst xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'><a:ext uri='urn:future'><cdr:sp textlink='Data!A2'/></a:ext></a:extLst></cdr:cNvPr></cdr:nvSpPr></cdr:sp>",
+        ] {
+            let xml = format!("<c:userShapes xmlns:c='{CHART_NS}' xmlns:cdr='{CHART_DRAWING_NS}'><cdr:relSizeAnchor>{object}</cdr:relSizeAnchor></c:userShapes>");
+            assert!(!scan_part(xml.as_bytes(), "Host", Some(&prepared), PartKind::ChartDrawing, None).unwrap(), "{xml}");
+        }
+    }
 
     fn lazy_book() -> Workbook {
         let mut book = crate::new_file();

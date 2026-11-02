@@ -146,9 +146,7 @@ impl PatternFill {
             .map(|session| session.enter_child_scope(owner))
             .transpose()?
             .flatten();
-        if let Some(value) = crate::reader::driver::read_attribute(owner, b"prst")? {
-            self.set_preset(value);
-        }
+        self.set_preset(crate::reader::driver::read_attribute(owner, b"prst")?.unwrap_or_default());
         if empty {
             return Ok(());
         }
@@ -221,7 +219,11 @@ impl PatternFill {
         write_start_tag(
             writer,
             "a:pattFill",
-            vec![("prst", &self.preset).into()],
+            if self.preset.is_empty() {
+                vec![]
+            } else {
+                vec![("prst", &self.preset).into()]
+            },
             false,
         );
 

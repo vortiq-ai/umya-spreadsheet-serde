@@ -10,8 +10,9 @@ use crate::writer::driver::write_start_tag;
 
 /// The link of a chart to the drawing part that holds the shapes and text
 /// boxes drawn inside it (`dml-chartDrawing`). `relationship_id` names the
-/// chart part's relationship to that drawing part, which stays a preserved
-/// package part.
+/// chart part's relationship to that drawing part. A chart with a drawing
+/// model gets a fresh part and id when written; without one the part stays a
+/// preserved package part.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct UserShapes {
@@ -19,6 +20,10 @@ pub struct UserShapes {
 }
 
 impl UserShapes {
+    pub(crate) fn new(relationship_id: String) -> Self {
+        Self { relationship_id }
+    }
+
     #[must_use]
     pub fn relationship_id(&self) -> &str {
         &self.relationship_id

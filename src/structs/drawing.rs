@@ -198,6 +198,9 @@ pub use self::preset_line_dash_values::*;
 mod preset_dash;
 pub use self::preset_dash::*;
 
+mod custom_dash;
+pub use self::custom_dash::*;
+
 mod miter;
 pub use self::miter::*;
 

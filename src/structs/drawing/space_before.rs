@@ -88,7 +88,7 @@ impl SpaceBefore {
     #[must_use]
     pub fn is_valid(&self) -> bool {
         match (&self.spacing_percent, self.spacing_points) {
-            (Some(percent), None) => (0..=13_200_000).contains(&percent.val()),
+            (Some(percent), None) => percent.is_valid(),
             (None, Some(points)) => (0..=158_400).contains(&points),
             _ => false,
         }

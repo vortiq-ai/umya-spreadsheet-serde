@@ -225,7 +225,7 @@ impl WorksheetDrawing {
             let properties = frame
                 .non_visual_graphic_frame_properties_mut()
                 .non_visual_drawing_properties_mut();
-            if !properties.has_id() {
+            if !properties.has_id() || self.object_ids().contains(&properties.id()) {
                 properties.set_id(self.available_object_id());
             }
         }
@@ -852,7 +852,7 @@ fn unique<T>(mut values: impl Iterator<Item = T>) -> Result<Option<T>, XlsxError
     Ok(first)
 }
 impl WorksheetDrawing {
-    fn available_object_id(&self) -> u32 {
+    fn object_ids(&self) -> HashSet<u32> {
         let mut ids = HashSet::new();
         ids.extend(
             self.object_order
@@ -868,6 +868,11 @@ impl WorksheetDrawing {
         self.visit_drawing_properties(&mut |properties| {
             ids.insert(properties.id());
         });
+        ids
+    }
+
+    fn available_object_id(&self) -> u32 {
+        let ids = self.object_ids();
         let mut next = 1u32;
         while ids.contains(&next) {
             next = next.checked_add(1).expect("drawing IDs exhausted");
@@ -1331,7 +1336,7 @@ impl WorksheetDrawing {
                     let mut chart = Chart::default();
                     chart.set_two_cell_anchor(value);
                     self.object_order.push(DrawingObjectKey::Chart(id));
-                    self.add_chart_collection(chart);
+                    self.chart_collection.push(chart);
                 } else if value.is_image() {
                     let mut image = Image::default();
                     image.set_two_cell_anchor(value);

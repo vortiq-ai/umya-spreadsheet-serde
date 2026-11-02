@@ -51,29 +51,34 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ChartSpace {
-    date1904:           Option<Date1904>,
-    editing_language:   EditingLanguage,
-    rounded_corners:    RoundedCorners,
-    style:              Option<Style>,
-    chart:              Chart,
-    shape_properties:   Option<ShapeProperties>,
-    print_settings:     Option<PrintSettings>,
+    date1904:            Option<Date1904>,
+    editing_language:    EditingLanguage,
+    rounded_corners:     RoundedCorners,
+    style:               Option<Style>,
+    chart:               Chart,
+    shape_properties:    Option<ShapeProperties>,
+    print_settings:      Option<PrintSettings>,
     #[cfg_attr(feature = "serde", serde(default))]
-    user_shapes:        Option<UserShapes>,
+    user_shapes:         Option<UserShapes>,
     #[cfg_attr(feature = "serde", serde(default))]
-    pivot_source:       Option<PivotSource>,
+    pivot_source:        Option<PivotSource>,
     #[cfg_attr(feature = "serde", serde(default))]
-    text_properties:    Option<TextProperties>,
+    text_properties:     Option<TextProperties>,
     #[cfg_attr(feature = "serde", serde(default))]
-    external_data:      Option<ExternalData>,
+    external_data:       Option<ExternalData>,
     #[cfg_attr(feature = "serde", serde(default))]
-    color_map_override: Option<ColorMapOverride>,
+    color_map_override:  Option<ColorMapOverride>,
     #[cfg_attr(feature = "serde", serde(default))]
-    protection:         Option<ChartProtection>,
+    protection:          Option<ChartProtection>,
     #[cfg_attr(feature = "serde", serde(default))]
-    pivot_options:      Option<PivotChartOptions>,
+    pivot_options:       Option<PivotChartOptions>,
     #[cfg_attr(feature = "serde", serde(default))]
-    parts:              Option<Box<ChartSpaceParts>>,
+    chart_drawing:       Option<Box<super::ChartDrawing>>,
+    // Parent chart styles; older persisted JSON also stores drawing dependencies here.
+    #[cfg_attr(feature = "serde", serde(default))]
+    chart_drawing_parts: Option<Box<crate::structs::drawing_parts::DrawingParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:               Option<Box<ChartSpaceParts>>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -133,6 +138,15 @@ impl ChartSpace {
         previous: &Self,
         report: &mut super::RestoreReport,
     ) -> Result<usize, crate::XlsxError> {
+        self.chart_drawing_parts
+            .clone_from(&previous.chart_drawing_parts);
+        if let Some(drawing) = self.chart_drawing.as_deref_mut() {
+            drawing.restore_export_parts(previous.chart_drawing.as_deref())?;
+        }
+        if self.chart_drawing.is_none() && !previous.keeps_preserved_drawing() {
+            self.user_shapes = None;
+        }
+        self.migrate_chart_drawing_parts();
         super::chart_metadata_restoration::record_supplied_extension(
             self.parts.is_some(),
             "chartSpace/extLst",
@@ -183,7 +197,12 @@ impl ChartSpace {
 
     pub(crate) fn reference_role_parts(
         &self,
-    ) -> (&Chart, Option<&ShapeProperties>, Vec<&super::ExtensionList>) {
+    ) -> (
+        &Chart,
+        Option<&ShapeProperties>,
+        Vec<&super::ExtensionList>,
+        Option<&super::ChartDrawing>,
+    ) {
         (
             &self.chart,
             self.shape_properties.as_ref(),
@@ -195,6 +214,7 @@ impl ChartSpace {
                         .flat_map(PivotSource::extension_lists),
                 )
                 .collect(),
+            self.chart_drawing.as_deref(),
         )
     }
 
@@ -204,8 +224,13 @@ impl ChartSpace {
         &mut Chart,
         Option<&mut ShapeProperties>,
         Vec<&mut super::ExtensionList>,
+        Option<&mut super::ChartDrawing>,
     ) {
         self.parts = None;
+        self.chart_drawing_parts = None;
+        if let Some(drawing) = self.chart_drawing.as_deref_mut() {
+            drawing.strip_export_parts();
+        }
         if let Some(source) = &mut self.pivot_source {
             source.strip_export_parts();
         }
@@ -224,6 +249,7 @@ impl ChartSpace {
         &mut Chart,
         Option<&mut ShapeProperties>,
         Vec<&mut super::ExtensionList>,
+        Option<&mut super::ChartDrawing>,
     ) {
         (
             &mut self.chart,
@@ -238,6 +264,7 @@ impl ChartSpace {
                         .flat_map(PivotSource::extension_lists_mut),
                 )
                 .collect(),
+            self.chart_drawing.as_deref_mut(),
         )
     }
 
@@ -469,6 +496,105 @@ impl ChartSpace {
         self.print_settings_mut()
     }
 
+    /// The shapes and text boxes drawn inside the chart.
+    #[must_use]
+    pub fn chart_drawing(&self) -> Option<&super::ChartDrawing> {
+        self.chart_drawing.as_deref()
+    }
+
+    pub(crate) fn chart_drawing_parts(
+        &self,
+    ) -> Option<&crate::structs::drawing_parts::DrawingParts> {
+        self.chart_drawing()
+            .and_then(|drawing| drawing.dependency_parts.as_deref())
+            .or_else(|| {
+                self.chart_drawing_parts
+                    .as_deref()
+                    .filter(|parts| parts.drawing_source().is_some())
+            })
+    }
+
+    pub(crate) fn chart_style_bundle(
+        &self,
+    ) -> Option<&crate::drawing::spreadsheet::ChartExStyleBundle> {
+        self.chart_drawing_parts
+            .as_deref()
+            .and_then(|parts| parts.chart_style_bundle())
+    }
+
+    pub(crate) fn bind_chart_drawing_parts(
+        &mut self,
+        mut parts: crate::structs::drawing_parts::DrawingParts,
+    ) {
+        self.chart_drawing_parts = Some(Box::new(parts.take_chart_style_parts()));
+        if let Some(drawing) = self.chart_drawing.as_deref_mut() {
+            drawing.dependency_parts = Some(Box::new(parts));
+        }
+    }
+
+    // Older persisted charts stored the drawing graph beside the drawing.
+    // Move it before exposing a mutable drawing so replacement cannot retain
+    // it.
+    fn migrate_chart_drawing_parts(&mut self) {
+        if self
+            .chart_drawing()
+            .is_some_and(|drawing| drawing.dependency_parts.is_none())
+            && self
+                .chart_drawing_parts
+                .as_deref()
+                .is_some_and(|parts| parts.drawing_source().is_some())
+        {
+            let parts = self.chart_drawing_parts.take().unwrap();
+            self.bind_chart_drawing_parts(*parts);
+        }
+    }
+
+    fn discard_legacy_drawing_dependencies(&mut self) {
+        if let Some(parts) = self
+            .chart_drawing_parts
+            .as_deref_mut()
+            .filter(|parts| parts.drawing_source().is_some())
+        {
+            *parts = parts.take_chart_style_parts();
+        }
+    }
+
+    /// The chart's drawing, created empty when the chart has none yet.
+    pub fn chart_drawing_mut(&mut self) -> &mut super::ChartDrawing {
+        if self.chart_drawing.is_none() {
+            self.discard_legacy_drawing_dependencies();
+        }
+        self.migrate_chart_drawing_parts();
+        self.chart_drawing.get_or_insert_with(Box::default)
+    }
+
+    /// Replaces the drawing together with its imported relationships and media.
+    pub fn set_chart_drawing(&mut self, value: super::ChartDrawing) -> &mut Self {
+        self.discard_legacy_drawing_dependencies();
+        self.chart_drawing = Some(Box::new(value));
+        self
+    }
+
+    /// Removes every shape and text box from the chart.
+    pub fn remove_chart_drawing(&mut self) -> &mut Self {
+        self.discard_legacy_drawing_dependencies();
+        self.chart_drawing = None;
+        self.user_shapes = None;
+        self
+    }
+
+    /// Whether `c:userShapes` still names the preserved drawing part the chart
+    /// was read with, because the chart has no drawing model (persisted before
+    /// the model existed). Otherwise the writer writes the drawing from the
+    /// model and records its relationship id here.
+    pub(crate) fn keeps_preserved_drawing(&self) -> bool {
+        self.chart_drawing.is_none() && self.user_shapes.is_some()
+    }
+
+    pub(crate) fn set_user_shapes_id(&mut self, value: Option<String>) {
+        self.user_shapes = value.map(UserShapes::new);
+    }
+
     pub fn set_print_settings(&mut self, value: PrintSettings) -> &mut Self {
         self.print_settings = Some(value);
         self
@@ -622,10 +748,15 @@ impl ChartSpace {
     }
 
     /// The chart part relationships the chart XML refers to by id, with the
-    /// relationship type each must have (`None` when several are valid).
+    /// relationship type each must have (`None` when several are valid). A
+    /// modelled drawing gets its relationship when it is written.
     pub(crate) fn package_references(&self) -> Vec<(&'static str, Option<&'static str>, &str)> {
         let mut references = Vec::new();
-        if let Some(shapes) = &self.user_shapes {
+        if let Some(shapes) = self
+            .user_shapes
+            .as_ref()
+            .filter(|_| self.chart_drawing.is_none())
+        {
             references.push((
                 "c:userShapes",
                 Some(crate::helper::const_str::CHART_USER_SHAPES_NS),

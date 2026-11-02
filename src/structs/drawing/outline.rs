@@ -12,6 +12,7 @@ use quick_xml::{
 
 use super::{
     Bevel,
+    CustomDash,
     GradientFill,
     LineEndProperties,
     Miter,
@@ -52,6 +53,8 @@ pub struct Outline {
     round:              Option<Round>,
     alignment:          EnumValue<PenAlignmentValues>,
     system_color:       Option<Box<SystemColor>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    custom_dash:        Option<CustomDash>,
 }
 
 impl Outline {
@@ -302,7 +305,33 @@ impl Outline {
 
     #[inline]
     pub fn set_preset_dash(&mut self, value: PresetDash) -> &mut Self {
+        self.custom_dash = None;
         self.preset_dash = Some(value);
+        self
+    }
+
+    pub fn remove_preset_dash(&mut self) -> &mut Self {
+        self.preset_dash = None;
+        self
+    }
+
+    #[must_use]
+    pub fn custom_dash(&self) -> Option<&CustomDash> {
+        self.custom_dash.as_ref()
+    }
+
+    pub fn custom_dash_mut(&mut self) -> Option<&mut CustomDash> {
+        self.custom_dash.as_mut()
+    }
+
+    pub fn set_custom_dash(&mut self, value: CustomDash) -> &mut Self {
+        self.preset_dash = None;
+        self.custom_dash = Some(value);
+        self
+    }
+
+    pub fn remove_custom_dash(&mut self) -> &mut Self {
+        self.custom_dash = None;
         self
     }
 
@@ -513,9 +542,20 @@ impl Outline {
                             self.set_miter(value);
                         }
                         b"prstDash" => {
+                            if self.preset_dash.is_some() || self.custom_dash.is_some() {
+                                return Err(crate::xml::xml_error("duplicate DrawingML line dash"));
+                            }
                             let mut value = PresetDash::default();
                             value.read_with_session(reader, child, child_empty, session)?;
                             self.set_preset_dash(value);
+                        }
+                        b"custDash" => {
+                            if self.preset_dash.is_some() || self.custom_dash.is_some() {
+                                return Err(crate::xml::xml_error("duplicate DrawingML line dash"));
+                            }
+                            let mut value = CustomDash::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_custom_dash(value);
                         }
                         b"sysClr" => {
                             let mut value = SystemColor::default();
@@ -558,6 +598,9 @@ impl Outline {
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
     ) -> Result<(), crate::XlsxError> {
+        if self.preset_dash.is_some() && self.custom_dash.is_some() {
+            return Err(crate::xml::xml_error("duplicate DrawingML line dash"));
+        }
         // a:ln
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         let width = self.width.value_string();
@@ -591,6 +634,9 @@ impl Outline {
         }
         if let Some(v) = &self.preset_dash {
             v.write_to(writer);
+        }
+        if let Some(v) = &self.custom_dash {
+            v.write_to(writer)?;
         }
         if self.round.is_some() {
             Round::write_to(writer);

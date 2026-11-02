@@ -1249,6 +1249,27 @@ impl SourceCacheSession {
             .insert(target.to_owned(), relationships.clone());
     }
 
+    /// The package part a chart's relationship `id` of the given type names.
+    pub(crate) fn chart_relationship_target(
+        &self,
+        chart: &str,
+        id: &str,
+        kind: &str,
+    ) -> Result<String, XlsxError> {
+        let relationships = self.chart_relationships.borrow();
+        let edge = relationships
+            .get(chart)
+            .and_then(|list| list.find_relationship_by_rid(id))
+            .filter(|edge| edge.get_type() == kind && edge.target_mode() != "External")
+            .ok_or_else(|| {
+                XlsxError::with_message(
+                    crate::XlsxErrorKind::Xml,
+                    format!("chart {chart} has no internal {kind} relationship {id}"),
+                )
+            })?;
+        Ok(edge.raw_file().file_target().to_owned())
+    }
+
     pub(crate) fn read_chart_picture<R: std::io::BufRead>(
         &self,
         reader: &mut Reader<R>,

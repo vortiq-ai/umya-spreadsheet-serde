@@ -235,6 +235,8 @@ pub use self::cross_between::*;
 mod legend_position;
 pub use self::legend_position::*;
 
+mod chart_drawing;
+pub use self::chart_drawing::*;
 mod print_settings;
 pub use self::print_settings::*;
 

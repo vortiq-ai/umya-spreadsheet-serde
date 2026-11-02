@@ -39,6 +39,43 @@ pub(crate) fn read(
     provider: &mut dyn ChartPartProvider,
 ) -> Result<(), XlsxError> {
     let target = raw_file.file_target();
+    read_chart_part(raw_file, chart_space, session, provider)?;
+    if let Some(id) = chart_space
+        .user_shapes()
+        .map(|shapes| shapes.relationship_id().to_owned())
+    {
+        let drawing = session.chart_relationship_target(
+            target,
+            &id,
+            crate::helper::const_str::CHART_USER_SHAPES_NS,
+        )?;
+        let mut data = Vec::new();
+        provider.with_part(&drawing, session, &mut |bytes| {
+            data = bytes.to_vec();
+            Ok(())
+        })?;
+        let parsed = crate::drawing::charts::ChartDrawing::read(&data, session, provider)
+            .map_err(|error| in_part(&drawing, &error))?;
+        if parsed.is_empty() {
+            // A drawing without shapes is dropped, as Excel drops it.
+            chart_space.set_user_shapes_id(None);
+        } else {
+            chart_space.set_chart_drawing(parsed);
+            chart_space.bind_chart_drawing_parts(
+                crate::structs::drawing_parts::DrawingParts::chart_drawing(drawing),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_chart_part(
+    raw_file: &RawFile,
+    chart_space: &mut ChartSpace,
+    session: &SourceCacheSession,
+    provider: &mut dyn ChartPartProvider,
+) -> Result<(), XlsxError> {
+    let target = raw_file.file_target();
     provider.with_part(target, session, &mut |data| {
         (|| {
             let _part_guard = session.enter_chart_part(raw_file.file_target());

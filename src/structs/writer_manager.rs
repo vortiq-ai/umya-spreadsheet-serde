@@ -533,7 +533,7 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
                 .get(*target)
                 .is_none_or(|previous| *previous == owner)
         });
-        self.add_chart_part(preferred, data, CHART_EX_TYPE, "chartEx")
+        self.add_chart_part(preferred, data, CHART_EX_TYPE, "xl/charts/chartEx", true)
     }
 
     /// Whether an identical extended chart (same XML, same style payloads)
@@ -636,18 +636,19 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         }
     }
 
-    /// A new part `{directory}/{stem}{n}.xml` holding `data`: a chart owns its
-    /// drawing, style and colour parts instead of sharing them.
+    /// A new part `{prefix}{n}.{extension}` holding `data`: a chart owns its
+    /// drawing, style and colour parts and their dependencies instead of
+    /// sharing them.
     pub(crate) fn add_chart_private_part(
         &mut self,
-        directory: &str,
-        stem: &str,
+        prefix: &str,
+        extension: &str,
         data: &[u8],
         content_type: &str,
     ) -> Result<String, XlsxError> {
         let mut number = 1u32;
         loop {
-            let target = format!("{directory}/{stem}{number}.xml");
+            let target = format!("{prefix}{number}.{extension}");
             if !self.reserved_parts.contains(&target) && !self.written_parts.contains_key(&target) {
                 self.add_typed_bin(&target, content_type, data)?;
                 return Ok(target);
@@ -668,7 +669,23 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         preferred: Option<&str>,
         data: &[u8],
     ) -> Result<String, XlsxError> {
-        self.add_chart_part(preferred, data, CHART_TYPE, "chart")
+        self.add_chart_part(preferred, data, CHART_TYPE, "xl/charts/chart", false)
+    }
+
+    /// Writes a chart's drawing part. A chart owns its drawing, so a name
+    /// already written is never shared.
+    pub(crate) fn add_chart_drawing(
+        &mut self,
+        preferred: Option<&str>,
+        data: &[u8],
+    ) -> Result<String, XlsxError> {
+        self.add_chart_part(
+            preferred,
+            data,
+            crate::helper::const_str::CHART_USER_SHAPES_TYPE,
+            "xl/drawings/drawing",
+            false,
+        )
     }
 
     fn add_chart_part(
@@ -677,6 +694,7 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         data: &[u8],
         content_type: &str,
         prefix: &str,
+        share_identical: bool,
     ) -> Result<String, XlsxError> {
         if let Some(target) = preferred {
             if target.starts_with('/')
@@ -688,7 +706,7 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
                 return Err(part_error("invalid chart part target"));
             }
             if let Some(previous) = self.written_parts.get(target) {
-                if previous.digest()? == <[u8; 32]>::from(Sha256::digest(data)) {
+                if share_identical && previous.digest()? == <[u8; 32]>::from(Sha256::digest(data)) {
                     self.add_typed_bin(target, content_type, data)?;
                     return Ok(target.into());
                 }
@@ -699,7 +717,7 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         }
         let mut number = 1u32;
         loop {
-            let target = format!("xl/charts/{prefix}{number}.xml");
+            let target = format!("{prefix}{number}.xml");
             if !self.reserved_parts.contains(&target) && !self.written_parts.contains_key(&target) {
                 self.add_typed_bin(&target, content_type, data)?;
                 return Ok(target);

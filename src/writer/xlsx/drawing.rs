@@ -79,10 +79,19 @@ pub(crate) fn write_dependencies<W: io::Seek + io::Write>(
     if let Some(parts) = worksheet.drawing_parts() {
         let mut live_charts = std::collections::HashSet::new();
         let mut bundles = std::collections::HashMap::new();
+        let mut typed_charts = std::collections::HashSet::new();
         let mut standard =
             |_: crate::drawing::spreadsheet::DrawingFrameKey,
              frame: &crate::drawing::spreadsheet::GraphicFrame| {
                 live_charts.extend(frame.source_parts().iter().cloned());
+                if !frame
+                    .graphic()
+                    .graphic_data()
+                    .chart_space()
+                    .keeps_preserved_drawing()
+                {
+                    typed_charts.extend(frame.source_parts().iter().cloned());
+                }
             };
         worksheet
             .worksheet_drawing()
@@ -107,7 +116,7 @@ pub(crate) fn write_dependencies<W: io::Seek + io::Write>(
         for ole in worksheet.ole_objects().ole_object() {
             ole.two_cell_anchor().visit_extended_frames(&mut extended);
         }
-        parts.write_common(manager, &live_charts, &bundles)?;
+        parts.write_common(manager, &live_charts, &bundles, &typed_charts)?;
     }
     Ok(())
 }

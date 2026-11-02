@@ -33,9 +33,26 @@ pub struct ConnectionShape {
     shape_style:                            ShapeStyle,
     #[cfg_attr(feature = "serde", serde(default))]
     r#macro:                                Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    published:                              Option<bool>,
 }
 
 impl ConnectionShape {
+    #[must_use]
+    pub fn published(&self) -> bool {
+        self.published.unwrap_or(false)
+    }
+
+    pub fn set_published(&mut self, value: bool) -> &mut Self {
+        self.published = Some(value);
+        self
+    }
+
+    pub fn remove_published(&mut self) -> &mut Self {
+        self.published = None;
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn anchor(&self) -> &Anchor {
@@ -187,6 +204,9 @@ impl ConnectionShape {
         if let Some(value) = crate::reader::driver::read_attribute(owner, b"macro")? {
             self.set_macro(value);
         }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"fPublished")? {
+            self.set_published(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
         let end = owner.name().as_ref().to_vec();
         let mut buffer = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -261,11 +281,14 @@ impl ConnectionShape {
         ole_id: usize,
     ) -> Result<(), crate::XlsxError> {
         // xdr:cxnSp
-        let attributes = self
+        let mut attributes = self
             .r#macro
             .as_ref()
             .map(|value| vec![("macro", value.as_str()).into()])
             .unwrap_or_default();
+        if let Some(value) = self.published {
+            attributes.push(("fPublished", if value { "1" } else { "0" }).into());
+        }
         write_start_tag(writer, "xdr:cxnSp", attributes, false);
 
         // xdr:nvCxnSpPr

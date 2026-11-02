@@ -82,7 +82,13 @@ pub(crate) fn parse_double(value: &str) -> Result<f64, String> {
     value.parse().map_err(|_| invalid())
 }
 pub(crate) fn attr<'a>(node: &'a OpaqueElement, name: &str) -> Option<&'a str> {
-    node.attributes
+    attr_of(&node.attributes, name)
+}
+pub(crate) fn attr_of<'a>(
+    attributes: &'a [(crate::drawing::charts::QName, String)],
+    name: &str,
+) -> Option<&'a str> {
+    attributes
         .iter()
         .find(|(key, _)| key.is("", name))
         .map(|(_, value)| value.as_str())

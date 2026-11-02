@@ -39,6 +39,8 @@ pub(crate) struct DrawingParts {
     files:                 Vec<RawFile>,
     #[cfg_attr(feature = "serde", serde(default))]
     content_types:         Vec<(String, String)>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    chart_style_bundle:    Option<ChartExStyleBundle>,
 }
 
 pub(crate) struct PreparedDrawingParts {
@@ -48,6 +50,164 @@ pub(crate) struct PreparedDrawingParts {
 }
 
 impl PreparedDrawingParts {
+    pub(crate) fn bind_chart_drawing_parts(
+        &self,
+        raw: &RawWorksheet,
+        sheet: &mut Worksheet,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), XlsxError> {
+        if !self.value.relationships.iter().any(|list| {
+            list.relationship_list()
+                .iter()
+                .any(|edge| edge.get_type() == crate::helper::const_str::CHART_USER_SHAPES_NS)
+        }) {
+            return Ok(());
+        }
+        let media = sheet
+            .media_object_collection()
+            .into_iter()
+            .chain(sheet.worksheet_drawing().additional_media_objects())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut failure = None;
+        let mut bind =
+            |_: crate::drawing::spreadsheet::DrawingFrameKey,
+             frame: &mut crate::drawing::spreadsheet::GraphicFrame| {
+                if failure.is_some()
+                    || frame
+                        .graphic()
+                        .graphic_data()
+                        .chart_space()
+                        .chart_drawing()
+                        .is_none()
+                {
+                    return;
+                }
+                let result = (|| {
+                    let root = frame
+                        .graphic()
+                        .graphic_data()
+                        .chart_space()
+                        .chart_drawing_parts()
+                        .and_then(DrawingParts::drawing_source)
+                        .ok_or_else(|| part_error("chart drawing has no source relationship"))?;
+                    let mut graph = DrawingParts::chart_drawing(root.to_owned());
+                    for source in frame.source_parts() {
+                        let list = self
+                            .value
+                            .chart_relationships(std::slice::from_ref(source))?;
+                        if !list.relationship_list().iter().any(|edge| {
+                            edge.get_type() == crate::helper::const_str::CHART_USER_SHAPES_NS
+                                && edge.raw_file().file_target() == root
+                        }) {
+                            continue;
+                        }
+                        let bundle = chart_style_bundle(raw, &self.value.files, source, session)?;
+                        if graph
+                            .chart_style_bundle
+                            .as_ref()
+                            .is_some_and(|old| old != &bundle)
+                        {
+                            return Err(part_error("conflicting chart drawing style owners"));
+                        }
+                        graph.chart_style_bundle = Some(bundle);
+                    }
+                    let mut pending = vec![root.to_owned()];
+                    let mut visited = HashSet::new();
+                    while let Some(owner) = pending.pop() {
+                        if !visited.insert(owner.clone()) {
+                            continue;
+                        }
+                        let path = relationships_path(&owner)?;
+                        let Some(list) = self
+                            .value
+                            .relationships
+                            .iter()
+                            .find(|list| list.file_target() == path)
+                        else {
+                            continue;
+                        };
+                        graph.relationships.push(list.clone());
+                        for edge in list.relationship_list() {
+                            if edge.target_mode() == "External" {
+                                continue;
+                            }
+                            let target = edge.raw_file().file_target();
+                            pending.push(target.to_owned());
+                            if target == root
+                                || graph.files.iter().any(|file| file.file_target() == target)
+                            {
+                                continue;
+                            }
+                            let data = if let Some(image) = media
+                                .iter()
+                                .find(|image| format!("xl/media/{}", image.image_name()) == target)
+                            {
+                                image.image_data().to_vec()
+                            } else {
+                                self.value
+                                    .files
+                                    .iter()
+                                    .chain(
+                                        raw.relationships_list()
+                                            .iter()
+                                            .flat_map(RawRelationships::relationship_list)
+                                            .map(RawRelationship::raw_file),
+                                    )
+                                    .find(|file| {
+                                        file.file_target() == target
+                                            && (!file.file_data().is_empty()
+                                                || file.source_file().is_some())
+                                    })
+                                    .ok_or_else(|| {
+                                        part_error(format!(
+                                            "missing chart drawing dependency: {target}"
+                                        ))
+                                    })?
+                                    .read_data()?
+                            };
+                            if data.is_empty() {
+                                return Err(part_error(format!(
+                                    "empty chart drawing dependency: {target}"
+                                )));
+                            }
+                            let mut file = RawFile::default();
+                            file.set_file_target(target).set_file_data(&data);
+                            graph.files.push(file);
+                            graph.content_types.push((
+                                target.to_owned(),
+                                session
+                                    .content_type(target)
+                                    .ok_or_else(|| {
+                                        part_error(format!(
+                                            "missing chart drawing content type: {target}"
+                                        ))
+                                    })?
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                    frame
+                        .graphic_mut()
+                        .graphic_data_mut()
+                        .chart_space_mut()
+                        .bind_chart_drawing_parts(graph);
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    failure = Some(error);
+                }
+            };
+        sheet
+            .worksheet_drawing_mut()
+            .visit_standard_frames_mut(&mut bind);
+        for ole in sheet.ole_objects_mut().ole_object_mut() {
+            ole.two_cell_anchor_mut()
+                .visit_standard_frames_mut(&mut bind);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
     /// Hands every native extended chart the style and colour parts its own
     /// package relationships name, so the chart owns them from now on.
     pub(crate) fn bind_style_bundles(&self, sheet: &mut Worksheet) {
@@ -81,6 +241,80 @@ impl PreparedDrawingParts {
 }
 
 impl DrawingParts {
+    pub(crate) fn chart_drawing(root: String) -> Self {
+        Self {
+            chart_parts: vec![root],
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn drawing_source(&self) -> Option<&str> {
+        self.chart_parts.first().map(String::as_str)
+    }
+
+    pub(crate) fn chart_style_bundle(&self) -> Option<&ChartExStyleBundle> {
+        self.chart_style_bundle.as_ref()
+    }
+
+    pub(crate) fn take_chart_style_parts(&mut self) -> Self {
+        Self {
+            chart_style_bundle: self.chart_style_bundle.take(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn write_chart_drawing_dependencies<W: io::Seek + io::Write>(
+        &self,
+        output: &str,
+        manager: &mut WriterManager<W>,
+    ) -> Result<RawRelationships, XlsxError> {
+        let source = self
+            .drawing_source()
+            .ok_or_else(|| part_error("chart drawing graph has no root"))?;
+        let mut targets = HashMap::from([(source.to_owned(), output.to_owned())]);
+        for file in &self.files {
+            let source = file.file_target();
+            let content_type = self
+                .content_types
+                .iter()
+                .find(|(target, _)| target == source)
+                .ok_or_else(|| part_error("chart drawing dependency has no content type"))?;
+            let (stem, extension) = source
+                .rsplit_once('.')
+                .ok_or_else(|| part_error("drawing dependency has no extension"))?;
+            let target = manager.add_chart_private_part(
+                &format!("{stem}-copy"),
+                extension,
+                &file.read_data()?,
+                &content_type.1,
+            )?;
+            targets.insert(source.to_owned(), target);
+        }
+        let mut root = RawRelationships::default();
+        for original in &self.relationships {
+            let owner = relationships_owner(original.file_target())
+                .ok_or_else(|| part_error("invalid chart drawing relationship owner"))?;
+            let output = targets
+                .get(&owner)
+                .ok_or_else(|| part_error("chart drawing relationship owner has no output"))?;
+            let mut list = original.clone();
+            for edge in list.relationship_list_mut() {
+                if edge.target_mode() != "External" {
+                    let target = targets
+                        .get(edge.raw_file().file_target())
+                        .ok_or_else(|| part_error("chart drawing dependency has no output"))?;
+                    edge.raw_file_mut().set_file_target(target);
+                }
+            }
+            if owner == source {
+                root = list;
+            } else {
+                Self::write_chart_relationships(&mut list, output, manager)?;
+            }
+        }
+        Ok(root)
+    }
+
     pub(crate) fn preserved_files(files: Vec<RawFile>) -> Self {
         Self {
             files,
@@ -238,6 +472,7 @@ impl DrawingParts {
                             edge.get_type(),
                             crate::helper::const_str::CHART_NS
                                 | crate::helper::const_str::CHART_EX_NS
+                                | crate::helper::const_str::CHART_USER_SHAPES_NS
                         ) {
                             let mut recovered = RawFile::default();
                             recovered.set_file_target(file.file_target());
@@ -279,6 +514,7 @@ impl DrawingParts {
             relationships,
             files: retained_files,
             content_types: Vec::new(),
+            chart_style_bundle: None,
         };
         let mut locations: Vec<_> = file_locations.into_values().collect();
         locations.sort_unstable();
@@ -457,8 +693,13 @@ impl DrawingParts {
         manager: &mut WriterManager<W>,
         live_charts: &HashSet<String>,
         bundles: &HashMap<String, Vec<ChartExStyleBundle>>,
+        typed_charts: &HashSet<String>,
     ) -> Result<(), XlsxError> {
-        let orphaned = self.orphaned_chart_style_parts(live_charts, bundles)?;
+        let mut orphaned = self.orphaned_chart_style_parts(live_charts, bundles)?;
+        // The drawing parts of charts that model their shapes are written
+        // from that model together with their own relationships.
+        let typed_drawings = self.typed_user_shape_parts(typed_charts);
+        orphaned.extend(typed_drawings.iter().copied());
         for (part, content_type) in &self.content_types {
             if orphaned.contains(part.as_str()) {
                 continue;
@@ -469,13 +710,12 @@ impl DrawingParts {
         }
         let chart_parts: HashSet<&str> = self.chart_parts.iter().map(String::as_str).collect();
         for list in &self.relationships {
-            if relationships_owner(list.file_target())
-                .as_deref()
-                .is_some_and(|owner| {
-                    chart_parts.contains(owner)
-                        && !self.files.iter().any(|file| file.file_target() == owner)
-                })
-            {
+            let owner = relationships_owner(list.file_target());
+            if owner.as_deref().is_some_and(|owner| {
+                typed_drawings.contains(owner)
+                    || (chart_parts.contains(owner)
+                        && !self.files.iter().any(|file| file.file_target() == owner))
+            }) {
                 continue;
             }
             list.write_to(manager, None)?;
@@ -509,6 +749,22 @@ impl DrawingParts {
         let mut file = file.clone();
         file.load_file_data_from_source()?;
         Ok(Some((file.file_data().to_vec(), content_type)))
+    }
+
+    /// The chart drawing parts the given charts refer to.
+    fn typed_user_shape_parts(&self, charts: &HashSet<String>) -> HashSet<&str> {
+        self.relationships
+            .iter()
+            .filter(|list| {
+                relationships_owner(list.file_target()).is_some_and(|owner| charts.contains(&owner))
+            })
+            .flat_map(RawRelationships::relationship_list)
+            .filter(|edge| {
+                edge.get_type() == crate::helper::const_str::CHART_USER_SHAPES_NS
+                    && edge.target_mode() != "External"
+            })
+            .map(|edge| edge.raw_file().file_target())
+            .collect()
     }
 
     pub(crate) fn chart_relationships(

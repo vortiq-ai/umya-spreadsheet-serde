@@ -1308,14 +1308,14 @@ fn package_with_user_shapes_drawing() -> Vec<u8> {
         r#"<Relationships xmlns="{PKG_REL}"><Relationship Id="rId1" Type="{R}/chartUserShapes" Target="../drawings/drawing2.xml"/></Relationships>"#
     );
     let user_drawing = format!(
-        r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="{R}"><xdr:oneCellAnchor><xdr:from><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="95250" cy="95250"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="user"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>"#
+        r#"<c:userShapes xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:cdr="http://schemas.openxmlformats.org/drawingml/2006/chartDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="{R}"><cdr:absSizeAnchor><cdr:from><cdr:x>0.5</cdr:x><cdr:y>0.5</cdr:y></cdr:from><cdr:ext cx="95250" cy="95250"/><cdr:pic><cdr:nvPicPr><cdr:cNvPr id="2" name="user"/><cdr:cNvPicPr/></cdr:nvPicPr><cdr:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></cdr:blipFill><cdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></cdr:spPr></cdr:pic></cdr:absSizeAnchor></c:userShapes>"#
     );
     let user_drawing_rels = format!(
         r#"<Relationships xmlns="{PKG_REL}"><Relationship Id="rId1" Type="{R}/image" Target="../media/userImage.png"/></Relationships>"#
     );
     let types = part(&source, "[Content_Types].xml").replace(
         "</Types>",
-        r#"<Override PartName="/xl/drawings/drawing2.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>"#,
+        r#"<Override PartName="/xl/drawings/drawing2.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chartshapes+xml"/></Types>"#,
     );
     rewrite(
         &source,
@@ -1340,9 +1340,59 @@ fn sheet_drawing_keeps_its_picture_when_a_user_shapes_drawing_has_its_own_relati
         let mut book = reader::xlsx::read_reader(Cursor::new(&source), eager).unwrap();
         book.sheet_mut(0).unwrap().cell_mut("A1").set_value("edit");
         assert_eq!(image_bytes(&book), [FIRST_PNG], "eager={eager}");
-        let saved = write_book(&book);
-        let reread = reader::xlsx::read_reader(Cursor::new(&saved), true).unwrap();
-        assert_eq!(image_bytes(&reread), [FIRST_PNG], "eager={eager} saved");
+        for light in [false, true] {
+            let saved = if light {
+                let mut output = Vec::new();
+                writer::xlsx::write_writer_light(&book, &mut output).unwrap();
+                output
+            } else {
+                write_book(&book)
+            };
+            let reread = reader::xlsx::read_reader(Cursor::new(&saved), true).unwrap();
+            assert_eq!(image_bytes(&reread), [FIRST_PNG], "eager={eager} saved");
+            let edge = relationships(&saved, "xl/charts/_rels/chart1.xml.rels")
+                .into_iter()
+                .find(|edge| edge.kind == format!("{R}/chartUserShapes"))
+                .unwrap();
+            let drawing = format!("xl/{}", edge.target.trim_start_matches("../"));
+            assert!(part(&saved, &drawing).contains("r:embed=\"rId1\""));
+            let (directory, file) = drawing.rsplit_once('/').unwrap();
+            let edge = relationships(&saved, &format!("{directory}/_rels/{file}.rels"))
+                .into_iter()
+                .find(|edge| edge.id == "rId1" && edge.kind == format!("{R}/image"))
+                .unwrap();
+            let target = format!("xl/{}", edge.target.trim_start_matches("../"));
+            let mut archive = zip::ZipArchive::new(Cursor::new(&saved)).unwrap();
+            let mut actual = Vec::new();
+            archive
+                .by_name(&target)
+                .unwrap()
+                .read_to_end(&mut actual)
+                .unwrap();
+            assert_eq!(
+                actual, SECOND_PNG,
+                "eager={eager} light={light} chart picture"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_chart_user_shapes_part_cannot_have_a_worksheet_drawing_root() {
+    let source = package_with_user_shapes_drawing();
+    let invalid = rewrite(&source, &[("xl/drawings/drawing2.xml", br#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>"#.to_vec())]);
+    let error = reader::xlsx::read_reader(Cursor::new(&invalid), true).unwrap_err();
+    assert!(
+        error.to_string().contains("invalid chart drawing root"),
+        "{error}"
+    );
+    let mut lazy = reader::xlsx::read_reader(Cursor::new(&invalid), false).unwrap();
+    for _ in 0..2 {
+        let error = lazy.try_read_sheet(0).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid chart drawing root"),
+            "{error}"
+        );
     }
 }
 

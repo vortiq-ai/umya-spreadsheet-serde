@@ -358,7 +358,8 @@ pub(crate) fn prepare_picture_graph<W: io::Seek + io::Write>(
                         return;
                     }
                 }
-                if !original.has_picture_fills() {
+                let has_picture_fills = original.has_picture_fills();
+                if !has_picture_fills && original.keeps_preserved_drawing() {
                     manager.preserve_chart_owners(frame.source_parts());
                     return;
                 }
@@ -367,17 +368,27 @@ pub(crate) fn prepare_picture_graph<W: io::Seek + io::Write>(
                 }
                 let result = (|| {
                     let mut relationships = relationships_for(wb, sheet, frame.source_parts())?;
-                    let mut space = original.clone();
-                    prepare_images(
-                        &mut relationships,
-                        manager,
-                        sheet.drawing_parts(),
-                        &modeled_media,
-                        |visit| space.visit_shapes_mut(visit),
-                    )?;
-                    let mut writer = Writer::new(io::Cursor::new(Vec::new()));
-                    space.write_to(&mut writer, wb)?;
-                    retain_referenced_images(writer.get_ref().get_ref(), &mut relationships)?;
+                    if !original.keeps_preserved_drawing() {
+                        relationships.relationship_list_mut().retain(|edge| {
+                            edge.get_type() != crate::helper::const_str::CHART_USER_SHAPES_NS
+                        });
+                    }
+                    if has_picture_fills {
+                        let mut space = original.clone();
+                        if !space.keeps_preserved_drawing() {
+                            space.set_user_shapes_id(None);
+                        }
+                        prepare_images(
+                            &mut relationships,
+                            manager,
+                            sheet.drawing_parts(),
+                            &modeled_media,
+                            |visit| space.visit_shapes_mut(visit),
+                        )?;
+                        let mut writer = Writer::new(io::Cursor::new(Vec::new()));
+                        space.write_to(&mut writer, wb)?;
+                        retain_referenced_images(writer.get_ref().get_ref(), &mut relationships)?;
+                    }
                     manager.replace_chart_relationship_graph(frame.source_parts(), &relationships)
                 })();
                 if let Err(error) = result {
@@ -775,6 +786,45 @@ pub(crate) fn write_parts<W: io::Seek + io::Write>(
     Ok(chart_parts)
 }
 
+/// Writes a chart's shapes and text boxes as their own part, with the
+/// relationships the preserved objects in it still use, and points the chart
+/// at it. Returns the chart's relationship id.
+fn write_chart_drawing<W: io::Seek + io::Write>(
+    drawing: &crate::drawing::charts::ChartDrawing,
+    graph: Option<&crate::structs::drawing_parts::DrawingParts>,
+    previous: &[RawRelationship],
+    manager: &mut WriterManager<W>,
+    relationships: &mut RawRelationships,
+) -> Result<String, XlsxError> {
+    let data = drawing.to_xml()?;
+    let previous = graph
+        .and_then(|graph| graph.drawing_source())
+        .or_else(|| previous.first().map(|edge| edge.raw_file().file_target()));
+    let target = manager.add_chart_drawing(previous, &data)?;
+    let mut own = if let Some(graph) = graph {
+        graph.write_chart_drawing_dependencies(&target, manager)?
+    } else {
+        RawRelationships::default()
+    };
+    for id in drawing.preserved_relationship_ids() {
+        if own.find_relationship_by_rid(&id).is_none() {
+            return Err(crate::xml::xml_error(format!(
+                "chart drawing object refers to relationship {id}, which this chart does not have"
+            )));
+        }
+    }
+    if !own.relationship_list().is_empty() {
+        crate::structs::drawing_parts::DrawingParts::write_chart_relationships(
+            &mut own, &target, manager,
+        )?;
+    }
+    add_dependency(
+        relationships,
+        crate::helper::const_str::CHART_USER_SHAPES_NS,
+        &target,
+    )
+}
+
 fn write_standard_frame<W: io::Seek + io::Write>(
     frame: &crate::drawing::spreadsheet::GraphicFrame,
     worksheet: &crate::Worksheet,
@@ -784,6 +834,27 @@ fn write_standard_frame<W: io::Seek + io::Write>(
     let (mut relationships, origin) =
         relationships_with_origin(wb, worksheet, frame.source_parts())?;
     let mut space = Cow::Borrowed(frame.graphic().graphic_data().chart_space());
+    // A chart without a preserved drawing link writes its drawing from its own
+    // model below, so the part an imported chart pointed at is not carried
+    // over.
+    let modelled_drawing = !space.keeps_preserved_drawing();
+    let (kept, old_drawings): (Vec<_>, Vec<_>) =
+        std::mem::take(relationships.relationship_list_mut())
+            .into_iter()
+            .partition(|edge| {
+                !modelled_drawing
+                    || edge.get_type() != crate::helper::const_str::CHART_USER_SHAPES_NS
+            });
+    *relationships.relationship_list_mut() = kept;
+    if let Some(bundle) = space.chart_style_bundle() {
+        let needed = reconcile_style_dependencies(
+            worksheet.drawing_parts(),
+            bundle,
+            &mut relationships,
+            |target| manager.style_part_claimed(target),
+        )?;
+        add_bundled_style_dependencies(bundle, needed, &mut relationships, manager)?;
+    }
     if space.has_picture_fills() {
         prepare_images(
             &mut relationships,
@@ -792,6 +863,27 @@ fn write_standard_frame<W: io::Seek + io::Write>(
             &worksheet.media_object_collection(),
             |visit| space.to_mut().visit_shapes_mut(visit),
         )?;
+    }
+    let id = space
+        .chart_drawing()
+        .filter(|drawing| !drawing.is_empty())
+        .map(|drawing| {
+            write_chart_drawing(
+                drawing,
+                space.chart_drawing_parts(),
+                &old_drawings,
+                manager,
+                &mut relationships,
+            )
+        })
+        .transpose()?;
+    if modelled_drawing
+        && space
+            .user_shapes()
+            .map(crate::drawing::charts::UserShapes::relationship_id)
+            != id.as_deref()
+    {
+        space.to_mut().set_user_shapes_id(id);
     }
     // A second frame of the same source part (a copied chart) gets a part of
     // its own: Excel does not open charts that share one chart part.
@@ -805,12 +897,16 @@ fn write_standard_frame<W: io::Seek + io::Write>(
     if let Some(origin) = parts.filter(|_| preferred.is_none() && !frame.source_parts().is_empty())
     {
         // A chart copied to another sheet owns copies of its drawing, style and
-        // colour parts, as Excel writes them.
+        // colour parts, as Excel writes them. A modelled drawing and a chart's
+        // own style bundle were written for this chart above.
+        let bundled_styles = space.chart_style_bundle().is_some();
         for edge in relationships.relationship_list_mut() {
-            let (directory, stem) = match edge.get_type() {
-                crate::helper::const_str::CHART_USER_SHAPES_NS => ("xl/drawings", "drawing"),
-                CHART_STYLE_NS => ("xl/charts", "style"),
-                CHART_COLOR_STYLE_NS => ("xl/charts", "colors"),
+            let prefix = match edge.get_type() {
+                crate::helper::const_str::CHART_USER_SHAPES_NS if !modelled_drawing => {
+                    "xl/drawings/drawing"
+                }
+                CHART_STYLE_NS if !bundled_styles => "xl/charts/style",
+                CHART_COLOR_STYLE_NS if !bundled_styles => "xl/charts/colors",
                 _ => continue,
             };
             if edge.target_mode() == "External" {
@@ -821,7 +917,7 @@ fn write_standard_frame<W: io::Seek + io::Write>(
                 .ok_or_else(|| {
                 crate::xml::xml_error("copied chart drawing part is not preserved")
             })?;
-            let copy = manager.add_chart_private_part(directory, stem, &data, &content_type)?;
+            let copy = manager.add_chart_private_part(prefix, "xml", &data, &content_type)?;
             edge.raw_file_mut().set_file_target(copy);
         }
     }
@@ -837,6 +933,11 @@ fn write_standard_frame<W: io::Seek + io::Write>(
             &target,
             manager,
         )?;
+    }
+    for edge in relationships.relationship_list() {
+        if matches!(edge.get_type(), CHART_STYLE_NS | CHART_COLOR_STYLE_NS) {
+            manager.claim_style_part(edge.raw_file().file_target());
+        }
     }
     Ok(target)
 }

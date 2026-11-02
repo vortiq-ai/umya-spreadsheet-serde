@@ -37,6 +37,23 @@ pub struct Shape {
     shape_style:                 Option<Box<ShapeStyle>>,
     text_body:                   Option<Box<TextBody>>,
     r#macro:                     StringValue,
+    #[cfg_attr(feature = "serde", serde(default = "legacy_text_link"))]
+    text_link:                   Option<Box<crate::drawing::charts::Formula>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    locks_text:                  Option<bool>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    published:                   Option<bool>,
+}
+
+#[cfg(feature = "serde")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Serde default hooks must return the complete optional field type"
+)]
+fn legacy_text_link() -> Option<Box<crate::drawing::charts::Formula>> {
+    // Historical Shape JSON predates this field; its writer emitted an empty
+    // textlink. An explicit null still removes the attribute in current JSON.
+    Some(Box::default())
 }
 
 impl Shape {
@@ -193,6 +210,42 @@ impl Shape {
         self
     }
 
+    /// Cell reference supplying the shape's text, as stored in `textlink`.
+    #[must_use]
+    pub fn text_link(&self) -> Option<&crate::drawing::charts::Formula> {
+        self.text_link.as_deref()
+    }
+
+    pub fn text_link_mut(&mut self) -> Option<&mut crate::drawing::charts::Formula> {
+        self.text_link.as_deref_mut()
+    }
+
+    /// `None` removes the cell link, leaving the shape's stored text.
+    pub fn set_text_link(&mut self, value: Option<crate::drawing::charts::Formula>) -> &mut Self {
+        self.text_link = value.map(Box::new);
+        self
+    }
+
+    #[must_use]
+    pub fn locks_text(&self) -> bool {
+        self.locks_text.unwrap_or(true)
+    }
+
+    pub fn set_locks_text(&mut self, value: bool) -> &mut Self {
+        self.locks_text = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn published(&self) -> bool {
+        self.published.unwrap_or(false)
+    }
+
+    pub fn set_published(&mut self, value: bool) -> &mut Self {
+        self.published = Some(value);
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -206,6 +259,17 @@ impl Shape {
             .map_err(crate::xml::xml_error)?;
         if let Some(value) = crate::reader::driver::read_attribute(owner, b"macro")? {
             self.set_macro(value);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"textlink")? {
+            let mut formula = crate::drawing::charts::Formula::default();
+            formula.set_string_value(value);
+            self.set_text_link(Some(formula));
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"fLocksText")? {
+            self.set_locks_text(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"fPublished")? {
+            self.set_published(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
         }
         let end = owner.name().as_ref().to_vec();
         let mut buffer = Vec::new();
@@ -286,15 +350,20 @@ impl Shape {
         ole_id: usize,
     ) -> Result<(), crate::XlsxError> {
         // xdr:sp
-        write_start_tag(
-            writer,
-            "xdr:sp",
-            vec![
-                ("macro", self.r#macro.value_str()).into(),
-                ("textlink", "").into(),
-            ],
-            false,
-        );
+        let mut attributes = vec![("macro", self.r#macro.value_str()).into()];
+        let text_link = self
+            .text_link()
+            .map(crate::drawing::charts::Formula::address_str);
+        if let Some(value) = &text_link {
+            attributes.push(("textlink", value.as_str()).into());
+        }
+        if let Some(value) = self.locks_text {
+            attributes.push(("fLocksText", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.published {
+            attributes.push(("fPublished", if value { "1" } else { "0" }).into());
+        }
+        write_start_tag(writer, "xdr:sp", attributes, false);
 
         // xdr:nvSpPr
         self.non_visual_shape_properties

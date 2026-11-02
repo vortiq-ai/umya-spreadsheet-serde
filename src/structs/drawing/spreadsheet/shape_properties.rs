@@ -16,6 +16,7 @@ use super::super::{
     ExtensionList,
     NoFill,
     Outline,
+    PatternFill,
     PresetGeometry,
     SolidFill,
     Transform2D,
@@ -48,6 +49,8 @@ pub struct ShapeProperties {
     black_white_mode:     EnumValue<BlackWhiteModeValues>,
     #[cfg_attr(feature = "serde", serde(default))]
     preserved_properties: Vec<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pattern_fill:         Option<Box<PatternFill>>,
 }
 
 #[cfg(feature = "serde")]
@@ -65,6 +68,7 @@ impl<'de> serde::Deserialize<'de> for ShapeProperties {
             "extension_list",
             "black_white_mode",
             "preserved_properties",
+            "pattern_fill",
         ];
         struct Visitor;
         impl<'de> serde::de::Visitor<'de> for Visitor {
@@ -112,9 +116,12 @@ impl<'de> serde::Deserialize<'de> for ShapeProperties {
                     preserved_properties: seq
                         .next_element()?
                         .ok_or_else(|| serde::de::Error::invalid_length(10, &self))?,
+                    pattern_fill:         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(11, &self))?,
                 };
                 if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                    return Err(serde::de::Error::invalid_length(12, &self));
+                    return Err(serde::de::Error::invalid_length(13, &self));
                 }
                 Ok(value)
             }
@@ -134,6 +141,7 @@ impl<'de> serde::Deserialize<'de> for ShapeProperties {
                 let mut extension_list = None;
                 let mut black_white_mode = None;
                 let mut preserved_properties = None;
+                let mut pattern_fill = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "transform2d" => {
@@ -204,6 +212,12 @@ impl<'de> serde::Deserialize<'de> for ShapeProperties {
                             }
                             preserved_properties = Some(map.next_value()?);
                         }
+                        "pattern_fill" => {
+                            if pattern_fill.is_some() {
+                                return Err(serde::de::Error::duplicate_field("pattern_fill"));
+                            }
+                            pattern_fill = Some(map.next_value()?);
+                        }
                         _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
                     }
                 }
@@ -247,6 +261,7 @@ impl<'de> serde::Deserialize<'de> for ShapeProperties {
                     black_white_mode: black_white_mode
                         .ok_or_else(|| serde::de::Error::missing_field("black_white_mode"))?,
                     preserved_properties: preserved_properties.unwrap_or_default(),
+                    pattern_fill: pattern_fill.unwrap_or(None),
                 })
             }
         }
@@ -433,6 +448,71 @@ impl<'de> serde::Deserializer<'de> for DeferredGradientValue {
 }
 
 impl ShapeProperties {
+    pub(crate) fn strip_export_parts(&mut self) {
+        self.extension_list = None;
+        self.preserved_properties.clear();
+        self.blip_fill = None;
+    }
+
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) {
+        self.extension_list.clone_from(&previous.extension_list);
+        self.preserved_properties
+            .clone_from(&previous.preserved_properties);
+        if !self.preset_geometry.geometry().is_empty() {
+            self.preserved_properties
+                .retain(|value| value.name.local_name != "custGeom");
+        }
+        if self.effect_list.is_some() {
+            self.preserved_properties.retain(|value| {
+                !matches!(value.name.local_name.as_str(), "effectLst" | "effectDag")
+            });
+        }
+        if self.solid_fill.is_some()
+            || self.gradient_fill.is_some()
+            || self.pattern_fill.is_some()
+            || self.no_fill.is_some()
+        {
+            self.blip_fill = None;
+            self.clear_preserved_fills();
+        } else {
+            self.blip_fill.clone_from(&previous.blip_fill);
+        }
+    }
+
+    fn clear_preserved_fills(&mut self) {
+        self.preserved_properties
+            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
+    }
+
+    fn clear_fills(&mut self) {
+        self.clear_preserved_fills();
+        self.blip_fill = None;
+        self.solid_fill = None;
+        self.gradient_fill = None;
+        self.pattern_fill = None;
+        self.no_fill = None;
+    }
+
+    #[must_use]
+    pub fn pattern_fill(&self) -> Option<&PatternFill> {
+        self.pattern_fill.as_deref()
+    }
+
+    pub fn pattern_fill_mut(&mut self) -> Option<&mut PatternFill> {
+        self.pattern_fill.as_deref_mut()
+    }
+
+    pub fn set_pattern_fill(&mut self, value: PatternFill) -> &mut Self {
+        self.clear_fills();
+        self.pattern_fill = Some(Box::new(value));
+        self
+    }
+
+    pub fn remove_pattern_fill(&mut self) -> &mut Self {
+        self.pattern_fill = None;
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn transform2d(&self) -> Option<&Transform2D> {
@@ -523,8 +603,7 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_blip_fill(&mut self, value: BlipFill) -> &mut Self {
-        self.preserved_properties
-            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
+        self.clear_fills();
         self.blip_fill = Some(Box::new(value));
         self
     }
@@ -555,8 +634,7 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_solid_fill(&mut self, value: SolidFill) -> &mut Self {
-        self.preserved_properties
-            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
+        self.clear_fills();
         self.solid_fill = Some(Box::new(value));
         self
     }
@@ -587,8 +665,7 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_gradient_fill(&mut self, value: GradientFill) -> &mut Self {
-        self.preserved_properties
-            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
+        self.clear_fills();
         self.gradient_fill = Some(Box::new(value));
         self
     }
@@ -650,7 +727,7 @@ impl ShapeProperties {
     #[inline]
     pub fn set_effect_list(&mut self, value: EffectList) -> &mut Self {
         self.preserved_properties
-            .retain(|value| value.name.local_name != "effectDag");
+            .retain(|value| !matches!(value.name.local_name.as_str(), "effectLst" | "effectDag"));
         self.effect_list = Some(Box::new(value));
         self
     }
@@ -681,8 +758,7 @@ impl ShapeProperties {
 
     #[inline]
     pub fn set_no_fill(&mut self, value: NoFill) -> &mut Self {
-        self.preserved_properties
-            .retain(|value| !matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"));
+        self.clear_fills();
         self.no_fill = Some(value);
         self
     }
@@ -798,7 +874,7 @@ impl ShapeProperties {
                     }
                     previous_rank = Some(rank);
                     match name.local_name.as_str() {
-                        "custGeom" | "pattFill" | "grpFill" | "effectDag" | "scene3d" | "sp3d" => {
+                        "custGeom" | "grpFill" | "effectDag" | "scene3d" | "sp3d" => {
                             self.preserved_properties.push(
                                 crate::drawing::charts::OpaqueElement::read_detached(
                                     reader, child, empty, &scope,
@@ -833,6 +909,11 @@ impl ShapeProperties {
                             value.read_with_session(reader, child, empty, Some(session))?;
                             self.set_gradient_fill(value);
                         }
+                        "pattFill" => {
+                            let mut value = PatternFill::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_pattern_fill(value);
+                        }
                         "ln" => {
                             let mut value = Outline::default();
                             value.read_with_session(reader, child, empty, Some(session))?;
@@ -844,9 +925,37 @@ impl ShapeProperties {
                             self.set_solid_fill(value);
                         }
                         "effectLst" => {
-                            let mut value = EffectList::default();
-                            value.read_with_session(reader, child, empty, Some(session))?;
-                            self.set_effect_list(value);
+                            let element = crate::drawing::charts::OpaqueElement::read_detached(
+                                reader, child, empty, &scope,
+                            )
+                            .map_err(crate::xml::xml_error)?;
+                            let supported = crate::xml::direct_children(&element)
+                                .map_err(crate::xml::xml_error)?
+                                .iter()
+                                .all(|child| {
+                                    child.name.namespace_uri
+                                        == crate::helper::const_str::DRAWINGML_MAIN_NS
+                                        && child.name.local_name == "softEdge"
+                                });
+                            if supported {
+                                let value =
+                                    super::with_fragment(&element, |reader, child, empty| {
+                                        let mut value = EffectList::default();
+                                        value.read_with_session(
+                                            reader,
+                                            child,
+                                            empty,
+                                            Some(session),
+                                        )?;
+                                        Ok(value)
+                                    })?;
+                                self.set_effect_list(value);
+                            } else {
+                                // Color-bearing effects are not fully modelled.
+                                // Keep their attributes, colors and transforms
+                                // together.
+                                self.preserved_properties.push(element);
+                            }
                         }
                         "noFill" => {
                             if !empty {
@@ -884,6 +993,24 @@ impl ShapeProperties {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
     ) -> Result<(), crate::XlsxError> {
+        let fill_count = [
+            self.blip_fill.is_some(),
+            self.solid_fill.is_some(),
+            self.gradient_fill.is_some(),
+            self.pattern_fill.is_some(),
+            self.no_fill.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+            + self
+                .preserved_properties
+                .iter()
+                .filter(|value| matches!(value.name.local_name.as_str(), "pattFill" | "grpFill"))
+                .count();
+        if fill_count > 1 {
+            return Err(crate::xml::xml_error("conflicting shape fills"));
+        }
         // xdr:spPr
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.black_white_mode.has_value() {
@@ -903,7 +1030,7 @@ impl ShapeProperties {
             .any(|value| value.name.local_name == "custGeom")
         {
             self.write_preserved(writer, rel_list, &["custGeom"])?;
-        } else {
+        } else if !self.preset_geometry.geometry().is_empty() {
             self.preset_geometry.write_to(writer);
         }
 
@@ -917,6 +1044,9 @@ impl ShapeProperties {
             v.write_to(writer)?;
         }
         if let Some(v) = &self.gradient_fill {
+            v.write_to(writer)?;
+        }
+        if let Some(v) = &self.pattern_fill {
             v.write_to(writer)?;
         }
 
@@ -937,7 +1067,11 @@ impl ShapeProperties {
             v.write_to(writer)?;
         }
 
-        self.write_preserved(writer, rel_list, &["effectDag", "scene3d", "sp3d"])?;
+        self.write_preserved(
+            writer,
+            rel_list,
+            &["effectLst", "effectDag", "scene3d", "sp3d"],
+        )?;
 
         if let Some(value) = &self.extension_list {
             let mut metadata = value.clone();

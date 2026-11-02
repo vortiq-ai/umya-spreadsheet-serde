@@ -10,6 +10,8 @@ declare_const_strings! {
     CERTIFICATE_NS       => "http://schemas.microsoft.com/office/2006/keyEncryptor/certificate",
     CHART_NS             => "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart",
     CHART_EX_NS          => "http://schemas.microsoft.com/office/2014/relationships/chartEx",
+    CHART_DRAWING_NS     => "http://schemas.openxmlformats.org/drawingml/2006/chartDrawing",
+    CHART_USER_SHAPES_TYPE => "application/vnd.openxmlformats-officedocument.drawingml.chartshapes+xml",
     CHART_EX_TYPE        => "application/vnd.ms-office.chartex+xml",
     CHART_USER_SHAPES_NS => "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartUserShapes",
     CHART_STYLE_NS       => "http://schemas.microsoft.com/office/2011/relationships/chartStyle",

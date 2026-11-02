@@ -592,7 +592,24 @@ macro_rules! reference_topology {
         }
         pub(super) fn space$(<$b>)?(space:& $($b)? $($m)* ChartSpace,
         w:&mut State<'_ $(, $b)?>) {
-            let (chart, space_shape, space_extensions)=get!(space, role_parts);
+            let (chart, space_shape, space_extensions, drawing)=get!(space, role_parts);
+            if let Some(drawing)=drawing {
+                for anchor in get!(drawing, anchors) {
+                    let (object, links)=get!(anchor, anchor_parts);
+                    for link in links {
+                        drawing_text_link(get!(link, link_formula), w);
+                    }
+                    match object {
+                        crate::drawing::charts::ChartDrawingObject::Shape(child)=>{
+                            drawing_shape(child, w);
+                        },
+                        crate::drawing::charts::ChartDrawingObject::Group(child)=>{
+                            drawing_group(child, w);
+                        },
+                        _=>(),
+                    }
+                }
+            }
             if w.order==ReferenceOrder::NativeFormulaApi {
                 native_chart(chart, w);
                 if let Some(child)=space_shape { shape(None, child, w); }
@@ -603,6 +620,33 @@ macro_rules! reference_topology {
             if let Some(child)=space_shape { shape(None, child, w); }
             chart_tail(rest, w);
             for child in space_extensions { list(None, child, w); }
+        }
+        fn drawing_shape$(<$b>)?(owner:& $($b)? $($m)* crate::drawing::spreadsheet::Shape,
+        w:&mut State<'_ $(, $b)?>) {
+            if let Some(formula)=get!(owner, text_link) {
+                drawing_text_link(formula, w);
+            }
+        }
+        fn drawing_text_link$(<$b>)?(formula:& $($b)? $($m)* Formula,
+        w:&mut State<'_ $(, $b)?>) {
+            if !formula.address_str().is_empty() {
+                let meta=w.metadata("shape_text_link", ReferenceGrammar::Formula, None, None);
+                (w.visitor)(meta, $target::Formula(formula));
+            }
+        }
+        fn drawing_group$(<$b>)?(owner:& $($b)? $($m)* crate::drawing::spreadsheet::GroupShape,
+        w:&mut State<'_ $(, $b)?>) {
+            for child in get!(owner, content) {
+                match child {
+                    crate::drawing::spreadsheet::DrawingObject::Shape(child)=>{
+                        drawing_shape(child, w);
+                    },
+                    crate::drawing::spreadsheet::DrawingObject::Group(child)=>{
+                        drawing_group(child, w);
+                    },
+                    _=>(),
+                }
+            }
         }
         pub(super) fn chart$(<$b>)?(chart:& $($b)? $($m)* Chart,
         w:&mut State<'_ $(, $b)?>) {
@@ -2040,6 +2084,11 @@ mod borrowed {
     sequence=>sequence,
     exception_refs=>references,
     child=>child,
+    anchors=>anchors,
+    anchor_parts=>reference_role_parts,
+    link_formula=>formula,
+    content=>content,
+    text_link=>text_link,
     );
 }
 
@@ -2123,6 +2172,11 @@ mod mutable {
     sequence=>sequence_mut,
     exception_refs=>references_for_roles_mut,
     child=>child_mut,
+    anchors=>anchors_mut,
+    anchor_parts=>reference_role_parts_mut,
+    link_formula=>formula_mut,
+    content=>content_mut,
+    text_link=>text_link_mut,
     );
 }
 
@@ -2206,6 +2260,11 @@ mod projection {
     sequence=>sequence_mut,
     exception_refs=>references_for_roles_mut,
     child=>child_mut,
+    anchors=>anchors_mut,
+    anchor_parts=>reference_role_parts_mut,
+    link_formula=>formula_mut,
+    content=>content_mut,
+    text_link=>text_link_mut,
     );
 }
 
@@ -2288,6 +2347,11 @@ mod retaining {
     sequence=>sequence_mut,
     exception_refs=>references_for_roles_mut,
     child=>child_mut,
+    anchors=>anchors_mut,
+    anchor_parts=>reference_role_parts_mut,
+    link_formula=>formula_mut,
+    content=>content_mut,
+    text_link=>text_link_mut,
     );
 }
 

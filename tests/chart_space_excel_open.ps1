@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $excel = $null
 $failures = 0
 $lines = [System.Collections.Generic.List[string]]::new()
@@ -31,8 +32,23 @@ try {
             # Read-only open without a repair prompt: a file Excel would repair
             # fails here instead of being silently fixed.
             $book = $excel.Workbooks.Open($file.FullName, 0, $true)
-            $sheetName = if ($name -like 'pivotchart-renamed*') { 'Sales 2026' } elseif ($name -like 'pivotchart*' -or $name -like 'pivot-options*') { 'Pivot' } else { 'Sheet1' }
-            $chart = $book.Worksheets.Item($sheetName).ChartObjects(1).Chart
+            $chart = $null
+            foreach ($sheet in $book.Worksheets) {
+                if ($sheet.ChartObjects().Count -gt 0) {
+                    $chart = $sheet.ChartObjects(1).Chart
+                    break
+                }
+            }
+            if ($null -eq $chart) {
+                # Only a package without any chart part may show no chart.
+                $zip = [IO.Compression.ZipFile]::OpenRead($file.FullName)
+                try {
+                    $hasChart = @($zip.Entries | Where-Object { $_.FullName -match '^xl/charts/chart[^/]*\.xml$' }).Count -gt 0
+                }
+                finally { $zip.Dispose() }
+                Check "$name opens" (-not $hasChart) $(if ($hasChart) { 'chart part present but Excel shows no chart' } else { 'no chart part' })
+                continue
+            }
             Check "$name opens" $true "series=$($chart.SeriesCollection().Count)"
             switch -Wildcard ($name) {
                 'chart-font-roundtrip*' {

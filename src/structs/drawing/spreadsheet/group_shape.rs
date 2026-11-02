@@ -389,7 +389,7 @@ impl GroupShape {
             .write_to(writer, rel_list, ole_id)?;
 
         // xdr:grpSpPr
-        self.group_shape_properties.write_to(writer);
+        self.group_shape_properties.write_to(writer)?;
 
         for object in &self.content {
             object.write_to(writer, rel_list)?;

@@ -652,7 +652,9 @@ pub(crate) fn prepare_worksheet_materialization(
             {
                 if !matches!(
                     relationship.get_type(),
-                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS
+                    crate::helper::const_str::CHART_NS
+                        | crate::helper::const_str::CHART_EX_NS
+                        | crate::helper::const_str::CHART_USER_SHAPES_NS
                 ) {
                     continue;
                 }
@@ -758,6 +760,7 @@ pub(crate) fn prepare_worksheet_materialization(
         )?;
         if let Some(prepared) = &drawing_parts {
             prepared.bind_style_bundles(&mut parsed);
+            prepared.bind_chart_drawing_parts(&raw, &mut parsed, &sheet_session)?;
         }
         Ok(())
     })();

@@ -88,7 +88,10 @@ pub use self::non_visual_group_shape_drawing_properties::*;
 mod absolute_anchor;
 pub use self::absolute_anchor::*;
 mod extended_chart;
-pub(crate) use extended_chart::drawing_error;
+pub(crate) use extended_chart::{
+    drawing_error,
+    with_fragment,
+};
 mod slicer_frame;
 pub use self::slicer_frame::*;
 

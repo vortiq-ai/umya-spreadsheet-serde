@@ -92,6 +92,7 @@ fn shape_json(current: bool) -> Value {
         "black_white_mode": {"value": "Gray", "value_default": "Auto"},
     });
     if current {
+        value["pattern_fill"] = Value::Null;
         value["gradient_fill"]["path_gradient_fill"] = Value::Null;
         value["preserved_properties"] = json!([{
             "name": {
@@ -300,7 +301,7 @@ fn shape_compatibility_maps_reject_unknown_duplicate_and_invalid_marker_fields()
 }
 
 #[test]
-fn current_shape_binary_encoding_keeps_all_eleven_derived_fields() {
+fn current_shape_binary_encoding_keeps_all_twelve_derived_fields() {
     let value = shape_json(true);
     let properties: ShapeProperties = serde_json::from_value(value.clone()).unwrap();
     let black_white_mode: EnumValue<BlackWhiteModeValues> =
@@ -319,6 +320,7 @@ fn current_shape_binary_encoding_keeps_all_eleven_derived_fields() {
         properties.extension_list(),
         &black_white_mode,
         &preserved,
+        properties.pattern_fill(),
     ))
     .unwrap();
     assert_eq!(bincode::serialize(&properties).unwrap(), expected);
