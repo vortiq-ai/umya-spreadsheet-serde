@@ -377,3 +377,45 @@ fn pivot_rename_rejects_a_name_on_an_unread_other_sheet() {
         );
     }
 }
+
+#[test]
+fn frozen_pivot_chart_categories_without_a_source_cache_use_chart_overflow_text() {
+    // The edited category range no longer matches the cached range, so the
+    // freeze reads the cells. Excel's chart labels show 7 '#' for a date serial
+    // outside its range.
+    for eager in [false, true] {
+        let mut book = reader::xlsx::read_reader(Cursor::new(PIVOT_CHART), eager).unwrap();
+        book.try_read_sheet_collection().unwrap();
+        let sheet = book.sheet_by_name_mut("Pivot").unwrap();
+        for (address, serial) in [("A5", 1e20), ("A6", -1.0), ("A7", 1e21)] {
+            let cell = sheet.cell_mut(address);
+            cell.set_value_number(serial);
+            cell.style_mut()
+                .number_format_mut()
+                .set_format_code("yyyy-mm-dd");
+        }
+        for series in sheet.chart_collection_mut()[0]
+            .area_chart_series_list_mut()
+            .area_chart_series_mut()
+        {
+            series
+                .category_axis_data_mut()
+                .unwrap()
+                .string_reference_mut()
+                .unwrap()
+                .formula_mut()
+                .set_address_str("Pivot!$A$5:$A$7");
+        }
+        book.remove_pivot_table("Pivot", "PivotTable1").unwrap();
+        for light in [false, true] {
+            let output = write(&book, light);
+            for bytes in [output.clone(), write(&read_eager(&output).unwrap(), light)] {
+                assert_eq!(
+                    plotted_values(&chart_parts(&bytes)[0], b"c:cat"),
+                    vec![vec!["#######"; 3]; 2],
+                    "eager={eager}, light={light}"
+                );
+            }
+        }
+    }
+}

@@ -78,6 +78,17 @@ impl CellValue {
         self.raw_value.to_string().into()
     }
 
+    pub(crate) fn value_for_xml(&self) -> Cow<'static, str> {
+        // Excel accepts these magnitudes in scientific notation, but rejects
+        // their 309-digit decimal encodings in cells and numeric chart caches.
+        match self.raw_value() {
+            CellRawValue::Numeric(value) if value.is_finite() && value.abs() >= 1e308 => {
+                format!("{value:e}").into()
+            }
+            _ => self.value(),
+        }
+    }
+
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use value()")]

@@ -55,7 +55,7 @@ struct Value {
 impl Value {
     fn from_cell(cell: &Cell) -> Self {
         Self {
-            display: cell.formatted_value(),
+            display: cell.formatted_chart_value(),
             number:  cell.cell_value().value_number(),
             format:  cell
                 .style()
@@ -459,14 +459,14 @@ impl<'a> WorkbookChartExResolver<'a> {
                 if worksheet.is_deserialized() {
                     for (&coordinate, display) in &mut displays {
                         if let Some(cell) = worksheet.cell(coordinate) {
-                            *display = cell.formatted_value();
+                            *display = cell.formatted_chart_value();
                         }
                     }
                 } else {
                     self.stream(*sheet, |cell| {
                         let coordinate = (cell.coordinate().col_num(), cell.coordinate().row_num());
                         if let Some(display) = displays.get_mut(&coordinate) {
-                            *display = cell.formatted_value();
+                            *display = cell.formatted_chart_value();
                         }
                     })?;
                 }

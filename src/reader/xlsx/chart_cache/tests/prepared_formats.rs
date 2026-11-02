@@ -1,5 +1,3 @@
-use std::panic::catch_unwind as unwind;
-
 use super::{
     repeats::{
         add_part,
@@ -9,10 +7,10 @@ use super::{
 };
 
 // An imported styles.xml can exhaust the escape VM. Both eager and lazy
-// chart reads must return a literal first, or raise raw bounds before the
-// saved escape error. Patch the package so the writer cannot mask read order.
+// chart reads preserve literal sections and return numeric text when format
+// preparation fails. Patch the package so the writer cannot mask read order.
 #[test]
-fn chart_reads_preserve_literal_returns_and_format_failure_order() {
+fn chart_reads_preserve_literals_and_fall_back_when_format_preparation_fails() {
     let mut book = crate::new_file();
     let cell = book.sheet_mut(0).unwrap().cell_mut("A1");
     cell.set_value_number(-1);
@@ -34,19 +32,9 @@ fn chart_reads_preserve_literal_returns_and_format_failure_order() {
     let code = format!("0;\"{literal}\"");
     let raw_code = format!("0;0;0;0;0;[Red]0{literal}");
     for (code, positive, expected) in [
-        (code.as_str(), false, None),
-        (
-            code.as_str(),
-            true,
-            Some(
-                "called `Result::unwrap()` on an `Err` value: RuntimeError(BacktrackLimitExceeded)",
-            ),
-        ),
-        (
-            raw_code.as_str(),
-            true,
-            Some("index out of bounds: the len is 5 but the index is 5"),
-        ),
+        (code.as_str(), false, literal.as_str()),
+        (code.as_str(), true, "1"),
+        (raw_code.as_str(), true, "1"),
     ] {
         let attribute = format!("formatCode=\"{}\"", quick_xml::escape::escape(code));
         let mut bytes = rewrite_package_bytes(
@@ -65,30 +53,18 @@ fn chart_reads_preserve_literal_returns_and_format_failure_order() {
         }
         for eager in [true, false] {
             let before = crate::helper::number_format::preparation_count();
-            let observed = unwind(|| {
-                let mut imported =
-                    crate::reader::xlsx::read_reader(Cursor::new(bytes.clone()), eager).unwrap();
-                let sheet = imported.sheet_mut(0).unwrap();
-                assert_eq!(sheet.name(), "Sheet1");
-                if expected.is_none() {
-                    assert_eq!(
-                        crate::helper::number_format::preparation_count() - before,
-                        1,
-                        "eager={eager}"
-                    );
-                    assert_eq!(sheet.cell("A1").unwrap().formatted_value(), literal);
-                }
-            });
-            match (observed, expected) {
-                (Ok(()), None) => (),
-                (Err(payload), Some(expected)) => {
-                    assert_eq!(panic_message(payload), expected, "eager={eager}")
-                }
-                (Ok(()), Some(expected)) => panic!("eager={eager}: missing panic {expected}"),
-                (Err(payload), None) => {
-                    panic!("eager={eager}: unexpected panic {}", panic_message(payload))
-                }
-            }
+            let mut imported =
+                crate::reader::xlsx::read_reader(Cursor::new(bytes.clone()), eager).unwrap();
+            let sheet = imported.sheet_mut(0).unwrap();
+            assert_eq!(sheet.name(), "Sheet1");
+            assert_eq!(
+                crate::helper::number_format::preparation_count() - before,
+                1,
+                "eager={eager}"
+            );
+            let cell = sheet.cell("A1").unwrap();
+            assert_eq!(cell.formatted_value(), expected, "eager={eager}");
+            assert_eq!(cell.formatted_chart_value(), expected, "eager={eager}");
         }
     }
 }

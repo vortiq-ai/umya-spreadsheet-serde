@@ -26,6 +26,7 @@ use crate::{
         },
         number_format::{
             PreparedFormats,
+            to_formatted_chart_string,
             to_formatted_string,
         },
     },
@@ -575,6 +576,23 @@ impl Cell {
         result
     }
 
+    pub(crate) fn formatted_chart_value(&self) -> String {
+        let value = self.value();
+        if matches!(
+            self.raw_value(),
+            CellRawValue::String(_) | CellRawValue::RichText(_)
+        ) {
+            return value.into_owned();
+        }
+        let code = self
+            .style()
+            .number_format()
+            .map_or(NumberingFormat::FORMAT_GENERAL, |format| {
+                format.format_code()
+            });
+        to_formatted_chart_string(&value, code)
+    }
+
     pub(crate) fn cache_display(&self, scratch: &mut String) -> CacheDisplay<'_> {
         match self.raw_value() {
             CellRawValue::String(text) => CacheDisplay::Borrowed(text),
@@ -592,7 +610,7 @@ impl Cell {
                 CacheDisplay::Scratch
             }
             _ => {
-                *scratch = self.formatted_value();
+                *scratch = self.formatted_chart_value();
                 CacheDisplay::Scratch
             }
         }
@@ -611,7 +629,7 @@ impl Cell {
                     format.format_code()
                 });
             if !matches!(code, "General" | "@") {
-                *scratch = formats.format(self.value().as_ref(), code);
+                *scratch = formats.format_chart(self.value().as_ref(), code);
                 return CacheDisplay::Scratch;
             }
         }
@@ -851,6 +869,7 @@ impl Cell {
                 "e" => {
                     write_text_node(writer, self.value());
                 }
+                "n" => write_text_node(writer, self.cell_value().value_for_xml()),
                 _ => write_text_node_conversion(writer, self.value()),
             }
             write_end_tag(writer, "v");
@@ -986,7 +1005,7 @@ mod tests {
                 if matches!(code, None | Some("General" | "@")) {
                     assert_eq!(display.text(&scratch), expected, "{value:?} {code:?}");
                 }
-                assert_eq!(display.text(&scratch), cell.formatted_value());
+                assert_eq!(display.text(&scratch), cell.formatted_chart_value());
                 if matches!(code, Some("general" | "GENERAL")) {
                     assert!(matches!(display, CacheDisplay::Scratch));
                 }
@@ -1036,7 +1055,7 @@ mod tests {
                 }
                 assert_eq!(
                     cell.cache_display(&mut scratch).text(&scratch),
-                    cell.formatted_value(),
+                    cell.formatted_chart_value(),
                     "bits={:016x} format={code:?}",
                     value.to_bits(),
                 );
@@ -1076,7 +1095,7 @@ mod tests {
                     cell.style_mut().number_format_mut().set_format_code(code);
                 }
                 let display = cell.cache_display(&mut scratch);
-                assert_eq!(display.text(&scratch), cell.formatted_value());
+                assert_eq!(display.text(&scratch), cell.formatted_chart_value());
                 if matches!(
                     cell.raw_value(),
                     CellRawValue::String(_) | CellRawValue::Bool(_)
@@ -1087,6 +1106,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn date_overflow_uses_chart_text_in_both_cache_display_paths() {
+        let mut cell = Cell::default();
+        cell.style_mut()
+            .number_format_mut()
+            .set_format_code("yyyy-mm-dd");
+        let mut formats = PreparedFormats::default();
+        let mut scratch = String::new();
+        for value in [1e20, -1.0, 2_958_466.0, f64::MAX] {
+            cell.set_value_number(value);
+            assert_eq!(
+                cell.formatted_value(),
+                "############################################"
+            );
+            assert_eq!(cell.formatted_chart_value(), "#######");
+            assert_eq!(cell.cache_display(&mut scratch).text(&scratch), "#######");
+            assert_eq!(
+                cell.cache_display_prepared(&mut scratch, &mut formats)
+                    .text(&scratch),
+                "#######"
+            );
+        }
+        cell.set_value_string("1e20");
+        assert_eq!(cell.formatted_value(), "1e20");
+        assert_eq!(cell.formatted_chart_value(), "1e20");
     }
 
     #[test]

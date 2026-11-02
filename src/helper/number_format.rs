@@ -76,32 +76,79 @@ pub(crate) struct PreparedFormats {
 }
 
 impl PreparedFormats {
+    #[cfg(test)]
     pub(crate) fn format(&mut self, value: &str, code: &str) -> String {
+        self.format_result(value, code).cell_text()
+    }
+
+    pub(crate) fn format_chart(&mut self, value: &str, code: &str) -> String {
+        self.format_result(value, code).chart_text()
+    }
+
+    fn format_result(&mut self, value: &str, code: &str) -> FormattedValue {
         format_with(value, code, |parsed| {
             if let Some(prepared) = self.formats.get(code) {
-                return prepared.apply(parsed);
+                return prepared.apply_result(parsed);
             }
             self.formats
-                .insert(code.to_string(), PreparedFormat::new(code));
-            self.formats.get(code).unwrap().apply(parsed)
+                .entry(code.to_string())
+                .or_insert_with(|| PreparedFormat::new(code))
+                .apply_result(parsed)
         })
     }
 }
 
 pub fn to_formatted_string<S: AsRef<str>, P: AsRef<str>>(value: S, format: P) -> String {
     format_with(value.as_ref(), format.as_ref(), |parsed| {
-        PreparedFormat::new(format.as_ref()).apply(parsed)
+        PreparedFormat::new(format.as_ref()).apply_result(parsed)
     })
+    .cell_text()
 }
 
-fn format_with(value: &str, code: &str, prepare_and_apply: impl FnOnce(f64) -> String) -> String {
+pub(crate) fn to_formatted_chart_string(value: &str, format: &str) -> String {
+    format_with(value, format, |parsed| {
+        PreparedFormat::new(format).apply_result(parsed)
+    })
+    .chart_text()
+}
+
+pub(crate) enum FormattedValue {
+    Text(String),
+    DateOverflow,
+}
+
+impl FormattedValue {
+    fn cell_text(self) -> String {
+        match self {
+            Self::Text(text) => text,
+            Self::DateOverflow => "############################################".to_string(),
+        }
+    }
+
+    fn chart_text(self) -> String {
+        match self {
+            Self::Text(text) => text,
+            Self::DateOverflow => "#######".to_string(),
+        }
+    }
+}
+
+fn format_with(
+    value: &str,
+    code: &str,
+    prepare_and_apply: impl FnOnce(f64) -> FormattedValue,
+) -> FormattedValue {
     if value.is_empty() {
-        return value.to_string();
+        return FormattedValue::Text(value.to_string());
     }
     let parsed = match value.parse::<f64>() {
-        Ok(value) if code == NumberingFormat::FORMAT_GENERAL => return value.to_string(),
-        Ok(_) if code == NumberingFormat::FORMAT_TEXT => return value.to_string(),
-        Err(_) => return value.to_string(),
+        Ok(value) if code == NumberingFormat::FORMAT_GENERAL => {
+            return FormattedValue::Text(value.to_string());
+        }
+        Ok(_) if code == NumberingFormat::FORMAT_TEXT => {
+            return FormattedValue::Text(value.to_string());
+        }
+        Err(_) => return FormattedValue::Text(value.to_string()),
         Ok(value) => value,
     };
     prepare_and_apply(parsed)
@@ -149,32 +196,38 @@ impl PreparedFormat {
         Self { raw, rewritten }
     }
 
+    #[cfg(test)]
     fn apply(&self, value: f64) -> String {
-        let (raw, _) = select_section(&self.raw, value);
-        if let Some(literal) = literal_only_section(&raw.display) {
-            return literal;
+        self.apply_result(value).cell_text()
+    }
+
+    fn apply_result(&self, value: f64) -> FormattedValue {
+        if !value.is_finite() {
+            return FormattedValue::Text(value.to_string());
         }
-        let rewritten = self.rewritten.as_ref().unwrap();
-        let (section, absolute) = select_section(rewritten, value);
-        let section = &section.display;
-        // Keep the absolute value's round trip and the quoted parse here.
-        let reparsed = absolute.to_string().parse::<f64>().unwrap_or(0.0);
-        let formatted = match section.kind {
-            FormatKind::Date => date_formater::format_as_date(reparsed, &section.spaced),
-            FormatKind::Quoted => Cow::Owned(
-                section
-                    .spaced
-                    .trim_matches('"')
-                    .parse::<f64>()
-                    .unwrap()
-                    .to_string(),
-            ),
-            FormatKind::Percent => {
-                percentage_formater::format_as_percentage(reparsed, &section.spaced)
-            }
-            FormatKind::Number => number_formater::format_as_number(reparsed, &section.spaced),
+        let Some((raw, _)) = select_section(&self.raw, value) else {
+            return FormattedValue::Text(value.to_string());
         };
-        formatted.trim().to_string()
+        if let Some(literal) = literal_only_section(&raw.display) {
+            return FormattedValue::Text(literal);
+        }
+        let Some(rewritten) = self.rewritten.as_ref().ok() else {
+            return FormattedValue::Text(value.to_string());
+        };
+        let Some((section, absolute)) = select_section(rewritten, value) else {
+            return FormattedValue::Text(value.to_string());
+        };
+        let section = &section.display;
+        let formatted = match section.kind {
+            FormatKind::Date => return date_formater::format_as_date(absolute, &section.spaced),
+            FormatKind::Quoted | FormatKind::Number => {
+                number_formater::format_as_number(absolute, &section.spaced)
+            }
+            FormatKind::Percent => {
+                percentage_formater::format_as_percentage(absolute, &section.spaced)
+            }
+        };
+        FormattedValue::Text(formatted.trim().to_string())
     }
 }
 
@@ -241,11 +294,8 @@ fn prepare_display(converted: String) -> PreparedDisplay {
 fn select_section<T>(
     stage: &Result<Vec<PreparedSection<T>>, usize>,
     value: f64,
-) -> (&PreparedSection<T>, f64) {
-    let sections = match stage {
-        Ok(sections) => sections,
-        Err(index) => panic!("index out of bounds: the len is 5 but the index is {index}"),
-    };
+) -> Option<(&PreparedSection<T>, f64)> {
+    let Ok(sections) = stage else { return None };
     let compare = |index: usize, default| {
         let section = &sections[index];
         split_format_compare(
@@ -272,7 +322,7 @@ fn select_section<T>(
     } else {
         value
     };
-    (&sections[index], absolute)
+    sections.get(index).map(|section| (section, absolute))
 }
 
 /// Decode a section that contains literals but no value placeholder.
@@ -551,102 +601,56 @@ mod number_format_expectations;
 mod prepared_tests {
     use super::*;
 
-    fn outcome(result: std::thread::Result<String>) -> String {
-        result.unwrap_or_else(|payload| {
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap();
-            format!("PANIC: {message}")
-        })
-    }
-
-    // Every captured row must agree after earlier codes and panics have used
-    // the same map; an uncached-only replay misses damaged prepared entries.
+    // Every row must give exactly the answer of the one-shot formatter after
+    // earlier codes and edge values have used the same map. The integration
+    // test `number_formats_match_known_answers` pins those answers exactly.
     #[test]
-    fn shared_formats_preserve_every_known_answer_in_fixture_order() {
+    fn shared_formats_match_the_one_shot_formatter_for_every_known_row() {
         let rows = number_format_expectations::validated_rows();
         let mut formats = PreparedFormats::default();
         for (index, row) in rows.iter().enumerate() {
             let code = row["format"].as_str().unwrap();
             let value = row["value"].as_str().unwrap();
-            let observed = outcome(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || formats.format(value, code),
-            )));
             assert_eq!(
-                observed,
-                row["output"].as_str().unwrap(),
-                "oracle row {index}: format={code:?}, value={value:?}"
+                formats.format(value, code),
+                to_formatted_string(value, code),
+                "row {index}: format={code:?}, value={value:?}"
             );
         }
     }
 
-    // The escape VM exhausts its default 1,000,000 backtracks searching
-    // 2,000,000 ASCII positions (fancy-regex 0.18 compile.rs:999, vm.rs:1062).
-    // Preparation must survive; a literal return bypasses that saved error.
+    // The escape VM can exhaust its default backtrack budget on a large mask.
+    // Selected literal sections still render, and unsupported value sections
+    // return the numeric input without panicking.
     #[test]
-    fn escape_failure_waits_for_raw_checks_and_literal_return() {
+    fn escape_failure_and_excess_sections_do_not_panic() {
         let literal = "x".repeat(2_000_000);
         let code = format!("0;\"{literal}\"");
         let prepared = PreparedFormat::new(&code);
         assert_eq!(prepared.apply(-1.0), literal);
-        let expected = "PANIC: called `Result::unwrap()` on an `Err` value: \
-                        RuntimeError(BacktrackLimitExceeded)";
-        // The previous formatter called replace_all here, which delegates to
-        // try_replacen(...).unwrap() (fancy-regex lib.rs:1280,1295).
-        assert_eq!(
-            outcome(std::panic::catch_unwind(|| {
-                get_escape_regex()
-                    .replace_all(&code, r#""$0""#)
-                    .into_owned()
-            })),
-            expected
-        );
-        assert_eq!(
-            outcome(std::panic::catch_unwind(|| prepared.apply(1.0))),
-            expected
-        );
+        assert_eq!(prepared.apply(1.0), "1");
         let raw_code = format!("0;0;0;0;0;[Red]0{literal}");
         let raw_prepared = PreparedFormat::new(&raw_code);
-        let bounds = "PANIC: index out of bounds: the len is 5 but the index is 5";
-        assert_eq!(
-            outcome(std::panic::catch_unwind(|| raw_prepared.apply(1.0))),
-            bounds
-        );
+        assert_eq!(raw_prepared.apply(1.0), "1");
         let mut formats = PreparedFormats::default();
         for (value, code, expected) in [
             ("-1", code.as_str(), literal.as_str()),
-            ("1", code.as_str(), expected),
-            ("1", raw_code.as_str(), bounds),
+            ("1", code.as_str(), "1"),
+            ("1", raw_code.as_str(), "1"),
         ] {
-            assert_eq!(
-                outcome(std::panic::catch_unwind(|| to_formatted_string(
-                    value, code
-                ))),
-                expected
-            );
+            assert_eq!(to_formatted_string(value, code), expected);
             let mut cell = crate::Cell::default();
             cell.set_value_number(value.parse::<f64>().unwrap());
             cell.style_mut().number_format_mut().set_format_code(code);
-            assert_eq!(
-                outcome(std::panic::catch_unwind(|| cell.formatted_value())),
-                expected
-            );
-            assert_eq!(
-                outcome(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || { formats.format(value, code) }
-                ))),
-                expected
-            );
+            assert_eq!(cell.formatted_value(), expected);
+            assert_eq!(formats.format(value, code), expected);
         }
     }
 
-    // Reusing one date entry must survive a panic without corrupting later
-    // values. These are the oracle's 16 lexical inputs, in capture-input order.
-    // Rows 10891 -> 10892 -> 10895 put a panic between two numeric successes.
+    // Reusing one date entry across ordinary, out-of-range and non-finite
+    // inputs must preserve its output and prepared map.
     #[test]
-    fn reused_date_format_preserves_known_answers_before_and_after_panics() {
+    fn reused_date_format_handles_out_of_range_inputs() {
         let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
             "../../tests/fixtures/number_format_known_answers.json"
         ))
@@ -675,24 +679,13 @@ mod prepared_tests {
             let row = &rows[index];
             assert_eq!(row["format"], "yyyy-mm-dd");
             assert_eq!(row["value"], value);
-            let observed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                formats.format(value, "yyyy-mm-dd")
-            })) {
-                Ok(output) => output,
-                Err(payload) => {
-                    let message = payload
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| payload.downcast_ref::<&str>().copied())
-                        .unwrap();
-                    format!("PANIC: {message}")
-                }
+            let expected = match value {
+                "-1" | "-1234.5678" | "1e21" => "############################################",
+                "NaN" | "inf" | "-inf" => value,
+                _ => row["output"].as_str().unwrap(),
             };
-            assert_eq!(
-                observed,
-                row["output"].as_str().unwrap(),
-                "oracle row {index}"
-            );
+            let observed = formats.format(value, "yyyy-mm-dd");
+            assert_eq!(observed, expected, "oracle row {index}");
             assert_eq!(formats.formats.len(), 1);
             assert_eq!(preparation_count() - before, 1);
         }
@@ -717,48 +710,36 @@ mod prepared_tests {
         assert_eq!(preparation_count(), before);
     }
 
-    // The external oracle's zero-based rows 1225, 5803 and 5819 establish
-    // the bounds message, including failure before a literal first section.
+    // A mask with more sections than the formatter supports stays
+    // non-panicking, including when its first section is literal-only.
     #[test]
-    fn raw_section_failure_precedes_literal_selection() {
+    fn raw_section_overflow_returns_the_numeric_value() {
         for code in [
             r#""literal";0;0;0;0;[Red]0"#,
             "0;0;0;0;0;[<0]0",
             "0;0;0;0;0;[Red]0",
         ] {
             let prepared = PreparedFormat::new(code);
-            let panic = std::panic::catch_unwind(|| prepared.apply(1.0)).unwrap_err();
-            assert_eq!(
-                panic.downcast_ref::<String>().unwrap(),
-                "index out of bounds: the len is 5 but the index is 5",
-            );
+            assert_eq!(prepared.apply(1.0), "1");
         }
     }
 
     // _ followed by a quote removes that quote during spacing conversion.
-    // Raw "a_"0" contains an unquoted zero, but its converted "a 0" is a
-    // quoted non-number. Only selecting this section may run its parse.
+    // The converted display remains numeric formatting with a literal prefix.
     #[test]
-    fn quoted_numeric_parse_waits_for_the_selected_converted_section() {
+    fn quoted_numeric_display_does_not_parse_its_literal_as_a_number() {
         let code = r#""a_"0";"other""#;
         let prepared = PreparedFormat::new(code);
         assert_eq!(prepared.apply(-1.0), "other");
-        let panic = std::panic::catch_unwind(|| prepared.apply(1.0)).unwrap_err();
-        assert_eq!(
-            panic.downcast_ref::<String>().unwrap(),
-            "called `Result::unwrap()` on an `Err` value: ParseFloatError { kind: Invalid }",
-        );
+        assert_eq!(prepared.apply(1.0), "a 1");
     }
 
-    // Escaping \(; shields a raw separator only after the raw bounds check.
-    // Combining stage failures must not hide that check behind rewriting.
+    // An escaped separator in an overlong section list follows the same safe
+    // unsupported-format path.
     #[test]
-    fn raw_bounds_failure_survives_an_escaped_separator() {
+    fn escaped_section_overflow_does_not_panic() {
         let prepared = PreparedFormat::new(r"0;0;0;0;0\(;[Red]0");
-        assert_eq!(
-            outcome(std::panic::catch_unwind(|| prepared.apply(1.0))),
-            "PANIC: index out of bounds: the len is 5 but the index is 5"
-        );
+        assert_eq!(prepared.apply(1.0), "1");
         assert_eq!(to_formatted_string("1", r#""literal";0"#), "literal");
     }
 

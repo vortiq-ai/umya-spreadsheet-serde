@@ -12,12 +12,14 @@ use quick_xml::{
 
 use super::FormatCode;
 use crate::{
+    CellErrorType,
     reader::driver::{
         local_name,
         try_xml_read_loop,
     },
     structs::{
         Address,
+        CellRawValue,
         Workbook,
     },
     writer::driver::{
@@ -109,7 +111,21 @@ impl NumberingCache {
 
             // c:v
             write_start_tag(writer, "c:v", vec![], false);
-            write_text_node(writer, cell_value.value());
+            match cell_value.raw_value() {
+                CellRawValue::Error(
+                    CellErrorType::Div0
+                    | CellErrorType::Name
+                    | CellErrorType::Null
+                    | CellErrorType::Num
+                    | CellErrorType::Ref
+                    | CellErrorType::Value,
+                ) => {
+                    // Excel saves these worksheet errors as zero in numeric
+                    // caches.
+                    write_text_node(writer, "0");
+                }
+                _ => write_text_node(writer, cell_value.value_for_xml()),
+            }
             write_end_tag(writer, "c:v");
 
             write_end_tag(writer, "c:pt");

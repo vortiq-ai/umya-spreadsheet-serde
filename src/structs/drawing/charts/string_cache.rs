@@ -287,7 +287,7 @@ impl<'a> DisplaySource<'a> {
             |cell: &Cell| {
                 let coordinate = (cell.coordinate().col_num(), cell.coordinate().row_num());
                 if wanted.contains(&coordinate) {
-                    values.insert(coordinate, cell.formatted_value());
+                    values.insert(coordinate, cell.formatted_chart_value());
                 }
             },
         );
@@ -305,7 +305,7 @@ impl<'a> DisplaySource<'a> {
                 Some(
                     cells
                         .get(coordinate)
-                        .map_or_else(String::new, Cell::formatted_value),
+                        .map_or_else(String::new, Cell::formatted_chart_value),
                 )
             }
             Self::Streamed { values, range } => {
@@ -583,7 +583,10 @@ impl StringCache {
                         count = index.checked_add(1).ok_or_else(|| {
                             crate::xml::xml_error("PivotChart has too many category points")
                         })?;
-                        add(index, cell.map_or_else(String::new, Cell::formatted_value));
+                        add(
+                            index,
+                            cell.map_or_else(String::new, Cell::formatted_chart_value),
+                        );
                     }
                     Some(count)
                 }
@@ -646,7 +649,7 @@ impl StringCache {
                 Ok(sheet) => sheet
                     .cells_crate()
                     .iter_all_cells_by_range_sorted_by_row(&address.range().range())
-                    .map(|cell| cell.map_or_else(String::new, Cell::formatted_value))
+                    .map(|cell| cell.map_or_else(String::new, Cell::formatted_chart_value))
                     .collect(),
                 Err(_) => vec![],
             }

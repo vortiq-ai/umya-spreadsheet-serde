@@ -22,11 +22,17 @@ use umya_spreadsheet::{
         charts::{
             BarChart,
             CategoryAxisData,
+            ChartExDataResolver,
+            ChartExDimension,
+            ChartExDimensionSource,
             ChartText,
+            DataLabel,
+            DataLabels,
             Formula,
             GroupingValues,
             ShapeProperties,
             StringReference,
+            WorkbookChartExResolver,
         },
         spreadsheet::MarkerType,
     },
@@ -189,6 +195,320 @@ fn category_labels_use_each_cells_number_format() {
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     for xml in chart_parts_after_round_trip(&book) {
         assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$12", &labels);
+    }
+}
+
+#[test]
+fn generated_date_category_and_series_text_use_chart_overflow_labels() {
+    let mut book = category_workbook("Sheet1!$A$1:$A$3");
+    for (row, value) in [(1, 1e20), (2, 45_000.0), (3, 2_958_465.999_991)] {
+        let cell = book.sheet_mut(0).unwrap().cell_mut((1, row));
+        cell.set_value_number(value);
+        cell.style_mut()
+            .number_format_mut()
+            .set_format_code("yyyy-mm-dd");
+    }
+    let mut reference = StringReference::default();
+    reference.formula_mut().set_address_str("Sheet1!$A$1");
+    let mut text = ChartText::default();
+    text.set_string_reference(reference);
+    let mut label = DataLabel::default();
+    label.index_mut().set_val(0);
+    label.set_text(Some(text.clone()));
+    let mut labels = DataLabels::default();
+    labels.labels_mut().push(label);
+    chart_mut(&mut book)
+        .area_chart_series_list_mut()
+        .area_chart_series_mut()[0]
+        .set_chart_text(text)
+        .set_data_labels(labels);
+    assert_eq!(
+        book.sheet(0).unwrap().cell("A1").unwrap().formatted_value(),
+        "############################################"
+    );
+    emit_dateformat("generated-date-labels", &write(&book));
+    for xml in chart_parts_after_round_trip(&book) {
+        assert_string_reference(
+            &xml,
+            "cat",
+            "Sheet1!$A$1:$A$3",
+            &["#######", "2023-03-15", "9999-12-31"],
+        );
+        assert_string_reference(&xml, "tx", "Sheet1!$A$1", &["#######"]);
+        let label = between(&xml, "<c:dLbl>", "</c:dLbl>");
+        assert_string_reference(label, "tx", "Sheet1!$A$1", &["#######"]);
+    }
+}
+
+#[test]
+fn reader_date_masks_treat_literal_percent_without_panicking() {
+    let mut book = category_workbook("Sheet1!$A$1");
+    let cell = book.sheet_mut(0).unwrap().cell_mut("A1");
+    cell.set_value_number(45_000);
+    cell.style_mut()
+        .number_format_mut()
+        .set_format_code("yyyy-mm-dd");
+    let valid = write(&book);
+    // Excel rejects yyyy% as NumberFormat and leaves General; its quoted
+    // literal-percent form is accepted and displays 2023% in the COM evidence.
+    for (format, expected) in [("yyyy%", "45000"), (r#"yyyy"%""#, "2023%")] {
+        let source = rewrite_part(&valid, "xl/styles.xml", |xml| {
+            assert!(xml.contains("yyyy-mm-dd"));
+            xml.replace("yyyy-mm-dd", &escape(format))
+        });
+        let mut book = read_book(&source);
+        let cell = book.sheet(0).unwrap().cell("A1").unwrap();
+        assert_eq!(cell.style().number_format().unwrap().format_code(), format);
+        assert_eq!(cell.formatted_value(), expected);
+        // Retarget to an equivalent range so the old valid-date source cache
+        // cannot mask a formatter regression during regeneration.
+        chart_mut(&mut book)
+            .area_chart_series_list_mut()
+            .area_chart_series_mut()[0]
+            .category_axis_data_mut()
+            .unwrap()
+            .string_reference_mut()
+            .unwrap()
+            .formula_mut()
+            .set_address_str("Sheet1!$A$1:$A$1");
+        for xml in chart_parts_after_round_trip(&book) {
+            assert_string_reference(&xml, "cat", "Sheet1!$A$1:$A$1", &[expected]);
+        }
+    }
+}
+
+const DATE_OVERFLOW_CHARTS: &[u8] = include_bytes!("fixtures/date_overflow_charts.xlsx");
+
+fn emit_dateformat(name: &str, bytes: &[u8]) {
+    if let Some(directory) = std::env::var_os("UMYA_DATEFORMAT_OUTPUT_DIR") {
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(format!("{name}.xlsx")), bytes).unwrap();
+    }
+}
+
+fn package_text(bytes: &[u8], name: &str) -> String {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name(name)
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    xml
+}
+
+fn assert_standard_date_caches(bytes: &[u8], edited: bool) {
+    let xml = chart_part(bytes);
+    let series: Vec<_> = xml.split("<c:ser>").skip(1).collect();
+    let category = between(series[0], "<c:cat>", "</c:cat>");
+    assert!(category.contains("<c:numRef>"), "{category}");
+    assert_eq!(
+        between(category, "<c:formatCode>", "</c:formatCode>"),
+        r"yyyy\-mm\-dd\ h:mm"
+    );
+    let numbers: Vec<f64> = category
+        .split("<c:v>")
+        .skip(1)
+        .map(|point| point.split_once("</c:v>").unwrap().0.parse().unwrap())
+        .collect();
+    assert_eq!(
+        numbers,
+        [
+            1e20,
+            -1.0,
+            2_958_466.0,
+            2_958_465.5,
+            45_000.0,
+            if edited { 45_000.0 } else { f64::MAX }
+        ]
+    );
+    // Excel stores zero for the three series whose referenced TEXT formula
+    // cells contain #VALUE!, independently of their date-category labels.
+    for series in &series[1..4] {
+        let values = between(series, "<c:val>", "</c:val>");
+        assert_eq!(between(values, "<c:v>", "</c:v>"), "0");
+    }
+    let sheet = package_text(bytes, "xl/worksheets/sheet1.xml");
+    let maximum = between(&sheet, "<c r=\"S10\"", "</c>");
+    let maximum = between(maximum, "<v>", "</v>");
+    assert_eq!(maximum.parse::<f64>().unwrap(), f64::MAX);
+    assert!(maximum.contains('e') || maximum.contains('E'));
+    if !edited {
+        let maximum = category
+            .split("<c:v>")
+            .last()
+            .unwrap()
+            .split_once("</c:v>")
+            .unwrap()
+            .0;
+        assert!(maximum.contains('e') || maximum.contains('E'));
+    }
+    assert_string_reference(
+        series[1],
+        "cat",
+        "Measurements!$A$7:$G$7",
+        &[
+            if edited { "2023-03-15 0:00" } else { "#######" },
+            "6",
+            "max-finite-double",
+            "#######",
+            "#######",
+            "#######",
+            "#######",
+        ],
+    );
+}
+
+fn assert_chart_ex_date_values(book: &Workbook, edited: bool) {
+    let chart = book.sheet(0).unwrap().worksheet_drawing().extended_charts()[0].chart_space();
+    let mut resolver = WorkbookChartExResolver::new(book);
+    let data = chart
+        .resolved_series_data(
+            &chart.chart().unwrap().series()[0],
+            "Measurements",
+            &mut resolver,
+        )
+        .unwrap()
+        .unwrap();
+    let ChartExDimension::String(dimension) = &data.dimensions[0] else {
+        panic!("string categories")
+    };
+    let ChartExDimensionSource::Literal(levels) = &dimension.source else {
+        panic!("resolved categories")
+    };
+    assert_eq!(
+        levels[0]
+            .points
+            .iter()
+            .map(|point| point.value.as_str())
+            .collect::<Vec<_>>(),
+        [
+            if edited { "2023-03-15" } else { "#######" },
+            "#######",
+            "#######",
+            "9999-12-31",
+            if edited { "#######" } else { "2023-03-15" },
+            "#######"
+        ]
+    );
+    let ChartExDimension::Numeric(dimension) = &chart.data().unwrap().data[1].dimensions[0] else {
+        panic!("numeric date cache")
+    };
+    let ChartExDimensionSource::Reference(reference) = &dimension.source else {
+        panic!("numeric date reference")
+    };
+    let numbers = resolver.numeric_levels("Measurements", reference).unwrap();
+    assert_eq!(
+        numbers[0]
+            .points
+            .iter()
+            .map(|point| point.value.value())
+            .collect::<Vec<_>>(),
+        [
+            Some(if edited { 45_000.0 } else { 1e20 }),
+            Some(-1.0),
+            Some(2_958_466.0),
+            Some(2_958_465.5),
+            Some(if edited { 1e20 } else { 45_000.0 }),
+            Some(f64::MAX)
+        ]
+    );
+}
+
+fn assert_chart_ex_numeric_cache(bytes: &[u8], edited: bool) {
+    let xml = package_text(bytes, "xl/charts/chartEx1.xml");
+    let numeric = between(&xml, "<cx:data id=\"1\">", "</cx:data>");
+    assert!(numeric.contains("<cx:numDim type=\"val\">"), "{numeric}");
+    let level = numeric
+        .split_once("<cx:lvl ")
+        .unwrap()
+        .1
+        .split_once('>')
+        .unwrap()
+        .0;
+    assert!(level.contains("ptCount=\"6\""), "{level}");
+    assert!(level.contains("formatCode=\"yyyy-mm-dd\""), "{level}");
+    assert_eq!(numeric.matches("<cx:pt ").count(), 6);
+    for (index, expected) in [
+        if edited { 45_000.0 } else { 1e20 },
+        -1.0,
+        2_958_466.0,
+        2_958_465.5,
+        if edited { 1e20 } else { 45_000.0 },
+        f64::MAX,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let value = between(numeric, &format!("<cx:pt idx=\"{index}\">"), "</cx:pt>");
+        assert_eq!(
+            value.parse::<f64>().unwrap(),
+            expected,
+            "numeric cache point {index}"
+        );
+    }
+}
+
+#[test]
+fn excel_date_overflow_caches_survive_read_edit_write_and_reread() {
+    emit_dateformat("excel-date-source", DATE_OVERFLOW_CHARTS);
+    assert_standard_date_caches(DATE_OVERFLOW_CHARTS, false);
+    assert_chart_ex_numeric_cache(DATE_OVERFLOW_CHARTS, false);
+    let original = package_text(DATE_OVERFLOW_CHARTS, "xl/charts/chartEx1.xml");
+    assert!(original.contains("<cx:pt idx=\"0\">#######</cx:pt>"));
+    assert!(original.contains("formatCode=\"yyyy-mm-dd\""));
+    assert!(original.contains("<cx:pt idx=\"0\">1E+20</cx:pt>"));
+    for eager in [false, true] {
+        let mut book =
+            umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(DATE_OVERFLOW_CHARTS), eager)
+                .unwrap();
+        book.sheet_mut(0).unwrap();
+        assert_eq!(book.sheet(0).unwrap().chart_collection().len(), 1);
+        assert_eq!(
+            book.sheet(0)
+                .unwrap()
+                .worksheet_drawing()
+                .extended_charts()
+                .len(),
+            1
+        );
+        #[cfg(feature = "serde")]
+        {
+            let baseline =
+                serde_json::to_string(&book.sheet(0).unwrap().chart_collection()[0]).unwrap();
+            assert!(
+                !baseline.contains("############################################"),
+                "cell overflow leaked into a chart source baseline"
+            );
+        }
+        assert_chart_ex_date_values(&book, false);
+        let bytes = write(&book);
+        emit_dateformat(&format!("date-readonly-eager-{eager}"), &bytes);
+        assert_standard_date_caches(&bytes, false);
+        assert_chart_ex_numeric_cache(&bytes, false);
+        assert_chart_ex_date_values(&read_book(&bytes), false);
+
+        let sheet = book.sheet_mut(0).unwrap();
+        sheet.cell_mut("A7").set_value_number(45_000);
+        sheet.cell_mut("N10").set_value_number(45_000);
+        sheet.cell_mut("R10").set_value_number(1e20);
+        assert_chart_ex_date_values(&book, true);
+        let once = write(&book);
+        emit_dateformat(&format!("date-edited-eager-{eager}"), &once);
+        let reread = read_book(&once);
+        assert_standard_date_caches(&once, true);
+        assert_chart_ex_numeric_cache(&once, true);
+        assert_chart_ex_date_values(&reread, true);
+        let twice = write(&reread);
+        emit_dateformat(&format!("date-reread-eager-{eager}"), &twice);
+        assert_standard_date_caches(&twice, true);
+        assert_chart_ex_numeric_cache(&twice, true);
+        assert_chart_ex_date_values(&read_book(&twice), true);
+        let written = package_text(&once, "xl/charts/chartEx1.xml");
+        assert!(written.contains("<cx:pt idx=\"0\">2023-03-15</cx:pt>"));
+        assert!(written.contains("<cx:pt idx=\"4\">#######</cx:pt>"));
+        assert!(!written.contains("############################################"));
     }
 }
 

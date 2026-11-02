@@ -2372,13 +2372,6 @@ impl<'a> DisplayResolver<'a> {
 
 #[cfg(test)]
 mod tests {
-    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        match payload.downcast::<String>() {
-            Ok(message) => *message,
-            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_owned(),
-        }
-    }
-
     #[cfg(feature = "serde")]
     mod cache_admission_order;
     mod prepared_formats;
