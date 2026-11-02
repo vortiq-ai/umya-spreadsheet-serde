@@ -11,14 +11,28 @@ use super::super::super::UInt16Value;
 use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct SecondPieSize {
     val: UInt16Value,
 }
+impl Default for SecondPieSize {
+    fn default() -> Self {
+        let mut val = UInt16Value::default();
+        val.set_value(Self::DEFAULT);
+        Self { val }
+    }
+}
 impl SecondPieSize {
+    /// `ST_SecondPieSize` (5 to 200 percent) defaults to 75.
+    const DEFAULT: u16 = 75;
+
     #[must_use]
     pub fn val(&self) -> u16 {
-        self.val.value()
+        if self.val.has_value() {
+            self.val.value()
+        } else {
+            Self::DEFAULT
+        }
     }
 
     #[must_use]
@@ -34,20 +48,27 @@ impl SecondPieSize {
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
-        _reader: &mut Reader<R>,
+        reader: &mut Reader<R>,
         e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        self.val
-            .set_value_string(crate::reader::driver::require_attribute(e, b"val")?);
+        let value = super::percent_element::read_percent(
+            reader,
+            e,
+            "secondPieSize",
+            (5, 200),
+            Self::DEFAULT,
+        )?;
+        self.val.set_value(value);
         Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
         // c:secondPieSize
+        let value = self.val().to_string();
         write_start_tag(
             writer,
             "c:secondPieSize",
-            vec![("val", &self.val.value_string()).into()],
+            vec![("val", value.as_str()).into()],
             true,
         );
     }

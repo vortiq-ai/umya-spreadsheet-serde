@@ -160,6 +160,13 @@ impl NumericData {
         None
     }
 
+    pub(crate) fn restore_extensions(&mut self, previous: Option<&Self>) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.and_then(|value| value.extensions.as_ref()),
+        )
+    }
+
     pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions.as_deref_mut()
     }
@@ -384,15 +391,215 @@ impl NumericDataSource {
     }
 }
 
-pub(crate) fn is_native_numeric_reference(
-    child: &BytesStart<'_>,
-    session: Option<&crate::reader::xlsx::SourceCacheSession>,
-) -> Result<bool, crate::XlsxError> {
-    let native = match session {
-        Some(session) => session.accepts_child_namespace(child, super::extension_registry::NS_C)?,
-        None => true,
+/// Reads the `numRef` / `numLit` choice of a `CT_NumDataSource` owner into
+/// the owner's reference and literal. Holding more than one choice is an
+/// error, never a silent pick.
+pub(crate) fn read_numeric_source<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    owner: &BytesStart,
+    session: &crate::reader::xlsx::SourceCacheSession,
+    reference: &mut NumberReference,
+    literal: &mut Option<NumericData>,
+) -> Result<(), crate::XlsxError> {
+    let _scope_guard = session.enter_child_scope(owner)?;
+    let mut choices = 0_usize;
+    let complete = children(
+        reader,
+        owner,
+        false,
+        |reader, child, empty| -> Result<bool, crate::XlsxError> {
+            if !session.accepts_child_namespace(child, super::extension_registry::NS_C)? {
+                return Ok(false);
+            }
+            match local_name(child.name().into_inner()) {
+                b"numRef" => {
+                    choices += 1;
+                    if !empty {
+                        reference.set_attributes_with_session(reader, child, session)?;
+                    }
+                    Ok(true)
+                }
+                b"numLit" => {
+                    choices += 1;
+                    *literal = Some(NumericData::read_with_session(
+                        reader, child, empty, session,
+                    )?);
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        },
+    )?;
+    if !complete || choices > 1 {
+        return Err(crate::xml::xml_error("Could not read numeric data source"));
+    }
+    Ok(())
+}
+
+/// The array-constant API and hidden-extension plumbing of a numeric data
+/// source that stores `number_literal: Option<NumericData>`. The literal is
+/// the source while it is present. There is no remover: a constant is replaced
+/// by another source, never by an empty reference.
+macro_rules! numeric_literal_api {
+    ($($clear_field:ident)?) => {
+        /// The array-constant source, when the series holds one instead of a
+        /// reference.
+        #[must_use]
+        pub fn number_literal(&self) -> Option<&super::NumericData> {
+            self.number_literal.as_ref()
+        }
+
+        pub fn number_literal_mut(&mut self) -> Option<&mut super::NumericData> {
+            self.number_literal.as_mut()
+        }
+
+        /// Makes the literal the source; the reference is not written while a
+        /// literal is present.
+        pub fn set_number_literal(&mut self, value: super::NumericData) -> &mut Self {
+            $(self.$clear_field = None;)?
+            self.number_literal = Some(value);
+            self
+        }
+
+        #[must_use]
+        pub fn extensions(&self) -> Option<&super::ExtensionList> {
+            self.number_literal
+                .as_ref()
+                .and_then(super::NumericData::extensions)
+        }
+
+        pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+            self.number_literal
+                .as_mut()
+                .and_then(super::NumericData::extensions_mut)
+        }
+
+        pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+            self.number_literal
+                .as_mut()
+                .and_then(super::NumericData::projection_extensions_mut)
+        }
+
+        pub(crate) fn restore_literal_extensions(&mut self, previous: &Self) -> usize {
+            match self.number_literal.as_mut() {
+                Some(literal) => literal.restore_extensions(previous.number_literal.as_ref()),
+                None => 0,
+            }
+        }
     };
-    Ok(native && local_name(child.name().into_inner()) == b"numRef")
+}
+pub(crate) use numeric_literal_api;
+
+/// A `CT_NumDataSource` owner (`c:val`, `c:yVal`, `c:bubbleSize`): a numeric
+/// reference or an array constant such as `={1,2,3}`.
+macro_rules! numeric_source {
+    ($(#[$doc:meta])* $name:ident, $tag:literal, $label:literal) => {
+        $(#[$doc])*
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[derive(Clone, Default, Debug)]
+        pub struct $name {
+            number_reference: super::NumberReference,
+            #[cfg_attr(feature = "serde", serde(default))]
+            number_literal:   Option<super::NumericData>,
+        }
+
+        impl $name {
+            #[must_use]
+            pub fn number_reference(&self) -> &super::NumberReference {
+                &self.number_reference
+            }
+
+            #[must_use]
+            #[deprecated(since = "3.0.0", note = "Use number_reference()")]
+            pub fn get_number_reference(&self) -> &super::NumberReference {
+                self.number_reference()
+            }
+
+            pub fn number_reference_mut(&mut self) -> &mut super::NumberReference {
+                &mut self.number_reference
+            }
+
+            #[deprecated(since = "3.0.0", note = "Use number_reference_mut()")]
+            pub fn get_number_reference_mut(&mut self) -> &mut super::NumberReference {
+                self.number_reference_mut()
+            }
+
+            /// Makes `value` the source, replacing any literal.
+            pub fn set_number_reference(&mut self, value: super::NumberReference) -> &mut Self {
+                self.number_reference = value;
+                self.number_literal = None;
+                self
+            }
+
+            super::numeric_data::numeric_literal_api!();
+
+            pub(crate) fn conflict(&self) -> Option<super::SeriesPartConflictReason> {
+                self.number_literal
+                    .as_ref()
+                    .and_then(super::NumericData::conflict)
+            }
+
+            pub(crate) fn is_literal(&self) -> bool {
+                self.number_literal.is_some()
+            }
+
+            pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+                &mut self,
+                reader: &mut quick_xml::Reader<R>,
+                e: &quick_xml::events::BytesStart,
+                session: &crate::reader::xlsx::SourceCacheSession,
+            ) -> Result<(), crate::XlsxError> {
+                super::numeric_data::read_numeric_source(
+                    reader,
+                    e,
+                    session,
+                    &mut self.number_reference,
+                    &mut self.number_literal,
+                )
+            }
+
+            pub(crate) fn write_to(
+                &self,
+                writer: &mut quick_xml::Writer<std::io::Cursor<Vec<u8>>>,
+                wb: &crate::structs::Workbook,
+            ) -> Result<(), crate::XlsxError> {
+                super::numeric_data::write_numeric_source(
+                    writer,
+                    wb,
+                    concat!("c:", $tag),
+                    $label,
+                    &self.number_reference,
+                    self.number_literal.as_ref(),
+                )
+            }
+        }
+    };
+}
+pub(crate) use numeric_source;
+
+/// Writes a `CT_NumDataSource` owner: the literal when the owner holds one,
+/// otherwise the reference. An invalid literal is an export error naming
+/// `label`.
+pub(crate) fn write_numeric_source(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    workbook: &Workbook,
+    name: &str,
+    label: &str,
+    reference: &NumberReference,
+    literal: Option<&NumericData>,
+) -> Result<(), crate::XlsxError> {
+    if literal.is_some_and(|value| !value.is_valid()) {
+        return Err(crate::xml::xml_error(format!(
+            "chart {label} contain an invalid numeric literal"
+        )));
+    }
+    write_start_tag(writer, name, vec![], false);
+    match literal {
+        Some(value) => value.write_to(writer)?,
+        None => reference.write_to(writer, workbook)?,
+    }
+    write_end_tag(writer, name);
+    Ok(())
 }
 
 /// Visit direct children; the callback reports whether it consumed the owner

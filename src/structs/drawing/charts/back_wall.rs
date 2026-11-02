@@ -11,6 +11,7 @@ use quick_xml::{
 };
 
 use super::{
+    PictureOptions,
     ShapeProperties,
     Thickness,
     extension_registry::NS_C,
@@ -32,9 +33,31 @@ use crate::{
 pub struct BackWall {
     thickness:        Option<Thickness>,
     shape_properties: Option<ShapeProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    picture_options:  Option<PictureOptions>,
 }
 
 impl BackWall {
+    /// How a picture fill is stacked or stretched on the surface.
+    #[must_use]
+    pub fn picture_options(&self) -> Option<&PictureOptions> {
+        self.picture_options.as_ref()
+    }
+
+    pub fn picture_options_mut(&mut self) -> Option<&mut PictureOptions> {
+        self.picture_options.as_mut()
+    }
+
+    pub fn set_picture_options(&mut self, value: PictureOptions) -> &mut Self {
+        self.picture_options = Some(value);
+        self
+    }
+
+    pub fn remove_picture_options(&mut self) -> &mut Self {
+        self.picture_options = None;
+        self
+    }
+
     #[must_use]
     pub fn thickness(&self) -> Option<&Thickness> {
         self.thickness.as_ref()
@@ -143,6 +166,11 @@ impl BackWall {
                         }
                         self.set_shape_properties(obj);
                     },
+                    b"pictureOptions" => {
+                        self.set_picture_options(PictureOptions::read(
+                            reader, e, empty, session,
+                        )?);
+                    },
                     _ => { if !empty { skip_element(reader, e)?; } },
                 }
             },
@@ -170,6 +198,11 @@ impl BackWall {
         // c:spPr
         if let Some(v) = &self.shape_properties {
             v.write_to(writer)?;
+        }
+
+        // c:pictureOptions
+        if let Some(v) = &self.picture_options {
+            v.write_to(writer);
         }
 
         write_end_tag(writer, "c:backWall");

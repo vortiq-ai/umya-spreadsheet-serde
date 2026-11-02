@@ -4,8 +4,8 @@ use super::super::super::EnumTrait;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub enum ShapeValues {
-    Box,
     #[default]
+    Box,
     Cone,
     ConeToMax,
     Cylinder,

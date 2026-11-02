@@ -16,6 +16,7 @@ use super::{
     AxisId,
     ChartLines,
     DataLabels,
+    GapDepth,
     Grouping,
     SeriesFamily,
     VaryColors,
@@ -50,6 +51,8 @@ pub struct Line3DChart {
     #[cfg_attr(feature = "serde", serde(default))]
     drop_lines:             Option<ChartLines>,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    gap_depth:              Option<GapDepth>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }
@@ -128,6 +131,26 @@ impl Line3DChart {
 
     pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
         std::iter::once(&mut self.data_labels)
+    }
+
+    /// The gap between series along the depth of a 3-D chart.
+    #[must_use]
+    pub fn gap_depth(&self) -> Option<&GapDepth> {
+        self.gap_depth.as_ref()
+    }
+
+    pub fn gap_depth_mut(&mut self) -> Option<&mut GapDepth> {
+        self.gap_depth.as_mut()
+    }
+
+    pub fn set_gap_depth(&mut self, value: GapDepth) -> &mut Self {
+        self.gap_depth = Some(value);
+        self
+    }
+
+    pub fn remove_gap_depth(&mut self) -> &mut Self {
+        self.gap_depth = None;
+        self
     }
 
     #[must_use]
@@ -320,6 +343,11 @@ impl Line3DChart {
                     b"varyColors" => {
                         self.vary_colors.set_attributes(reader, e)?;
                     }
+                    b"gapDepth" => {
+                        let mut obj = GapDepth::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_gap_depth(obj);
+                    }
                     b"axId" => {
                         let mut obj = AxisId::default();
                         obj.set_attributes(reader, e)?;
@@ -362,6 +390,11 @@ impl Line3DChart {
         // c:dropLines
         if let Some(v) = &self.drop_lines {
             v.write_to_as(writer, "c:dropLines")?;
+        }
+
+        // c:gapDepth
+        if let Some(v) = &self.gap_depth {
+            v.write_to(writer);
         }
 
         // c:axId

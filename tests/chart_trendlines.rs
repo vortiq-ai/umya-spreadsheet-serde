@@ -876,10 +876,11 @@ fn source_cache_walk_does_not_allocate_empty_series_supplements() {
 #[test]
 fn appended_series_vector_and_number_format_wire_costs_are_exact() {
     let series = AreaChartSeries::default();
-    assert_eq!(bincode::serialize(&series).unwrap(), vec![0; 16]);
+    // Sixteen absent originals, then the picture options and shape options.
+    assert_eq!(bincode::serialize(&series).unwrap(), vec![0; 18]);
     let mut series = series;
     series.parts_mut();
-    assert_eq!(bincode::serialize(&series).unwrap().len(), 41); // Fifteen absent originals, Some, three eight-byte vectors, absent extension option.
+    assert_eq!(bincode::serialize(&series).unwrap().len(), 43); // Seventeen absent originals, Some, three eight-byte vectors, absent extension option.
     let format = NumberingFormat::default();
     assert_eq!(bincode::serialize(&format).unwrap(), vec![0, 0, 0]);
     assert_eq!(

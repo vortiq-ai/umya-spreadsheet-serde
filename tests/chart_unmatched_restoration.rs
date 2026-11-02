@@ -19,6 +19,118 @@ fn imported(series: &str, group: &str, axis: &str, pivots: &str) -> Chart {
     imported_on((10, 20), series, group, axis, pivots)
 }
 
+fn chart_with_bar_series_lines(lines: &str) -> Chart {
+    fixture::imported_chart(&format!(
+        r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+         xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+         xmlns:u="urn:future"><c:chart><c:plotArea><c:barChart><c:barDir
+         val="col"/><c:grouping val="stacked"/>{lines}</c:barChart></c:plotArea></c:chart></c:chartSpace>"#
+    ))
+}
+
+fn find_series_lines(value: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.contains_key("series_lines") {
+                return object.get_mut("series_lines");
+            }
+            for child in object.values_mut() {
+                if let Some(found) = find_series_lines(child) {
+                    return Some(found);
+                }
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for child in array {
+                if let Some(found) = find_series_lines(child) {
+                    return Some(found);
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn exported_and_reloaded_chart(chart: Chart) -> (String, Chart) {
+    let mut book = umya_spreadsheet::new_file();
+    book.sheet_mut(0).unwrap().add_chart(chart);
+    let xml = fixture::chart_xml(&book);
+    let reloaded = umya_spreadsheet::reader::xlsx::read_reader(
+        Cursor::new(fixture::write_workbook(&book)),
+        true,
+    )
+    .unwrap();
+    (
+        xml,
+        reloaded.sheet(0).unwrap().chart_collection()[0].clone(),
+    )
+}
+
+fn assert_reloaded_series_lines(chart: &Chart, count: usize) {
+    let mut value = serde_json::to_value(chart).unwrap();
+    let lines = find_series_lines(&mut value).unwrap().as_array().unwrap();
+    assert_eq!(lines.len(), count);
+    assert!(!value.to_string().contains("urn:injected-line"));
+}
+
+const INJECTED_LINE_EXTENSION: &str =
+    "<a:extLst><a:ext uri=\"urn:injected-line\"><u:payload/></a:ext></a:extLst>";
+
+#[test]
+fn added_series_line_drops_client_supplied_shape_extensions() {
+    let previous = chart_with_bar_series_lines("<c:serLines/>");
+    let forged = chart_with_bar_series_lines(&format!(
+        "<c:serLines><c:spPr>{INJECTED_LINE_EXTENSION}</c:spPr></c:serLines>"
+    ));
+    let mut projected = previous.clone();
+    projected.strip_export_parts();
+    let mut incoming = serde_json::to_value(projected).unwrap();
+    let forged_lines = find_series_lines(&mut serde_json::to_value(forged).unwrap())
+        .unwrap()
+        .clone();
+    find_series_lines(&mut incoming)
+        .unwrap()
+        .as_array_mut()
+        .unwrap()
+        .push(forged_lines.as_array().unwrap()[0].clone());
+    let mut current: Chart = serde_json::from_value(incoming).unwrap();
+
+    current.restore_export_parts(&previous).unwrap();
+
+    let (xml, reloaded) = exported_and_reloaded_chart(current);
+    assert!(xml.contains("<c:serLines"), "{xml}");
+    assert!(!xml.contains("urn:injected-line"), "{xml}");
+    assert_reloaded_series_lines(&reloaded, 2);
+}
+
+#[test]
+fn injected_shape_on_previously_shapeless_series_line_is_dropped() {
+    let previous = chart_with_bar_series_lines("<c:serLines/>");
+    let forged = chart_with_bar_series_lines(&format!(
+        "<c:serLines><c:spPr>{INJECTED_LINE_EXTENSION}</c:spPr></c:serLines>"
+    ));
+    let mut projected = previous.clone();
+    projected.strip_export_parts();
+    let mut incoming = serde_json::to_value(projected).unwrap();
+    let forged_lines = find_series_lines(&mut serde_json::to_value(forged).unwrap())
+        .unwrap()
+        .clone();
+    find_series_lines(&mut incoming)
+        .unwrap()
+        .as_array_mut()
+        .unwrap()[0]["shape_properties"] =
+        forged_lines.as_array().unwrap()[0]["shape_properties"].clone();
+    let mut current: Chart = serde_json::from_value(incoming).unwrap();
+
+    current.restore_export_parts(&previous).unwrap();
+
+    let (xml, reloaded) = exported_and_reloaded_chart(current);
+    assert!(xml.contains("<c:serLines"), "{xml}");
+    assert!(!xml.contains("urn:injected-line"), "{xml}");
+    assert_reloaded_series_lines(&reloaded, 1);
+}
+
 fn imported_on(axes: (u32, u32), series: &str, group: &str, axis: &str, pivots: &str) -> Chart {
     fixture::imported_chart(&format!("<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:u=\"urn:future\"><c:chart>{pivots}<c:plotArea><c:lineChart><c:grouping val=\"standard\"/>{series}{group}<c:axId val=\"{}\"/><c:axId val=\"{}\"/></c:lineChart>{axis}</c:plotArea></c:chart></c:chartSpace>", axes.0, axes.1))
 }

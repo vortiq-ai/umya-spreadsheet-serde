@@ -18,7 +18,9 @@ use super::{
     DataLabels,
     SeriesFamily,
     ShowNegativeBubbles,
+    SizeRepresents,
     VaryColors,
+    XmlBoolean,
 };
 use crate::{
     reader::driver::{
@@ -42,6 +44,10 @@ pub struct BubbleChart {
     bubble_scale:           BubbleScale,
     show_negative_bubbles:  ShowNegativeBubbles,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    bubble_3d:              Option<XmlBoolean>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    size_represents:        Option<SizeRepresents>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }
@@ -99,6 +105,43 @@ impl BubbleChart {
 
     pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
         std::iter::once(&mut self.data_labels)
+    }
+
+    /// The 3-D effect of every bubble in the group (`c:bubble3D`).
+    #[must_use]
+    pub fn bubble_3d(&self) -> Option<&XmlBoolean> {
+        self.bubble_3d.as_ref()
+    }
+
+    pub fn set_bubble_3d(&mut self, value: XmlBoolean) -> &mut Self {
+        self.bubble_3d = Some(value);
+        self
+    }
+
+    pub fn remove_bubble_3d(&mut self) -> &mut Self {
+        self.bubble_3d = None;
+        self
+    }
+
+    /// Whether bubble size stands for area or width (`c:sizeRepresents`);
+    /// Excel treats an absent element as area.
+    #[must_use]
+    pub fn size_represents(&self) -> Option<&SizeRepresents> {
+        self.size_represents.as_ref()
+    }
+
+    pub fn size_represents_mut(&mut self) -> Option<&mut SizeRepresents> {
+        self.size_represents.as_mut()
+    }
+
+    pub fn set_size_represents(&mut self, value: SizeRepresents) -> &mut Self {
+        self.size_represents = Some(value);
+        self
+    }
+
+    pub fn remove_size_represents(&mut self) -> &mut Self {
+        self.size_represents = None;
+        self
     }
 
     #[must_use]
@@ -305,6 +348,14 @@ impl BubbleChart {
                     b"varyColors" => {
                         self.vary_colors.set_attributes(reader, e)?;
                     }
+                    b"bubble3D" => {
+                        self.bubble_3d = Some(XmlBoolean::read(e));
+                    }
+                    b"sizeRepresents" => {
+                        let mut obj = SizeRepresents::default();
+                        obj.set_attributes(reader, e)?;
+                        self.size_represents = Some(obj);
+                    }
                     b"bubbleScale" => {
                         self.bubble_scale.set_attributes(reader, e)?;
                     }
@@ -347,11 +398,21 @@ impl BubbleChart {
         // c:dLbls
         self.data_labels.write_to(writer, wb)?;
 
+        // c:bubble3D
+        if let Some(v) = &self.bubble_3d {
+            v.write_to(writer, "c:bubble3D");
+        }
+
         // c:bubbleScale
         self.bubble_scale.write_to(writer);
 
         // c:showNegBubbles
         self.show_negative_bubbles.write_to(writer);
+
+        // c:sizeRepresents
+        if let Some(v) = &self.size_represents {
+            v.write_to(writer);
+        }
 
         // c:axId
         for v in &self.axis_id {

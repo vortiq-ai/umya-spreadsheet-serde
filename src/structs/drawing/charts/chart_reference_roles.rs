@@ -210,6 +210,7 @@ pub(crate) struct GroupParts<'a> {
     pub(crate) series:           &'a [super::AreaChartSeries],
     pub(crate) labels:           Option<&'a super::DataLabels>,
     pub(crate) extensions:       Option<&'a super::ExtensionList>,
+    pub(crate) series_lines:     Option<&'a [super::ChartLines]>,
     // Line, bar and band formatting of the group, and the up/down bars' list.
     pub(crate) shapes:           Vec<&'a super::ShapeProperties>,
     pub(crate) lines_extensions: Option<&'a super::ExtensionList>,
@@ -219,6 +220,7 @@ pub(crate) struct GroupPartsMut<'a> {
     pub(crate) series:           &'a mut [super::AreaChartSeries],
     pub(crate) labels:           Option<&'a mut super::DataLabels>,
     pub(crate) extensions:       Option<&'a mut super::ExtensionList>,
+    pub(crate) series_lines:     Option<&'a mut [super::ChartLines]>,
     pub(crate) shapes:           Vec<&'a mut super::ShapeProperties>,
     pub(crate) lines_extensions: Option<&'a mut super::ExtensionList>,
 }
@@ -516,6 +518,9 @@ macro_rules! reference_topology {
                 let fields=get!(group, group_parts);
                 for series in fields.series { native_series(series, false, w); }
                 if let Some(child)=fields.labels { labels(None, child, w); }
+                if let Some(series_lines)=fields.series_lines {
+                    for line in series_lines { lines(None, line, w); }
+                }
                 if let Some(child)=fields.extensions { list(None, child, w); }
                 for child in fields.shapes { shape(None, child, w); }
                 if let Some(child)=fields.lines_extensions { list(None, child, w); }
@@ -727,11 +732,12 @@ macro_rules! reference_topology {
             number: Option<&'a $($m)* NumberReference>,
             multi: Option<&'a $($m)* MultiLevelStringReference>,
             literal: Option<&'a $($m)* StringLiteral>,
+            number_literal: Option<&'a $($m)* NumericData>,
         }
         fn primary_category<'a>(owner:&'a $($m)* CategoryAxisData,
         action:Option<(Option<ReferenceIdentity>, &'static str)>,
         w:&mut State<'_ $(, $b)?>)->CategoryRemainder<'a> {
-            let (string, number, multi, literal)=get!(owner, role_parts);
+            let (string, number, multi, literal, number_literal)=get!(owner, role_parts);
             let string_extensions=match string {
                 Some(reference)=>match action {
                     Some((id, role))=>project_leaf(reference, w,
@@ -740,7 +746,7 @@ macro_rules! reference_topology {
                 },
                 None=>None,
             };
-            CategoryRemainder { string_extensions, number, multi, literal }
+            CategoryRemainder { string_extensions, number, multi, literal, number_literal }
         }
         fn category_remainder$(<$b>)?(base:Option<String>,
         string_base:Option<String>, rest:CategoryRemainder<$lt>,
@@ -757,6 +763,11 @@ macro_rules! reference_topology {
             if let Some(literal)=rest.literal {
                 if let Some(child)=get!(literal, ext) {
                     list(key(base.as_deref(), "categoryLiteralExtensions"), child, w);
+                }
+            }
+            if let Some(literal)=rest.number_literal {
+                if let Some(child)=get!(literal, ext) {
+                    list(key(base.as_deref(), "categoryNumericLiteralExtensions"), child, w);
                 }
             }
         }
@@ -1066,36 +1077,87 @@ macro_rules! reference_topology {
                 }
             }
         }
+        // The text choice of `c:xVal` (a `CT_AxDataSource`), by role.
+        fn x_source$(<$b>)?(base:Option<String>,
+        owner:& $($b)? $($m)* CategoryAxisData, w:&mut State<'_ $(, $b)?>) {
+            let (text, numeric, multilevel, literal, numeric_literal)=get!(owner, role_parts);
+            if let Some(reference)=text {
+                string(key(base.as_deref(), "xValues"), reference, "x_string",
+                    ReferenceGrammar::Formula, w);
+            }
+            if let Some(reference)=numeric {
+                number(key(base.as_deref(), "xNumericExtensions"), reference, "x_values", w);
+            }
+            if let Some(reference)=multilevel {
+                multi(key(base.as_deref(), "xMultiExtensions"), reference, "x_multilevel", w);
+            }
+            if let Some(owner)=literal {
+                if let Some(child)=get!(owner, ext) {
+                    list(key(base.as_deref(), "xLiteralExtensions"), child, w);
+                }
+            }
+            if let Some(owner)=numeric_literal {
+                if let Some(child)=get!(owner, ext) {
+                    list(key(base.as_deref(), "xNumericLiteralExtensions"), child, w);
+                }
+            }
+        }
         fn series_values$(<$b>)?(base:Option<String>, values:Option<& $($b)? $($m)* Values>,
         xvalues:Option<& $($b)? $($m)* XValues>, yvalues:Option<& $($b)? $($m)* YValues>,
         bubble:Option<& $($b)? $($m)* BubbleSize>, w:&mut State<'_ $(, $b)?>) {
+            // A literal replaces the reference as the source, so only its
+            // extension list is an owner here.
             if let Some(v)=values{
                 let (reference, literal) = get!(v, role_parts);
                 if let Some(reference) = reference { number(base.clone(), reference, "values", w); }
                 if let Some(literal) = literal {
-                    if let Some(ext) = get!(literal, ext) { list(base.clone(), ext, w); }
+                    if let Some(child)=get!(literal, ext) {
+                        list(key(base.as_deref(), "valuesLiteralExtensions"), child, w);
+                    }
                 }
             }
             if let Some(v)=xvalues{
-                number(base.clone(),
-                get!(v,
-                numberref),
-                "x_values",
-                w);
+                if v.has_text_source() {
+                    if let Some(source)=get!(v, xtext) {
+                        x_source(base.clone(), source, w);
+                    }
+                } else if v.is_literal() {
+                    if let Some(child)=get!(v, ext) {
+                        list(key(base.as_deref(), "xValuesLiteralExtensions"), child, w);
+                    }
+                } else {
+                    number(base.clone(),
+                    get!(v,
+                    numberref),
+                    "x_values",
+                    w);
+                }
             }
             if let Some(v)=yvalues{
-                number(base.clone(),
-                get!(v,
-                numberref),
-                "y_values",
-                w);
+                if v.is_literal() {
+                    if let Some(child)=get!(v, ext) {
+                        list(key(base.as_deref(), "yValuesLiteralExtensions"), child, w);
+                    }
+                } else {
+                    number(base.clone(),
+                    get!(v,
+                    numberref),
+                    "y_values",
+                    w);
+                }
             }
             if let Some(v)=bubble{
-                number(base.clone(),
-                get!(v,
-                numberref),
-                "bubble_size",
-                w);
+                if v.is_literal() {
+                    if let Some(child)=get!(v, ext) {
+                        list(key(base.as_deref(), "bubbleSizeLiteralExtensions"), child, w);
+                    }
+                } else {
+                    number(base.clone(),
+                    get!(v,
+                    numberref),
+                    "bubble_size",
+                    w);
+                }
             }
         }
         fn series_suffix$(<$b>)?(base:Option<String>, rest:SeriesSuffix<$lt>,
@@ -1198,6 +1260,7 @@ macro_rules! reference_topology {
             series: Vec<SeriesAfterText<'a>>,
             labels: Option<&'a $($m)* DataLabels>,
             extensions: Option<&'a $($m)* ExtensionList>,
+            series_lines: Option<&'a $($m)* [ChartLines]>,
             shapes: Vec<&'a $($m)* ShapeProperties>,
             lines_extensions: Option<&'a $($m)* ExtensionList>,
         }
@@ -1205,6 +1268,7 @@ macro_rules! reference_topology {
             series: Vec<SeriesAfterTrends<'a>>,
             labels: Option<&'a $($m)* DataLabels>,
             extensions: Option<&'a $($m)* ExtensionList>,
+            series_lines: Option<&'a $($m)* [ChartLines]>,
             shapes: Vec<&'a $($m)* ShapeProperties>,
             lines_extensions: Option<&'a $($m)* ExtensionList>,
         }
@@ -1213,19 +1277,24 @@ macro_rules! reference_topology {
             let mut series=Vec::new();
             for owner in fields.series { series.push(primary_series(owner, w)); }
             GroupAfterText { series, labels:fields.labels, extensions:fields.extensions,
-                shapes:fields.shapes, lines_extensions:fields.lines_extensions }
+                series_lines:fields.series_lines, shapes:fields.shapes,
+                lines_extensions:fields.lines_extensions }
         }
         fn primary_group_trends<'a>(rest:GroupAfterText<'a>,
         w:&mut State<'_ $(, $b)?>)->GroupAfterTrends<'a> {
             let mut series=Vec::new();
             for owner in rest.series { series.push(primary_series_trends(owner, w)); }
             GroupAfterTrends { series, labels:rest.labels, extensions:rest.extensions,
-                shapes:rest.shapes, lines_extensions:rest.lines_extensions }
+                series_lines:rest.series_lines, shapes:rest.shapes,
+                lines_extensions:rest.lines_extensions }
         }
         fn group_remainder$(<$b>)?(rest:GroupAfterTrends<$lt>,
         w:&mut State<'_ $(, $b)?>) {
             for owner in rest.series { series_remainder(owner, w); }
             if let Some(owner)=rest.labels { labels(None, owner, w); }
+            if let Some(series_lines)=rest.series_lines {
+                for line in series_lines { lines(None, line, w); }
+            }
             if let Some(owner)=rest.extensions { list(None, owner, w); }
             for owner in rest.shapes { shape(None, owner, w); }
             if let Some(owner)=rest.lines_extensions { list(None, owner, w); }
@@ -1924,6 +1993,7 @@ mod borrowed {
             MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
+            NumericData,
             NumericDataSource,
             OpaqueToken,
             PivotFormat,
@@ -1962,6 +2032,7 @@ mod borrowed {
     ext=>extensions,
     shape=>shape_properties,
     numberref=>number_reference,
+    xtext=>text_source_for_roles,
     range_ref=>reference,
     entries=>entries,
     choices=>choices,
@@ -2005,6 +2076,7 @@ mod mutable {
             MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
+            NumericData,
             NumericDataSource,
             OpaqueToken,
             PivotFormat,
@@ -2043,6 +2115,7 @@ mod mutable {
     ext=>extensions_mut,
     shape=>shape_properties_mut,
     numberref=>number_reference_mut,
+    xtext=>text_source_for_roles_mut,
     range_ref=>reference_for_roles_mut,
     entries=>entries_mut,
     choices=>choices_mut,
@@ -2086,6 +2159,7 @@ mod projection {
             MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
+            NumericData,
             NumericDataSource,
             OpaqueToken,
             PivotFormat,
@@ -2124,6 +2198,7 @@ mod projection {
     ext=>projection_extensions_mut,
     shape=>shape_properties_mut,
     numberref=>number_reference_mut,
+    xtext=>text_source_for_roles_mut,
     range_ref=>reference_for_roles_mut,
     entries=>entries_mut,
     choices=>choices_mut,
@@ -2167,6 +2242,7 @@ mod retaining {
             MinorGridlines,
             MultiLevelStringReference,
             NumberReference,
+            NumericData,
             NumericDataSource,
             OpaqueToken,
             PivotFormat,
@@ -2204,6 +2280,7 @@ mod retaining {
     ext=>extensions_mut,
     shape=>shape_properties_mut,
     numberref=>number_reference_mut,
+    xtext=>text_source_for_roles_mut,
     range_ref=>reference_for_roles_mut,
     entries=>entries_mut,
     choices=>choices_mut,
@@ -2218,7 +2295,85 @@ mod retaining {
 /// Hidden parents are detached before projection, so their children are not
 /// traversed or materialized solely to discard them.
 pub(crate) fn strip_export_parts(space: &mut ChartSpace) {
+    fn strip_category_sources(source: &mut super::CategoryAxisData) {
+        let (string, number, multi_level, string_literal, number_literal) =
+            source.reference_role_parts_mut();
+        if let Some(reference) = string {
+            let _ = reference.projection_extensions_mut();
+        }
+        if let Some(reference) = number {
+            let _ = reference.projection_extensions_mut();
+        }
+        if let Some(reference) = multi_level {
+            let _ = reference.projection_extensions_mut();
+        }
+        if let Some(literal) = string_literal {
+            let _ = literal.projection_extensions_mut();
+        }
+        if let Some(literal) = number_literal {
+            let _ = literal.projection_extensions_mut();
+        }
+    }
+
+    fn strip_number_reference(reference: &mut NumberReference) {
+        let _ = reference.projection_extensions_mut();
+    }
+
+    fn strip_numeric_literal(literal: Option<&mut super::NumericData>) {
+        if let Some(literal) = literal {
+            let _ = literal.projection_extensions_mut();
+        }
+    }
+
+    fn strip_numeric_data_source(source: &mut super::NumericDataSource) {
+        if let Some(reference) = source.reference_mut() {
+            let _ = reference.projection_extensions_mut();
+        }
+        if let Some(literal) = source.literal_mut() {
+            let _ = literal.projection_extensions_mut();
+        }
+    }
+
+    fn strip_stored_sources(space: &mut ChartSpace) {
+        for group in space.chart_mut().plot_area_mut().chart_groups_mut() {
+            for series in group.series_mut().area_chart_series_mut() {
+                if let Some(source) = series.category_axis_data_mut() {
+                    strip_category_sources(source);
+                }
+                if let Some(values) = series.x_values_mut() {
+                    strip_number_reference(values.number_reference_mut());
+                    strip_numeric_literal(values.number_literal_mut());
+                    if let Some(source) = values.text_source_mut() {
+                        strip_category_sources(source);
+                    }
+                }
+                if let Some(values) = series.y_values_mut() {
+                    strip_number_reference(values.number_reference_mut());
+                    strip_numeric_literal(values.number_literal_mut());
+                }
+                if let Some(values) = series.bubble_size_mut() {
+                    strip_number_reference(values.number_reference_mut());
+                    strip_numeric_literal(values.number_literal_mut());
+                }
+                for error_bars in series.error_bars_mut() {
+                    let (plus, minus, extra_plus, extra_minus, ..) =
+                        error_bars.reference_role_parts_mut();
+                    if let Some(source) = plus {
+                        strip_numeric_data_source(source);
+                    }
+                    if let Some(source) = minus {
+                        strip_numeric_data_source(source);
+                    }
+                    for source in extra_plus.iter_mut().chain(extra_minus.iter_mut()) {
+                        strip_numeric_data_source(source);
+                    }
+                }
+            }
+        }
+    }
+
     fn discard(_metadata: ReferenceMetadata, _target: ReferenceTargetMut<'_>) {}
+    strip_stored_sources(space);
     let mut visitor = discard;
     let mut state = projection::State::new(&mut visitor);
     projection::space(space, &mut state);

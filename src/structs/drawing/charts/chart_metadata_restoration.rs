@@ -481,7 +481,7 @@ fn restore_series(
             report,
         )?;
     }
-    let fields = current.reference_role_parts_mut();
+    let mut fields = current.reference_role_parts_mut();
     let old = previous.reference_role_parts();
     paired(
         fields.text,
@@ -508,39 +508,9 @@ fn restore_series(
         report,
     )?;
     if let Some(category) = fields.category {
-        if let Some(old) = old.category {
-            let (string, number, multi, literal) = category.reference_role_parts_mut();
-            let (old_string, old_number, old_multi, old_literal) = old.reference_role_parts();
-            paired(
-                string,
-                old_string,
-                |current, previous, report| {
-                    restore_string_reference(current, previous, report);
-                    Ok(())
-                },
-                discard_string_reference_extensions,
-                report,
-            )?;
-            if let Some(reference) = number {
-                if let Some(old) = old_number {
-                    restore_number_reference(reference, old, report);
-                } else {
-                    discard_number_reference_extensions(reference, report);
-                }
-            }
-            if let Some(reference) = multi {
-                if let Some(old) = old_multi {
-                    restore_multi_reference(reference, old, report);
-                } else {
-                    discard_multi_reference_extensions(reference, report);
-                }
-            }
-            if let Some(literal) = literal {
-                record_supplied_extension(literal.extensions().is_some(), "strLit", report);
-                report.restored_owners += literal.restore_extensions(old_literal);
-            }
-        } else {
-            discard_category_extensions(category, report);
+        match old.category {
+            Some(old) => restore_category(category, old, report)?,
+            None => discard_category_extensions(category, report),
         }
     }
 
@@ -553,8 +523,12 @@ fn restore_series(
                         old.number_reference(),
                         report,
                     );
+                    record_supplied_extension(value.extensions().is_some(), "numLit", report);
+                    report.restored_owners += value.restore_literal_extensions(old);
                 } else {
                     discard_number_reference_extensions(value.number_reference_mut(), report);
+                    record_supplied_extension(value.extensions().is_some(), "numLit", report);
+                    value.projection_extensions_mut();
                 }
             }
         };
@@ -577,9 +551,60 @@ fn restore_series(
             report.restored_owners += usize::from(literal.extensions().is_some());
         }
     }
+    if let Some(value) = fields.xvalues.as_mut() {
+        if let Some(category) = value.text_source_for_roles_mut() {
+            match old.xvalues.and_then(super::XValues::text_source_for_roles) {
+                Some(old) => restore_category(category, old, report)?,
+                None => discard_category_extensions(category, report),
+            }
+        }
+    }
     numeric_reference!(fields.xvalues, old.xvalues);
     numeric_reference!(fields.yvalues, old.yvalues);
     numeric_reference!(fields.bubble, old.bubble);
+    Ok(())
+}
+
+fn restore_category(
+    category: &mut super::CategoryAxisData,
+    old: &super::CategoryAxisData,
+    report: &mut RestoreReport,
+) -> Result<(), crate::XlsxError> {
+    let (string, number, multi, literal, number_literal) = category.reference_role_parts_mut();
+    let (old_string, old_number, old_multi, old_literal, old_number_literal) =
+        old.reference_role_parts();
+    paired(
+        string,
+        old_string,
+        |current, previous, report| {
+            restore_string_reference(current, previous, report);
+            Ok(())
+        },
+        discard_string_reference_extensions,
+        report,
+    )?;
+    if let Some(reference) = number {
+        if let Some(old) = old_number {
+            restore_number_reference(reference, old, report);
+        } else {
+            discard_number_reference_extensions(reference, report);
+        }
+    }
+    if let Some(reference) = multi {
+        if let Some(old) = old_multi {
+            restore_multi_reference(reference, old, report);
+        } else {
+            discard_multi_reference_extensions(reference, report);
+        }
+    }
+    if let Some(literal) = literal {
+        record_supplied_extension(literal.extensions().is_some(), "strLit", report);
+        report.restored_owners += literal.restore_extensions(old_literal);
+    }
+    if let Some(literal) = number_literal {
+        record_supplied_extension(literal.extensions().is_some(), "numLit", report);
+        report.restored_owners += literal.restore_extensions(old_number_literal);
+    }
     Ok(())
 }
 
@@ -695,7 +720,11 @@ fn discard_multi_reference_extensions(
 }
 
 fn discard_category_extensions(current: &mut super::CategoryAxisData, report: &mut RestoreReport) {
-    let (string, number, multi, literal) = current.reference_role_parts_mut();
+    let (string, number, multi, literal, number_literal) = current.reference_role_parts_mut();
+    if let Some(value) = number_literal {
+        record_supplied_extension(value.extensions().is_some(), "numLit", report);
+        value.projection_extensions_mut();
+    }
     if let Some(value) = string {
         discard_string_reference_extensions(value, report);
     }
@@ -730,12 +759,21 @@ fn discard_numeric_series_extensions(
     }
     if let Some(value) = x {
         discard_number_reference_extensions(value.number_reference_mut(), report);
+        if let Some(source) = value.text_source_for_roles_mut() {
+            discard_category_extensions(source, report);
+        }
+        record_supplied_extension(value.extensions().is_some(), "numLit", report);
+        value.projection_extensions_mut();
     }
     if let Some(value) = y {
         discard_number_reference_extensions(value.number_reference_mut(), report);
+        record_supplied_extension(value.extensions().is_some(), "numLit", report);
+        value.projection_extensions_mut();
     }
     if let Some(value) = bubble {
         discard_number_reference_extensions(value.number_reference_mut(), report);
+        record_supplied_extension(value.extensions().is_some(), "numLit", report);
+        value.projection_extensions_mut();
     }
 }
 

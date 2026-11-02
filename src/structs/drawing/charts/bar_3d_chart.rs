@@ -16,6 +16,7 @@ use super::{
     AxisId,
     BarDirection,
     DataLabels,
+    GapDepth,
     GapWidth,
     Grouping,
     SeriesFamily,
@@ -46,6 +47,8 @@ pub struct Bar3DChart {
     gap_width:              GapWidth,
     shape:                  Shape,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    gap_depth:              Option<GapDepth>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }
@@ -296,6 +299,26 @@ impl Bar3DChart {
         self
     }
 
+    /// The gap between series along the depth of a 3-D chart.
+    #[must_use]
+    pub fn gap_depth(&self) -> Option<&GapDepth> {
+        self.gap_depth.as_ref()
+    }
+
+    pub fn gap_depth_mut(&mut self) -> Option<&mut GapDepth> {
+        self.gap_depth.as_mut()
+    }
+
+    pub fn set_gap_depth(&mut self, value: GapDepth) -> &mut Self {
+        self.gap_depth = Some(value);
+        self
+    }
+
+    pub fn remove_gap_depth(&mut self) -> &mut Self {
+        self.gap_depth = None;
+        self
+    }
+
     #[must_use]
     pub fn axis_id(&self) -> &[AxisId] {
         &self.axis_id
@@ -368,6 +391,11 @@ impl Bar3DChart {
                     b"gapWidth" => {
                         self.gap_width.set_attributes(reader, e)?;
                     }
+                    b"gapDepth" => {
+                        let mut obj = GapDepth::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_gap_depth(obj);
+                    }
                     b"shape" => {
                         self.shape.set_attributes(reader, e)?;
                     }
@@ -415,6 +443,11 @@ impl Bar3DChart {
 
         // c:gapWidth
         self.gap_width.write_to(writer);
+
+        // c:gapDepth
+        if let Some(v) = &self.gap_depth {
+            v.write_to(writer);
+        }
 
         // c:shape
         self.shape.write_to(writer);

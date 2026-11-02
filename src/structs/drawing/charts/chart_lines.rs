@@ -29,6 +29,31 @@ pub struct ChartLines {
     shape_properties: Option<Box<ShapeProperties>>,
     duplicate_shape:  bool,
 }
+/// Group-level line owners keep `a:extLst` hidden parts in their shape
+/// properties; these follow the same strip and restore rules as every other
+/// shape.
+pub(crate) fn strip_export_parts(lines: &mut [ChartLines]) {
+    for line in lines {
+        if let Some(shape) = line.shape_properties.as_mut() {
+            shape.projection_extensions_mut();
+        }
+    }
+}
+
+pub(crate) fn restore_export_parts(lines: &mut [ChartLines], previous: &[ChartLines]) -> usize {
+    strip_export_parts(lines);
+    lines
+        .iter_mut()
+        .zip(previous)
+        .map(
+            |(line, old)| match (line.shape_properties.as_mut(), old.shape_properties()) {
+                (Some(shape), Some(old)) => shape.restore_export_parts(old),
+                _ => 0,
+            },
+        )
+        .sum()
+}
+
 impl ChartLines {
     #[must_use]
     pub fn shape_properties(&self) -> Option<&ShapeProperties> {
@@ -43,6 +68,10 @@ impl ChartLines {
         self.shape_properties = value.map(Box::new);
         self.duplicate_shape = false;
         self
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.conflict().is_none()
     }
 
     pub(crate) fn conflict(&self) -> Option<SeriesPartConflictReason> {
@@ -90,6 +119,20 @@ impl ChartLines {
         self.write_to_as(writer, "c:leaderLines")?;
 
         Ok(())
+    }
+
+    /// Writes the line as Excel does a group-level line: a self-closing
+    /// element when it has no shape properties.
+    pub(crate) fn write_group_line(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
+        if self.shape_properties.is_none() && self.conflict().is_none() {
+            write_start_tag(writer, name, vec![], true);
+            return Ok(());
+        }
+        self.write_to_as(writer, name)
     }
 
     pub(crate) fn write_to_as(

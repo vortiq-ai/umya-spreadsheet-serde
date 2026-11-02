@@ -331,6 +331,15 @@ pub use self::bar_chart::*;
 mod gap_width;
 pub use self::gap_width::*;
 
+mod percent_element;
+pub use self::percent_element::*;
+
+mod split_type;
+pub use self::split_type::*;
+
+mod size_represents;
+pub use self::size_represents::*;
+
 mod overlap;
 pub use self::overlap::*;
 

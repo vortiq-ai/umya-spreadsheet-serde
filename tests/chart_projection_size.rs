@@ -39,8 +39,11 @@ const RANGE_ROWS: u32 = 100_000;
 // to JSON. The absent numeric literal of the one value series adds one tag and
 // `,"number_literal":null` (22 bytes). The one numeric reference also adds a
 // hidden pivot-cache tag and `,"pivot_cache":null` (19 bytes).
-const CHART_BINCODE_BYTES: usize = 696 + 27 + 15;
-const CHART_JSON_BYTES: usize = 5718 + 527 + 265;
+// The one series adds three more `None` tags (picture options, shape, and the
+// literal slot of its categories) and, to JSON, `,"picture_options":null,
+// "shape":null` (36 bytes) plus `,"number_literal":null` (22 bytes).
+const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3;
+const CHART_JSON_BYTES: usize = 5718 + 527 + 265 + 36 + 22;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

@@ -23,10 +23,12 @@ use super::{
     InvertIfNegative,
     Marker,
     Order,
+    PictureOptions,
     SeriesFamily,
     SeriesPartConflictReason,
     SeriesPartKind,
     SeriesParts,
+    Shape,
     ShapeProperties,
     Smooth,
     Trendline,
@@ -68,6 +70,10 @@ pub struct AreaChartSeries {
     data_labels:        Option<DataLabels>,
     #[cfg_attr(feature = "serde", serde(default))]
     parts:              Option<Box<SeriesParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    picture_options:    Option<PictureOptions>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    shape:              Option<Shape>,
 }
 
 pub(crate) struct SeriesReferenceParts<'a> {
@@ -572,6 +578,46 @@ impl AreaChartSeries {
         self
     }
 
+    /// The column shape of a bar series (box, cylinder, cone, pyramid).
+    #[must_use]
+    pub fn shape(&self) -> Option<&Shape> {
+        self.shape.as_ref()
+    }
+
+    pub fn shape_mut(&mut self) -> Option<&mut Shape> {
+        self.shape.as_mut()
+    }
+
+    pub fn set_shape(&mut self, value: Shape) -> &mut Self {
+        self.shape = Some(value);
+        self
+    }
+
+    pub fn remove_shape(&mut self) -> &mut Self {
+        self.shape = None;
+        self
+    }
+
+    /// How a picture fill is stacked or stretched on a bar or area series.
+    #[must_use]
+    pub fn picture_options(&self) -> Option<&PictureOptions> {
+        self.picture_options.as_ref()
+    }
+
+    pub fn picture_options_mut(&mut self) -> Option<&mut PictureOptions> {
+        self.picture_options.as_mut()
+    }
+
+    pub fn set_picture_options(&mut self, value: PictureOptions) -> &mut Self {
+        self.picture_options = Some(value);
+        self
+    }
+
+    pub fn remove_picture_options(&mut self) -> &mut Self {
+        self.picture_options = None;
+        self
+    }
+
     #[must_use]
     pub fn smooth(&self) -> Option<&Smooth> {
         self.smooth.as_ref()
@@ -778,6 +824,22 @@ impl AreaChartSeries {
                         obj.set_attributes(reader, e)?;
                         self.set_bubble_3d(obj);
                     }
+                    b"shape" => {
+                        let mut obj = Shape::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_shape(obj);
+                        if !is_empty_element {
+                            skip_element(reader, e)?;
+                        }
+                    }
+                    b"pictureOptions" => {
+                        self.set_picture_options(PictureOptions::read(
+                            reader,
+                            e,
+                            is_empty_element,
+                            Some(session),
+                        )?);
+                    }
                     b"smooth" => {
                         let mut obj = Smooth::default();
                         obj.set_attributes(reader, e)?;
@@ -811,6 +873,8 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size.is_some(),
             SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
             SeriesPartKind::Smooth => self.smooth.is_some(),
+            SeriesPartKind::Shape => self.shape.is_some(),
+            SeriesPartKind::PictureOptions => self.picture_options.is_some(),
             SeriesPartKind::DataPoints => !self.data_points().is_empty(),
             SeriesPartKind::DataLabels => self.data_labels.is_some(),
             SeriesPartKind::Extensions => self.extensions().is_some(),
@@ -831,6 +895,8 @@ impl AreaChartSeries {
             SeriesPartKind::BubbleSize => self.bubble_size = None,
             SeriesPartKind::Bubble3D => self.bubble_3d = None,
             SeriesPartKind::Smooth => self.smooth = None,
+            SeriesPartKind::Shape => self.shape = None,
+            SeriesPartKind::PictureOptions => self.picture_options = None,
             SeriesPartKind::DataPoints => {
                 if let Some(parts) = self.parts.as_mut() {
                     parts.data_points_mut().clear();
@@ -877,10 +943,36 @@ impl AreaChartSeries {
                 conflicts.push((SeriesPartKind::Categories, 0, reason));
             }
         }
-        if family.allows(SeriesPartKind::Values) {
-            if let Some(reason) = self.values.as_ref().and_then(Values::conflict) {
-                conflicts.push((SeriesPartKind::Values, 0, reason));
+        for (part, reason) in [
+            (
+                SeriesPartKind::Values,
+                self.values.as_ref().and_then(Values::conflict),
+            ),
+            (
+                SeriesPartKind::XValues,
+                self.x_values.as_ref().and_then(XValues::conflict),
+            ),
+            (
+                SeriesPartKind::YValues,
+                self.y_values.as_ref().and_then(YValues::conflict),
+            ),
+            (
+                SeriesPartKind::BubbleSize,
+                self.bubble_size.as_ref().and_then(BubbleSize::conflict),
+            ),
+        ] {
+            if let Some(reason) = reason.filter(|_| family.allows(part)) {
+                conflicts.push((part, 0, reason));
             }
+        }
+        if family.allows(SeriesPartKind::PictureOptions)
+            && self.picture_options.as_ref().is_some_and(|v| !v.is_valid())
+        {
+            conflicts.push((
+                SeriesPartKind::PictureOptions,
+                0,
+                SeriesPartConflictReason::InvalidValue,
+            ));
         }
         if family.allows(SeriesPartKind::Marker)
             && self.marker.as_ref().is_some_and(|v| !v.is_valid())
@@ -1061,6 +1153,15 @@ impl AreaChartSeries {
             v.write_to(writer);
         }
 
+        // c:pictureOptions
+        if let Some(v) = self
+            .picture_options
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::PictureOptions))
+        {
+            v.write_to(writer);
+        }
+
         // c:marker
         if let Some(v) = self
             .marker
@@ -1117,6 +1218,15 @@ impl AreaChartSeries {
             .filter(|_| family.allows(SeriesPartKind::Values))
         {
             v.write_to(writer, wb)?;
+        }
+
+        // c:shape
+        if let Some(v) = self
+            .shape
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Shape))
+        {
+            v.write_to(writer);
         }
 
         // c:xVal

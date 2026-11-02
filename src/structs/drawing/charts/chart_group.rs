@@ -10,6 +10,8 @@ use super::{
     Bar3DChart,
     BarChart,
     BubbleChart,
+    ChartLines,
+    DataLabels,
     DoughnutChart,
     Line3DChart,
     LineChart,
@@ -31,6 +33,30 @@ use crate::{
     ChartType,
     Workbook,
 };
+
+fn without_series_lines<'a, S, L, E, G>(
+    (series, labels, extensions, lines): (S, L, E, G),
+) -> (S, L, E, G, Option<&'a mut [ChartLines]>) {
+    (series, labels, extensions, lines, None)
+}
+
+fn without_any_lines<'a, S, L, E>(
+    (series, labels, extensions): (S, L, E),
+) -> (S, L, E, GroupLinesMut<'a>, Option<&'a mut [ChartLines]>) {
+    (series, labels, extensions, GroupLinesMut::default(), None)
+}
+
+fn with_series_lines<S, L, E>(
+    (series, labels, extensions, series_lines): (S, L, E, Option<&mut [ChartLines]>),
+) -> (S, L, E, GroupLinesMut<'_>, Option<&mut [ChartLines]>) {
+    (
+        series,
+        labels,
+        extensions,
+        GroupLinesMut::default(),
+        series_lines,
+    )
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
@@ -106,10 +132,6 @@ fn without_lines<'a, S, L, E>(parts: (S, L, E)) -> (S, L, E, GroupLines<'a>) {
     (parts.0, parts.1, parts.2, GroupLines::default())
 }
 
-fn without_lines_mut<'a, S, L, E>(parts: (S, L, E)) -> (S, L, E, GroupLinesMut<'a>) {
-    (parts.0, parts.1, parts.2, GroupLinesMut::default())
-}
-
 impl ChartGroup {
     #[must_use]
     pub fn kind(&self) -> ChartType {
@@ -179,11 +201,17 @@ impl<'a> ChartGroupRef<'a> {
             Self::SurfaceChart(owner) => owner.reference_group_parts(),
             Self::Surface3DChart(owner) => owner.reference_group_parts(),
         };
+        let series_lines = match self {
+            Self::BarChart(owner) => Some(owner.series_lines()),
+            Self::OfPieChart(owner) => Some(owner.series_lines().lines()),
+            _ => None,
+        };
         let (shapes, lines_extensions) = (lines.shapes(), lines.extensions());
         super::chart_reference_roles::GroupParts {
             series: series.area_chart_series(),
             labels,
             extensions,
+            series_lines,
             shapes,
             lines_extensions,
         }
@@ -412,29 +440,30 @@ impl<'a> ChartGroupMut<'a> {
     }
 
     pub(crate) fn into_projection_parts(self) -> super::chart_reference_roles::GroupPartsMut<'a> {
-        let (series, labels, extensions, lines) = match self {
-            Self::LineChart(owner) => owner.projection_group_parts_mut(),
-            Self::Line3DChart(owner) => owner.projection_group_parts_mut(),
-            Self::PieChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::Pie3DChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::DoughnutChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::ScatterChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::BarChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::Bar3DChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::RadarChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::BubbleChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::AreaChart(owner) => owner.projection_group_parts_mut(),
-            Self::Area3DChart(owner) => owner.projection_group_parts_mut(),
-            Self::OfPieChart(owner) => without_lines_mut(owner.projection_group_parts_mut()),
-            Self::StockChart(owner) => owner.projection_group_parts_mut(),
-            Self::SurfaceChart(owner) => owner.projection_group_parts_mut(),
-            Self::Surface3DChart(owner) => owner.projection_group_parts_mut(),
+        let (series, labels, extensions, lines, series_lines) = match self {
+            Self::LineChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
+            Self::Line3DChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
+            Self::PieChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::Pie3DChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::DoughnutChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::ScatterChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::BarChart(owner) => with_series_lines(owner.projection_group_parts_mut()),
+            Self::Bar3DChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::RadarChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::BubbleChart(owner) => without_any_lines(owner.projection_group_parts_mut()),
+            Self::AreaChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
+            Self::Area3DChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
+            Self::OfPieChart(owner) => with_series_lines(owner.projection_group_parts_mut()),
+            Self::StockChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
+            Self::SurfaceChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
+            Self::Surface3DChart(owner) => without_series_lines(owner.projection_group_parts_mut()),
         };
         let (shapes, lines_extensions) = lines.into_parts();
         super::chart_reference_roles::GroupPartsMut {
             series: series.area_chart_series_mut(),
             labels,
             extensions,
+            series_lines,
             shapes,
             lines_extensions,
         }
@@ -443,29 +472,30 @@ impl<'a> ChartGroupMut<'a> {
     pub(crate) fn into_reference_role_parts(
         self,
     ) -> super::chart_reference_roles::GroupPartsMut<'a> {
-        let (series, labels, extensions, lines) = match self {
-            Self::LineChart(owner) => owner.reference_group_parts_mut(),
-            Self::Line3DChart(owner) => owner.reference_group_parts_mut(),
-            Self::PieChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::Pie3DChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::DoughnutChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::ScatterChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::BarChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::Bar3DChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::RadarChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::BubbleChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::AreaChart(owner) => owner.reference_group_parts_mut(),
-            Self::Area3DChart(owner) => owner.reference_group_parts_mut(),
-            Self::OfPieChart(owner) => without_lines_mut(owner.reference_group_parts_mut()),
-            Self::StockChart(owner) => owner.reference_group_parts_mut(),
-            Self::SurfaceChart(owner) => owner.reference_group_parts_mut(),
-            Self::Surface3DChart(owner) => owner.reference_group_parts_mut(),
+        let (series, labels, extensions, lines, series_lines) = match self {
+            Self::LineChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
+            Self::Line3DChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
+            Self::PieChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::Pie3DChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::DoughnutChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::ScatterChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::BarChart(owner) => with_series_lines(owner.reference_group_parts_mut()),
+            Self::Bar3DChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::RadarChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::BubbleChart(owner) => without_any_lines(owner.reference_group_parts_mut()),
+            Self::AreaChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
+            Self::Area3DChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
+            Self::OfPieChart(owner) => with_series_lines(owner.reference_group_parts_mut()),
+            Self::StockChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
+            Self::SurfaceChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
+            Self::Surface3DChart(owner) => without_series_lines(owner.reference_group_parts_mut()),
         };
         let (shapes, lines_extensions) = lines.into_parts();
         super::chart_reference_roles::GroupPartsMut {
             series: series.area_chart_series_mut(),
             labels,
             extensions,
+            series_lines,
             shapes,
             lines_extensions,
         }
@@ -498,7 +528,7 @@ impl<'a> ChartGroupMut<'a> {
         let group_shows_labels = parts
             .labels
             .as_deref()
-            .is_some_and(super::DataLabels::shows_labels);
+            .is_some_and(DataLabels::shows_labels);
         let Some(series) = parts.series.get_mut(series_index) else {
             return false;
         };

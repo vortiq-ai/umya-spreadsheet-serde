@@ -12,6 +12,7 @@ use quick_xml::{
 
 use super::{
     MultiLevelStringReference,
+    NumericData,
     SeriesPartConflictReason,
     StringLiteral,
     StringReference,
@@ -38,7 +39,26 @@ pub struct CategoryAxisData {
     number_reference:             Option<NumberReference>,
     #[cfg_attr(feature = "serde", serde(default))]
     multi_level_string_reference: Option<MultiLevelStringReference>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    number_literal:               Option<NumericData>,
 }
+
+/// The disjoint stored choices of a category source: string reference, number
+/// reference, multi-level reference, string literal and number literal.
+pub(crate) type CategoryParts<'a> = (
+    Option<&'a StringReference>,
+    Option<&'a NumberReference>,
+    Option<&'a MultiLevelStringReference>,
+    Option<&'a StringLiteral>,
+    Option<&'a NumericData>,
+);
+pub(crate) type CategoryPartsMut<'a> = (
+    Option<&'a mut StringReference>,
+    Option<&'a mut NumberReference>,
+    Option<&'a mut MultiLevelStringReference>,
+    Option<&'a mut StringLiteral>,
+    Option<&'a mut NumericData>,
+);
 
 #[cfg(test)]
 mod category_writer_tests {
@@ -82,6 +102,7 @@ impl CategoryAxisData {
             self.string_literal.is_some(),
             self.number_reference.is_some(),
             self.multi_level_string_reference.is_some(),
+            self.number_literal.is_some(),
         ]
         .into_iter()
         .filter(|present| *present)
@@ -91,52 +112,34 @@ impl CategoryAxisData {
             1 => self
                 .string_literal
                 .as_ref()
-                .and_then(StringLiteral::conflict),
+                .and_then(StringLiteral::conflict)
+                .or_else(|| self.number_literal.as_ref().and_then(NumericData::conflict)),
             _ => Some(SeriesPartConflictReason::ConflictingChoice),
         }
     }
 
     // Disjoint stored children; preserves absent/invalid source states.
-    pub(crate) fn reference_role_parts(
-        &self,
-    ) -> (
-        Option<&StringReference>,
-        Option<&NumberReference>,
-        Option<&MultiLevelStringReference>,
-        Option<&StringLiteral>,
-    ) {
+    pub(crate) fn reference_role_parts(&self) -> CategoryParts<'_> {
         (
             self.string_reference.as_ref(),
             self.number_reference.as_ref(),
             self.multi_level_string_reference.as_ref(),
             self.string_literal.as_ref(),
+            self.number_literal.as_ref(),
         )
     }
 
-    pub(crate) fn projection_parts_mut(
-        &mut self,
-    ) -> (
-        Option<&mut StringReference>,
-        Option<&mut NumberReference>,
-        Option<&mut MultiLevelStringReference>,
-        Option<&mut StringLiteral>,
-    ) {
+    pub(crate) fn projection_parts_mut(&mut self) -> CategoryPartsMut<'_> {
         self.reference_role_parts_mut()
     }
 
-    pub(crate) fn reference_role_parts_mut(
-        &mut self,
-    ) -> (
-        Option<&mut StringReference>,
-        Option<&mut NumberReference>,
-        Option<&mut MultiLevelStringReference>,
-        Option<&mut StringLiteral>,
-    ) {
+    pub(crate) fn reference_role_parts_mut(&mut self) -> CategoryPartsMut<'_> {
         (
             self.string_reference.as_mut(),
             self.number_reference.as_mut(),
             self.multi_level_string_reference.as_mut(),
             self.string_literal.as_mut(),
+            self.number_literal.as_mut(),
         )
     }
 
@@ -222,6 +225,26 @@ impl CategoryAxisData {
         self
     }
 
+    /// The array-constant numeric categories, such as `={1,2,3}`.
+    #[must_use]
+    pub fn number_literal(&self) -> Option<&NumericData> {
+        self.number_literal.as_ref()
+    }
+
+    pub fn number_literal_mut(&mut self) -> Option<&mut NumericData> {
+        self.number_literal.as_mut()
+    }
+
+    pub fn set_number_literal(&mut self, value: NumericData) -> &mut Self {
+        self.number_literal = Some(value);
+        self
+    }
+
+    pub fn remove_number_literal(&mut self) -> &mut Self {
+        self.number_literal = None;
+        self
+    }
+
     #[must_use]
     pub fn number_reference(&self) -> Option<&NumberReference> {
         self.number_reference.as_ref()
@@ -284,15 +307,29 @@ impl CategoryAxisData {
                         obj.set_attributes_with_session(reader, e, session)?;
                         self.set_number_reference(obj);
                     }
+                    b"numLit" => {
+                        self.set_number_literal(NumericData::read_with_session(
+                            reader, e, false, session,
+                        )?);
+                    }
                     _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                if session.accepts_child_namespace(e, super::extension_registry::NS_C)?
-                    && local_name(e.name().into_inner()) == b"strLit"
-                {
-                    let literal = StringLiteral::read_with_session(reader, e, true, session)?;
-                    self.set_string_literal(literal);
+                if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
+                    match local_name(e.name().into_inner()) {
+                        b"strLit" => {
+                            let literal =
+                                StringLiteral::read_with_session(reader, e, true, session)?;
+                            self.set_string_literal(literal);
+                        }
+                        b"numLit" => {
+                            self.set_number_literal(NumericData::read_with_session(
+                                reader, e, true, session,
+                            )?);
+                        }
+                        _ => (),
+                    }
                 }
             },
             Event::End(ref e) => {
@@ -304,16 +341,38 @@ impl CategoryAxisData {
         );
     }
 
+    /// Whether a text choice (string reference, string literal or multi-level
+    /// reference) is stored.
+    pub(crate) fn holds_text(&self) -> bool {
+        self.string_reference.is_some()
+            || self.string_literal.is_some()
+            || self.multi_level_string_reference.is_some()
+    }
+
+    /// Moves the numeric reference and numeric literal out.
+    pub(crate) fn take_numeric(&mut self) -> (Option<NumberReference>, Option<NumericData>) {
+        (self.number_reference.take(), self.number_literal.take())
+    }
+
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         wb: &Workbook,
     ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, wb, "c:cat")
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
         if self.conflict().is_some() {
             return Ok(());
         }
-        // c:cat
-        write_start_tag(writer, "c:cat", vec![], false);
+        // c:cat or c:xVal
+        write_start_tag(writer, name, vec![], false);
 
         // Keep hierarchy and sparse point indices in their native
         // representation.
@@ -336,7 +395,12 @@ impl CategoryAxisData {
             v.write_to(writer, wb)?;
         }
 
-        write_end_tag(writer, "c:cat");
+        // c:numLit
+        if let Some(v) = &self.number_literal {
+            v.write_to(writer)?;
+        }
+
+        write_end_tag(writer, name);
 
         Ok(())
     }

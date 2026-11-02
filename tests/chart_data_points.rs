@@ -427,24 +427,26 @@ fn marker_size_presence_survives_current_and_deprecated_edits_and_reload() {
 fn absent_supplement_defaults_on_old_json_and_costs_one_binary_option_byte() {
     let series = AreaChartSeries::default();
     let mut json = serde_json::to_value(&series).unwrap();
-    assert!(
-        json.as_object_mut()
-            .unwrap()
-            .remove("parts")
-            .unwrap()
-            .is_null()
-    );
+    // Each of these children is absent in persisted JSON written before it
+    // existed; the key and its comma cost key length + 2 quotes + `:null` +
+    // `,`.
+    let mut removed = 0;
+    for key in ["parts", "picture_options", "shape"] {
+        assert!(json.as_object_mut().unwrap().remove(key).unwrap().is_null());
+        removed += key.len() + 2 + ":null".len() + 1;
+    }
     let old = serde_json::to_string(&json).unwrap();
     let restored: AreaChartSeries = serde_json::from_str(&old).unwrap();
     assert!(restored.parts().is_none());
+    assert!(restored.picture_options().is_none() && restored.shape().is_none());
     assert_eq!(
         serde_json::to_string(&series).unwrap().len(),
-        old.len() + 13
+        old.len() + removed
     );
     let bytes = bincode::serialize(&series).unwrap();
     // Two original scalar-option leaves and thirteen original optional
-    // children, plus parts.
-    assert_eq!(bytes, vec![0; 16]);
+    // children, plus parts, picture options and shape.
+    assert_eq!(bytes, vec![0; 18]);
     // Positional bincode is intentionally versioned by its callers, not
     // default-compatible.
     assert!(bincode::deserialize::<AreaChartSeries>(&bytes[..bytes.len() - 1]).is_err());

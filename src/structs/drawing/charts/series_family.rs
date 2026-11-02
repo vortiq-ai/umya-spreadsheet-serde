@@ -61,6 +61,10 @@ pub enum SeriesPartKind {
     BubbleSize,
     Bubble3D,
     Smooth,
+    /// A bar series' column shape.
+    Shape,
+    /// Picture-fill stacking on bar and area series.
+    PictureOptions,
     /// Ordered point overrides, legal in every family but surface.
     DataPoints,
     /// Ordered trendlines and their labels.
@@ -75,7 +79,7 @@ pub enum SeriesPartKind {
 
 impl SeriesPartKind {
     /// Family-dependent kinds, in the order the series types write them.
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Explosion,
         Self::InvertIfNegative,
         Self::Marker,
@@ -86,6 +90,8 @@ impl SeriesPartKind {
         Self::BubbleSize,
         Self::Bubble3D,
         Self::Smooth,
+        Self::Shape,
+        Self::PictureOptions,
     ];
 }
 
@@ -100,6 +106,8 @@ impl SeriesFamily {
             Explosion,
             InvertIfNegative,
             Marker,
+            PictureOptions,
+            Shape,
             Smooth,
             Values,
             XValues,
@@ -121,9 +129,12 @@ impl SeriesFamily {
             return self != Self::Surface;
         }
         match self {
-            Self::Bar => matches!(part, InvertIfNegative | Categories | Values),
+            Self::Bar => matches!(
+                part,
+                InvertIfNegative | Categories | Values | Shape | PictureOptions
+            ),
             Self::Line => matches!(part, Marker | Categories | Values | Smooth),
-            Self::Area => matches!(part, Categories | Values),
+            Self::Area => matches!(part, Categories | Values | PictureOptions),
             Self::Pie => matches!(part, Explosion | Categories | Values),
             Self::Scatter => matches!(part, Marker | XValues | YValues | Smooth),
             Self::Bubble => matches!(

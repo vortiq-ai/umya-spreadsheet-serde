@@ -11,6 +11,8 @@ use quick_xml::{
 };
 
 use super::{
+    DepthPercent,
+    HeightPercent,
     Perspective,
     RightAngleAxes,
     RotateX,
@@ -34,9 +36,54 @@ pub struct View3D {
     rotate_y:         Option<RotateY>,
     right_angle_axes: Option<RightAngleAxes>,
     perspective:      Option<Perspective>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    height_percent:   Option<HeightPercent>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    depth_percent:    Option<DepthPercent>,
 }
 
 impl View3D {
+    /// The chart height as a percentage of its base (`c:hPercent`). Excel
+    /// leaves it out while the chart autoscales.
+    #[must_use]
+    pub fn height_percent(&self) -> Option<&HeightPercent> {
+        self.height_percent.as_ref()
+    }
+
+    pub fn height_percent_mut(&mut self) -> Option<&mut HeightPercent> {
+        self.height_percent.as_mut()
+    }
+
+    pub fn set_height_percent(&mut self, value: HeightPercent) -> &mut Self {
+        self.height_percent = Some(value);
+        self
+    }
+
+    pub fn remove_height_percent(&mut self) -> &mut Self {
+        self.height_percent = None;
+        self
+    }
+
+    /// The chart depth as a percentage of its base (`c:depthPercent`).
+    #[must_use]
+    pub fn depth_percent(&self) -> Option<&DepthPercent> {
+        self.depth_percent.as_ref()
+    }
+
+    pub fn depth_percent_mut(&mut self) -> Option<&mut DepthPercent> {
+        self.depth_percent.as_mut()
+    }
+
+    pub fn set_depth_percent(&mut self, value: DepthPercent) -> &mut Self {
+        self.depth_percent = Some(value);
+        self
+    }
+
+    pub fn remove_depth_percent(&mut self) -> &mut Self {
+        self.depth_percent = None;
+        self
+    }
+
     #[must_use]
     pub fn rotate_x(&self) -> Option<&RotateX> {
         self.rotate_x.as_ref()
@@ -152,6 +199,16 @@ impl View3D {
                         obj.set_attributes(reader, e)?;
                         self.set_rotate_x(obj);
                     }
+                    b"hPercent" => {
+                        let mut obj = HeightPercent::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_height_percent(obj);
+                    }
+                    b"depthPercent" => {
+                        let mut obj = DepthPercent::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_depth_percent(obj);
+                    }
                     b"rotY" => {
                         let mut obj = RotateY::default();
                         obj.set_attributes(reader, e)?;
@@ -188,8 +245,18 @@ impl View3D {
             v.write_to(writer);
         }
 
+        // c:hPercent
+        if let Some(v) = &self.height_percent {
+            v.write_to(writer);
+        }
+
         // c:rotY
         if let Some(v) = &self.rotate_y {
+            v.write_to(writer);
+        }
+
+        // c:depthPercent
+        if let Some(v) = &self.depth_percent {
             v.write_to(writer);
         }
 

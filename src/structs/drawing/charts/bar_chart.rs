@@ -15,6 +15,7 @@ use super::{
     AreaChartSeriesList,
     AxisId,
     BarDirection,
+    ChartLines,
     DataLabels,
     GapWidth,
     Grouping,
@@ -47,15 +48,38 @@ pub struct BarChart {
     overlap:                Overlap,
     axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
+    series_lines:           Vec<ChartLines>,
+    #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl BarChart {
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
-        super::chart_metadata_restoration::replace_hidden_parts(
-            &mut self.extensions,
-            previous.extensions.as_ref(),
-        )
+        super::chart_lines::restore_export_parts(&mut self.series_lines, &previous.series_lines)
+            + super::chart_metadata_restoration::replace_hidden_parts(
+                &mut self.extensions,
+                previous.extensions.as_ref(),
+            )
+    }
+
+    /// The series lines drawn between stacked bars (`c:serLines`).
+    #[must_use]
+    pub fn series_lines(&self) -> &[ChartLines] {
+        &self.series_lines
+    }
+
+    pub fn series_lines_mut(&mut self) -> &mut Vec<ChartLines> {
+        &mut self.series_lines
+    }
+
+    pub fn add_series_lines(&mut self, value: ChartLines) -> &mut Self {
+        self.series_lines.push(value);
+        self
+    }
+
+    pub fn remove_series_lines(&mut self) -> &mut Self {
+        self.series_lines.clear();
+        self
     }
 
     pub(crate) fn reference_group_parts(
@@ -78,8 +102,10 @@ impl BarChart {
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
+        Option<&mut [ChartLines]>,
     ) {
         self.extensions = None;
+        super::chart_lines::strip_export_parts(&mut self.series_lines);
         self.reference_group_parts_mut()
     }
 
@@ -89,11 +115,13 @@ impl BarChart {
         &mut AreaChartSeriesList,
         Option<&mut DataLabels>,
         Option<&mut super::ExtensionList>,
+        Option<&mut [ChartLines]>,
     ) {
         (
             &mut self.area_chart_series_list,
             Some(&mut self.data_labels),
             self.extensions.as_deref_mut(),
+            Some(self.series_lines.as_mut_slice()),
         )
     }
 
@@ -349,6 +377,9 @@ impl BarChart {
                     b"dLbls" => {
                         self.data_labels.set_attributes(reader, e, session)?;
                     }
+                    b"serLines" => {
+                        self.series_lines.push(ChartLines::read(reader, e, false, session)?);
+                    }
                     _ => skip_element(reader, e)?,
                 }
             },
@@ -370,6 +401,9 @@ impl BarChart {
                     }
                     b"overlap" => {
                         self.overlap.set_attributes(reader, e)?;
+                    }
+                    b"serLines" => {
+                        self.series_lines.push(ChartLines::read(reader, e, true, session)?);
                     }
                     b"axId" => {
                         let mut obj = AxisId::default();
@@ -418,6 +452,11 @@ impl BarChart {
 
         // c:overlap
         self.overlap.write_to(writer);
+
+        // c:serLines
+        for line in &self.series_lines {
+            line.write_group_line(writer, "c:serLines")?;
+        }
 
         // c:axId
         for v in &self.axis_id {
