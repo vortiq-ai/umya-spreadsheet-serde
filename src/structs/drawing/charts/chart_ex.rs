@@ -34,7 +34,6 @@ use xml::{
     AttributeValue,
     Attributes,
     NativeElement,
-    Presence,
     WriteContext,
     children,
     native_element,
@@ -53,6 +52,7 @@ use crate::{
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 #[derive(Clone, Default, Debug)]
 pub struct ChartExSpace {
     pub version:          Option<String>,
@@ -86,7 +86,7 @@ native_element!(
         print_settings:ChartExPrintSettings=>"printSettings" one,
         extensions:ChartExExtensionList=>"extLst" one,
     },
-    required[data_collection],
+    required[],
     choices[required[chart,dashboard]]
 );
 
@@ -224,20 +224,18 @@ impl ChartExSpace {
         if self.chart.is_some() == self.dashboard.is_some() {
             return Err("ChartEx needs exactly one chart/dashboard".to_owned());
         }
-        let collection = self
-            .data_collection
-            .as_ref()
-            .ok_or("ChartEx needs chartData")?;
-        if collection.data.is_empty() {
-            return Err("ChartEx chartData needs a data block".to_owned());
-        }
         let mut ids = HashSet::new();
-        for data in &collection.data {
-            if !ids.insert(data.id) {
-                return Err(format!("ambiguous ChartEx data id {}", data.id));
+        if let Some(collection) = &self.data_collection {
+            if collection.data.is_empty() {
+                return Err("ChartEx chartData needs a data block".to_owned());
             }
-            if data.dimensions.is_empty() {
-                return Err(format!("ChartEx data {} needs a dimension", data.id));
+            for data in &collection.data {
+                if !ids.insert(data.id) {
+                    return Err(format!("ambiguous ChartEx data id {}", data.id));
+                }
+                if data.dimensions.is_empty() {
+                    return Err(format!("ChartEx data {} needs a dimension", data.id));
+                }
             }
         }
         if let Some(chart) = &self.chart {
