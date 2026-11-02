@@ -528,6 +528,75 @@ impl StringCache {
         );
     }
 
+    /// Builds the literal written in place of a frozen reference.
+    pub(crate) fn freeze(
+        &self,
+        formula: &Formula,
+        wb: &Workbook,
+        point_limit: Option<u32>,
+    ) -> Result<super::StringLiteral, crate::XlsxError> {
+        let mut literal = super::StringLiteral::default();
+        let mut add = |index: u32, value: String| {
+            let mut point = super::StringPoint::default();
+            let mut position = super::XmlUnsignedInt::default();
+            position.set_val(index);
+            point.set_index(position);
+            point.numeric_value_mut().set_text(value);
+            literal.add_string_point_list(point);
+        };
+        let count = match &self.source {
+            Some(cache) if cache.formula() == formula.address_str() => {
+                let current = DisplaySource::new(formula, wb, cache.indices());
+                let mut exceptions = cache.exceptions().iter().peekable();
+                for index in cache.indices() {
+                    let display = current.display(index);
+                    let value = match exceptions.next_if(|exception| exception.index() == index) {
+                        Some(exception) if display.as_deref() == exception.loaded_display() => {
+                            exception.value().map(str::to_owned)
+                        }
+                        _ => display,
+                    }
+                    .ok_or_else(|| {
+                        crate::xml::xml_error("PivotChart label has no value to freeze")
+                    })?;
+                    add(index, value);
+                }
+                cache.point_count()
+            }
+            _ => {
+                if formula.has_string_value() {
+                    add(0, literal_text(formula));
+                    Some(1)
+                } else {
+                    let sheet =
+                        wb.sheet_by_name(&unescape_sheet_name(formula.address().sheet_name()))?;
+                    let mut count = 0;
+                    for (index, cell) in sheet
+                        .cells_crate()
+                        .iter_all_cells_by_range_sorted_by_row(&formula.address().range().range())
+                        .take(point_limit.map_or(usize::MAX, |count| count as usize))
+                        .enumerate()
+                    {
+                        let index = u32::try_from(index).map_err(|_| {
+                            crate::xml::xml_error("PivotChart has too many category points")
+                        })?;
+                        count = index.checked_add(1).ok_or_else(|| {
+                            crate::xml::xml_error("PivotChart has too many category points")
+                        })?;
+                        add(index, cell.map_or_else(String::new, Cell::formatted_value));
+                    }
+                    Some(count)
+                }
+            }
+        };
+        if let Some(count) = count {
+            let mut value = super::XmlUnsignedInt::default();
+            value.set_val(count);
+            literal.set_point_count(Some(value));
+        }
+        Ok(literal)
+    }
+
     /// Writes the cache of `formula`. A source cache that was read under the
     /// same formula keeps the labels the cells cannot reproduce; otherwise
     /// the cache is generated from the cells.

@@ -21,10 +21,14 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct Location {
-    reference:        StringValue,
-    first_header_row: UInt32Value,
-    first_data_row:   UInt32Value,
-    first_data_col:   UInt32Value,
+    reference:         StringValue,
+    first_header_row:  UInt32Value,
+    first_data_row:    UInt32Value,
+    first_data_col:    UInt32Value,
+    #[cfg_attr(feature = "serde", serde(default))]
+    row_page_count:    Option<u32>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    column_page_count: Option<u32>,
 }
 impl Location {
     #[must_use]
@@ -91,6 +95,41 @@ impl Location {
         self
     }
 
+    /// How many report-filter fields the pivot table lays out per row of
+    /// filters (`rowPageCount`); Excel writes it with `column_page_count`
+    /// whenever the table has report filters.
+    #[must_use]
+    pub fn row_page_count(&self) -> Option<u32> {
+        self.row_page_count
+    }
+
+    pub fn set_row_page_count(&mut self, value: u32) -> &mut Self {
+        self.row_page_count = Some(value);
+        self
+    }
+
+    pub fn remove_row_page_count(&mut self) -> &mut Self {
+        self.row_page_count = None;
+        self
+    }
+
+    /// How many report-filter fields the pivot table lays out per column of
+    /// filters (`colPageCount`).
+    #[must_use]
+    pub fn column_page_count(&self) -> Option<u32> {
+        self.column_page_count
+    }
+
+    pub fn set_column_page_count(&mut self, value: u32) -> &mut Self {
+        self.column_page_count = Some(value);
+        self
+    }
+
+    pub fn remove_column_page_count(&mut self) -> &mut Self {
+        self.column_page_count = None;
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         _reader: &mut Reader<R>,
@@ -100,21 +139,26 @@ impl Location {
         set_string_from_xml!(self, e, first_header_row, "firstHeaderRow");
         set_string_from_xml!(self, e, first_data_row, "firstDataRow");
         set_string_from_xml!(self, e, first_data_col, "firstDataCol");
+        self.row_page_count = get_attribute(e, b"rowPageCount").and_then(|v| v.trim().parse().ok());
+        self.column_page_count =
+            get_attribute(e, b"colPageCount").and_then(|v| v.trim().parse().ok());
     }
 
     #[allow(dead_code)]
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
         // location
-        write_start_tag(
-            writer,
-            "location",
-            vec![
-                ("ref", self.reference.value_str()).into(),
-                ("firstHeaderRow", &self.first_header_row.value_string()).into(),
-                ("firstDataRow", &self.first_data_row.value_string()).into(),
-                ("firstDataCol", &self.first_data_col.value_string()).into(),
-            ],
-            true,
-        );
+        let mut attributes: crate::structs::AttrCollection = vec![
+            ("ref", self.reference.value_str()).into(),
+            ("firstHeaderRow", &self.first_header_row.value_string()).into(),
+            ("firstDataRow", &self.first_data_row.value_string()).into(),
+            ("firstDataCol", &self.first_data_col.value_string()).into(),
+        ];
+        if let Some(value) = self.row_page_count {
+            attributes.push(("rowPageCount", value.to_string()).into());
+        }
+        if let Some(value) = self.column_page_count {
+            attributes.push(("colPageCount", value.to_string()).into());
+        }
+        write_start_tag(writer, "location", attributes, true);
     }
 }

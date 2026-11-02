@@ -51,6 +51,10 @@ impl Range {
             matches!(coordinate_collection.len(), 1 | 2),
             "Non-standard coordinate"
         );
+        self.start_col = None;
+        self.start_row = None;
+        self.end_col = None;
+        self.end_row = None;
 
         let (
             row,         //

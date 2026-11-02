@@ -238,6 +238,27 @@ pub use self::legend_position::*;
 mod print_settings;
 pub use self::print_settings::*;
 
+mod data_table;
+pub use self::data_table::*;
+
+mod pivot_source;
+pub use self::pivot_source::*;
+
+mod pivot_options;
+pub use self::pivot_options::PivotChartOptions;
+
+mod chart_protection;
+pub use self::chart_protection::*;
+
+mod color_map_override;
+pub use self::color_map_override::*;
+
+mod external_data;
+pub use self::external_data::*;
+
+mod user_shapes;
+pub use self::user_shapes::*;
+
 mod header_footer;
 pub use self::header_footer::*;
 
@@ -552,3 +573,5 @@ mod extension_registry;
 #[cfg(test)]
 #[path = "charts/extension_leaves_tests.rs"]
 mod extension_leaves_tests;
+
+pub(crate) mod pivot_chart_data;

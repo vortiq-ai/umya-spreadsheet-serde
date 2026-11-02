@@ -123,14 +123,39 @@ pub(super) fn record_supplied_extension(present: bool, path: &str, report: &mut 
     }
 }
 
+/// Restores the hidden text-body parts of a chart-level `txPr` from the
+/// authoritative one. Whatever hidden parts the incoming text carries are
+/// discarded first, so a client can neither add fields nor override body
+/// attributes; a changed paragraph or run structure keeps none.
+pub(super) fn restore_text_body(
+    current: &mut super::TextProperties,
+    previous: Option<&super::TextProperties>,
+    path: &str,
+    report: &mut RestoreReport,
+) -> Result<usize, crate::XlsxError> {
+    current.strip_export_parts();
+    let Some(previous) = previous else {
+        return Ok(0);
+    };
+    if !current.projected_structure_matches(previous) {
+        report.incompatible_owners += 1;
+        report.diagnostics.push(format!(
+            "{path} text structure changed; authoritative hidden text parts not restored"
+        ));
+        return Ok(0);
+    }
+    current.restore_export_parts(previous)
+}
+
 pub(crate) fn restore_space(
     current: &mut ChartSpace,
     previous: &ChartSpace,
 ) -> Result<RestoreReport, crate::XlsxError> {
     // Incoming caches never become authoritative, even if their guard matches.
     super::clear_source_caches(current);
+    super::chart_reference_roles::clear_pivot_caches(current);
     let mut report = RestoreReport::default();
-    let restored = current.restore_export_parts(previous, &mut report);
+    let restored = current.restore_export_parts(previous, &mut report)?;
     report.restored_owners += restored;
     let (chart, shape, _) = current.reference_role_parts_mut();
     let (old_chart, old_shape, _) = previous.reference_role_parts();
@@ -534,7 +559,24 @@ fn restore_series(
             }
         };
     }
-    numeric_reference!(fields.values, old.values);
+    if let Some(value) = fields.values {
+        let (reference, literal) = value.reference_role_parts_mut();
+        let (old_reference, old_literal) = old
+            .values
+            .map_or((None, None), super::Values::reference_role_parts);
+        if let Some(reference) = reference {
+            if let Some(old) = old_reference {
+                restore_number_reference(reference, old, report);
+            } else {
+                discard_number_reference_extensions(reference, report);
+            }
+        }
+        if let Some(literal) = literal {
+            record_supplied_extension(literal.extensions().is_some(), "numLit", report);
+            literal.set_extensions(old_literal.and_then(|v| v.extensions()).cloned());
+            report.restored_owners += usize::from(literal.extensions().is_some());
+        }
+    }
     numeric_reference!(fields.xvalues, old.xvalues);
     numeric_reference!(fields.yvalues, old.yvalues);
     numeric_reference!(fields.bubble, old.bubble);
@@ -677,7 +719,14 @@ fn discard_numeric_series_extensions(
     report: &mut RestoreReport,
 ) {
     if let Some(value) = values {
-        discard_number_reference_extensions(value.number_reference_mut(), report);
+        let (reference, literal) = value.reference_role_parts_mut();
+        if let Some(reference) = reference {
+            discard_number_reference_extensions(reference, report);
+        }
+        if let Some(literal) = literal {
+            record_supplied_extension(literal.extensions().is_some(), "numLit", report);
+            literal.projection_extensions_mut();
+        }
     }
     if let Some(value) = x {
         discard_number_reference_extensions(value.number_reference_mut(), report);
@@ -944,9 +993,20 @@ fn restore_plot(
     axes!(value_axis, value_axis_mut, "value", restore_export_parts; discard_untrusted_display_units);
     axes!(series_axis, series_axis_mut, "series", restore_export_parts);
 
+    report.restored_owners += current.restore_table_parts(previous, report)?;
     let fields = current.reference_role_parts_mut();
     let old = previous.reference_role_parts();
     restore_layout(fields.layout, old.layout, report);
+    paired(
+        fields.table_shape,
+        old.table_shape,
+        |current, previous, report| {
+            restore_shape(current, previous, report);
+            Ok(())
+        },
+        discard_shape_extensions,
+        report,
+    )?;
     paired(
         fields.shape,
         old.shape,

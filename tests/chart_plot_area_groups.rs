@@ -50,7 +50,7 @@ const FAMILIES: [(ChartType, &str); 16] = [
 ];
 
 // The complete previous JSON model (with every group field) ignores the new
-// order key.
+// order and data-table keys.
 #[derive(Serialize, Deserialize)]
 struct PreviousPlotArea {
     layout:           charts::Layout,
@@ -630,6 +630,11 @@ fn json_round_trip_keeps_container_order_and_first_containers_in_legacy_fields()
     assert_eq!(serde_json::to_value(&restored).unwrap(), json);
     let previous: PreviousPlotArea = serde_json::from_value(json.clone()).unwrap();
     json.as_object_mut().unwrap().remove("chart_group_order");
+    // The data table and extension keys (null when the chart has none) are
+    // newer than the previous model as well.
+    for key in ["data_table", "extensions"] {
+        assert!(json.as_object_mut().unwrap().remove(key).unwrap().is_null());
+    }
     assert_eq!(serde_json::to_value(previous).unwrap(), json);
     let mut legacy: PlotArea = serde_json::from_value(json.clone()).unwrap();
     assert!(
@@ -651,10 +656,13 @@ fn json_round_trip_keeps_container_order_and_first_containers_in_legacy_fields()
     let previous: PreviousPlotArea = serde_json::from_value(json).unwrap();
     let old_binary = bincode::serialize(&previous).unwrap();
     let new_binary = bincode::serialize(&legacy).unwrap();
-    assert_eq!(new_binary.len() - old_binary.len(), 8);
+    // The order list adds its 8-byte length, the absent data table and plot
+    // extensions one tag byte each.
+    assert_eq!(new_binary.len() - old_binary.len(), 10);
+    // `"chart_group_order":[],`, `"data_table":null,` and `"extensions":null,`.
     assert!(
         serde_json::to_vec(&legacy).unwrap().len() - serde_json::to_vec(&previous).unwrap().len()
-            <= 24
+            <= 24 + 18 + 18
     );
 }
 

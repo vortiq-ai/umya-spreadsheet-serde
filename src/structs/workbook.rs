@@ -106,6 +106,11 @@ pub struct Workbook {
     pub(crate) slicer_refs:   Vec<super::slicer::SlicerPartReference>,
 }
 
+type FrozenPivotCharts = Vec<(
+    usize,
+    Vec<Option<crate::drawing::charts::pivot_chart_data::FrozenPivotChart>>,
+)>;
+
 // Precomputed decisions are kept separate from model mutation: an unresolved
 // reference must not leave half a workbook adjusted.
 struct WorkbookReferencePlan {
@@ -166,7 +171,7 @@ mod reference_adjustment_tests {
             book.sheet(0).unwrap().defined_names()[0].address(),
             "Sheet1!$B$2"
         );
-        book.apply_workbook_reference_adjustment(plan);
+        book.apply_workbook_reference_adjustment(plan, &edit);
         assert_eq!(
             book.sheet(0).unwrap().cell((1, 1)).unwrap().formula(),
             "Sheet1!B3"
@@ -331,7 +336,11 @@ impl Workbook {
         })
     }
 
-    fn apply_workbook_reference_adjustment(&mut self, plan: WorkbookReferencePlan) {
+    fn apply_workbook_reference_adjustment(
+        &mut self,
+        plan: WorkbookReferencePlan,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) {
         for (name, decision) in self.defined_names.iter_mut().zip(plan.global_names) {
             if let Some(text) = decision {
                 name.set_string_value(text);
@@ -357,7 +366,7 @@ impl Workbook {
                     cell.cell_value_mut().set_formula_result_blank();
                 }
             }
-            sheet.apply_chart_space_edits(sheet_plan.charts);
+            sheet.apply_chart_space_edits(sheet_plan.charts, edit);
             sheet.apply_extension_formula_edits(sheet_plan.extension_formulas);
         }
     }
@@ -391,7 +400,7 @@ impl Workbook {
         self.find_sheet_index_by_name(destination_sheet)?;
         let hosts = self.prepare_reference_hosts(&[source_sheet, destination_sheet], &edit)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
-        self.apply_workbook_reference_adjustment(plan);
+        self.apply_workbook_reference_adjustment(plan, &edit);
         self.relocate_cells_only(source_sheet, &source, destination_sheet, destination)
     }
 
@@ -1423,6 +1432,144 @@ impl Workbook {
         std::mem::replace(&mut self.work_sheet_collection, sheets)
     }
 
+    /// Renames the pivot table `old` of the sheet `sheet_name`. The charts
+    /// linked to it keep their link, as in Excel.
+    /// # Errors
+    /// `NotFound` when the sheet or the pivot table does not exist,
+    /// `NameDuplicate` when another pivot table in the workbook uses `new`.
+    pub fn rename_pivot_table(
+        &mut self,
+        sheet_name: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<(), XlsxError> {
+        let index = self.find_sheet_index_by_name(sheet_name)?;
+        for at in 0..self.work_sheet_collection.len() {
+            if at == index
+                || !self.work_sheet_collection[at]
+                    .pivot_cache_definition_collection()
+                    .is_empty()
+            {
+                self.try_read_sheet(at)?;
+            }
+        }
+        let position = self.work_sheet_collection[index]
+            .pivot_tables()
+            .iter()
+            .position(|table| {
+                table
+                    .pivot_table_definition()
+                    .name()
+                    .eq_ignore_ascii_case(old)
+            })
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
+        let taken = self
+            .work_sheet_collection
+            .iter()
+            .enumerate()
+            .any(|(sheet_index, sheet)| {
+                sheet.pivot_tables().iter().enumerate().any(|(at, table)| {
+                    table
+                        .pivot_table_definition()
+                        .name()
+                        .eq_ignore_ascii_case(new)
+                        && !(sheet_index == index && at == position)
+                })
+            });
+        if taken {
+            return Err(XlsxError::new(XlsxErrorKind::NameDuplicate));
+        }
+        let hosts = reference_hosts::discover_pivot_chart_hosts(self, sheet_name, Some(old))?;
+        reference_hosts::materialize(self, &hosts)?;
+        let sheet_id = self.work_sheet_collection[index]
+            .sheet_id()
+            .parse::<u32>()
+            .ok();
+        self.work_sheet_collection[index].pivot_tables_mut()[position]
+            .pivot_table_definition_mut()
+            .set_name(new);
+        self.reconcile_slicers_after_pivot_table_rename(sheet_id, old, new);
+        for &host in &hosts {
+            self.work_sheet_collection[host].visit_chart_spaces_mut(&mut |space| {
+                space.rename_pivot_table(sheet_name, old, new);
+            });
+        }
+        Ok(())
+    }
+
+    /// Removes the pivot table `table` of the sheet `sheet_name`. The charts
+    /// linked to it become ordinary charts, as in Excel.
+    /// # Errors
+    /// `NotFound` when the sheet or the pivot table does not exist.
+    pub fn remove_pivot_table(&mut self, sheet_name: &str, table: &str) -> Result<(), XlsxError> {
+        let index = self.find_sheet_index_by_name(sheet_name)?;
+        self.try_read_sheet(index)?;
+        let position = self.work_sheet_collection[index]
+            .pivot_tables()
+            .iter()
+            .position(|candidate| {
+                candidate
+                    .pivot_table_definition()
+                    .name()
+                    .eq_ignore_ascii_case(table)
+            })
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
+        self.prepare_slicer_reconciliation()?;
+        let sheet_id = self.work_sheet_collection[index]
+            .sheet_id()
+            .parse::<u32>()
+            .ok();
+        let hosts = reference_hosts::discover_pivot_chart_hosts(self, sheet_name, Some(table))?;
+        reference_hosts::materialize(self, &hosts)?;
+        let frozen = self.prepare_frozen_pivot_charts(&hosts, sheet_name, Some(table))?;
+        self.apply_frozen_pivot_charts(frozen);
+        self.work_sheet_collection[index]
+            .pivot_tables_mut()
+            .remove(position);
+        self.reconcile_slicers_after_pivot_table_removal(sheet_id, table);
+        Ok(())
+    }
+
+    fn prepare_frozen_pivot_charts(
+        &self,
+        hosts: &[usize],
+        sheet: &str,
+        table: Option<&str>,
+    ) -> Result<FrozenPivotCharts, XlsxError> {
+        let mut snapshots = Vec::new();
+        for &host in hosts {
+            let mut frozen = Vec::new();
+            self.work_sheet_collection[host].visit_chart_spaces(&mut |space| {
+                let linked = table.map_or_else(
+                    || space.is_linked_to_pivot_sheet(sheet),
+                    |table| space.is_linked_to_pivot_table(sheet, table),
+                );
+                frozen.push(linked.then(|| {
+                    crate::drawing::charts::pivot_chart_data::FrozenPivotChart::new(space, self)
+                }));
+            });
+            snapshots.push((
+                host,
+                frozen
+                    .into_iter()
+                    .map(Option::transpose)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
+        Ok(snapshots)
+    }
+
+    fn apply_frozen_pivot_charts(&mut self, snapshots: FrozenPivotCharts) {
+        for (host, frozen) in snapshots {
+            let mut frozen = frozen.into_iter();
+            self.work_sheet_collection[host].visit_chart_spaces_mut(&mut |space| {
+                if let Some(Some(frozen)) = frozen.next() {
+                    frozen.apply(space);
+                }
+            });
+        }
+    }
+
     /// Remove Work Sheet.
     /// # Arguments
     /// * `index` - sheet index
@@ -1455,8 +1602,12 @@ impl Workbook {
         };
         self.prepare_slicer_reconciliation()?;
         let hosts = self.prepare_reference_hosts(&[&name], &edit)?;
+        // Freeze while the pivot cells and their references still exist.
+        self.try_read_sheet(index)?;
+        let frozen = self.prepare_frozen_pivot_charts(&hosts, &name, None)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
-        self.apply_workbook_reference_adjustment(plan);
+        self.apply_workbook_reference_adjustment(plan, &edit);
+        self.apply_frozen_pivot_charts(frozen);
         let mut deleted_locals = Vec::new();
         for names in std::iter::once(&mut self.defined_names).chain(
             self.work_sheet_collection
@@ -1655,7 +1806,12 @@ impl Workbook {
         };
         let hosts = self.prepare_reference_hosts(&[&old], &edit)?;
         let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
-        self.apply_workbook_reference_adjustment(plan);
+        self.apply_workbook_reference_adjustment(plan, &edit);
+        for &host in &hosts {
+            self.work_sheet_collection[host].visit_chart_spaces_mut(&mut |space| {
+                space.rename_pivot_source_sheet(&old, &sheet_name_str);
+            });
+        }
         self.work_sheet_collection[index].set_name_after_reference_adjustment(sheet_name_str);
         Ok(())
     }

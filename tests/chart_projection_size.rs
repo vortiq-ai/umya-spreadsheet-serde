@@ -33,8 +33,14 @@ const RANGE_ROWS: u32 = 100_000;
 // extension slots on two scalings and two axes add 4 bytes (72 in JSON).
 // Stock/surface plot slots and line-group drop/high-low lines and up/down
 // bars add another six None tags (6 bincode bytes) and 122 JSON bytes.
-const CHART_BINCODE_BYTES: usize = 723;
-const CHART_JSON_BYTES: usize = 6245;
+// The empty chart-wide text, pivot source, external data, user shapes, data
+// table, print-settings, colour-mapping, protection, pivot-option and
+// plot-extension slots add 13 tag bytes to bincode and 224 bytes of null keys
+// to JSON. The absent numeric literal of the one value series adds one tag and
+// `,"number_literal":null` (22 bytes). The one numeric reference also adds a
+// hidden pivot-cache tag and `,"pivot_cache":null` (19 bytes).
+const CHART_BINCODE_BYTES: usize = 696 + 27 + 15;
+const CHART_JSON_BYTES: usize = 5718 + 527 + 265;
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

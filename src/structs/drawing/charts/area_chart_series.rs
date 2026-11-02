@@ -877,6 +877,11 @@ impl AreaChartSeries {
                 conflicts.push((SeriesPartKind::Categories, 0, reason));
             }
         }
+        if family.allows(SeriesPartKind::Values) {
+            if let Some(reason) = self.values.as_ref().and_then(Values::conflict) {
+                conflicts.push((SeriesPartKind::Values, 0, reason));
+            }
+        }
         if family.allows(SeriesPartKind::Marker)
             && self.marker.as_ref().is_some_and(|v| !v.is_valid())
         {

@@ -58,6 +58,42 @@ macro_rules! native_targets {
 native_targets!(ReferenceTargetRef,);
 native_targets!(ReferenceTargetMut, mut);
 impl ReferenceTargetMut<'_> {
+    pub(crate) fn replace_for_sheet_rename(&mut self, text: &str) -> bool {
+        let before = self.formula().address_str();
+        if before == text {
+            return false;
+        }
+        let source = if let Self::String(reference) = self {
+            reference
+                .string_cache_mut()
+                .take_source()
+                .filter(|source| source.formula() == before)
+        } else {
+            None
+        };
+        if let Self::Number(reference) = self {
+            reference.retarget_pivot_cache(text);
+        }
+        let changed = self.replace_decided_text(text);
+        if let (Self::String(reference), Some(mut source)) = (self, source) {
+            source.set_formula(text.to_owned());
+            reference.string_cache_mut().set_source(Some(source));
+        }
+        changed
+    }
+
+    pub(crate) fn replace_for_edit(
+        &mut self,
+        edit: &super::ChartReferenceEdit,
+        text: &str,
+    ) -> bool {
+        if matches!(edit, super::ChartReferenceEdit::RenameSheet { .. }) {
+            self.replace_for_sheet_rename(text)
+        } else {
+            self.replace_decided_text(text)
+        }
+    }
+
     pub(crate) fn formula_mut(&mut self) -> &mut Formula {
         match self {
             Self::String(v) => v.formula_mut(),
@@ -115,13 +151,16 @@ pub(crate) struct ChartParts<'a> {
 }
 
 pub(crate) struct PlotParts<'a> {
-    pub(crate) layout:        &'a super::Layout,
-    pub(crate) shape:         Option<&'a super::ShapeProperties>,
-    pub(crate) groups:        Vec<super::ChartGroupRef<'a>>,
-    pub(crate) category_axes: &'a [super::CategoryAxis],
-    pub(crate) date_axes:     &'a [super::DateAxis],
-    pub(crate) value_axes:    &'a [super::ValueAxis],
-    pub(crate) series_axes:   &'a [super::SeriesAxis],
+    pub(crate) layout:           &'a super::Layout,
+    pub(crate) shape:            Option<&'a super::ShapeProperties>,
+    pub(crate) table_shape:      Option<&'a super::ShapeProperties>,
+    pub(crate) table_extensions: Option<&'a super::ExtensionList>,
+    pub(crate) plot_extensions:  Option<&'a super::ExtensionList>,
+    pub(crate) groups:           Vec<super::ChartGroupRef<'a>>,
+    pub(crate) category_axes:    &'a [super::CategoryAxis],
+    pub(crate) date_axes:        &'a [super::DateAxis],
+    pub(crate) value_axes:       &'a [super::ValueAxis],
+    pub(crate) series_axes:      &'a [super::SeriesAxis],
 }
 
 pub(crate) struct AxisParts<'a> {
@@ -145,13 +184,16 @@ pub(crate) struct ChartPartsMut<'a> {
 }
 
 pub(crate) struct PlotPartsMut<'a> {
-    pub(crate) layout:        &'a mut super::Layout,
-    pub(crate) shape:         Option<&'a mut super::ShapeProperties>,
-    pub(crate) groups:        Vec<super::ChartGroupMut<'a>>,
-    pub(crate) category_axes: &'a mut [super::CategoryAxis],
-    pub(crate) date_axes:     &'a mut [super::DateAxis],
-    pub(crate) value_axes:    &'a mut [super::ValueAxis],
-    pub(crate) series_axes:   &'a mut [super::SeriesAxis],
+    pub(crate) layout:           &'a mut super::Layout,
+    pub(crate) shape:            Option<&'a mut super::ShapeProperties>,
+    pub(crate) table_shape:      Option<&'a mut super::ShapeProperties>,
+    pub(crate) table_extensions: Option<&'a mut super::ExtensionList>,
+    pub(crate) plot_extensions:  Option<&'a mut super::ExtensionList>,
+    pub(crate) groups:           Vec<super::ChartGroupMut<'a>>,
+    pub(crate) category_axes:    &'a mut [super::CategoryAxis],
+    pub(crate) date_axes:        &'a mut [super::DateAxis],
+    pub(crate) value_axes:       &'a mut [super::ValueAxis],
+    pub(crate) series_axes:      &'a mut [super::SeriesAxis],
 }
 
 pub(crate) struct AxisPartsMut<'a> {
@@ -243,7 +285,7 @@ macro_rules! reference_leaf {
     ($native:ty) => {
         impl ReferenceLeaf for $native {
             fn strip_reference_export_parts(&mut self) {
-                self.set_extensions(None);
+                self.projection_extensions_mut();
             }
 
             fn reference_extensions(&self) -> Option<&super::ExtensionList> {
@@ -466,7 +508,10 @@ macro_rules! reference_topology {
                 native_axis(get!(axis, role_parts), id, w);
             }
             for axis in fields.series_axes { native_axis(get!(axis, role_parts), None, w); }
+            if let Some(child)=fields.table_shape { shape(None, child, w); }
+            if let Some(child)=fields.table_extensions { list(None, child, w); }
             if let Some(child)=fields.shape { shape(None, child, w); }
+            if let Some(child)=fields.plot_extensions { list(None, child, w); }
             for group in fields.groups {
                 let fields=get!(group, group_parts);
                 for series in fields.series { native_series(series, false, w); }
@@ -546,13 +591,13 @@ macro_rules! reference_topology {
             if w.order==ReferenceOrder::NativeFormulaApi {
                 native_chart(chart, w);
                 if let Some(child)=space_shape { shape(None, child, w); }
-                if let Some(child)=space_extensions { list(None, child, w); }
+                for child in space_extensions { list(None, child, w); }
                 return;
             }
             let rest=chart_begin(chart, w);
             if let Some(child)=space_shape { shape(None, child, w); }
             chart_tail(rest, w);
-            if let Some(child)=space_extensions { list(None, child, w); }
+            for child in space_extensions { list(None, child, w); }
         }
         pub(super) fn chart$(<$b>)?(chart:& $($b)? $($m)* Chart,
         w:&mut State<'_ $(, $b)?>) {
@@ -1025,11 +1070,11 @@ macro_rules! reference_topology {
         xvalues:Option<& $($b)? $($m)* XValues>, yvalues:Option<& $($b)? $($m)* YValues>,
         bubble:Option<& $($b)? $($m)* BubbleSize>, w:&mut State<'_ $(, $b)?>) {
             if let Some(v)=values{
-                number(base.clone(),
-                get!(v,
-                numberref),
-                "values",
-                w);
+                let (reference, literal) = get!(v, role_parts);
+                if let Some(reference) = reference { number(base.clone(), reference, "values", w); }
+                if let Some(literal) = literal {
+                    if let Some(ext) = get!(literal, ext) { list(base.clone(), ext, w); }
+                }
             }
             if let Some(v)=xvalues{
                 number(base.clone(),
@@ -1222,6 +1267,9 @@ macro_rules! reference_topology {
         pub(super) struct PlotAfterPrimary<'a> {
             layout: &'a $($m)* Layout,
             shape: Option<&'a $($m)* ShapeProperties>,
+            table_shape: Option<&'a $($m)* ShapeProperties>,
+            table_extensions: Option<&'a $($m)* ExtensionList>,
+            plot_extensions: Option<&'a $($m)* ExtensionList>,
             groups: Vec<GroupAfterTrends<'a>>,
             category_axes: Vec<AxisAfterPrimary<'a>>,
             date_axes: Vec<AxisAfterPrimary<'a>>,
@@ -1260,13 +1308,19 @@ macro_rules! reference_topology {
             }
             let mut completed=Vec::new();
             for group in groups { completed.push(primary_group_trends(group, w)); }
-            PlotAfterPrimary { layout:fields.layout, shape:fields.shape, groups:completed,
+            PlotAfterPrimary { layout:fields.layout, shape:fields.shape,
+                table_shape:fields.table_shape, table_extensions:fields.table_extensions,
+                plot_extensions:fields.plot_extensions,
+                groups:completed,
                 category_axes, date_axes, value_axes, series_axes }
         }
         pub(super) fn plot_remainder<'a>(rest:PlotAfterPrimary<'a>,
         w:&mut State<'_ $(, $b)?>)->PlotAfterExtras<'a> {
             layout(None, rest.layout, w);
+            if let Some(owner)=rest.table_shape { shape(None, owner, w); }
+            if let Some(owner)=rest.table_extensions { list(None, owner, w); }
             if let Some(owner)=rest.shape { shape(None, owner, w); }
+            if let Some(owner)=rest.plot_extensions { list(None, owner, w); }
             for group in rest.groups { group_remainder(group, w); }
             let mut category_axes=Vec::new();
             for axis in rest.category_axes { category_axes.push(axis_title_remainder(axis, w)); }
@@ -2202,6 +2256,14 @@ pub(crate) fn visit_mut(
     let mut state = mutable::State::new(visitor);
     mutable::space(space, &mut state);
     state.opaque
+}
+
+pub(crate) fn clear_pivot_caches(space: &mut ChartSpace) {
+    visit_mut(space, &mut |_, target| {
+        if let ReferenceTargetMut::Number(reference) = target {
+            reference.clear_pivot_cache();
+        }
+    });
 }
 
 pub(crate) fn visit_chart_ref<'a>(
@@ -3867,6 +3929,39 @@ pub(crate) mod tests {
             )
         );
     }
+    #[test]
+    fn sheet_rename_retargets_only_matching_string_cache_guards() {
+        for stale in [false, true] {
+            let mut reference = StringReference::default();
+            reference.formula_mut().set_address_str("Sheet1!$A$1");
+            reference
+                .string_cache_mut()
+                .set_source(Some(super::super::SourceCache::as_read(
+                    "Sheet1!$A$1".into(),
+                    Some(1),
+                    vec![(0, Some("saved".into()))],
+                )));
+            if stale {
+                reference.formula_mut().set_address_str("Sheet1!$A$2");
+            }
+            let text = if stale {
+                "'Sales 2026'!$A$2"
+            } else {
+                "'Sales 2026'!$A$1"
+            };
+            assert!(ReferenceTargetMut::String(&mut reference).replace_for_sheet_rename(text));
+            assert_eq!(
+                reference
+                    .string_cache()
+                    .source()
+                    .map(|source| source.formula()),
+                (!stale).then_some(text)
+            );
+            assert!(!ReferenceTargetMut::String(&mut reference).replace_for_sheet_rename(text));
+            assert_eq!(reference.string_cache().source().is_some(), !stale);
+        }
+    }
+
     #[test]
     fn decided_text_is_exact_and_existing_string_provenance_is_cleared_not_retagged() {
         let mut reference = StringReference::default();

@@ -636,6 +636,33 @@ impl<W: io::Seek + io::Write> WriterManager<W> {
         }
     }
 
+    /// A new part `{directory}/{stem}{n}.xml` holding `data`: a chart owns its
+    /// drawing, style and colour parts instead of sharing them.
+    pub(crate) fn add_chart_private_part(
+        &mut self,
+        directory: &str,
+        stem: &str,
+        data: &[u8],
+        content_type: &str,
+    ) -> Result<String, XlsxError> {
+        let mut number = 1u32;
+        loop {
+            let target = format!("{directory}/{stem}{number}.xml");
+            if !self.reserved_parts.contains(&target) && !self.written_parts.contains_key(&target) {
+                self.add_typed_bin(&target, content_type, data)?;
+                return Ok(target);
+            }
+            number = number
+                .checked_add(1)
+                .ok_or_else(|| part_error("drawing part numbers exhausted"))?;
+        }
+    }
+
+    /// Whether a chart part is already written (by another frame).
+    pub(crate) fn standard_chart_written(&self, target: &str) -> bool {
+        self.written_parts.contains_key(target)
+    }
+
     pub(crate) fn add_standard_chart(
         &mut self,
         preferred: Option<&str>,

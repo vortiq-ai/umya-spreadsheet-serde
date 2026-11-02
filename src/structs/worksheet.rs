@@ -577,6 +577,7 @@ impl Worksheet {
     pub(crate) fn apply_chart_space_edits(
         &mut self,
         spaces: Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
     ) {
         use crate::drawing::charts::chart_reference_roles::visit_mut;
         let mut spaces = spaces.into_iter();
@@ -589,7 +590,7 @@ impl Worksheet {
                 let decision = leaves
                     .next()
                     .expect("chart references changed after preflight");
-                target.replace_decided_text(&decision.text);
+                target.replace_for_edit(edit, &decision.text);
             });
             assert!(
                 leaves.next().is_none(),
@@ -663,7 +664,7 @@ impl Worksheet {
             let formulas = self.prepare_extension_formula_edits(&host, edit);
             self.apply_extension_formula_edits(formulas);
             let decisions = self.prepare_chart_space_edits(&host, edit);
-            self.apply_chart_space_edits(decisions);
+            self.apply_chart_space_edits(decisions, edit.edit());
         }
     }
 

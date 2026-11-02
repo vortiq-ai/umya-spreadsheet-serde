@@ -1181,6 +1181,7 @@ enum SourceCacheSessionMode {
 /// order for admission. References retain guarded placeholders meanwhile.
 #[derive(Clone)]
 pub(crate) struct SourceCacheSession {
+    pivot_chart:                  bool,
     content_types: std::sync::Arc<crate::structs::content_types::PackageContentTypes>,
     pivot_cache_bindings:         std::sync::Arc<Vec<(String, String)>>,
     mode:                         SourceCacheSessionMode,
@@ -1228,6 +1229,16 @@ impl Drop for ChartPartGuard {
 }
 
 impl SourceCacheSession {
+    pub(crate) fn for_pivot_chart(&self) -> Self {
+        let mut session = self.clone();
+        session.pivot_chart = true;
+        session
+    }
+
+    pub(crate) fn is_pivot_chart(&self) -> bool {
+        self.pivot_chart
+    }
+
     pub(crate) fn register_chart_relationships(
         &self,
         target: &str,
@@ -1363,8 +1374,41 @@ impl SourceCacheSession {
         Ok(name.namespace_uri == namespace)
     }
 
+    /// The value of the element's `r:id` attribute, resolved by namespace so
+    /// any prefix bound to the relationships namespace counts.
+    pub(crate) fn relationship_id(
+        &self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Result<Option<String>, XlsxError> {
+        let scopes = self.extension_scopes.borrow();
+        let scope = scopes.last().cloned().unwrap_or_default();
+        let scope = scope.child(e).map_err(crate::xml::xml_error)?;
+        let mut found = None;
+        for attribute in e.attributes() {
+            let attribute = attribute.map_err(crate::xml::xml_error)?;
+            let key = attribute.key.as_ref();
+            if key == b"xmlns" || key.starts_with(b"xmlns:") {
+                continue;
+            }
+            let name = scope.resolve(key, true).map_err(crate::xml::xml_error)?;
+            if name.is(crate::helper::const_str::REL_OFC_NS, "id") {
+                if found.is_some() {
+                    return Err(crate::xml::xml_error("duplicate relationship id attribute"));
+                }
+                found = Some(
+                    attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(crate::xml::xml_error)?
+                        .into_owned(),
+                );
+            }
+        }
+        Ok(found)
+    }
+
     pub(crate) fn deferred() -> Self {
         Self {
+            pivot_chart:                               false,
             mode:                                      SourceCacheSessionMode::Deferred,
             content_types:                             std::sync::Arc::default(),
             pivot_cache_bindings:                      std::sync::Arc::default(),
@@ -1392,6 +1436,7 @@ impl SourceCacheSession {
     #[cfg(test)]
     pub(crate) fn immediate() -> Self {
         Self {
+            pivot_chart:                               false,
             mode:                                      SourceCacheSessionMode::Immediate,
             content_types:                             std::sync::Arc::default(),
             pivot_cache_bindings:                      std::sync::Arc::default(),
@@ -1418,6 +1463,7 @@ impl SourceCacheSession {
 
     pub(crate) fn immediate_subsession(&self) -> Self {
         Self {
+            pivot_chart:                               self.pivot_chart,
             mode:                                      SourceCacheSessionMode::Immediate,
             content_types:                             std::sync::Arc::clone(&self.content_types),
             pivot_cache_bindings:                      std::sync::Arc::clone(

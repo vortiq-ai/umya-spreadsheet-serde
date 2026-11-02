@@ -533,11 +533,12 @@ pub(crate) fn write_worksheet_extensions(
     Ok(())
 }
 
-/// Remove the pivot tables of sheet `removed_id` from the links of a pivot
-/// slicer cache; true when the cache had links and none are left.
-fn unlink_pivot_tables_of_sheet(cache: &mut SlicerCache, removed_id: Option<u32>) -> bool {
+/// Remove matching links; true when the cache had links and none are left.
+fn unlink_pivot_tables(
+    cache: &mut SlicerCache,
+    leaves: impl Fn(&SlicerPivotTable) -> bool,
+) -> bool {
     let before = cache.linked_pivots().len();
-    let leaves = |link: &SlicerPivotTable| Some(link.sheet_id) == removed_id;
     if let Some(tables) = &mut cache.pivot_tables {
         tables.retain(|link| !leaves(link));
         if tables.is_empty() {
@@ -623,6 +624,43 @@ impl Workbook {
         self.try_read_sheet_collection().map(|_| ())
     }
 
+    pub(crate) fn reconcile_slicers_after_pivot_table_rename(
+        &mut self,
+        sheet_id: Option<u32>,
+        old: &str,
+        new: &str,
+    ) {
+        for cache in self.slicer_caches_mut() {
+            let links = cache.pivot_tables.iter_mut().flatten().chain(
+                cache
+                    .extensions
+                    .iter_mut()
+                    .filter_map(|extension| match extension {
+                        SlicerCacheExtension::PivotTables { tables, .. } => Some(tables),
+                        _ => None,
+                    })
+                    .flatten(),
+            );
+            for link in links {
+                if Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(old) {
+                    new.clone_into(&mut link.name);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn reconcile_slicers_after_pivot_table_removal(
+        &mut self,
+        sheet_id: Option<u32>,
+        name: &str,
+    ) {
+        for cache in self.slicer_caches_mut() {
+            unlink_pivot_tables(cache, |link| {
+                Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(name)
+            });
+        }
+    }
+
     /// Follow the removal of `removed` the way Excel does: the slicers of the
     /// sheet go with it, its pivot tables leave the pivot slicer caches that
     /// listed them, a pivot slicer cache left without pivot tables and a table
@@ -643,7 +681,7 @@ impl Workbook {
             let drop = if let Some(SlicerSource::Table(source)) = &cache.source {
                 removed_tables.contains(&source.table_id)
             } else {
-                unlink_pivot_tables_of_sheet(cache, removed_id)
+                unlink_pivot_tables(cache, |link| Some(link.sheet_id) == removed_id)
             };
             if drop {
                 dropped.insert(cache.name.to_lowercase());

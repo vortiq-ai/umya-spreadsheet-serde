@@ -286,10 +286,18 @@ impl NumericData {
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
     ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, "c:numLit")
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        tag: &str,
+    ) -> Result<(), crate::XlsxError> {
         if !self.is_valid() {
             return Ok(());
         }
-        write_start_tag(writer, "c:numLit", vec![], false);
+        write_start_tag(writer, tag, vec![], false);
         if let Some(value) = &self.format_code {
             write_start_tag(writer, "c:formatCode", vec![], false);
             write_text_node(writer, value);
@@ -310,9 +318,9 @@ impl NumericData {
             point.write_to(writer);
         }
         if let Some(ext) = self.extensions() {
-            ext.write_for_owner(writer, None, "numLit", None)?;
+            ext.write_for_owner(writer, None, tag.trim_start_matches("c:"), None)?;
         }
-        write_end_tag(writer, "c:numLit");
+        write_end_tag(writer, tag);
 
         Ok(())
     }

@@ -51,6 +51,10 @@ pub(crate) struct PreparedReferenceEdit<'a> {
     deleted_count: u32,
 }
 impl<'a> PreparedReferenceEdit<'a> {
+    pub(crate) fn edit(&self) -> &'a ChartReferenceEdit {
+        self.edit
+    }
+
     pub(crate) fn new(edit: &'a ChartReferenceEdit) -> Result<Self, UnresolvedEdit> {
         let mut deleted = match edit {
             ChartReferenceEdit::DeleteRows { rows, .. } => rows.clone(),

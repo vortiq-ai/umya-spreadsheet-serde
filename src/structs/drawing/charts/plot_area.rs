@@ -22,7 +22,9 @@ use super::{
     ChartGroupEntry,
     ChartGroupMut,
     ChartGroupRef,
+    DataTable,
     DoughnutChart,
+    ExtensionList,
     Formula,
     GroupingValues,
     Layout,
@@ -86,7 +88,11 @@ pub struct PlotArea {
     date_axis:         Vec<DateAxis>,
     value_axis:        Vec<ValueAxis>,
     series_axis:       Vec<SeriesAxis>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    data_table:        Option<DataTable>,
     shape_properties:  Option<ShapeProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:        Option<ExtensionList>,
     #[cfg_attr(feature = "serde", serde(default))]
     chart_group_order: Vec<ChartGroupEntry>,
 }
@@ -179,6 +185,12 @@ impl PlotArea {
         super::chart_reference_roles::PlotParts {
             layout: &self.layout,
             shape: self.shape_properties.as_ref(),
+            table_shape: self
+                .data_table
+                .as_ref()
+                .and_then(DataTable::shape_properties),
+            table_extensions: self.data_table.as_ref().and_then(DataTable::extensions),
+            plot_extensions: self.extensions.as_ref(),
             groups,
             category_axes: &self.category_axis,
             date_axes: &self.date_axis,
@@ -190,16 +202,60 @@ impl PlotArea {
     pub(crate) fn projection_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::PlotPartsMut<'_> {
+        if let Some(table) = &mut self.data_table {
+            table.strip_export_parts();
+        }
+        self.extensions = None;
         self.reference_role_parts_mut()
+    }
+
+    /// Restores the hidden parts of the data table from the authoritative
+    /// plot area. A table the authoritative plot area lacks keeps none.
+    pub(crate) fn restore_table_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<usize, crate::XlsxError> {
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "plotArea",
+            report,
+        );
+        let mut restored = super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        );
+        match (&mut self.data_table, &previous.data_table) {
+            (Some(current), Some(previous)) => {
+                restored += current.restore_export_parts(previous, report)?;
+            }
+            (Some(current), None) => {
+                super::chart_metadata_restoration::record_supplied_extension(
+                    current.extensions().is_some(),
+                    "dTable",
+                    report,
+                );
+                current.strip_export_parts();
+            }
+            _ => {}
+        }
+        Ok(restored)
     }
 
     pub(crate) fn reference_role_parts_mut(
         &mut self,
     ) -> super::chart_reference_roles::PlotPartsMut<'_> {
         let groups = ordered_group_views_mut!(self).collect();
+        let (table_shape, table_extensions) = self
+            .data_table
+            .as_mut()
+            .map_or((None, None), DataTable::role_parts_mut);
         super::chart_reference_roles::PlotPartsMut {
             layout: &mut self.layout,
             shape: self.shape_properties.as_mut(),
+            table_shape,
+            table_extensions,
+            plot_extensions: self.extensions.as_mut(),
             groups,
             category_axes: &mut self.category_axis,
             date_axes: &mut self.date_axis,
@@ -988,6 +1044,59 @@ impl PlotArea {
         self
     }
 
+    /// The chart's data table, if it shows one.
+    #[must_use]
+    pub fn data_table(&self) -> Option<&DataTable> {
+        self.data_table.as_ref()
+    }
+
+    pub fn data_table_mut(&mut self) -> Option<&mut DataTable> {
+        self.data_table.as_mut()
+    }
+
+    pub fn set_data_table(&mut self, value: DataTable) -> &mut Self {
+        self.data_table = Some(value);
+        self
+    }
+
+    /// Removes the data table, like clearing Excel's "Data Table" chart
+    /// element.
+    /// The extension lists of the plot area stay opaque; hidden from the
+    /// projection and restored from the authoritative chart.
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.extensions.as_ref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.extensions.as_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) -> &mut Self {
+        self.extensions = value;
+        self
+    }
+
+    fn read_plot_extensions<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let list = ExtensionList::read(reader, element, empty, session)?;
+        match &mut self.extensions {
+            Some(existing) => existing.append_list(list),
+            None => self.extensions = Some(list),
+        }
+        Ok(())
+    }
+
+    pub fn remove_data_table(&mut self) -> &mut Self {
+        self.data_table = None;
+        self
+    }
+
     pub fn set_grouping(&mut self, value: GroupingValues) -> &mut Self {
         if let Some(chart) = &mut self.line_chart {
             chart.grouping_mut().set_val(value);
@@ -1200,12 +1309,31 @@ impl PlotArea {
                     obj.set_attributes(reader, e, session)?;
                     self.add_series_axis(obj);
                 }
+                b"dTable" => {
+                    let mut obj = DataTable::default();
+                    obj.set_attributes(reader, e, session)?;
+                    self.set_data_table(obj);
+                }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
                     obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
+                b"extLst" if session.accepts_child_namespace(e, super::extension_registry::NS_C)? => {
+                    self.read_plot_extensions(reader, e, false, session)?;
+                }
                 _ => skip_element(reader, e)?,
+            },
+            Event::Empty(ref e) => {
+                if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
+                    match local_name(e.name().0) {
+                        b"dTable" => {
+                            self.set_data_table(DataTable::default());
+                        }
+                        b"extLst" => self.read_plot_extensions(reader, e, true, session)?,
+                        _ => (),
+                    }
+                }
             },
             Event::End(ref e) => {
                 if e.name().as_ref() == owner_end {
@@ -1252,9 +1380,19 @@ impl PlotArea {
             v.write_to(writer, wb)?;
         }
 
+        // c:dTable
+        if let Some(v) = &self.data_table {
+            v.write_to(writer, wb)?;
+        }
+
         // c:spPr
         if let Some(v) = &self.shape_properties {
             v.write_to(writer)?;
+        }
+
+        // c:extLst
+        if let Some(v) = &self.extensions {
+            v.write_for_owner(writer, Some(wb), "plotArea", None)?;
         }
 
         write_end_tag(writer, "c:plotArea");

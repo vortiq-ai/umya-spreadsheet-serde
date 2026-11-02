@@ -32,16 +32,57 @@ pub struct NumberReference {
     numbering_cache: NumberingCache,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:      Option<Box<super::ExtensionList>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pivot_cache:     Option<Box<PivotNumericCache>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug)]
+struct PivotNumericCache {
+    formula: String,
+    data:    super::NumericData,
 }
 
 impl NumberReference {
+    pub(crate) fn retarget_pivot_cache(&mut self, formula: &str) {
+        let before = self.formula.address_str();
+        if let Some(cache) = self
+            .pivot_cache
+            .as_mut()
+            .filter(|cache| cache.formula == before)
+        {
+            formula.clone_into(&mut cache.formula);
+        }
+    }
+
+    pub(crate) fn clear_pivot_cache(&mut self) {
+        self.pivot_cache = None;
+    }
+
+    pub(crate) fn pivot_cache(&self) -> Option<&super::NumericData> {
+        self.pivot_cache
+            .as_deref()
+            .filter(|cache| cache.formula == self.formula.address_str())
+            .map(|cache| &cache.data)
+    }
+
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        let cache = previous
+            .pivot_cache
+            .as_ref()
+            .filter(|cache| cache.formula == self.formula.address_str());
+        let restored =
+            super::chart_metadata_restoration::replace_hidden_parts(&mut self.pivot_cache, cache);
         let previous = if self.formula.address_str() == previous.formula.address_str() {
             previous.extensions.as_ref()
         } else {
             None
         };
-        super::chart_metadata_restoration::replace_hidden_parts(&mut self.extensions, previous)
+        restored
+            + super::chart_metadata_restoration::replace_hidden_parts(
+                &mut self.extensions,
+                previous,
+            )
     }
 
     // A retaining Formula projection must consume these disjoint fields once.
@@ -58,6 +99,7 @@ impl NumberReference {
 
     pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions = None;
+        self.clear_pivot_cache();
         None
     }
 
@@ -194,6 +236,7 @@ impl NumberReference {
             .flatten();
         let mut formulas = 0usize;
         let mut valid = true;
+        let mut pivot_data = None;
         let complete = children(
             reader,
             e,
@@ -230,7 +273,27 @@ impl NumberReference {
                             true
                         }
                         b"numCache" if matches!(policy, NumericSourceCachePolicy::Read) => {
-                            if !empty {
+                            if let Some(session) =
+                                session.filter(|session| session.is_pivot_chart())
+                            {
+                                if pivot_data.is_some() {
+                                    return Err(crate::xml::xml_error(
+                                        "pivot numeric reference has repeated caches",
+                                    ));
+                                }
+                                let data = super::NumericData::read_with_session(
+                                    reader, child, empty, session,
+                                )?;
+                                if !data.is_valid() {
+                                    return Err(crate::xml::xml_error(
+                                        "pivot numeric reference has an invalid cache",
+                                    ));
+                                }
+                                if let Some(format) = data.format_code() {
+                                    self.numbering_cache.format_code_mut().set_text(format);
+                                }
+                                pivot_data = Some(data);
+                            } else if !empty {
                                 self.numbering_cache.set_attributes(reader, child)?;
                             }
                             true
@@ -242,6 +305,12 @@ impl NumberReference {
                 })
             },
         )?;
+        self.pivot_cache = pivot_data.map(|data| {
+            Box::new(PivotNumericCache {
+                formula: self.formula.address_str(),
+                data,
+            })
+        });
         Ok((complete && valid, formulas == 1))
     }
 
@@ -257,8 +326,12 @@ impl NumberReference {
         self.formula.write_to(writer);
 
         // c:numCache
-        self.numbering_cache
-            .write_to(writer, self.formula().address(), wb);
+        if let Some(cache) = self.pivot_cache() {
+            cache.write_to_as(writer, "c:numCache")?;
+        } else {
+            self.numbering_cache
+                .write_to(writer, self.formula().address(), wb);
+        }
 
         if let Some(ext) = self.extensions() {
             ext.write_for_owner(writer, Some(wb), "numRef", None)?;

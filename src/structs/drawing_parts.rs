@@ -491,6 +491,26 @@ impl DrawingParts {
         Ok(())
     }
 
+    /// The bytes and content type of a preserved part, for a chart that
+    /// copies the part instead of sharing it.
+    pub(crate) fn preserved_part_copy(
+        &self,
+        target: &str,
+    ) -> Result<Option<(Vec<u8>, String)>, XlsxError> {
+        let Some(file) = self.files.iter().find(|file| file.file_target() == target) else {
+            return Ok(None);
+        };
+        let content_type = self
+            .content_types
+            .iter()
+            .find(|(part, _)| part == target)
+            .map(|(_, content_type)| content_type.clone())
+            .ok_or_else(|| part_error("preserved part has no content type"))?;
+        let mut file = file.clone();
+        file.load_file_data_from_source()?;
+        Ok(Some((file.file_data().to_vec(), content_type)))
+    }
+
     pub(crate) fn chart_relationships(
         &self,
         sources: &[String],

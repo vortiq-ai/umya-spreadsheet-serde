@@ -209,7 +209,43 @@ impl Extension {
         Ok(root)
     }
 }
+impl Extension {
+    /// A new occurrence of `uri` whose only content is `payload`.
+    pub(crate) fn with_payload(
+        uri: &str,
+        namespaces: Vec<(Option<String>, String)>,
+        name: QName,
+        payload: OpaqueElement,
+    ) -> Self {
+        Self {
+            uri: Some(uri.to_owned()),
+            namespaces,
+            attributes: Vec::new(),
+            nodes: vec![ExtensionNode::Unknown(Box::new(payload))],
+            name,
+        }
+    }
+}
 impl ExtensionList {
+    /// An empty list for the chart-space level, for content that has no
+    /// source list to join.
+    pub(crate) fn new_chart_space() -> Self {
+        let name = |local: &str| QName {
+            namespace_uri:    NS_C.into(),
+            local_name:       local.into(),
+            preferred_prefix: Some("c".into()),
+        };
+        Self {
+            entries:            Vec::new(),
+            name:               name("extLst"),
+            owner:              name("chartSpace"),
+            owner_path:         "chartSpace".into(),
+            chart_part:         String::new(),
+            source_part_sha256: String::new(),
+            invalid:            false,
+        }
+    }
+
     pub(crate) fn append_list(&mut self, other: Self) {
         let same_name = |left: &QName, right: &QName| {
             left.namespace_uri == right.namespace_uri && left.local_name == right.local_name

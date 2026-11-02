@@ -154,7 +154,7 @@ impl ExtendedChart {
                         &prepared,
                         metadata.grammar == ReferenceGrammar::LabelRangeFormula,
                     );
-                    if target.replace_decided_text(&decision.text) {
+                    if target.replace_for_edit(edit, &decision.text) {
                         report.report.adjustments.changed += 1;
                     }
                 },

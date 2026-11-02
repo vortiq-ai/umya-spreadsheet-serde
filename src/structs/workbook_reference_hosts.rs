@@ -123,11 +123,18 @@ enum PartKind {
     Chart,
 }
 
+/// A pivot table a chart may be linked to: its sheet and, when known, its name.
+type PivotLink<'a> = (&'a str, Option<&'a str>);
+
+/// Scans one part for what an edit may change: the reference formulas of
+/// `prepared` and the pivot table link `pivot_link`. Without `prepared` only
+/// the link is looked for.
 fn scan_part(
     bytes: &[u8],
     host: &str,
-    prepared: &PreparedReferenceEdit<'_>,
+    prepared: Option<&PreparedReferenceEdit<'_>>,
     kind: PartKind,
+    pivot_link: Option<PivotLink<'_>>,
 ) -> Result<bool, XlsxError> {
     let mut reader = Reader::from_reader(Cursor::new(bytes));
     let mut buffer = Vec::new();
@@ -142,6 +149,35 @@ fn scan_part(
                 let name = scope
                     .resolve(element.name().into_inner(), false)
                     .map_err(error)?;
+                // A PivotChart names its pivot table in c:pivotSource.
+                if let (PartKind::Chart, Some((link_sheet, link_table))) = (&kind, pivot_link) {
+                    if name.is(CHART_NS, "name")
+                        && scopes.last().is_some_and(|(_, uri, local)| {
+                            uri == CHART_NS && local == "pivotSource"
+                        })
+                    {
+                        let text = read_simple_text(&mut reader, element, false)?
+                            .ok_or_else(|| error("invalid pivot source name in raw metadata"))?;
+                        let source = crate::drawing::charts::PivotSource::new(text, 0);
+                        if source
+                            .sheet_name()
+                            .is_some_and(|sheet| sheet.eq_ignore_ascii_case(link_sheet))
+                            && link_table
+                                .is_none_or(|table| source.table_name().eq_ignore_ascii_case(table))
+                        {
+                            return Ok(true);
+                        }
+                        buffer.clear();
+                        continue;
+                    }
+                }
+                let Some(prepared) = prepared else {
+                    if !empty {
+                        scopes.push((scope, name.namespace_uri, name.local_name));
+                    }
+                    buffer.clear();
+                    continue;
+                };
                 let target = match kind {
                     PartKind::Worksheet => {
                         (name.namespace_uri == SHEET_NS
@@ -234,6 +270,11 @@ pub(super) fn discover(
             format!("invalid reference edit: {e:?}"),
         )
     })?;
+    let pivot_link = match edit {
+        ChartReferenceEdit::RenameSheet { old, .. } => Some((old.as_str(), None)),
+        ChartReferenceEdit::DeleteSheet { sheet, .. } => Some((sheet.as_str(), None)),
+        _ => None,
+    };
     let mut hosts = Vec::new();
     for (index, sheet) in book.sheet_collection_no_check().iter().enumerate() {
         if sheet.is_deserialized() || required.iter().any(|name| *name == sheet.name()) {
@@ -244,8 +285,9 @@ pub(super) fn discover(
         if scan_part(
             &part_bytes(raw.worksheet_file())?,
             sheet.name(),
-            &prepared,
+            Some(&prepared),
             PartKind::Worksheet,
+            pivot_link,
         )? {
             hosts.push(index);
             continue;
@@ -260,8 +302,9 @@ pub(super) fn discover(
                     && scan_part(
                         &part_bytes(relationship.raw_file())?,
                         sheet.name(),
-                        &prepared,
+                        Some(&prepared),
                         PartKind::Chart,
+                        pivot_link,
                     )?
                 {
                     dependent = true;
@@ -273,6 +316,45 @@ pub(super) fn discover(
             }
         }
         if dependent {
+            hosts.push(index);
+        }
+    }
+    Ok(hosts)
+}
+
+/// The sheets that hold a chart linked to the pivot table `table` of `sheet`
+/// (any table of the sheet when `table` is `None`). Sheets already read are
+/// always included; the others are scanned without being read.
+pub(super) fn discover_pivot_chart_hosts(
+    book: &Workbook,
+    sheet: &str,
+    table: Option<&str>,
+) -> Result<Vec<usize>, XlsxError> {
+    let mut hosts = Vec::new();
+    for (index, candidate) in book.sheet_collection_no_check().iter().enumerate() {
+        if candidate.is_deserialized() {
+            hosts.push(index);
+            continue;
+        }
+        let raw = candidate.raw_data_of_worksheet();
+        let mut linked = false;
+        for rels in raw.relationships_list() {
+            for relationship in rels.relationship_list() {
+                if relationship.get_type() == crate::helper::const_str::CHART_NS
+                    && relationship.target_mode() != "External"
+                    && scan_part(
+                        &part_bytes(relationship.raw_file())?,
+                        candidate.name(),
+                        None,
+                        PartKind::Chart,
+                        Some((sheet, table)),
+                    )?
+                {
+                    linked = true;
+                }
+            }
+        }
+        if linked {
             hosts.push(index);
         }
     }
@@ -680,14 +762,65 @@ mod tests {
                      {prefix}chartSpace>"
                 );
                 assert!(
-                    scan_part(xml.as_bytes(), "Host", &prepared, PartKind::Chart).unwrap(),
+                    scan_part(
+                        xml.as_bytes(),
+                        "Host",
+                        Some(&prepared),
+                        PartKind::Chart,
+                        None
+                    )
+                    .unwrap(),
                     "{xml}"
                 );
             }
         }
         let foreign =
             b"<x:chartSpace xmlns:x=\"urn:foreign\"><x:f>Target!$A$1</x:f></x:chartSpace>";
-        assert!(!scan_part(foreign, "Host", &prepared, PartKind::Chart).unwrap());
+        assert!(!scan_part(foreign, "Host", Some(&prepared), PartKind::Chart, None).unwrap());
+    }
+
+    #[test]
+    fn pivot_chart_part_selects_a_host_only_for_its_pivot_sheet_rename() {
+        let edit = ChartReferenceEdit::RenameSheet {
+            old: "Pivot".into(),
+            new: "Renamed".into(),
+        };
+        let prepared = PreparedReferenceEdit::new(&edit).unwrap();
+        let chart = |source: &str| {
+            format!(
+                "<c:chartSpace xmlns:c=\"{CHART_NS}\"><c:pivotSource><c:name>{source}</c:name>                 <c:fmtId val=\"0\"/></c:pivotSource><c:chart/></c:chartSpace>"
+            )
+        };
+        let scan = |source: &str, link: Option<PivotLink<'_>>| {
+            scan_part(
+                chart(source).as_bytes(),
+                "Charts",
+                Some(&prepared),
+                PartKind::Chart,
+                link,
+            )
+            .unwrap()
+        };
+        assert!(scan("[b.xlsx]pivot!PivotTable1", Some(("Pivot", None))));
+        assert!(!scan(
+            "[b.xlsx]Elsewhere!PivotTable1",
+            Some(("Pivot", None))
+        ));
+        assert!(!scan("[b.xlsx]Pivot!PivotTable1", None));
+        // The link scan alone also names the table.
+        let by_table = |source: &str, table: &str| {
+            scan_part(
+                chart(source).as_bytes(),
+                "Charts",
+                None,
+                PartKind::Chart,
+                Some(("Pivot", Some(table))),
+            )
+            .unwrap()
+        };
+        assert!(by_table("[b.xlsx]Pivot!PivotTable1", "pivottable1"));
+        assert!(!by_table("[b.xlsx]Pivot!PivotTable1", "Other"));
+        assert!(!by_table("[b.xlsx]Elsewhere!PivotTable1", "PivotTable1"));
     }
 
     #[test]

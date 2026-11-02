@@ -530,3 +530,82 @@ fn canonical_comparison_uses_expanded_names_attributes_and_child_order() {
     );
     assert_ne!(canonical_xml(b"<x p='1'/>"), canonical_xml(b"<x p='2'/>"));
 }
+
+#[test]
+fn chart_space_parts_added_later_default_when_the_persisted_chart_lacks_them() {
+    use umya_spreadsheet::drawing::charts::{
+        ChartSpace,
+        PrintSettings,
+    };
+    let charts: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "fixtures/persisted_charts/7fd0288662ac/standard.json"
+    ))
+    .unwrap();
+    let space = charts[0]["two_cell_anchor"]["graphic_frame"]["graphic"]["graphic_data"]
+        ["chart_space"]
+        .clone();
+    for key in [
+        "pivot_source",
+        "text_properties",
+        "external_data",
+        "user_shapes",
+        "color_map_override",
+        "protection",
+        "pivot_options",
+    ] {
+        assert!(space.get(key).is_none(), "{key} predates this revision");
+    }
+    let plot = &space["chart"]["plot_area"];
+    assert!(plot.get("data_table").is_none() && plot.get("extensions").is_none());
+    let space: ChartSpace = serde_json::from_value(space).unwrap();
+    assert!(space.pivot_source().is_none());
+    assert!(space.text_properties().is_none());
+    assert!(space.external_data().is_none());
+    assert!(space.user_shapes().is_none());
+    assert!(space.chart().plot_area().data_table().is_none());
+    assert!(space.chart().plot_area().extensions().is_none());
+    assert!(space.color_map_override().is_none());
+    assert!(space.protection().is_none());
+    assert!(space.pivot_options().is_none());
+
+    // Print settings persisted before the parts became optional held the
+    // header/footer and page setup as empty objects and the margins in full.
+    let margins = serde_json::to_value({
+        let mut settings = PrintSettings::default();
+        settings.page_margins_mut().set_left(0.7).set_top(0.75);
+        settings
+    })
+    .unwrap()["page_margins"]
+        .clone();
+    let old: PrintSettings = serde_json::from_value(serde_json::json!({
+        "header_footer": {},
+        "page_margins": margins,
+        "page_setup": {},
+    }))
+    .unwrap();
+    let header_footer = old.header_footer().unwrap();
+    assert_eq!(header_footer.odd_header(), None);
+    assert_eq!(header_footer.align_with_margins(), None);
+    assert_eq!(old.page_setup().unwrap().orientation(), None);
+    assert!((old.page_margins().unwrap().left() - 0.7).abs() < 1e-12);
+    assert!(old.legacy_drawing_header_footer().is_none());
+}
+
+#[test]
+fn series_values_without_a_literal_slot_keep_their_reference() {
+    use umya_spreadsheet::drawing::charts::Values;
+    let mut reference =
+        serde_json::to_value(umya_spreadsheet::drawing::charts::NumberReference::default())
+            .unwrap();
+    reference.as_object_mut().unwrap().remove("pivot_cache");
+    let mut old: Values =
+        serde_json::from_value(serde_json::json!({"number_reference": reference})).unwrap();
+    assert!(old.number_literal().is_none());
+    old.number_reference_mut()
+        .formula_mut()
+        .set_address_str("Pivot!$B$4:$B$6");
+    assert_eq!(
+        old.number_reference().formula().address_str(),
+        "Pivot!$B$4:$B$6"
+    );
+}
