@@ -30,6 +30,7 @@ use crate::{
     helper::{
         address::{
             is_address,
+            name_eq_ignore_case,
             split_reference_address,
         },
         const_str::CHART_DRAWING_NS,
@@ -51,6 +52,54 @@ const SHEET_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/mai
 const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const C15_NS: &str = "http://schemas.microsoft.com/office/drawing/2012/chart";
 const CX_NS: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
+
+/// After deleting a local scope, Excel retains a global tombstone only while
+/// a surviving formula refers to that name through the current workbook.
+pub(super) fn references_current_workbook_name(book: &Workbook, name: &str) -> bool {
+    let references = |text: &str| {
+        parse_chart_formula_tokens(text).iter().any(|token| {
+            if token.get_token_type() != &FormulaTokenTypes::Operand
+                || token.get_token_sub_type() != &FormulaTokenSubTypes::Range
+            {
+                return false;
+            }
+            let (qualifier, operand) = split_reference_address(token.get_value());
+            qualifier == "[0]" && name_eq_ignore_case(operand, name)
+        })
+    };
+    if book
+        .defined_names()
+        .iter()
+        .any(|name| references(&name.address()))
+    {
+        return true;
+    }
+    for sheet in book.sheet_collection_no_check() {
+        if sheet.cells().iter().any(|cell| references(cell.formula()))
+            || sheet
+                .defined_names()
+                .iter()
+                .any(|name| references(&name.address()))
+        {
+            return true;
+        }
+        let mut found = false;
+        sheet.visit_chart_spaces(&mut |space| {
+            crate::drawing::charts::chart_reference_roles::visit_ref(space, &mut |_, target| {
+                found |= references(&target.formula().address_str());
+            });
+        });
+        sheet
+            .worksheet_drawing()
+            .visit_extended_spaces(&mut |space| {
+                space.visit_formulas(&mut |formula| found |= references(&formula.address_str()));
+            });
+        if found {
+            return true;
+        }
+    }
+    false
+}
 
 fn error(message: impl Into<String>) -> XlsxError {
     XlsxError::with_message(XlsxErrorKind::Xml, message.into())

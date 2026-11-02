@@ -359,6 +359,17 @@ impl CellFormula {
         self
     }
 
+    pub(crate) fn rewrite_reference_texts(&mut self, rewrite: &impl Fn(&str) -> String) {
+        for text in [&mut self.text, &mut self.text_view] {
+            if text.has_value() {
+                let changed = rewrite(text.value_str());
+                if changed != text.value_str() {
+                    text.set_value(changed);
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,

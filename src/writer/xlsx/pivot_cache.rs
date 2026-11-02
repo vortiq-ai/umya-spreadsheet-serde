@@ -40,6 +40,12 @@ fn raw_sheet_has_relationship(
 /// sheets a slicer cache links to and sheets with slicers (which the slicer
 /// bindings are validated against). Every writer prepares the workbook here.
 pub(crate) fn prepare_workbook(wb: &Workbook) -> Result<std::borrow::Cow<'_, Workbook>, XlsxError> {
+    let mut boundary = std::borrow::Cow::Borrowed(wb);
+    if wb.needs_sheet_visibility_reconciliation() {
+        let reconciled = boundary.to_mut();
+        reconciled.reconcile_sheet_visibility()?;
+    }
+    let wb = boundary.as_ref();
     let mut has_pivots = wb.retained_pivot_caches().next().is_some();
     let mut read_sheets = Vec::new();
     for (index, sheet) in wb.sheet_collection_no_check().iter().enumerate() {
@@ -66,7 +72,7 @@ pub(crate) fn prepare_workbook(wb: &Workbook) -> Result<std::borrow::Cow<'_, Wor
         has_pivots |= pivots;
     }
     if read_sheets.is_empty() && !has_pivots {
-        return Ok(std::borrow::Cow::Borrowed(wb));
+        return Ok(boundary);
     }
     let mut prepared = wb.clone();
     for index in read_sheets {

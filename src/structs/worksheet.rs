@@ -96,7 +96,6 @@ pub struct Worksheet {
     rows:                              Rows,
     columns:                           Columns,
     worksheet_drawing:                 WorksheetDrawing,
-    sheet_state:                       Box<str>,
     page_setup:                        PageSetup,
     page_margins:                      PageMargins,
     header_footer:                     HeaderFooter,
@@ -2438,7 +2437,7 @@ impl Worksheet {
     #[inline]
     #[must_use]
     pub fn sheet_state(&self) -> &str {
-        &self.sheet_state
+        self.state_str()
     }
 
     #[inline]
@@ -2453,7 +2452,7 @@ impl Worksheet {
     /// * `value` - Sheet State.
     #[inline]
     pub fn set_sheet_state(&mut self, value: String) -> &mut Self {
-        self.sheet_state = value.into_boxed_str();
+        self.state.set_value_string(value);
         self
     }
 
@@ -3300,7 +3299,6 @@ impl Worksheet {
             sheet_id: self.sheet_id.clone(),
             title: self.title.clone(),
             state: self.state.clone(),
-            sheet_state: self.sheet_state.clone(),
             defined_names: self.defined_names.clone(),
             ..Self::default()
         }
@@ -3311,6 +3309,34 @@ impl Worksheet {
         self.raw_data_of_worksheet
             .as_ref()
             .expect("Not found at raw data of worksheet.")
+    }
+
+    pub(crate) fn prepare_tab_selection(
+        &self,
+        selected: bool,
+    ) -> Result<Option<RawWorksheet>, XlsxError> {
+        self.raw_data_of_worksheet
+            .as_ref()
+            .map(|raw| {
+                let mut prepared = raw.clone();
+                prepared.set_tab_selected(selected)?;
+                Ok(prepared)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn apply_tab_selection(&mut self, prepared: Option<RawWorksheet>, selected: bool) {
+        if let Some(prepared) = prepared {
+            self.raw_data_of_worksheet = Some(prepared);
+        } else {
+            let views = self.sheet_views_mut().sheet_view_list_mut();
+            if selected && !views.iter().any(|view| view.workbook_view_id() == 0) {
+                views.push(crate::structs::SheetView::default());
+            }
+            for view in views.iter_mut().filter(|view| view.workbook_view_id() == 0) {
+                view.set_tab_selected(selected);
+            }
+        }
     }
 
     #[inline]

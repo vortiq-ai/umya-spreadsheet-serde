@@ -3,6 +3,9 @@ use std::{
     path::Path,
 };
 
+#[path = "raw_worksheet_selection.rs"]
+mod selection;
+
 use crate::{
     helper::const_str::PKG_SHEET,
     structs::{
@@ -27,6 +30,13 @@ pub(crate) struct RawWorksheet {
     drops_row_styles:   bool,
 }
 impl RawWorksheet {
+    pub(crate) fn set_tab_selected(&mut self, selected: bool) -> Result<(), XlsxError> {
+        self.worksheet_file.load_file_data_from_source()?;
+        let xml = selection::with_tab_selection(self.worksheet_file.file_data(), selected)?;
+        self.worksheet_file.set_file_data(&xml);
+        Ok(())
+    }
+
     #[inline]
     pub(crate) fn worksheet_file(&self) -> &RawFile {
         &self.worksheet_file
@@ -308,7 +318,9 @@ fn without_row_styles(document: &[u8]) -> Result<Vec<u8>, XlsxError> {
             .iter()
             .rposition(|byte| *byte == b'<')
             .ok_or_else(|| crate::xml::xml_error("row start tag has no opening bracket"))?;
-        for (from, to) in row_style_attribute_spans(&xml[tag_start..end], tag_start)? {
+        for (from, to) in
+            attribute_spans(&xml[tag_start..end], tag_start, &[b"s", b"customFormat"])?
+        {
             out.extend_from_slice(&xml[copied..from]);
             copied = to;
         }
@@ -317,11 +329,15 @@ fn without_row_styles(document: &[u8]) -> Result<Vec<u8>, XlsxError> {
     Ok(out)
 }
 
-/// The byte spans (whitespace before the attribute included) of the
-/// unqualified `s` and `customFormat` attributes in a start tag, offset by
-/// the tag's position in the document.
-fn row_style_attribute_spans(tag: &[u8], offset: usize) -> Result<Vec<(usize, usize)>, XlsxError> {
-    let malformed = || crate::xml::xml_error("malformed row start tag");
+/// The byte spans (whitespace before each attribute included) of the named
+/// unqualified attributes in a start tag, offset by the tag's document
+/// position.
+fn attribute_spans(
+    tag: &[u8],
+    offset: usize,
+    names: &[&[u8]],
+) -> Result<Vec<(usize, usize)>, XlsxError> {
+    let malformed = || crate::xml::xml_error("malformed XML start tag");
     let is_space = |byte: u8| matches!(byte, b' ' | b'\t' | b'\r' | b'\n');
     let mut spans = Vec::new();
     // Skip `<` and the element name.
@@ -362,7 +378,7 @@ fn row_style_attribute_spans(tag: &[u8], offset: usize) -> Result<Vec<(usize, us
             .position(|byte| *byte == quote)
             .ok_or_else(malformed)?;
         at += close + 1;
-        if matches!(name, b"s" | b"customFormat") {
+        if names.contains(&name) {
             spans.push((offset + space_start, offset + at));
         }
     }

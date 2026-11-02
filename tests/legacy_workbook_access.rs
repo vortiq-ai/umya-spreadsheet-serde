@@ -34,6 +34,10 @@ fn existing_workbook_access_signatures_remain_available() {
 fn fallible_loaded_access_preserves_active_sheet_error_kinds() {
     let mut book = umya_spreadsheet::new_file();
     book.set_active_sheet(10);
+    // Excel refuses an out-of-range activation without changing selection.
+    // Exercise the raw-view escape hatch to retain the accessor error checks.
+    assert_eq!(book.workbook_view().active_tab(), 0);
+    book.workbook_view_mut().set_active_tab(10);
     assert_eq!(
         book.try_active_sheet().unwrap_err().kind(),
         umya_spreadsheet::XlsxErrorKind::NotFound

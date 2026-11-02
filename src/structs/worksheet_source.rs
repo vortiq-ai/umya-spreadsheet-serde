@@ -1,5 +1,6 @@
 // worksheetSource
 use std::io::Cursor;
+
 use quick_xml::{
     Reader,
     Writer,
@@ -7,7 +8,10 @@ use quick_xml::{
 };
 
 use crate::{
-    StringValue, reader::driver::get_attribute, set_string_from_xml, structs::Address, writer::driver::write_start_tag
+    StringValue,
+    reader::driver::read_attribute,
+    structs::Address,
+    writer::driver::write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -28,7 +32,7 @@ impl WorksheetSource {
     pub fn get_address(&self) -> &Address {
         self.address()
     }
-    
+
     pub fn address_mut(&mut self) -> &mut Address {
         &mut self.address
     }
@@ -74,17 +78,20 @@ impl WorksheetSource {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         let mut address = Address::default();
-        if let Some(v) = get_attribute(e, b"ref") {
+        if let Some(v) = read_attribute(e, b"ref")? {
             address.range_mut().set_range(v);
         }
-        if let Some(v) = get_attribute(e, b"sheet") {
+        if let Some(v) = read_attribute(e, b"sheet")? {
             address.set_sheet_name(v);
         }
         self.set_address(address);
-        
-        set_string_from_xml!(self, e, name, "name");
+
+        if let Some(v) = read_attribute(e, b"name")? {
+            self.set_name(v);
+        }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

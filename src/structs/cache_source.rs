@@ -152,7 +152,7 @@ impl CacheSource {
                 if name.is(crate::helper::const_str::SHEET_MAIN_NS, "worksheetSource")
                 {
                     let mut obj = WorksheetSource::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e)?;
                     self.set_worksheet_source_mut(obj);
                     if matches!(event, Event::Start(_)) {
                         let node = crate::drawing::charts::OpaqueElement::read(

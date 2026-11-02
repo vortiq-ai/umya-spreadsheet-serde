@@ -6,6 +6,15 @@ use std::sync::{
 #[path = "workbook_reference_hosts.rs"]
 mod reference_hosts;
 
+#[path = "workbook_sheet_visibility.rs"]
+mod sheet_visibility;
+
+#[path = "workbook_sheet_copy.rs"]
+mod sheet_copy;
+
+#[path = "workbook_sheet_chart_names.rs"]
+mod sheet_chart_names;
+
 use crate::{
     StringValue,
     XlsxError,
@@ -145,6 +154,21 @@ fn prepare_pivot_cache_source(
     use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
 
     let mut address = source.address().clone();
+    if !source.name().is_empty() && address.range().range().is_empty() {
+        let mut updated = source.clone();
+        for edit in edits {
+            if let crate::drawing::charts::ChartReferenceEdit::RenameSheet { old, new } =
+                edit.edit()
+            {
+                if name_eq_ignore_case(updated.address().sheet_name(), old) {
+                    updated.address_mut().set_sheet_name(new);
+                }
+            }
+        }
+        return Ok(
+            (updated.address().sheet_name() != source.address().sheet_name()).then_some(updated),
+        );
+    }
     if address.sheet_name().is_empty() || address.range().range().is_empty() {
         return Ok(None);
     }
@@ -1634,9 +1658,19 @@ impl Workbook {
         self.sheet_by_name_mut(sheet_name)
     }
 
+    /// Activate a visible worksheet. Invalid or hidden indexes leave the
+    /// current worksheet active, as does failure to read a lazy worksheet.
     #[inline]
     pub fn set_active_sheet(&mut self, index: u32) -> &mut Self {
-        self.workbook_view_mut().set_active_tab(index);
+        if self
+            .work_sheet_collection
+            .get(index as usize)
+            .is_some_and(|sheet| matches!(sheet.state(), crate::structs::SheetStateValues::Visible))
+        {
+            // The existing setter cannot return a materialization error.
+            // Selection is changed only after both sheets can be read.
+            drop(self.select_visible_sheet(index as usize));
+        }
         self
     }
 
@@ -1701,6 +1735,28 @@ impl Workbook {
     pub fn add_sheet(&mut self, mut value: Worksheet) -> Result<&mut Worksheet, XlsxError> {
         let title = value.name();
         self.check_sheet_name(title, None)?;
+        if let Some(source) = self
+            .work_sheet_collection
+            .iter()
+            .position(|sheet| !value.sheet_id().is_empty() && sheet.sheet_id() == value.sheet_id())
+        {
+            let mut prepared = self.clone();
+            let mut copy = value.clone();
+            prepared.try_read_sheet(source)?;
+            prepared.read_sheet_copy(source, &mut copy)?;
+            if prepared.work_sheet_collection[source].has_same_copy_identities(&copy) {
+                if matches!(copy.state(), crate::structs::SheetStateValues::VeryHidden) {
+                    return Err(XlsxError::with_message(
+                        XlsxErrorKind::InvalidArgument,
+                        "a very hidden worksheet cannot be copied",
+                    ));
+                }
+                prepared.prepare_sheet_copy(source, &mut copy)?;
+                prepared.work_sheet_collection.push(copy);
+                *self = prepared;
+                return Ok(self.work_sheet_collection.last_mut().unwrap());
+            }
+        }
         if value.sheet_id().is_empty()
             || self
                 .work_sheet_collection
@@ -1767,6 +1823,7 @@ impl Workbook {
     /// * `Result<(), XlsxError>` - OK:removed worksheet. Err:Error.
     #[inline]
     pub fn remove_sheet(&mut self, index: usize) -> Result<(), XlsxError> {
+        self.check_sheet_removal_visibility(index)?;
         let name = self
             .work_sheet_collection
             .get(index)
@@ -1833,17 +1890,17 @@ impl Workbook {
                     !existing.has_local_sheet_id()
                         && name_eq_ignore_case(existing.name(), name.name())
                 });
-            if !collides {
+            if !collides && reference_hosts::references_current_workbook_name(self, name.name()) {
                 // Match Excel's current-workbook fallback: an existing global
-                // wins a collision; otherwise retain a global #REF! tombstone.
+                // wins a collision; a surviving reference otherwise retains a
+                // global #REF! tombstone. Unreferenced local names disappear.
                 name.clear_local_sheet_id();
                 name.set_string_value("#REF!");
                 self.defined_names.push(name);
             }
         }
         // localSheetId is a zero-based workbook index, not a stable sheet ID.
-        // Later scopes shift with their owners after deleted locals are
-        // promoted.
+        // Later scopes shift with their owners after deleted locals are removed.
         for name in &mut self.defined_names {
             if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
                 name.set_local_sheet_id(name.local_sheet_id() - 1);
@@ -1863,6 +1920,9 @@ impl Workbook {
         let kept = (active - u32::from(index < active as usize)).min(last);
         if kept != active {
             self.workbook_view_mut().set_active_tab(kept);
+        }
+        if index == active as usize || self.needs_sheet_visibility_reconciliation() {
+            self.reconcile_sheet_visibility()?;
         }
         Ok(())
     }
@@ -1890,7 +1950,7 @@ impl Workbook {
         let v = sheet_title.into();
         self.check_sheet_name(&v, None)?;
         let sheet_id = self.next_sheet_id()?;
-        Ok(Workbook::add_new_sheet_crate(self, sheet_id, v.clone()))
+        Ok(Workbook::add_new_sheet_crate(self, sheet_id, v))
     }
 
     /// Set a worksheet's stable `sheetId` by its zero-based index.
