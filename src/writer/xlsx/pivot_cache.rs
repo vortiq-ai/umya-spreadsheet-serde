@@ -40,7 +40,7 @@ fn raw_sheet_has_relationship(
 /// sheets a slicer cache links to and sheets with slicers (which the slicer
 /// bindings are validated against). Every writer prepares the workbook here.
 pub(crate) fn prepare_workbook(wb: &Workbook) -> Result<std::borrow::Cow<'_, Workbook>, XlsxError> {
-    let mut has_pivots = false;
+    let mut has_pivots = wb.retained_pivot_caches().next().is_some();
     let mut read_sheets = Vec::new();
     for (index, sheet) in wb.sheet_collection_no_check().iter().enumerate() {
         let pivots = !sheet.pivot_tables().is_empty()
@@ -50,16 +50,22 @@ pub(crate) fn prepare_workbook(wb: &Workbook) -> Result<std::borrow::Cow<'_, Wor
                 .slicer_caches()
                 .iter()
                 .flat_map(crate::structs::SlicerCache::linked_pivots)
+                .chain(
+                    wb.timeline_caches()
+                        .iter()
+                        .flat_map(crate::structs::TimelineCache::linked_pivots),
+                )
                 .any(|link| sheet.sheet_id().parse::<u32>() == Ok(link.sheet_id));
         if pivots
             || linked
             || raw_sheet_has_relationship(sheet, crate::helper::const_str::SLICER_REL_NS)?
+            || raw_sheet_has_relationship(sheet, crate::helper::const_str::TIMELINE_REL_NS)?
         {
             read_sheets.push(index);
         }
         has_pivots |= pivots;
     }
-    if read_sheets.is_empty() {
+    if read_sheets.is_empty() && !has_pivots {
         return Ok(std::borrow::Cow::Borrowed(wb));
     }
     let mut prepared = wb.clone();
@@ -97,25 +103,49 @@ pub(crate) struct DeclaredCaches {
 
 pub(crate) fn declared_caches(wb: &Workbook) -> Result<DeclaredCaches, XlsxError> {
     let mut declared = DeclaredCaches::default();
-    for sheet in wb.sheet_collection_no_check() {
-        for pivot in sheet.pivot_tables() {
-            let id = pivot.pivot_table_definition().cache_id().to_string();
-            let hash = pivot.pivot_cache_definition().hash_code()?;
-            match declared.hashes.get(&id) {
-                Some(previous) if *previous != hash => {
-                    return Err(crate::xml::xml_error(format!(
-                        "conflicting definitions for pivot cache {id}"
-                    )));
-                }
-                Some(_) => (),
-                None => {
-                    declared.order.push(id.clone());
-                    declared.hashes.insert(id, hash);
-                }
+    for (id, definition) in wb
+        .sheet_collection_no_check()
+        .iter()
+        .flat_map(|sheet| sheet.pivot_tables().iter())
+        .map(|pivot| {
+            (
+                pivot.pivot_table_definition().cache_id(),
+                pivot.pivot_cache_definition(),
+            )
+        })
+        .chain(wb.retained_pivot_caches())
+    {
+        let id = id.to_string();
+        let hash = definition.hash_code()?;
+        match declared.hashes.get(&id) {
+            Some(previous) if *previous != hash => {
+                return Err(crate::xml::xml_error(format!(
+                    "conflicting definitions for pivot cache {id}"
+                )));
+            }
+            Some(_) => (),
+            None => {
+                declared.order.push(id.clone());
+                declared.hashes.insert(id, hash);
             }
         }
     }
     Ok(declared)
+}
+
+/// Both writers emit the pivot caches the workbook retains for slicers and
+/// timelines through the same definition/records path used by pivot tables.
+pub(crate) fn write_retained_caches<W: io::Seek + io::Write>(
+    workbook: &Workbook,
+    writer_mng: &mut WriterManager<W>,
+) -> Result<(), XlsxError> {
+    for (id, definition) in workbook.retained_pivot_caches() {
+        let (written, no) = writer_mng.get_pivot_cache_no(&id.to_string());
+        if !written {
+            write_definition(definition, no, writer_mng)?;
+        }
+    }
+    Ok(())
 }
 
 /// Check the pivot tables of a sheet about to be written against the caches

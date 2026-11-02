@@ -12,10 +12,15 @@ use crate::{
     helper::const_str::{
         SLICER_CACHE_REL_NS,
         SLICER_REL_NS,
+        TIMELINE_CACHE_REL_NS,
+        TIMELINE_REL_NS,
     },
     structs::{
         Slicer,
         SlicerCache,
+        SlicerListKind,
+        Timeline,
+        TimelineCache,
         Workbook,
         WorkbookExtension,
         Worksheet,
@@ -31,15 +36,16 @@ use crate::{
     xml::xml_error,
 };
 
-/// Read every workbook slicer cache listed in the workbook extension lists.
-/// Each entry resolves through the workbook's own relationships by exact id
-/// and relationship type.
+/// Read every workbook slicer cache and timeline cache listed in the workbook
+/// extension lists. Each entry resolves through the workbook's own
+/// relationships by exact id and relationship type.
 pub(crate) fn read_workbook_slicer_caches<R: io::Read + io::Seek>(
     archive: &mut zip::read::ZipArchive<R>,
     book: &mut Workbook,
     workbook_relationships: &[(String, String, String)],
     external_ids: &[String],
 ) -> Result<(), XlsxError> {
+    super::pivot_cache::read_retained_caches(archive, book, workbook_relationships, external_ids)?;
     resolve_workbook_extension_parts(archive, book, workbook_relationships, external_ids)?;
     let references = std::mem::take(&mut book.slicer_refs);
     let mut used = HashSet::new();
@@ -50,18 +56,24 @@ pub(crate) fn read_workbook_slicer_caches<R: io::Read + io::Seek>(
                 reference.relationship_id
             )));
         }
+        let timeline = reference.kind == SlicerListKind::Timeline;
+        let (label, expected) = if timeline {
+            ("timeline cache", TIMELINE_CACHE_REL_NS)
+        } else {
+            ("slicer cache", SLICER_CACHE_REL_NS)
+        };
         let (_, relationship_type, target) = workbook_relationships
             .iter()
             .find(|(id, ..)| *id == reference.relationship_id)
             .ok_or_else(|| {
                 xml_error(format!(
-                    "slicer cache relationship {} does not exist",
+                    "{label} relationship {} does not exist",
                     reference.relationship_id
                 ))
             })?;
-        if relationship_type != SLICER_CACHE_REL_NS {
+        if relationship_type != expected {
             return Err(xml_error(format!(
-                "relationship {} is not a slicer cache relationship",
+                "relationship {} is not a {label} relationship",
                 reference.relationship_id
             )));
         }
@@ -69,14 +81,20 @@ pub(crate) fn read_workbook_slicer_caches<R: io::Read + io::Seek>(
         let rels_path = relationships_path(&path)?;
         if archive.by_name(&rels_path).is_ok() {
             return Err(xml_error(format!(
-                "slicer cache part {path} has relationships, which are not supported"
+                "{label} part {path} has relationships, which are not supported"
             )));
         }
         let mut bytes = Vec::new();
         io::Read::read_to_end(&mut driver::zip_by_name(archive, &path)?, &mut bytes)?;
-        let cache = SlicerCache::from_xml(&bytes)
-            .map_err(|error| xml_error(format!("slicer cache part {path}: {error}")))?;
-        book.slicer_caches_mut().push(cache);
+        if timeline {
+            let cache = TimelineCache::from_xml(&bytes)
+                .map_err(|error| xml_error(format!("{label} part {path}: {error}")))?;
+            book.timeline_caches_mut().push(cache);
+        } else {
+            let cache = SlicerCache::from_xml(&bytes)
+                .map_err(|error| xml_error(format!("{label} part {path}: {error}")))?;
+            book.slicer_caches_mut().push(cache);
+        }
     }
     Ok(())
 }
@@ -244,7 +262,9 @@ pub(crate) fn read_worksheet_slicers(
     }
     let relationships = raw
         .relationships_of_part(raw.worksheet_file().file_target())?
-        .ok_or_else(|| xml_error("worksheet lists slicers but has no relationships"))?;
+        .ok_or_else(|| {
+            xml_error("worksheet lists slicers or timelines but has no relationships")
+        })?;
     let mut used = HashSet::new();
     for reference in references {
         if !used.insert(reference.relationship_id.clone()) {
@@ -253,30 +273,44 @@ pub(crate) fn read_worksheet_slicers(
                 reference.relationship_id
             )));
         }
+        let timeline = reference.kind == SlicerListKind::Timeline;
+        let (label, expected) = if timeline {
+            ("timeline", TIMELINE_REL_NS)
+        } else {
+            ("slicer", SLICER_REL_NS)
+        };
         let relationship = relationships
             .find_relationship_by_rid(&reference.relationship_id)
             .ok_or_else(|| {
                 xml_error(format!(
-                    "slicer relationship {} does not exist",
+                    "{label} relationship {} does not exist",
                     reference.relationship_id
                 ))
             })?;
-        if relationship.get_type() != SLICER_REL_NS || relationship.target_mode() == "External" {
+        if relationship.get_type() != expected || relationship.target_mode() == "External" {
             return Err(xml_error(format!(
-                "relationship {} is not an internal slicer relationship",
+                "relationship {} is not an internal {label} relationship",
                 reference.relationship_id
             )));
         }
         let part = relationship.raw_file();
         if raw.relationships_of_part(part.file_target())?.is_some() {
             return Err(xml_error(format!(
-                "slicer part {} has relationships, which are not supported",
+                "{label} part {} has relationships, which are not supported",
                 part.file_target()
             )));
         }
-        let slicers = Slicer::from_xml(part.file_data())
-            .map_err(|error| xml_error(format!("slicer part {}: {error}", part.file_target())))?;
-        worksheet.slicers_mut().extend(slicers);
+        if timeline {
+            let timelines = Timeline::from_xml(part.file_data()).map_err(|error| {
+                xml_error(format!("{label} part {}: {error}", part.file_target()))
+            })?;
+            worksheet.timelines_mut().extend(timelines);
+        } else {
+            let slicers = Slicer::from_xml(part.file_data()).map_err(|error| {
+                xml_error(format!("{label} part {}: {error}", part.file_target()))
+            })?;
+            worksheet.slicers_mut().extend(slicers);
+        }
     }
     Ok(())
 }

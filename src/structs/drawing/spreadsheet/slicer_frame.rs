@@ -35,6 +35,7 @@ use crate::{
     structs::{
         SLICER_DRAWING_NS,
         SlicerDrawing,
+        TIMELINE_DRAWING_NS,
         XlsxError,
     },
     traits::AdjustmentCoordinate,
@@ -51,6 +52,41 @@ use crate::{
         required_child,
     },
 };
+
+/// What a [`SlicerFrame`] displays: a slicer or a timeline slicer. Excel draws
+/// both with the same kind of graphic frame, in different namespaces.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SlicerFrameKind {
+    #[default]
+    Slicer,
+    Timeline,
+}
+
+impl SlicerFrameKind {
+    const ALL: [Self; 2] = [Self::Slicer, Self::Timeline];
+
+    pub(crate) fn namespace(self) -> &'static str {
+        match self {
+            Self::Slicer => SLICER_DRAWING_NS,
+            Self::Timeline => TIMELINE_DRAWING_NS,
+        }
+    }
+
+    pub(crate) fn element_name(self) -> &'static str {
+        match self {
+            Self::Slicer => "slicer",
+            Self::Timeline => "timeslicer",
+        }
+    }
+
+    pub(crate) fn prefix(self) -> &'static str {
+        match self {
+            Self::Slicer => "sle",
+            Self::Timeline => "tsle",
+        }
+    }
+}
 
 /// The `mc:AlternateContent` envelope of a slicer frame: the namespaces the
 /// slicer choice requires, the other alternatives in their source order and the
@@ -90,6 +126,7 @@ impl SlicerFrameCompatibility {
 
 /// The parts of a slicer graphic frame.
 struct FrameParts {
+    kind:       SlicerFrameKind,
     properties: NonVisualGraphicFrameProperties,
     transform:  Transform,
     macro_name: Option<String>,
@@ -104,6 +141,8 @@ struct FrameParts {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct SlicerFrame {
+    #[cfg_attr(feature = "serde", serde(default))]
+    kind:             SlicerFrameKind,
     anchor:           DrawingAnchor,
     frame_properties: NonVisualGraphicFrameProperties,
     transform:        Transform,
@@ -125,6 +164,21 @@ impl SlicerFrame {
             },
             ..Self::default()
         }
+    }
+
+    /// A frame that displays the timeline view `timeline_name`.
+    #[must_use]
+    pub fn new_timeline(anchor: DrawingAnchor, timeline_name: impl Into<String>) -> Self {
+        Self {
+            kind: SlicerFrameKind::Timeline,
+            ..Self::new(anchor, timeline_name)
+        }
+    }
+
+    /// Whether the frame displays a slicer or a timeline.
+    #[must_use]
+    pub fn kind(&self) -> SlicerFrameKind {
+        self.kind
     }
 
     #[must_use]
@@ -289,10 +343,12 @@ impl SlicerFrame {
         write_start_tag(
             writer,
             "a:graphicData",
-            vec![("uri", SLICER_DRAWING_NS).into()],
+            vec![("uri", self.kind.namespace()).into()],
             false,
         );
-        self.slicer.write_to(writer).map_err(drawing_error)?;
+        self.slicer
+            .write_to(writer, self.kind)
+            .map_err(drawing_error)?;
         write_end_tag(writer, "a:graphicData");
         write_end_tag(writer, "a:graphic");
         write_end_tag(writer, "xdr:graphicFrame");
@@ -400,13 +456,13 @@ impl AdjustmentCoordinate for SlicerFrame {
     }
 }
 
-/// The `name` of every slicer element inside `element`.
+/// The `name` of every slicer or timeline slicer element inside `element`.
 fn slicer_names(element: &OpaqueElement) -> Vec<String> {
     element
         .children
         .iter()
         .filter_map(|token| match token {
-            OpaqueToken::Start(start) if start.name.is(SLICER_DRAWING_NS, "slicer") => start
+            OpaqueToken::Start(start) if is_view_element(&start.name) => start
                 .attributes
                 .iter()
                 .find(|(name, _)| name.namespace_uri.is_empty() && name.local_name == "name")
@@ -416,11 +472,17 @@ fn slicer_names(element: &OpaqueElement) -> Vec<String> {
         .collect()
 }
 
-/// Make every slicer element inside `element` name `name`.
+fn is_view_element(name: &crate::drawing::charts::QName) -> bool {
+    SlicerFrameKind::ALL
+        .iter()
+        .any(|kind| name.is(kind.namespace(), kind.element_name()))
+}
+
+/// Make every slicer or timeline slicer element inside `element` name `name`.
 fn rename_slicers(element: &mut OpaqueElement, name: &str) {
     for token in &mut element.children {
         if let OpaqueToken::Start(start) = token {
-            if start.name.is(SLICER_DRAWING_NS, "slicer") {
+            if is_view_element(&start.name) {
                 for (key, value) in &mut start.attributes {
                     if key.namespace_uri.is_empty() && key.local_name == "name" {
                         name.clone_into(value);
@@ -431,27 +493,32 @@ fn rename_slicers(element: &mut OpaqueElement, name: &str) {
     }
 }
 
-fn slicer_payload(frame: &OpaqueElement) -> Result<bool, XlsxError> {
+/// The kind of view a graphic frame displays, if it displays one.
+fn frame_kind(frame: &OpaqueElement) -> Result<Option<SlicerFrameKind>, XlsxError> {
     if !frame.name.is(SHEET_DRAWING_NS, "graphicFrame") {
-        return Ok(false);
+        return Ok(None);
     }
     let children = direct_children(frame).map_err(drawing_error)?;
     let Some(graphic) = child(&children, DRAWINGML_MAIN_NS, "graphic").map_err(drawing_error)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let graphic_children = direct_children(graphic).map_err(drawing_error)?;
     let Some(data) =
         child(&graphic_children, DRAWINGML_MAIN_NS, "graphicData").map_err(drawing_error)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
-    Ok(attribute(data, "", "uri").map_err(drawing_error)? == Some(SLICER_DRAWING_NS))
+    let uri = attribute(data, "", "uri").map_err(drawing_error)?;
+    Ok(SlicerFrameKind::ALL
+        .into_iter()
+        .find(|kind| Some(kind.namespace()) == uri))
 }
 
 impl SlicerFrame {
     fn read_frame(
         frame: &OpaqueElement,
+        kind: SlicerFrameKind,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) -> Result<FrameParts, XlsxError> {
         attributes(frame, &["macro", "fPublished"], &[]).map_err(drawing_error)?;
@@ -501,13 +568,13 @@ impl SlicerFrame {
         }
         attributes(data, &["uri"], &[]).map_err(drawing_error)?;
         let payload = direct_children(data).map_err(drawing_error)?;
-        if payload.len() != 1 || !payload[0].name.is(SLICER_DRAWING_NS, "slicer") {
+        if payload.len() != 1 || !payload[0].name.is(kind.namespace(), kind.element_name()) {
             return Err(drawing_error(
                 "slicer graphic data needs exactly one slicer element",
             ));
         }
         let slicer = with_fragment(&payload[0], |reader, start, empty| {
-            SlicerDrawing::read_xml(reader, start, empty, &NamespaceScope::default())
+            SlicerDrawing::read_xml(reader, start, empty, &NamespaceScope::default(), kind)
                 .map_err(drawing_error)
         })?;
         if slicer.name.is_empty() {
@@ -520,6 +587,7 @@ impl SlicerFrame {
             Some(_) => return Err(drawing_error("invalid slicer frame fPublished")),
         };
         Ok(FrameParts {
+            kind,
             properties: frame_properties,
             transform,
             macro_name: attribute(frame, "", "macro")
@@ -541,8 +609,10 @@ impl SlicerFrame {
             return Ok(None);
         };
         let mut compatibility = None;
+        let kind;
         let frame = if object.name.is(COMPATIBILITY_NS, "AlternateContent") {
             let mut frame = None;
+            let mut frame_view_kind = None;
             let mut required_namespaces = Vec::new();
             let mut fallback = None;
             let mut choices_before = Vec::new();
@@ -553,7 +623,13 @@ impl SlicerFrame {
                     if fallback.is_some() {
                         return Err(drawing_error("choice after slicer fallback"));
                     }
-                    if frame.is_none() && objects.len() == 1 && slicer_payload(&objects[0])? {
+                    let payload_kind = if frame.is_none() && objects.len() == 1 {
+                        frame_kind(&objects[0])?
+                    } else {
+                        None
+                    };
+                    if let Some(payload_kind) = payload_kind {
+                        frame_view_kind = Some(payload_kind);
                         let scope = NamespaceScope::with_bindings(branch.namespaces.clone());
                         let requires =
                             required_attribute(&branch, "", "Requires").map_err(drawing_error)?;
@@ -583,11 +659,12 @@ impl SlicerFrame {
                     return Err(drawing_error("unsupported slicer compatibility branch"));
                 }
             }
-            let Some(frame) = frame else {
+            let (Some(frame), Some(frame_view_kind)) = (frame, frame_view_kind) else {
                 return Ok(None);
             };
+            kind = frame_view_kind;
             // Every other choice that holds a slicer must show the same one.
-            let modelled = Self::read_frame(&frame, session)?.slicer.name;
+            let modelled = Self::read_frame(&frame, kind, session)?.slicer.name;
             for alternative in choices_before.iter().chain(&choices_after) {
                 if slicer_names(alternative)
                     .iter()
@@ -605,7 +682,8 @@ impl SlicerFrame {
                 fallback,
             });
             frame
-        } else if slicer_payload(object)? {
+        } else if let Some(found) = frame_kind(object)? {
+            kind = found;
             object.clone()
         } else {
             return Ok(None);
@@ -613,9 +691,10 @@ impl SlicerFrame {
         if children.len() != 4 {
             return Err(drawing_error("slicer anchor has unsupported children"));
         }
-        let parts = Self::read_frame(&frame, session)?;
+        let parts = Self::read_frame(&frame, kind, session)?;
         let (anchor, client_data) = geometry(element)?;
         Ok(Some(Self {
+            kind: parts.kind,
             anchor,
             frame_properties: parts.properties,
             transform: parts.transform,

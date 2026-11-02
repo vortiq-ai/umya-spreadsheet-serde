@@ -104,6 +104,10 @@ pub struct Workbook {
     /// Slicer cache relationship ids read from the workbook extension lists,
     /// consumed while the package is read.
     pub(crate) slicer_refs:   Vec<super::slicer::SlicerPartReference>,
+    timeline_caches:          Vec<super::timeline::TimelineCache>,
+    /// Pivot caches a slicer or timeline still reads after their last pivot
+    /// table is removed, by workbook cache id.
+    pub(crate) pivot_orphans: Vec<(u32, super::PivotCacheDefinition)>,
 }
 
 type FrozenPivotCharts = Vec<(
@@ -114,9 +118,10 @@ type FrozenPivotCharts = Vec<(
 // Precomputed decisions are kept separate from model mutation: an unresolved
 // reference must not leave half a workbook adjusted.
 struct WorkbookReferencePlan {
-    global_names: Vec<Option<String>>,
-    scoped_names: Vec<Vec<Option<String>>>,
-    sheets:       Vec<SheetReferencePlan>,
+    global_names:        Vec<Option<String>>,
+    scoped_names:        Vec<Vec<Option<String>>>,
+    sheets:              Vec<SheetReferencePlan>,
+    pivot_cache_sources: Vec<PivotCacheSourcePlan>,
 }
 struct SheetReferencePlan {
     index:              usize,
@@ -124,6 +129,60 @@ struct SheetReferencePlan {
     charts:             Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
     extension_formulas: Vec<Option<String>>,
 }
+enum PivotCacheSourceOwner {
+    Live { sheet: usize, pivot: usize },
+    Retained { cache: usize },
+}
+struct PivotCacheSourcePlan {
+    owner:  PivotCacheSourceOwner,
+    source: super::WorksheetSource,
+}
+
+fn prepare_pivot_cache_source(
+    source: &super::WorksheetSource,
+    edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+) -> Result<Option<super::WorksheetSource>, XlsxError> {
+    use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
+
+    let mut address = source.address().clone();
+    if address.sheet_name().is_empty() || address.range().range().is_empty() {
+        return Ok(None);
+    }
+    let mut changed = false;
+    for edit in edits {
+        let range = address.range().range();
+        let reference = crate::helper::address::join_address(address.sheet_name(), &range);
+        let decision = edit_prepared_formula_text(&reference, "", edit, false);
+        if decision.invalidated != 0 {
+            // Excel keeps the source as written when its sheet or its whole
+            // range is deleted.
+            break;
+        }
+        if decision.text == reference {
+            continue;
+        }
+        let (sheet, range) = split_reference_address(&decision.text);
+        if sheet.is_empty() || range.is_empty() || range.contains("#REF!") {
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!(
+                    "reference edit cannot represent pivot cache worksheet source {reference:?}"
+                ),
+            ));
+        }
+        address.set_sheet_name(unescape_sheet_name(sheet).into_owned());
+        address.range_mut().set_range(range.to_owned());
+        changed = true;
+    }
+    if changed {
+        let mut updated = source.clone();
+        updated.set_address(address);
+        Ok(Some(updated))
+    } else {
+        Ok(None)
+    }
+}
+
 // Prepared ChartEx results of a sheet deletion: the converted charts of the
 // remaining hosts and the `_xlchart` names no chart refers to any more.
 struct ChartExSheetDeletion {
@@ -270,9 +329,35 @@ impl Workbook {
         required: &[&str],
         edit: &crate::drawing::charts::ChartReferenceEdit,
     ) -> Result<Vec<usize>, XlsxError> {
-        let hosts = reference_hosts::discover(self, required, edit)?;
+        let mut hosts = reference_hosts::discover(self, required, edit)?;
+        hosts.extend(self.raw_pivot_cache_hosts());
+        hosts.sort_unstable();
+        hosts.dedup();
         reference_hosts::materialize(self, &hosts)?;
         Ok(hosts)
+    }
+
+    // Live cache definitions are loaded with pivot tables on their host sheets.
+    fn raw_pivot_cache_hosts(&self) -> Vec<usize> {
+        self.work_sheet_collection
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sheet)| {
+                if sheet.is_deserialized() {
+                    return None;
+                }
+                let has_pivot_table = sheet
+                    .raw_data_of_worksheet()
+                    .relationships_list()
+                    .iter()
+                    .flat_map(crate::raw::RawRelationships::relationship_list)
+                    .any(|relationship| {
+                        relationship.get_type() == crate::helper::const_str::PIVOT_TABLE_NS
+                            && relationship.target_mode() != "External"
+                    });
+                has_pivot_table.then_some(index)
+            })
+            .collect()
     }
 
     /// Preflight names on every sheet and formula owners on materialized hosts
@@ -293,6 +378,8 @@ impl Workbook {
                 format!("reference edit: {e:?}"),
             )
         })?;
+        let pivot_cache_sources =
+            self.prepare_pivot_cache_source_adjustments(std::slice::from_ref(&prepared))?;
         let decide = |text: &str, host: &str| -> Option<String> {
             let result = edit_prepared_formula_text(text, host, &prepared, false);
             (result.text != text).then_some(result.text)
@@ -365,7 +452,62 @@ impl Workbook {
             global_names,
             scoped_names,
             sheets,
+            pivot_cache_sources,
         })
+    }
+
+    fn prepare_pivot_cache_source_adjustments(
+        &self,
+        edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+    ) -> Result<Vec<PivotCacheSourcePlan>, XlsxError> {
+        let mut plans = Vec::new();
+        for (sheet_index, sheet) in self.work_sheet_collection.iter().enumerate() {
+            for (pivot_index, pivot) in sheet.pivot_tables().iter().enumerate() {
+                let Some(source) = pivot
+                    .pivot_cache_definition()
+                    .cache_source()
+                    .worksheet_source()
+                else {
+                    continue;
+                };
+                if let Some(source) = prepare_pivot_cache_source(source, edits)? {
+                    plans.push(PivotCacheSourcePlan {
+                        owner: PivotCacheSourceOwner::Live {
+                            sheet: sheet_index,
+                            pivot: pivot_index,
+                        },
+                        source,
+                    });
+                }
+            }
+        }
+        for (cache_index, (_, definition)) in self.pivot_orphans.iter().enumerate() {
+            let Some(source) = definition.cache_source().worksheet_source() else {
+                continue;
+            };
+            if let Some(source) = prepare_pivot_cache_source(source, edits)? {
+                plans.push(PivotCacheSourcePlan {
+                    owner: PivotCacheSourceOwner::Retained { cache: cache_index },
+                    source,
+                });
+            }
+        }
+        Ok(plans)
+    }
+
+    fn apply_pivot_cache_source_adjustments(&mut self, plans: Vec<PivotCacheSourcePlan>) {
+        for plan in plans {
+            let definition = match plan.owner {
+                PivotCacheSourceOwner::Live { sheet, pivot } => self.work_sheet_collection[sheet]
+                    .pivot_tables_mut()[pivot]
+                    .pivot_cache_definition_mut(),
+                PivotCacheSourceOwner::Retained { cache } => &mut self.pivot_orphans[cache].1,
+            };
+            *definition
+                .cache_source_mut()
+                .worksheet_source_mut()
+                .expect("preflighted pivot cache worksheet source") = plan.source;
+        }
     }
 
     fn apply_workbook_reference_adjustment(
@@ -401,6 +543,7 @@ impl Workbook {
             sheet.apply_chart_space_edits(sheet_plan.charts, edit);
             sheet.apply_extension_formula_edits(sheet_plan.extension_formulas);
         }
+        self.apply_pivot_cache_source_adjustments(plan.pivot_cache_sources);
     }
 
     /// Excel's result for a deleted chart source sheet: the dimensions and
@@ -578,6 +721,7 @@ impl Workbook {
             });
             hosts.extend(found);
         }
+        hosts.extend(self.raw_pivot_cache_hosts());
         hosts.sort_unstable();
         hosts.dedup();
         reference_hosts::materialize(self, &hosts)
@@ -1581,8 +1725,8 @@ impl Workbook {
         std::mem::replace(&mut self.work_sheet_collection, sheets)
     }
 
-    /// Renames the pivot table `old` of the sheet `sheet_name`. The charts
-    /// linked to it keep their link, as in Excel.
+    /// Renames the pivot table `old` of the sheet `sheet_name`. The charts,
+    /// slicers and timelines linked to it keep their link, as in Excel.
     /// # Errors
     /// `NotFound` when the sheet or the pivot table does not exist,
     /// `NameDuplicate` when another pivot table in the workbook uses `new`.
@@ -1646,23 +1790,52 @@ impl Workbook {
         Ok(())
     }
 
-    /// Removes the pivot table `table` of the sheet `sheet_name`. The charts
-    /// linked to it become ordinary charts, as in Excel.
+    /// Removes the pivot table `table` of the sheet `sheet_name` the way Excel
+    /// clears one (`TableRange2.Clear()`):
+    /// - the pivot charts linked to it become ordinary charts that keep the
+    ///   data they plot as literals;
+    /// - it leaves every slicer cache and timeline cache that listed it; each
+    ///   cache stays with its slicers or views, its selection and its defined
+    ///   name, also when it lists no pivot table any more;
+    /// - when it was the last pivot table of its pivot cache and a slicer or a
+    ///   timeline still reads that cache, the workbook keeps the cache
+    ///   definition and records ([`Workbook::retained_pivot_caches`]).
+    ///
+    /// The cells the pivot table displayed are not cleared.
     /// # Errors
-    /// `NotFound` when the sheet or the pivot table does not exist.
+    /// With nothing changed: `NotFound` when the sheet or the pivot table does
+    /// not exist, `NameDuplicate` when several pivot tables of the sheet have
+    /// the name; the errors of reading the sheets involved.
     pub fn remove_pivot_table(&mut self, sheet_name: &str, table: &str) -> Result<(), XlsxError> {
         let index = self.find_sheet_index_by_name(sheet_name)?;
         self.try_read_sheet(index)?;
-        let position = self.work_sheet_collection[index]
+        let matches: Vec<usize> = self.work_sheet_collection[index]
             .pivot_tables()
             .iter()
-            .position(|candidate| {
+            .enumerate()
+            .filter(|(_, candidate)| {
                 candidate
                     .pivot_table_definition()
                     .name()
                     .eq_ignore_ascii_case(table)
             })
-            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
+            .map(|(position, _)| position)
+            .collect();
+        let position = match matches.as_slice() {
+            [position] => *position,
+            [] => {
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::NotFound,
+                    format!("pivot table '{table}' does not exist on sheet '{sheet_name}'"),
+                ));
+            }
+            _ => {
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::NameDuplicate,
+                    format!("pivot table '{table}' is ambiguous on sheet '{sheet_name}'"),
+                ));
+            }
+        };
         self.prepare_slicer_reconciliation()?;
         let sheet_id = self.work_sheet_collection[index]
             .sheet_id()
@@ -1672,10 +1845,11 @@ impl Workbook {
         reference_hosts::materialize(self, &hosts)?;
         let frozen = self.prepare_frozen_pivot_charts(&hosts, sheet_name, Some(table))?;
         self.apply_frozen_pivot_charts(frozen);
-        self.work_sheet_collection[index]
+        let removed = self.work_sheet_collection[index]
             .pivot_tables_mut()
             .remove(position);
         self.reconcile_slicers_after_pivot_table_removal(sheet_id, table);
+        self.retain_pivot_caches_of([&removed]);
         Ok(())
     }
 
@@ -2107,6 +2281,54 @@ impl Workbook {
         &mut self.slicer_caches
     }
 
+    /// Timeline caches of the workbook.
+    #[inline]
+    #[must_use]
+    pub fn timeline_caches(&self) -> &[super::timeline::TimelineCache] {
+        &self.timeline_caches
+    }
+
+    #[inline]
+    pub fn timeline_caches_mut(&mut self) -> &mut Vec<super::timeline::TimelineCache> {
+        &mut self.timeline_caches
+    }
+
+    /// The pivot caches kept without a pivot table because a slicer or a
+    /// timeline still reads them, as Excel keeps them when their last pivot
+    /// table is removed: workbook cache id and definition. The cache goes
+    /// when nothing reads it any more.
+    pub fn retained_pivot_caches(
+        &self,
+    ) -> impl Iterator<Item = (u32, &super::PivotCacheDefinition)> {
+        self.pivot_orphans
+            .iter()
+            .filter(|(_, definition)| self.retained_pivot_cache_list(definition).is_some())
+            .map(|(id, definition)| (*id, definition))
+    }
+
+    /// Release the retained pivot caches nothing reads any more.
+    pub(crate) fn remove_unused_retained_pivot_caches(&mut self) {
+        let orphans = std::mem::take(&mut self.pivot_orphans);
+        self.pivot_orphans = orphans
+            .into_iter()
+            .filter(|(_, definition)| self.retained_pivot_cache_list(definition).is_some())
+            .collect();
+    }
+
+    /// The timeline caches and the worksheets together, for changes that
+    /// touch both.
+    pub(crate) fn timeline_parts_mut(
+        &mut self,
+    ) -> (&mut Vec<super::timeline::TimelineCache>, &mut [Worksheet]) {
+        (&mut self.timeline_caches, &mut self.work_sheet_collection)
+    }
+
+    /// The custom timeline styles of the stylesheet and the default style.
+    #[must_use]
+    pub fn timeline_styles(&self) -> Option<&super::timeline::TimelineStyles> {
+        self.stylesheet.timeline_styles()
+    }
+
     #[must_use]
     pub fn pivot_caches(&self) -> Vec<(String, String, String)> {
         if self.pivot_caches_state == PivotCacheListState::Settled {
@@ -2119,6 +2341,14 @@ impl Workbook {
         let mut result: Vec<(String, String, String)> = Vec::new();
         for (val1, val2, val3) in &self.pivot_caches {
             let val3_up = format!("xl/{val3}");
+
+            if self
+                .retained_pivot_caches()
+                .any(|(id, _)| id.to_string() == **val2)
+            {
+                result.push((val1.to_string(), val2.to_string(), val3.to_string()));
+                continue;
+            }
 
             // Check if this cache is referenced by any worksheet's pivot cache
             // definitions (for existing files)
@@ -2386,17 +2616,23 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         if edits.is_empty() {
             return;
         }
+        // No hosts: a missing sheet or an invalid edit, which leaves the
+        // workbook, pivot cache sources included, unchanged.
         let hosts = self.structural_reference_hosts(sheet_name, &edits);
         if hosts.is_empty() {
             return;
         }
-        let prepared: Vec<_> = edits
+        let Ok(prepared) = edits
             .iter()
-            .map(|edit| {
-                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
-                    .expect("validated structural edit")
-            })
-            .collect();
+            .map(crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return;
+        };
+        let Ok(pivot_cache_sources) = self.prepare_pivot_cache_source_adjustments(&prepared) else {
+            return;
+        };
+        self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
         self.adjust_global_and_raw_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];
@@ -2456,17 +2692,23 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         if edits.is_empty() {
             return;
         }
+        // No hosts: a missing sheet or an invalid edit, which leaves the
+        // workbook, pivot cache sources included, unchanged.
         let hosts = self.structural_reference_hosts(sheet_name, &edits);
         if hosts.is_empty() {
             return;
         }
-        let prepared: Vec<_> = edits
+        let Ok(prepared) = edits
             .iter()
-            .map(|edit| {
-                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
-                    .expect("validated structural edit")
-            })
-            .collect();
+            .map(crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return;
+        };
+        let Ok(pivot_cache_sources) = self.prepare_pivot_cache_source_adjustments(&prepared) else {
+            return;
+        };
+        self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
         self.adjust_global_and_raw_defined_names(&prepared);
         for index in hosts {
             let worksheet = &mut self.work_sheet_collection[index];

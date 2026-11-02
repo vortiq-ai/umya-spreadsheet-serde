@@ -113,7 +113,12 @@ fn workbook_extensions_keep_their_order_around_the_slicer_caches() {
 const TIMELINE_CACHE_REL: &str =
     "http://schemas.microsoft.com/office/2011/relationships/timelineCache";
 const TIMELINE_CACHE_URI: &str = "{D0CA8CA8-9F24-4464-BF8E-62219DCF47F9}";
-const TIMELINE_CACHE: &str = r#"<timelineCacheDefinition xmlns="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main" name="NativeTimeline_Date" sourceName="Date"/>"#;
+/// A timeline cache as Excel writes it (declaration, namespaces, attribute
+/// order); `state` and `bounds` are required by the schema.
+const TIMELINE_CACHE: &str = concat!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n",
+    r#"<timelineCacheDefinition xmlns="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main" xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="xr10" xmlns:xr10="http://schemas.microsoft.com/office/spreadsheetml/2016/revision10" name="NativeTimeline_Team" xr10:uid="{E39C8D44-43D3-415A-B7D6-CBDF83F0C8C0}" sourceName="Team"><state minimalRefreshVersion="6" lastRefreshVersion="6" pivotCacheId="1045720654" filterType="unknown"><bounds startDate="2024-01-01T00:00:00" endDate="2025-01-01T00:00:00"/></state></timelineCacheDefinition>"#
+);
 
 fn package_with_timeline_cache() -> Parts {
     let mut parts = pivot_package();
@@ -648,6 +653,19 @@ fn slicer_names(book: &Workbook, sheet: &str) -> Vec<String> {
         .collect()
 }
 
+/// Excel keeps a pivot cache's `worksheetSource` as written when its source
+/// sheet is deleted (it only adds a link to the workbook's previous file).
+fn assert_source_left_as_written(book: &mut Workbook, label: &str) {
+    book.try_read_sheet_collection().unwrap();
+    let source = book.sheet_by_name("Pie Charts").unwrap().pivot_tables()[0]
+        .pivot_cache_definition()
+        .cache_source()
+        .worksheet_source()
+        .unwrap();
+    assert_eq!(source.address().sheet_name(), "Raw Data", "{label}");
+    assert_eq!(source.address().range().range(), "A1:B4", "{label}");
+}
+
 #[test]
 fn removing_a_sheet_with_a_pivot_table_unlinks_it_and_drops_caches_left_without_tables() {
     let bytes = pack(two_sheet_pivot_package());
@@ -705,6 +723,8 @@ fn removing_a_sheet_with_a_pivot_table_unlinks_it_and_drops_caches_left_without_
         let mut reread = read_eager(&try_save(&book).unwrap()).unwrap();
         reread.try_read_sheet_collection().unwrap();
         assert_eq!(slicer_names(&reread, "Pie Charts"), vec!["Team"], "{label}");
+        assert_source_left_as_written(&mut book, label);
+        assert_source_left_as_written(&mut reread, label);
     }
 }
 
@@ -716,7 +736,10 @@ fn removing_the_pivot_source_sheet_keeps_every_slicer() {
         book.remove_sheet_by_name("Raw Data").unwrap();
         assert_eq!(book.slicer_caches().len(), 2, "{label}");
         assert_eq!(slicer_names(&book, "Pie Charts").len(), 2, "{label}");
-        try_save(&book).unwrap();
+        let saved = try_save(&book).unwrap();
+        assert_source_left_as_written(&mut book, label);
+        let mut reread = read_eager(&saved).unwrap();
+        assert_source_left_as_written(&mut reread, label);
     }
 }
 

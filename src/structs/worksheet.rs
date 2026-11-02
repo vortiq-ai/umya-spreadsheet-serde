@@ -134,6 +134,8 @@ pub struct Worksheet {
     /// consumed while the worksheet package parts are read.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) slicer_part_references: Vec<super::slicer::SlicerPartReference>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    timelines:                         Vec<super::timeline::Timeline>,
     /// The worksheet `extLst` entries in source order. Slicer lists and the
     /// data validations extension are regenerated from the model; every other
     /// entry is kept verbatim with the parts it references.
@@ -2808,6 +2810,18 @@ impl Worksheet {
     #[inline]
     pub fn slicers_mut(&mut self) -> &mut Vec<Slicer> {
         &mut self.slicers
+    }
+
+    /// Timeline views placed on this worksheet.
+    #[inline]
+    #[must_use]
+    pub fn timelines(&self) -> &[super::timeline::Timeline] {
+        &self.timelines
+    }
+
+    #[inline]
+    pub fn timelines_mut(&mut self) -> &mut Vec<super::timeline::Timeline> {
+        &mut self.timelines
     }
 
     #[inline]

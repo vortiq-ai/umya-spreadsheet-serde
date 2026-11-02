@@ -1,0 +1,29 @@
+{
+  "excel": "Excel 16.0 build 20527 (authored through COM by the timeline evidence scripts)",
+  "two-pivots-custom-style": {
+    "workbook_sha256": "34d2140ea80cfff814a1eeb4faaaba3d9b6752f78c95efe8e34d550519f83823"
+  },
+  "no-timeline": {
+    "workbook_sha256": "6a795767c04fef35180d4259600763783f155e4dc4ab34fe9037715f0b0e3336"
+  },
+  "disconnected-pivot": {
+    "workbook_sha256": "b25c532ea1b0ebbcc416dc9f2dfc103b36339561174a60327da065b96fc8bcee"
+  },
+  "pivot-without-timeline": {
+    "workbook_sha256": "043dbf7fa981b24a27660b2b829c882ea2bb6c4eebed2a6b227aea1f8992d732"
+  },
+  "orphan-pivot-cache": {
+    "workbook_sha256": "2f35c8c0362b2481d77409ffb929027c02ebd9f3ec7d82725ada6d0e96d672bf",
+    "pivot_cache_records_sha256": "adc3b0bd8eedd619595b45147fefdc675407b5b1ce2c76f200e4f5454a3e9399"
+  },
+  "disconnected-surviving-view": {
+    "workbook_sha256": "fda91fe28e7d15c6f5d89e36d88e8e5e00c1ca6b6fcf90b6dacb2267c4b452fa",
+    "pivot_cache_records_sha256": "2dba0fcd88ef793d180881202406ed604cfe34fc24488e98531b78b1264d56f8"
+  },
+  "slicers-without-pivot-tables": {
+    "workbook_sha256": "c37cb4cb6aa12a210f620bd25ff76b53b3ecc22b7cf41e9c84a527d14093eea9"
+  },
+  "timeline-and-slicer-without-pivot-tables": {
+    "workbook_sha256": "1b9364adfcff5ea7f91f951ed794f7e39d8dc5b922a295a1328e4de1eb9a18fa"
+  }
+}

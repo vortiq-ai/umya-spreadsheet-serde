@@ -46,6 +46,9 @@ pub(crate) struct SpreadsheetXml<R> {
     finished:       bool,
     native_depth:   usize,
     all_extensions: bool,
+    /// The `uri`s of the `ext` entries that reach the legacy parser as native
+    /// subtrees, so their payload is read with its namespaces.
+    native_uris:    &'static [&'static str],
 }
 
 /// A part's bytes as UTF-8, whatever encoding its declaration names.
@@ -433,6 +436,7 @@ impl<R: BufRead> SpreadsheetXml<R> {
             finished:       false,
             native_depth:   0,
             all_extensions: false,
+            native_uris:    &[],
         }
     }
 
@@ -453,6 +457,18 @@ impl<R: BufRead> SpreadsheetXml<Utf8Source<R>> {
         Ok(Self::new(utf8_source(source)?))
     }
 
+    /// [`Self::open`] with the `ext` entries of the given `uri`s kept as
+    /// native subtrees.
+    pub(crate) fn open_with_native_extensions(
+        source: R,
+        uris: &'static [&'static str],
+    ) -> io::Result<Self> {
+        Ok(Self {
+            native_uris: uris,
+            ..Self::new(utf8_source(source)?)
+        })
+    }
+
     /// [`Self::open`] with every `ext` entry kept as a native subtree.
     pub(crate) fn open_with_all_extensions(source: R) -> io::Result<Self> {
         Ok(Self::with_all_extensions(utf8_source(source)?))
@@ -463,6 +479,7 @@ fn is_native_owner<R>(
     reader: &NsReader<R>,
     element: &BytesStart<'_>,
     all_extensions: bool,
+    native_uris: &[&str],
 ) -> bool {
     let (namespace, local) = reader.resolver().resolve_element(element.name());
     if !matches!(namespace, ResolveResult::Bound(Namespace(uri)) if uri == SHEET_MAIN_NS.as_bytes())
@@ -474,14 +491,15 @@ fn is_native_owner<R>(
         // The data validations extension is modelled by the worksheet reader,
         // so it keeps flowing through the legacy parser.
         b"ext" => {
-            all_extensions
-                && !element
-                    .try_get_attribute(b"uri")
-                    .ok()
-                    .flatten()
-                    .is_some_and(|uri| {
-                        crate::structs::slicer::is_data_validations_uri(uri.value.as_ref())
-                    })
+            let uri = element.try_get_attribute(b"uri").ok().flatten();
+            let uri = uri.as_ref().map_or(&[][..], |uri| uri.value.as_ref());
+            if all_extensions {
+                !crate::structs::slicer::is_data_validations_uri(uri)
+            } else {
+                native_uris
+                    .iter()
+                    .any(|native| native.as_bytes().eq_ignore_ascii_case(uri))
+            }
         }
         // Worksheet children the worksheet keeps verbatim.
         name if all_extensions && crate::structs::is_preserved_sheet_element_name(name) => true,
@@ -662,14 +680,24 @@ impl<R: BufRead> BufRead for SpreadsheetXml<R> {
                     Event::Start(element)
                 }
                 Event::Start(element)
-                    if is_native_owner(&self.reader, &element, self.all_extensions) =>
+                    if is_native_owner(
+                        &self.reader,
+                        &element,
+                        self.all_extensions,
+                        self.native_uris,
+                    ) =>
                 {
                     self.native_depth = 1;
                     Event::Start(native_start(&self.reader, &element)?)
                 }
                 Event::Empty(element) if self.native_depth > 0 => Event::Empty(element),
                 Event::Empty(element)
-                    if is_native_owner(&self.reader, &element, self.all_extensions) =>
+                    if is_native_owner(
+                        &self.reader,
+                        &element,
+                        self.all_extensions,
+                        self.native_uris,
+                    ) =>
                 {
                     Event::Empty(native_start(&self.reader, &element)?)
                 }

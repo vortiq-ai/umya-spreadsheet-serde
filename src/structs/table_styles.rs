@@ -220,7 +220,7 @@ pub(crate) struct SlicerStyles {
 
 /// Visit the children of the element just opened until its end tag. `child`
 /// must consume a child opened as `Start` through its end tag.
-fn read_children<R: std::io::BufRead>(
+pub(crate) fn read_children<R: std::io::BufRead>(
     reader: &mut Reader<R>,
     container: &str,
     mut child: impl FnMut(&mut Reader<R>, &BytesStart, bool) -> Result<(), String>,
@@ -260,7 +260,7 @@ fn no_children<R: std::io::BufRead>(
     })
 }
 
-fn unexpected(container: &str, e: &BytesStart) -> Result<(), String> {
+pub(crate) fn unexpected(container: &str, e: &BytesStart) -> Result<(), String> {
     Err(format!(
         "unexpected <{}> in <{container}>",
         String::from_utf8_lossy(e.local_name().into_inner())
@@ -368,12 +368,13 @@ impl TableStyles {
         })
     }
 
-    /// Write `tableStyles`. Excel's `count` of a slicer style entry also counts
-    /// the item elements of the slicer style of the same name.
+    /// Write `tableStyles`. Excel's `count` of a slicer or timeline style entry
+    /// also counts the `item_elements` of the slicer or timeline style of the
+    /// same name.
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
-        slicer_styles: &SlicerStyles,
+        item_elements: impl Fn(&str) -> usize,
     ) {
         write_start_tag(
             writer,
@@ -410,11 +411,7 @@ impl TableStyles {
                 attributes.push(("table", "0").into());
             }
             let item_elements = if style.is_item_style() {
-                slicer_styles
-                    .styles
-                    .iter()
-                    .find(|slicer| slicer.name == style.name)
-                    .map_or(0, |slicer| slicer.elements.len())
+                item_elements(&style.name)
             } else {
                 0
             };
@@ -512,41 +509,39 @@ impl SlicerStyles {
         })
     }
 
-    /// Read the stylesheet `extLst`, keeping the slicer styles and the
-    /// differential formats they index; the other extensions are not modelled.
-    pub(crate) fn read_extension_list<R: std::io::BufRead>(
+    /// Read an `ext` entry of the stylesheet `extLst`, `e` being its start (or
+    /// empty) tag, keeping the slicer styles and the differential formats they
+    /// index; the other extensions are not modelled.
+    pub(crate) fn read_extension<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
+        e: &BytesStart,
+        is_empty: bool,
     ) -> Result<(), String> {
-        read_children(reader, "extLst", |reader, e, is_empty| {
-            if e.local_name().into_inner() != b"ext" {
-                return unexpected("extLst", e);
-            }
-            let uri = get_attribute(e, b"uri").unwrap_or_default();
-            let is_styles = uri.eq_ignore_ascii_case(SLICER_STYLES_URI);
-            let is_dxfs = uri.eq_ignore_ascii_case(SLICER_STYLE_DXFS_URI);
-            if is_empty {
-                return Ok(());
-            }
-            if !is_styles && !is_dxfs {
-                let end = e.to_end().into_owned();
-                reader
-                    .read_to_end_into(end.name(), &mut Vec::new())
-                    .map_err(|e| format!("ext: {e}"))?;
-                return Ok(());
-            }
-            read_children(reader, "ext", |reader, e, is_empty| {
-                match (is_styles, e.local_name().into_inner()) {
-                    (true, b"slicerStyles") => self.read_styles(reader, e, is_empty),
-                    (false, b"dxfs") => {
-                        if !is_empty {
-                            self.dxfs.set_attributes(reader, e);
-                        }
-                        Ok(())
+        let uri = get_attribute(e, b"uri").unwrap_or_default();
+        let is_styles = uri.eq_ignore_ascii_case(SLICER_STYLES_URI);
+        let is_dxfs = uri.eq_ignore_ascii_case(SLICER_STYLE_DXFS_URI);
+        if is_empty {
+            return Ok(());
+        }
+        if !is_styles && !is_dxfs {
+            let end = e.to_end().into_owned();
+            reader
+                .read_to_end_into(end.name(), &mut Vec::new())
+                .map_err(|e| format!("ext: {e}"))?;
+            return Ok(());
+        }
+        read_children(reader, "ext", |reader, e, is_empty| {
+            match (is_styles, e.local_name().into_inner()) {
+                (true, b"slicerStyles") => self.read_styles(reader, e, is_empty),
+                (false, b"dxfs") => {
+                    if !is_empty {
+                        self.dxfs.set_attributes(reader, e);
                     }
-                    _ => unexpected("ext", e),
+                    Ok(())
                 }
-            })
+                _ => unexpected("ext", e),
+            }
         })
     }
 

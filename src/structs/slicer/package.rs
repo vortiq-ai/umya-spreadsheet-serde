@@ -54,6 +54,10 @@ const WORKBOOK_PIVOT_URI: &str = "{BBE1A952-AA13-448e-AADC-164F8A28A991}";
 const WORKBOOK_TABLE_URI: &str = "{46BE6895-7355-4a93-B00E-2C351335B9C9}";
 const WORKSHEET_PIVOT_URI: &str = "{A8765BA9-456A-4dab-B4F3-ACF838C121DE}";
 const WORKSHEET_TABLE_URI: &str = "{3A4CF648-6AED-40f4-86FF-DC5316D8AED3}";
+const WORKBOOK_TIMELINE_URI: &str = "{D0CA8CA8-9F24-4464-BF8E-62219DCF47F9}";
+const SLICER_PIVOT_CACHES_URI: &str = "{876F7934-8845-4945-9796-88D515C7AA90}";
+const TIMELINE_PIVOT_CACHES_URI: &str = "{A2CB5862-8E78-49c6-8D9D-AF26E26ADB89}";
+const WORKSHEET_TIMELINE_URI: &str = "{7E03D99C-DC04-49d9-9315-930204A7B6E9}";
 /// The worksheet `x14:dataValidations` extension.
 pub(crate) const DATA_VALIDATIONS_URI: &str = "{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}";
 
@@ -65,6 +69,8 @@ pub(crate) enum SlicerListKind {
     Pivot,
     /// `x15` lists: slicers over tables.
     Table,
+    /// `x15` lists: timelines over pivot caches.
+    Timeline,
 }
 
 impl SlicerListKind {
@@ -84,11 +90,44 @@ pub(crate) struct SlicerPartReference {
     pub(crate) relationship_id: String,
 }
 
+/// The workbook extension that declares the pivot caches kept without a pivot
+/// table. Excel writes `x14:pivotCaches` for a cache a slicer reads, also when
+/// a timeline reads it too, and `x15:timelineCachePivotCaches` for one only
+/// timelines read.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedPivotCacheList {
+    Slicer,
+    Timeline,
+}
+
+impl RetainedPivotCacheList {
+    const ALL: [Self; 2] = [Self::Slicer, Self::Timeline];
+
+    fn uri(self) -> &'static str {
+        match self {
+            Self::Slicer => SLICER_PIVOT_CACHES_URI,
+            Self::Timeline => TIMELINE_PIVOT_CACHES_URI,
+        }
+    }
+
+    /// The prefix, namespace and local name of the list element.
+    fn list(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Slicer => ("x14", SLICER_NS, "pivotCaches"),
+            Self::Timeline => ("x15", SLICER_2013_NS, "timelineCachePivotCaches"),
+        }
+    }
+}
+
 /// An entry of the workbook extension list, in source order.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub(crate) enum WorkbookExtension {
     SlicerCaches(SlicerListKind),
+    /// The retained pivot caches as read: workbook cache id and relationship
+    /// id. The writer lists the caches the workbook retains when it writes.
+    RetainedPivotCaches(RetainedPivotCacheList, Vec<(u32, String)>),
     Other(PreservedExtension),
 }
 
@@ -106,8 +145,9 @@ pub(crate) enum WorksheetExtension {
 /// slicers bind to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SlicerKinds {
-    pub(crate) pivot: bool,
-    pub(crate) table: bool,
+    pub(crate) pivot:    bool,
+    pub(crate) table:    bool,
+    pub(crate) timeline: bool,
 }
 
 /// Relationship ids written into a worksheet's extension lists, by the
@@ -116,6 +156,7 @@ pub(crate) struct SlicerKinds {
 pub(crate) struct WorksheetExtensionIds {
     pub(crate) pivot_slicers: Option<String>,
     pub(crate) table_slicers: Option<String>,
+    pub(crate) timelines:     Option<String>,
     /// One entry per `Other` extension, in order: the new ids of its parts.
     pub(crate) carried:       Vec<Vec<String>>,
 }
@@ -135,6 +176,7 @@ fn list_entries(
     list: &OpaqueElement,
     list_namespace: &str,
     list_name: &str,
+    entry_namespace: &str,
     entry_name: &str,
     kind: SlicerListKind,
     exactly_one: bool,
@@ -154,7 +196,7 @@ fn list_entries(
     entries
         .iter()
         .map(|entry| {
-            expect(entry, SLICER_NS, entry_name)?;
+            expect(entry, entry_namespace, entry_name)?;
             attributes(entry, &[], &[(REL_OFC_NS, "id")])?;
             no_children(entry)?;
             let id = required_attribute(entry, REL_OFC_NS, "id")?;
@@ -169,6 +211,19 @@ fn list_entries(
         .collect()
 }
 
+/// Whether a timeline extension lists nothing: Excel leaves such an empty
+/// extension (or an empty list) behind when the last timeline is deleted. It
+/// is kept as it is instead of being read as a list of timelines.
+fn lists_no_timelines(extension: &OpaqueElement) -> Result<bool, String> {
+    attributes(extension, &["uri"], &[])?;
+    let children = direct_children(extension)?;
+    match children.as_slice() {
+        [] => Ok(true),
+        [list] => Ok(direct_children(list)?.is_empty()),
+        _ => Ok(false),
+    }
+}
+
 fn single_list_child(extension: &OpaqueElement) -> Result<OpaqueElement, String> {
     attributes(extension, &["uri"], &[])?;
     let mut children = direct_children(extension)?;
@@ -176,6 +231,37 @@ fn single_list_child(extension: &OpaqueElement) -> Result<OpaqueElement, String>
         return Err("slicer extension needs exactly one list".into());
     }
     Ok(children.remove(0))
+}
+
+/// The `pivotCache` entries (workbook cache id, relationship id) of a retained
+/// pivot cache list.
+fn retained_pivot_caches(
+    extension: &OpaqueElement,
+    kind: RetainedPivotCacheList,
+) -> Result<Vec<(u32, String)>, String> {
+    let (_, namespace, name) = kind.list();
+    let list = single_list_child(extension)?;
+    expect(&list, namespace, name)?;
+    attributes(&list, &[], &[])?;
+    let mut caches = Vec::new();
+    let mut ids = HashSet::new();
+    let mut relationships = HashSet::new();
+    for cache in direct_children(&list)? {
+        expect(&cache, SHEET_MAIN_NS, "pivotCache")?;
+        attributes(&cache, &["cacheId"], &[(REL_OFC_NS, "id")])?;
+        no_children(&cache)?;
+        let id = crate::xml::required_unsigned(&cache, "cacheId")?;
+        let relationship = required_attribute(&cache, REL_OFC_NS, "id")?.to_owned();
+        if relationship.is_empty() || !ids.insert(id) || !relationships.insert(relationship.clone())
+        {
+            return Err(format!("invalid or duplicate {name} pivot cache identity"));
+        }
+        caches.push((id, relationship));
+    }
+    if caches.is_empty() {
+        return Err(format!("empty {name} extension"));
+    }
+    Ok(caches)
 }
 
 /// Classify the workbook `ext` entries. Slicer cache lists become references;
@@ -188,27 +274,57 @@ pub(crate) fn read_workbook_extensions(
     let mut seen = HashSet::new();
     for entry in entries {
         expect(entry, SHEET_MAIN_NS, "ext")?;
+        if let Some(kind) = RetainedPivotCacheList::ALL
+            .into_iter()
+            .find(|kind| uri_is(entry, kind.uri()))
+        {
+            if extensions.iter().any(|entry| {
+                matches!(entry, WorkbookExtension::RetainedPivotCaches(listed, _) if *listed == kind)
+            }) {
+                return Err(format!("duplicate {} extension", kind.list().2));
+            }
+            extensions.push(WorkbookExtension::RetainedPivotCaches(
+                kind,
+                retained_pivot_caches(entry, kind)?,
+            ));
+            continue;
+        }
         let kind = if uri_is(entry, WORKBOOK_PIVOT_URI) {
             Some((
                 SlicerListKind::Pivot,
                 SLICER_NS,
                 "x14:slicerCaches extension",
+                ("slicerCaches", SLICER_NS, "slicerCache"),
             ))
         } else if uri_is(entry, WORKBOOK_TABLE_URI) {
             Some((
                 SlicerListKind::Table,
                 SLICER_2013_NS,
                 "x15:slicerCaches extension",
+                ("slicerCaches", SLICER_NS, "slicerCache"),
+            ))
+        } else if uri_is(entry, WORKBOOK_TIMELINE_URI) {
+            Some((
+                SlicerListKind::Timeline,
+                SLICER_2013_NS,
+                "x15:timelineCacheRefs extension",
+                ("timelineCacheRefs", SLICER_2013_NS, "timelineCacheRef"),
             ))
         } else {
             None
         };
-        let Some((kind, namespace, label)) = kind else {
+        let Some((kind, namespace, label, (list_name, entry_namespace, entry_name))) = kind else {
             extensions.push(WorkbookExtension::Other(PreservedExtension::new(
                 entry.clone(),
             )));
             continue;
         };
+        if kind == SlicerListKind::Timeline && lists_no_timelines(entry)? {
+            extensions.push(WorkbookExtension::Other(PreservedExtension::new(
+                entry.clone(),
+            )));
+            continue;
+        }
         if !seen.insert(kind) {
             return Err(format!("duplicate {label}"));
         }
@@ -216,8 +332,9 @@ pub(crate) fn read_workbook_extensions(
         references.extend(list_entries(
             &list,
             namespace,
-            "slicerCaches",
-            "slicerCache",
+            list_name,
+            entry_namespace,
+            entry_name,
             kind,
             false,
         )?);
@@ -241,6 +358,8 @@ pub(crate) fn read_worksheet_extension(
         (SlicerListKind::Pivot, SLICER_NS)
     } else if uri_is(&extension, WORKSHEET_TABLE_URI) {
         (SlicerListKind::Table, SLICER_NS)
+    } else if uri_is(&extension, WORKSHEET_TIMELINE_URI) {
+        (SlicerListKind::Timeline, SLICER_2013_NS)
     } else if uri_is(&extension, DATA_VALIDATIONS_URI) {
         extensions.push(WorksheetExtension::DataValidations);
         return Ok(());
@@ -250,6 +369,12 @@ pub(crate) fn read_worksheet_extension(
         )));
         return Ok(());
     };
+    if kind == SlicerListKind::Timeline && lists_no_timelines(&extension)? {
+        extensions.push(WorksheetExtension::Other(PreservedExtension::new(
+            extension,
+        )));
+        return Ok(());
+    }
     if extensions
         .iter()
         .any(|entry| matches!(entry, WorksheetExtension::SlicerList(listed) if *listed == kind))
@@ -257,11 +382,17 @@ pub(crate) fn read_worksheet_extension(
         return Err(format!("worksheet lists {kind:?} slicers more than once"));
     }
     let list = single_list_child(&extension)?;
+    let (list_name, entry_namespace, entry_name) = if kind == SlicerListKind::Timeline {
+        ("timelineRefs", SLICER_2013_NS, "timelineRef")
+    } else {
+        ("slicerList", SLICER_NS, "slicer")
+    };
     references.extend(list_entries(
         &list,
         namespace,
-        "slicerList",
-        "slicer",
+        list_name,
+        entry_namespace,
+        entry_name,
         kind,
         true,
     )?);
@@ -277,9 +408,10 @@ fn write_ids(
     entry: &str,
 ) {
     // Workbook table slicer caches are listed by an x15 element, the worksheet
-    // slicer lists by an x14 element under both extension URIs.
+    // slicer lists by an x14 element under both extension URIs. Timelines are
+    // listed by x15 elements throughout.
     let workbook_list = list == "slicerCaches";
-    let (uri, root_prefix, root_namespace, root_name) = match kind {
+    let (uri, root_prefix, root_namespace, root_name, entry_name) = match kind {
         SlicerListKind::Pivot => (
             if workbook_list {
                 WORKBOOK_PIVOT_URI
@@ -289,18 +421,32 @@ fn write_ids(
             "x14",
             SLICER_NS,
             format!("x14:{list}"),
+            format!("x14:{entry}"),
         ),
         SlicerListKind::Table if workbook_list => (
             WORKBOOK_TABLE_URI,
             "x15",
             SLICER_2013_NS,
             format!("x15:{list}"),
+            format!("x14:{entry}"),
         ),
         SlicerListKind::Table => (
             WORKSHEET_TABLE_URI,
             "x15",
             SLICER_2013_NS,
             format!("x14:{list}"),
+            format!("x14:{entry}"),
+        ),
+        SlicerListKind::Timeline => (
+            if list == "timelineCacheRefs" {
+                WORKBOOK_TIMELINE_URI
+            } else {
+                WORKSHEET_TIMELINE_URI
+            },
+            "x15",
+            SLICER_2013_NS,
+            format!("x15:{list}"),
+            format!("x15:{entry}"),
         ),
     };
     write_start_tag(
@@ -320,7 +466,7 @@ fn write_ids(
     for id in ids {
         write_start_tag(
             writer,
-            format!("x14:{entry}"),
+            entry_name.as_str(),
             vec![("r:id", id.as_str()).into()],
             true,
         );
@@ -387,7 +533,8 @@ fn write_preserved(
 }
 
 /// Write the workbook `extLst`: the source entries in their original order,
-/// with each slicer cache list replaced by the caches actually written.
+/// with each slicer cache list replaced by the caches actually written and
+/// each retained pivot cache list by the caches `retained_ids` puts in it.
 /// `carried_ids` holds, for every preserved entry in order, the relationship
 /// ids allocated for the parts it names.
 pub(crate) fn write_workbook_extensions(
@@ -395,27 +542,53 @@ pub(crate) fn write_workbook_extensions(
     extensions: &[WorkbookExtension],
     pivot_ids: &[String],
     table_ids: &[String],
+    timeline_ids: &[String],
+    retained_ids: &[(RetainedPivotCacheList, u32, String)],
     carried_ids: &[Vec<String>],
 ) -> Result<(), XlsxError> {
     let ids_of = |kind| match kind {
         SlicerListKind::Pivot => pivot_ids,
         SlicerListKind::Table => table_ids,
+        SlicerListKind::Timeline => timeline_ids,
     };
+    let retained_in = |kind| retained_ids.iter().filter(move |(list, ..)| *list == kind);
     let listed = |kind| {
         extensions.iter().any(
             |entry| matches!(entry, WorkbookExtension::SlicerCaches(listed) if *listed == kind),
         )
     };
-    let fresh = [SlicerListKind::Pivot, SlicerListKind::Table]
+    let fresh_retained = |kind| {
+        let listed = extensions.iter().any(|entry| {
+            matches!(entry, WorkbookExtension::RetainedPivotCaches(listed, _) if *listed == kind)
+        });
+        (retained_in(kind).next().is_some() && !listed)
+            .then(|| WorkbookExtension::RetainedPivotCaches(kind, Vec::new()))
+    };
+    // Excel lists the slicer pivot caches before the slicer caches.
+    let fresh = fresh_retained(RetainedPivotCacheList::Slicer)
         .into_iter()
-        .filter(|kind| !ids_of(*kind).is_empty() && !listed(*kind))
-        .map(WorkbookExtension::SlicerCaches)
+        .chain(
+            [
+                SlicerListKind::Pivot,
+                SlicerListKind::Table,
+                SlicerListKind::Timeline,
+            ]
+            .into_iter()
+            .filter(|kind| !ids_of(*kind).is_empty() && !listed(*kind))
+            .map(WorkbookExtension::SlicerCaches),
+        )
+        .chain(fresh_retained(RetainedPivotCacheList::Timeline))
         .collect::<Vec<_>>();
     let mut ordered: Vec<(&WorkbookExtension, Option<usize>)> =
         fresh.iter().map(|entry| (entry, None)).collect();
     let mut carried_index = 0;
     for entry in extensions {
         match entry {
+            WorkbookExtension::RetainedPivotCaches(kind, _) => {
+                if retained_in(*kind).next().is_some() {
+                    ordered.push((entry, None));
+                }
+            }
             WorkbookExtension::SlicerCaches(kind) => {
                 if !ids_of(*kind).is_empty() {
                     ordered.push((entry, None));
@@ -433,8 +606,41 @@ pub(crate) fn write_workbook_extensions(
     write_start_tag(writer, "extLst", Vec::new(), false);
     for (entry, carried) in ordered {
         match entry {
+            WorkbookExtension::RetainedPivotCaches(kind, _) => {
+                let (prefix, namespace, name) = kind.list();
+                let declaration = format!("xmlns:{prefix}");
+                let list = format!("{prefix}:{name}");
+                write_start_tag(
+                    writer,
+                    "ext",
+                    vec![
+                        ("uri", kind.uri()).into(),
+                        (declaration.as_str(), namespace).into(),
+                    ],
+                    false,
+                );
+                write_start_tag(writer, list.as_str(), Vec::new(), false);
+                for (_, id, relationship) in retained_in(*kind) {
+                    write_start_tag(
+                        writer,
+                        "pivotCache",
+                        vec![
+                            ("cacheId", id.to_string()).into(),
+                            ("r:id", relationship.as_str()).into(),
+                        ],
+                        true,
+                    );
+                }
+                write_end_tag(writer, list.as_str());
+                write_end_tag(writer, "ext");
+            }
             WorkbookExtension::SlicerCaches(kind) => {
-                write_ids(writer, *kind, ids_of(*kind), "slicerCaches", "slicerCache");
+                let (list, entry) = if *kind == SlicerListKind::Timeline {
+                    ("timelineCacheRefs", "timelineCacheRef")
+                } else {
+                    ("slicerCaches", "slicerCache")
+                };
+                write_ids(writer, *kind, ids_of(*kind), list, entry);
             }
             WorkbookExtension::Other(extension) => {
                 let ids = carried
@@ -461,6 +667,7 @@ pub(crate) fn write_worksheet_extensions(
     let list_id = |kind| match kind {
         SlicerListKind::Pivot => ids.pivot_slicers.as_ref(),
         SlicerListKind::Table => ids.table_slicers.as_ref(),
+        SlicerListKind::Timeline => ids.timelines.as_ref(),
     };
     let has_dv_entry = extensions
         .iter()
@@ -489,16 +696,20 @@ pub(crate) fn write_worksheet_extensions(
             }
         }
     }
-    let fresh = [SlicerListKind::Pivot, SlicerListKind::Table]
-        .into_iter()
-        .filter(|kind| {
-            let listed_already = extensions.iter().any(
-                |entry| matches!(entry, WorksheetExtension::SlicerList(listed) if listed == kind),
-            );
-            list_id(*kind).is_some() && !listed_already
-        })
-        .map(WorksheetExtension::SlicerList)
-        .collect::<Vec<_>>();
+    let fresh = [
+        SlicerListKind::Pivot,
+        SlicerListKind::Table,
+        SlicerListKind::Timeline,
+    ]
+    .into_iter()
+    .filter(|kind| {
+        let listed_already = extensions
+            .iter()
+            .any(|entry| matches!(entry, WorksheetExtension::SlicerList(listed) if listed == kind));
+        list_id(*kind).is_some() && !listed_already
+    })
+    .map(WorksheetExtension::SlicerList)
+    .collect::<Vec<_>>();
     ordered.extend(fresh.iter().map(|entry| (entry, None)));
     if ordered.is_empty() {
         return Ok(());
@@ -513,13 +724,12 @@ pub(crate) fn write_worksheet_extensions(
             }
             WorksheetExtension::SlicerList(kind) => {
                 let id = list_id(*kind).expect("listed kinds have an id");
-                write_ids(
-                    writer,
-                    *kind,
-                    std::slice::from_ref(id),
-                    "slicerList",
-                    "slicer",
-                );
+                let (list, entry) = if *kind == SlicerListKind::Timeline {
+                    ("timelineRefs", "timelineRef")
+                } else {
+                    ("slicerList", "slicer")
+                };
+                write_ids(writer, *kind, std::slice::from_ref(id), list, entry);
             }
             WorksheetExtension::Other(extension) => {
                 let new_ids = carried
@@ -618,46 +828,70 @@ impl Workbook {
     /// Make every slicer binding of the workbook inspectable before a sheet is
     /// removed, so the removal can reconcile them without failing half way.
     pub(crate) fn prepare_slicer_reconciliation(&mut self) -> Result<(), XlsxError> {
-        if self.slicer_caches().is_empty() {
+        if self.slicer_caches().is_empty() && self.timeline_caches().is_empty() {
             return Ok(());
         }
         self.try_read_sheet_collection().map(|_| ())
     }
 
+    /// Follow the rename of the pivot table `old` of sheet `sheet_id`: the
+    /// slicer and timeline caches that list it keep listing it, as in Excel.
     pub(crate) fn reconcile_slicers_after_pivot_table_rename(
         &mut self,
         sheet_id: Option<u32>,
         old: &str,
         new: &str,
     ) {
-        for cache in self.slicer_caches_mut() {
-            let links = cache.pivot_tables.iter_mut().flatten().chain(
-                cache
-                    .extensions
-                    .iter_mut()
-                    .filter_map(|extension| match extension {
-                        SlicerCacheExtension::PivotTables { tables, .. } => Some(tables),
-                        _ => None,
-                    })
-                    .flatten(),
-            );
-            for link in links {
-                if Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(old) {
-                    new.clone_into(&mut link.name);
-                }
+        let rename = |link: &mut SlicerPivotTable| {
+            if Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(old) {
+                new.clone_into(&mut link.name);
             }
+        };
+        for cache in self.slicer_caches_mut() {
+            cache
+                .pivot_tables
+                .iter_mut()
+                .flatten()
+                .chain(
+                    cache
+                        .extensions
+                        .iter_mut()
+                        .filter_map(|extension| match extension {
+                            SlicerCacheExtension::PivotTables { tables, .. } => Some(tables),
+                            _ => None,
+                        })
+                        .flatten(),
+                )
+                .for_each(rename);
+        }
+        for cache in self.timeline_caches_mut() {
+            cache.pivot_tables.iter_mut().flatten().for_each(rename);
         }
     }
 
+    /// Follow the removal of the pivot table `name` of sheet `sheet_id` the
+    /// way Excel does: it leaves every slicer cache and timeline cache that
+    /// listed it, and each cache stays with its slicers or views, its
+    /// selection and its defined name, also when it lists no pivot table any
+    /// more.
     pub(crate) fn reconcile_slicers_after_pivot_table_removal(
         &mut self,
         sheet_id: Option<u32>,
         name: &str,
     ) {
+        let leaves = |link: &SlicerPivotTable| {
+            Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(name)
+        };
         for cache in self.slicer_caches_mut() {
-            unlink_pivot_tables(cache, |link| {
-                Some(link.sheet_id) == sheet_id && link.name.eq_ignore_ascii_case(name)
-            });
+            unlink_pivot_tables(cache, leaves);
+        }
+        for cache in self.timeline_caches_mut() {
+            if let Some(links) = &mut cache.pivot_tables {
+                links.retain(|link| !leaves(link));
+                if links.is_empty() {
+                    cache.pivot_tables = None;
+                }
+            }
         }
     }
 
@@ -667,7 +901,7 @@ impl Workbook {
     /// slicer cache whose table was on the sheet are removed, and with a
     /// removed cache its slicers and drawing frames on the other sheets.
     pub(crate) fn reconcile_slicers_after_sheet_removal(&mut self, removed: &Worksheet) {
-        if self.slicer_caches().is_empty() {
+        if self.slicer_caches().is_empty() && self.timeline_caches().is_empty() {
             return;
         }
         let removed_id = removed.sheet_id().parse::<u32>().ok();
@@ -676,7 +910,7 @@ impl Workbook {
             .iter()
             .filter_map(crate::structs::Table::id)
             .collect();
-        let mut dropped = HashSet::new();
+        let mut dropped = self.unlink_timelines_of_removed_sheet(removed);
         self.slicer_caches_mut().retain_mut(|cache| {
             let drop = if let Some(SlicerSource::Table(source)) = &cache.source {
                 removed_tables.contains(&source.table_id)
@@ -688,6 +922,63 @@ impl Workbook {
             }
             !drop
         });
+        self.remove_slicer_caches_named(&dropped);
+        self.remove_unused_retained_pivot_caches();
+        self.retain_pivot_caches_of(removed.pivot_tables());
+    }
+
+    /// The list that declares a pivot cache kept without a pivot table, by
+    /// what still reads it: `Slicer` when a pivot slicer cache does, else
+    /// `Timeline` when a timeline cache does, else none (Excel then drops the
+    /// cache).
+    pub(crate) fn retained_pivot_cache_list(
+        &self,
+        definition: &crate::structs::PivotCacheDefinition,
+    ) -> Option<RetainedPivotCacheList> {
+        let id = definition.slicer_cache_id()?;
+        if self
+            .slicer_caches()
+            .iter()
+            .any(|cache| pivot_cache_id_of(cache) == Some(id))
+        {
+            Some(RetainedPivotCacheList::Slicer)
+        } else if self
+            .timeline_caches()
+            .iter()
+            .any(|cache| cache.state.pivot_cache_id == id)
+        {
+            Some(RetainedPivotCacheList::Timeline)
+        } else {
+            None
+        }
+    }
+
+    /// Keep the pivot caches of the `removed` pivot tables that no pivot table
+    /// left carries but a slicer or timeline cache still reads: Excel keeps
+    /// their definitions and records.
+    pub(crate) fn retain_pivot_caches_of<'a>(
+        &mut self,
+        removed: impl IntoIterator<Item = &'a crate::structs::PivotTable>,
+    ) {
+        for table in removed {
+            let id = table.pivot_table_definition().cache_id();
+            let definition = table.pivot_cache_definition();
+            let carried = self
+                .sheet_collection_no_check()
+                .iter()
+                .flat_map(Worksheet::pivot_tables)
+                .any(|table| table.pivot_table_definition().cache_id() == id)
+                || self.pivot_orphans.iter().any(|(known, _)| *known == id);
+            if !carried && self.retained_pivot_cache_list(definition).is_some() {
+                self.pivot_orphans.push((id, definition.clone()));
+            }
+        }
+    }
+
+    /// Remove what belongs to the slicer or timeline caches named in `dropped`
+    /// (lowercase): their defined names, and their views and frames on every
+    /// sheet.
+    fn remove_slicer_caches_named(&mut self, dropped: &HashSet<String>) {
         if dropped.is_empty() {
             return;
         }
@@ -710,17 +1001,32 @@ impl Workbook {
                 .filter(|slicer| dropped.contains(&slicer.cache.to_lowercase()))
                 .map(|slicer| slicer.name.clone())
                 .collect();
-            if gone.is_empty() {
+            let gone_timelines: Vec<String> = sheet
+                .timelines()
+                .iter()
+                .filter(|timeline| dropped.contains(&timeline.cache.to_lowercase()))
+                .map(|timeline| timeline.name.clone())
+                .collect();
+            if gone.is_empty() && gone_timelines.is_empty() {
                 continue;
             }
             sheet
                 .slicers_mut()
                 .retain(|slicer| !gone.contains(&slicer.name));
+            sheet
+                .timelines_mut()
+                .retain(|timeline| !gone_timelines.contains(&timeline.name));
             let drawing = sheet.worksheet_drawing_mut();
             let frame_ids: Vec<u32> = drawing
                 .slicer_frames()
                 .iter()
-                .filter(|frame| gone.iter().any(|name| name == frame.slicer_name()))
+                .filter(|frame| {
+                    let names = match frame.kind() {
+                        crate::drawing::spreadsheet::SlicerFrameKind::Slicer => &gone,
+                        crate::drawing::spreadsheet::SlicerFrameKind::Timeline => &gone_timelines,
+                    };
+                    names.iter().any(|name| name == frame.slicer_name())
+                })
                 .map(crate::drawing::spreadsheet::SlicerFrame::frame_id)
                 .collect();
             drawing
@@ -771,10 +1077,11 @@ impl Workbook {
             }
         }
         for frame in worksheet.worksheet_drawing().slicer_frames() {
-            if !worksheet
-                .slicers()
-                .iter()
-                .any(|slicer| slicer.name == frame.slicer_name())
+            if frame.kind() == crate::drawing::spreadsheet::SlicerFrameKind::Slicer
+                && !worksheet
+                    .slicers()
+                    .iter()
+                    .any(|slicer| slicer.name == frame.slicer_name())
             {
                 return Err(binding_error(format!(
                     "drawing frame on sheet '{}' references unknown slicer '{}'",
@@ -783,6 +1090,9 @@ impl Workbook {
                 )));
             }
         }
+        let mut taken = other_slicer_names.clone();
+        taken.extend(names.iter().cloned());
+        names.extend(self.validate_sheet_timelines(worksheet, &taken)?);
         for cache in self.slicer_caches() {
             let Some(pivot_cache_id) = pivot_cache_id_of(cache) else {
                 continue;
@@ -841,7 +1151,7 @@ impl Workbook {
                 }
             }
         }
-        Ok(())
+        self.validate_streamed_timeline_caches(written_pivot_cache_ids)
     }
 
     /// Check that every slicer binding resolves by identity: slicer to cache
@@ -914,10 +1224,11 @@ impl Workbook {
                 }
             }
             for frame in sheet.worksheet_drawing().slicer_frames() {
-                if !sheet
-                    .slicers()
-                    .iter()
-                    .any(|slicer| slicer.name == frame.slicer_name())
+                if frame.kind() == crate::drawing::spreadsheet::SlicerFrameKind::Slicer
+                    && !sheet
+                        .slicers()
+                        .iter()
+                        .any(|slicer| slicer.name == frame.slicer_name())
                 {
                     return Err(binding_error(format!(
                         "drawing frame on sheet '{}' references unknown slicer '{}'",
@@ -927,7 +1238,7 @@ impl Workbook {
                 }
             }
         }
-        Ok(())
+        self.validate_timelines(complete)
     }
 
     fn check_pivot_cache(
@@ -960,7 +1271,12 @@ impl Workbook {
             .iter()
             .filter(|sheet| sheet.is_inspectable())
             .flat_map(Worksheet::pivot_tables)
-            .any(|table| table.pivot_cache_definition().slicer_cache_id() == Some(pivot_cache_id));
+            .map(crate::structs::PivotTable::pivot_cache_definition)
+            .chain(
+                self.retained_pivot_caches()
+                    .map(|(_, definition)| definition),
+            )
+            .any(|definition| definition.slicer_cache_id() == Some(pivot_cache_id));
         if !found && complete {
             return Err(binding_error(format!(
                 "slicer cache '{}' references missing pivot cache id {pivot_cache_id}",

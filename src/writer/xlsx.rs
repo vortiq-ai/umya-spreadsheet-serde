@@ -111,6 +111,7 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
     writer_manager.reserve_pivot_caches(&pivot_cache::declared_caches(wb)?.order);
     writer_manager.reserve_table_ids(wb)?;
     wb.validate_slicers(Some(writer_manager.table_ids()))?;
+    pivot_cache::write_retained_caches(wb, &mut writer_manager)?;
     writer_manager.reserve_drawing_parts(wb);
     chart::prepare_picture_graph(wb, &mut writer_manager)?;
 
@@ -132,6 +133,9 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
         let shared_string_table = wb.shared_string_table();
         let mut stylesheet = wb.stylesheet().clone();
         stylesheet.set_export_default_value();
+        if !wb.timeline_caches().is_empty() {
+            stylesheet.ensure_timeline_styles();
+        }
 
         // Process each worksheet
         wb.sheet_collection_no_check()

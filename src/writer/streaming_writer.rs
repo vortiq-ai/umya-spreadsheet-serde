@@ -100,6 +100,9 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
     pub fn new(zip_writer: zip::ZipWriter<W>, mut work_book: Workbook) -> Self {
         let mut stylesheet = work_book.stylesheet().clone();
         stylesheet.set_export_default_value();
+        if !work_book.timeline_caches().is_empty() {
+            stylesheet.ensure_timeline_styles();
+        }
         let has_macros = work_book.has_macros();
         let mut writer_manager = WriterManager::new(zip_writer);
         // The same preparation the in-memory writer applies: sheets with pivot
@@ -144,6 +147,12 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
                         .slicers()
                         .iter()
                         .map(|slicer| slicer.name.to_lowercase())
+                        .chain(
+                            sheet
+                                .timelines()
+                                .iter()
+                                .map(|timeline| timeline.name.to_lowercase()),
+                        )
                         .collect(),
                 )
             })
@@ -198,13 +207,17 @@ impl<W: io::Write + io::Seek> StreamingWriter<W> {
         if self.poisoned {
             return Err(streaming_error("cannot finish after a failed sheet flush"));
         }
+        pivot_cache::write_retained_caches(&self.work_book, &mut self.writer_manager)?;
+        self.written_pivot_cache_ids.extend(
+            self.work_book
+                .retained_pivot_caches()
+                .filter_map(|(_, definition)| definition.slicer_cache_id()),
+        );
         self.work_book.validate_streamed_slicer_caches(
             self.writer_manager.written_table_ids(),
             &self.written_pivot_cache_ids,
         )?;
-        // As Excel does, declare only the caches a pivot table still uses: a
-        // cache whose last pivot table was removed has no part and no
-        // declaration.
+        // Declare only caches written for pivot tables or retained ones.
         if !self.declared_caches.order.is_empty() {
             let used = self
                 .declared_caches

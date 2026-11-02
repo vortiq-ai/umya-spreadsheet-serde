@@ -31,6 +31,7 @@ use crate::{
         SLICER_REL_NS,
         TABLE_NS,
         THREADED_COMMENT_NS,
+        TIMELINE_REL_NS,
         VML_DRAWING_NS,
     },
     structs::{
@@ -65,6 +66,7 @@ pub(crate) struct RelationshipIds {
     pub(crate) extension_parts: i32,
     pub(crate) pivot_slicers:   Option<i32>,
     pub(crate) table_slicers:   Option<i32>,
+    pub(crate) timelines:       Option<i32>,
 }
 
 impl RelationshipIds {
@@ -115,6 +117,11 @@ impl RelationshipIds {
         let extension_parts = take(worksheet.extension_relationship_count())?;
         let pivot_slicers = if slicers.pivot { Some(take(1)?) } else { None };
         let table_slicers = if slicers.table { Some(take(1)?) } else { None };
+        let timelines = if slicers.timeline {
+            Some(take(1)?)
+        } else {
+            None
+        };
         Ok(Self {
             hyperlinks,
             page_setup,
@@ -129,6 +136,7 @@ impl RelationshipIds {
             extension_parts,
             pivot_slicers,
             table_slicers,
+            timelines,
         })
     }
 }
@@ -175,8 +183,9 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     let ids = RelationshipIds::of(
         worksheet,
         SlicerKinds {
-            pivot: slicer_parts.pivot_slicers.is_some(),
-            table: slicer_parts.table_slicers.is_some(),
+            pivot:    slicer_parts.pivot_slicers.is_some(),
+            table:    slicer_parts.table_slicers.is_some(),
+            timeline: slicer_parts.timelines.is_some(),
         },
     )?;
 
@@ -361,6 +370,16 @@ pub(crate) fn write<W: io::Seek + io::Write>(
                 "",
             );
         }
+    }
+
+    if let (Some(id), Some(part_no)) = (ids.timelines, slicer_parts.timelines) {
+        is_write = write_relationship(
+            &mut writer,
+            &id.to_string(),
+            TIMELINE_REL_NS,
+            format!("../timelines/timeline{part_no}.xml").as_str(),
+            "",
+        );
     }
 
     write_end_tag(&mut writer, "Relationships");

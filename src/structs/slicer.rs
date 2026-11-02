@@ -13,6 +13,7 @@ pub const SLICER_2013_NS: &str = "http://schemas.microsoft.com/office/spreadshee
 pub const SLICER_DRAWING_NS: &str = "http://schemas.microsoft.com/office/drawing/2010/slicer";
 
 pub(crate) use package::{
+    RetainedPivotCacheList,
     SlicerKinds,
     SlicerListKind,
     SlicerPartReference,

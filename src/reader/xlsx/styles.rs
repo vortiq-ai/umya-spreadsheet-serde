@@ -34,7 +34,12 @@ pub fn read<R: io::Read + io::Seek>(
             return Err(e.into());
         }
     });
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(r)?);
+    let mut reader = Reader::from_reader(
+        crate::reader::spreadsheet_xml::SpreadsheetXml::open_with_native_extensions(
+            r,
+            crate::structs::TIMELINE_STYLE_EXTENSIONS,
+        )?,
+    );
     reader.config_mut().trim_text(true);
 
     try_xml_read_loop!(

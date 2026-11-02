@@ -168,20 +168,29 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 
     // pivotCaches
     let pivot_cache_definition_collection = wb.pivot_caches();
-    if !pivot_cache_definition_collection.is_empty() {
-        if wb.cell_metadata.is_some() {
-            index += 1;
-        }
+    let retained_ids = super::workbook_rels::retained_pivot_cache_relationship_ids(wb);
+    let pivot_caches: Vec<_> = pivot_cache_definition_collection
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, id, _))| {
+            !retained_ids
+                .iter()
+                .any(|(_, known, _)| known.to_string() == *id)
+        })
+        .collect();
+    if wb.cell_metadata.is_some() {
+        index += 1;
+    }
+    if !pivot_caches.is_empty() {
         write_start_tag(&mut writer, "pivotCaches", vec![], false);
-        for (_, val2, _) in pivot_cache_definition_collection {
-            let r_id = format!("rId{index}");
+        for (offset, (_, val2, _)) in pivot_caches {
+            let r_id = format!("rId{}", index + offset);
             write_start_tag(
                 &mut writer,
                 "pivotCache",
-                vec![("cacheId", &val2).into(), ("r:id", &r_id).into()],
+                vec![("cacheId", val2).into(), ("r:id", &r_id).into()],
                 true,
             );
-            index += 1;
         }
         write_end_tag(&mut writer, "pivotCaches");
     }
@@ -193,6 +202,8 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         match kind {
             SlicerListKind::Pivot => pivot_ids.push(id),
             SlicerListKind::Table => table_ids.push(id),
+            // Timeline caches are listed by their own relationship ids.
+            SlicerListKind::Timeline => {}
         }
     }
     crate::structs::slicer::write_workbook_extensions(
@@ -200,6 +211,8 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         &wb.extensions,
         &pivot_ids,
         &table_ids,
+        &super::workbook_rels::timeline_cache_relationship_ids(wb),
+        &retained_ids,
         &super::workbook_rels::carried_relationship_ids(wb),
     )?;
 

@@ -8,7 +8,6 @@ use quick_xml::{
 
 use super::{
     SLICER_2013_NS,
-    SLICER_DRAWING_NS,
     SLICER_NS,
     model::{
         OlapSlicerCache,
@@ -37,9 +36,12 @@ use super::{
     },
 };
 use crate::{
-    drawing::charts::{
-        NamespaceScope,
-        OpaqueElement,
+    drawing::{
+        charts::{
+            NamespaceScope,
+            OpaqueElement,
+        },
+        spreadsheet::SlicerFrameKind,
     },
     writer::driver::write_end_tag,
     xml::{
@@ -511,16 +513,17 @@ impl SlicerDrawing {
         start: &BytesStart,
         empty: bool,
         inherited: &NamespaceScope,
+        kind: SlicerFrameKind,
     ) -> Result<Self, String> {
         let node = OpaqueElement::read(reader, start, empty, inherited)?;
-        expect(&node, SLICER_DRAWING_NS, "slicer")?;
+        expect(&node, kind.namespace(), kind.element_name())?;
         attributes(&node, &["name"])?;
         let mut value = Self {
             name:       required(&node, "name")?,
             extensions: None,
         };
         for child in direct_children(&node)? {
-            expect(&child, SLICER_DRAWING_NS, "extLst")?;
+            expect(&child, kind.namespace(), "extLst")?;
             unique(&mut value.extensions, child, "slicer drawing extensions")?;
         }
         Ok(value)
@@ -928,24 +931,30 @@ impl Slicer {
 }
 
 impl SlicerDrawing {
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), String> {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        kind: SlicerFrameKind,
+    ) -> Result<(), String> {
         if self.name.is_empty() {
             return Err("slicer drawing requires a view name".into());
         }
+        let prefix = kind.prefix();
+        let element = format!("{prefix}:{}", kind.element_name());
         start(
             writer,
-            "sle:slicer",
+            &element,
             vec![
-                ("xmlns:sle", SLICER_DRAWING_NS.into()),
+                (&format!("xmlns:{prefix}"), kind.namespace().into()),
                 ("name", self.name.clone()),
             ],
             self.extensions.is_none(),
         );
         if let Some(extension) = &self.extensions {
             let inherited =
-                NamespaceScope::with_bindings([(Some("sle".into()), SLICER_DRAWING_NS.into())]);
+                NamespaceScope::with_bindings([(Some(prefix.into()), kind.namespace().into())]);
             extension.write_to(writer, &inherited)?;
-            write_end_tag(writer, "sle:slicer");
+            write_end_tag(writer, element);
         }
         Ok(())
     }

@@ -28,10 +28,12 @@ use crate::{
         SLICER_CACHE_REL_NS,
         STYLES_NS,
         THEME_NS,
+        TIMELINE_CACHE_REL_NS,
         VBA_PROJECT_NS,
         WORKSHEET_NS,
     },
     structs::{
+        RetainedPivotCacheList,
         SlicerListKind,
         Workbook,
         WorkbookExtension,
@@ -59,14 +61,51 @@ pub(crate) fn slicer_cache_relationship_ids(wb: &Workbook) -> Vec<(SlicerListKin
         .collect()
 }
 
+/// Relationship ids of the workbook timeline caches, in cache order. They
+/// follow the slicer cache relationships.
+pub(crate) fn timeline_cache_relationship_ids(wb: &Workbook) -> Vec<String> {
+    let first = 1
+        + wb.sheet_collection_no_check().len()
+        + usize::from(wb.cell_metadata.is_some())
+        + wb.pivot_caches().len()
+        + wb.slicer_caches().len();
+    (first..first + wb.timeline_caches().len())
+        .map(|id| format!("rId{id}"))
+        .collect()
+}
+
+/// The retained pivot caches with the extension list that declares each,
+/// their workbook cache id and their relationship id.
+pub(crate) fn retained_pivot_cache_relationship_ids(
+    wb: &Workbook,
+) -> Vec<(RetainedPivotCacheList, u32, String)> {
+    let first = 1 + wb.sheet_collection_no_check().len() + usize::from(wb.cell_metadata.is_some());
+    wb.pivot_caches()
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, (_, id, _))| {
+            let (id, definition) = wb
+                .pivot_orphans
+                .iter()
+                .find(|(known, _)| known.to_string() == *id)?;
+            Some((
+                wb.retained_pivot_cache_list(definition)?,
+                *id,
+                format!("rId{}", first + offset),
+            ))
+        })
+        .collect()
+}
+
 /// Relationship ids of the parts the preserved workbook extensions carry, one
-/// list per extension in order. They follow the slicer cache relationships.
+/// list per extension in order. They follow the timeline cache relationships.
 pub(crate) fn carried_relationship_ids(wb: &Workbook) -> Vec<Vec<String>> {
     let mut next = 1
         + wb.sheet_collection_no_check().len()
         + usize::from(wb.cell_metadata.is_some())
         + wb.pivot_caches().len()
-        + wb.slicer_caches().len();
+        + wb.slicer_caches().len()
+        + wb.timeline_caches().len();
     let mut lists = Vec::new();
     for entry in &wb.extensions {
         if let WorkbookExtension::Other(extension) = entry {
@@ -143,6 +182,18 @@ pub(crate) fn write<W: io::Seek + io::Write>(
             &index.to_string(),
             SLICER_CACHE_REL_NS,
             &super::slicer::cache_target(offset),
+            "",
+        );
+        index += 1;
+    }
+
+    // relationships timeline caches
+    for (offset, _) in wb.timeline_caches().iter().enumerate() {
+        write_relationship(
+            &mut writer,
+            &index.to_string(),
+            TIMELINE_CACHE_REL_NS,
+            &super::slicer::timeline_cache_target(offset),
             "",
         );
         index += 1;

@@ -22,6 +22,10 @@ use super::{
     Fonts,
     NumberingFormats,
     Style,
+    table_styles::{
+        read_children,
+        unexpected,
+    },
 };
 use crate::{
     helper::const_str::{
@@ -29,7 +33,10 @@ use crate::{
         SHEET_MAIN_NS,
         SHEETML_AC_NS,
     },
-    reader::driver::xml_read_loop,
+    reader::driver::{
+        get_attribute,
+        xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -53,6 +60,8 @@ pub(crate) struct Stylesheet {
     table_styles:         super::table_styles::TableStyles,
     #[cfg_attr(feature = "serde", serde(default))]
     slicer_styles:        super::table_styles::SlicerStyles,
+    #[cfg_attr(feature = "serde", serde(default))]
+    timeline_styles:      Option<super::TimelineStyles>,
 }
 
 impl Stylesheet {
@@ -79,6 +88,69 @@ impl Stylesheet {
     #[inline]
     pub(crate) fn numbering_formats(&self) -> &NumberingFormats {
         &self.numbering_formats
+    }
+
+    /// The timeline styles of the stylesheet extension list.
+    #[inline]
+    pub(crate) fn timeline_styles(&self) -> Option<&super::TimelineStyles> {
+        self.timeline_styles.as_ref()
+    }
+
+    /// Make the stylesheet name the default timeline style, as Excel does for
+    /// every workbook with a timeline.
+    pub(crate) fn ensure_timeline_styles(&mut self) {
+        self.timeline_styles.get_or_insert_with(Default::default);
+    }
+
+    /// Read the `extLst`, each `ext` going to the styles of its `uri`: the
+    /// timeline styles, or the slicer styles, which skip the extensions that
+    /// are not modelled.
+    fn read_extension_list<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+    ) -> Result<(), String> {
+        let mut timeline_extensions = Vec::new();
+        read_children(reader, "extLst", |reader, e, is_empty| {
+            if e.local_name().into_inner() != b"ext" {
+                return unexpected("extLst", e);
+            }
+            let uri = get_attribute(e, b"uri").unwrap_or_default();
+            if super::TIMELINE_STYLE_EXTENSIONS
+                .iter()
+                .any(|timeline| timeline.eq_ignore_ascii_case(&uri))
+            {
+                // The reader keeps these entries native: their start tag binds
+                // every namespace in scope.
+                timeline_extensions.push(crate::drawing::charts::OpaqueElement::read(
+                    reader,
+                    e,
+                    is_empty,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )?);
+                return Ok(());
+            }
+            self.slicer_styles.read_extension(reader, e, is_empty)
+        })?;
+        self.timeline_styles = super::TimelineStyles::read_extensions(&timeline_extensions)?;
+        Ok(())
+    }
+
+    /// The elements of the slicer and timeline styles named `name`, which
+    /// Excel counts in the `count` of their table style entry.
+    fn item_style_elements(&self, name: &str) -> usize {
+        let slicer = self
+            .slicer_styles
+            .styles
+            .iter()
+            .find(|style| style.name == name)
+            .map_or(0, |style| style.elements.len());
+        let timeline = self
+            .timeline_styles
+            .iter()
+            .flat_map(|styles| &styles.styles)
+            .find(|style| style.name == name)
+            .map_or(0, |style| style.elements.len());
+        slicer + timeline
     }
 
     #[inline]
@@ -596,7 +668,7 @@ impl Stylesheet {
                         self.table_styles.read(reader, e, false)?;
                     }
                     b"extLst" => {
-                        self.slicer_styles.read_extension_list(reader)?;
+                        self.read_extension_list(reader)?;
                     }
                     _ => (),
                 }
@@ -619,7 +691,10 @@ impl Stylesheet {
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // styleSheet
         write_start_tag(
             writer,
@@ -658,7 +733,8 @@ impl Stylesheet {
         self.differential_formats.write_to(writer);
 
         // tableStyles
-        self.table_styles.write_to(writer, &self.slicer_styles);
+        self.table_styles
+            .write_to(writer, |name| self.item_style_elements(name));
 
         // colors
         self.colors.write_to(writer);
@@ -666,8 +742,14 @@ impl Stylesheet {
         // extLst
         write_start_tag(writer, "extLst", vec![], false);
         self.slicer_styles.write_to(writer);
+        if let Some(styles) = &self.timeline_styles {
+            styles
+                .write_extensions(writer)
+                .map_err(crate::xml::xml_error)?;
+        }
         write_end_tag(writer, "extLst");
 
         write_end_tag(writer, "styleSheet");
+        Ok(())
     }
 }

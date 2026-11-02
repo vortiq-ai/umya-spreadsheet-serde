@@ -427,6 +427,7 @@ fn write_worksheet_extensions(
         &WorksheetExtensionIds {
             pivot_slicers: ids.pivot_slicers.map(relationship_id),
             table_slicers: ids.table_slicers.map(relationship_id),
+            timelines:     ids.timelines.map(relationship_id),
             carried:       carried.extensions,
         },
     )

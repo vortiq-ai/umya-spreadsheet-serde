@@ -16,6 +16,8 @@ pub mod custom_properties;
 pub mod drawing;
 pub mod slicer;
 pub use self::slicer::*;
+pub mod timeline;
+pub use self::timeline::*;
 pub mod filter_rule;
 pub use self::filter_rule::*;
 mod pivot_cache_hierarchy;

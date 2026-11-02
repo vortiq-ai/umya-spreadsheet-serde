@@ -532,6 +532,17 @@ impl PivotTableDefinition {
         self
     }
 
+    /// The native `filters` element: the label, value and date filters of the
+    /// pivot table, kept as read.
+    #[must_use]
+    pub(crate) fn filters(&self) -> Option<&crate::drawing::charts::OpaqueElement> {
+        self.filters.as_ref()
+    }
+
+    pub(crate) fn set_filters(&mut self, value: Option<crate::drawing::charts::OpaqueElement>) {
+        self.filters = value;
+    }
+
     #[inline]
     #[must_use]
     pub fn multiple_field_filters(&self) -> bool {
@@ -1714,6 +1725,79 @@ impl PivotTableDefinition {
     }
 }
 
+/// Whether `value` is a pivot filter type (`ST_PivotFilterType`).
+pub(crate) fn is_pivot_filter_type(value: &str) -> bool {
+    matches!(
+        value,
+        "unknown"
+            | "count"
+            | "percent"
+            | "sum"
+            | "captionEqual"
+            | "captionNotEqual"
+            | "captionBeginsWith"
+            | "captionNotBeginsWith"
+            | "captionEndsWith"
+            | "captionNotEndsWith"
+            | "captionContains"
+            | "captionNotContains"
+            | "captionGreaterThan"
+            | "captionGreaterThanOrEqual"
+            | "captionLessThan"
+            | "captionLessThanOrEqual"
+            | "captionBetween"
+            | "captionNotBetween"
+            | "valueEqual"
+            | "valueNotEqual"
+            | "valueGreaterThan"
+            | "valueGreaterThanOrEqual"
+            | "valueLessThan"
+            | "valueLessThanOrEqual"
+            | "valueBetween"
+            | "valueNotBetween"
+            | "dateEqual"
+            | "dateNotEqual"
+            | "dateOlderThan"
+            | "dateOlderThanOrEqual"
+            | "dateNewerThan"
+            | "dateNewerThanOrEqual"
+            | "dateBetween"
+            | "dateNotBetween"
+            | "tomorrow"
+            | "today"
+            | "yesterday"
+            | "nextWeek"
+            | "thisWeek"
+            | "lastWeek"
+            | "nextMonth"
+            | "thisMonth"
+            | "lastMonth"
+            | "nextQuarter"
+            | "thisQuarter"
+            | "lastQuarter"
+            | "nextYear"
+            | "thisYear"
+            | "lastYear"
+            | "yearToDate"
+            | "Q1"
+            | "Q2"
+            | "Q3"
+            | "Q4"
+            | "M1"
+            | "M2"
+            | "M3"
+            | "M4"
+            | "M5"
+            | "M6"
+            | "M7"
+            | "M8"
+            | "M9"
+            | "M10"
+            | "M11"
+            | "M12"
+    )
+}
+
 fn validate_table_child(node: &crate::drawing::charts::OpaqueElement) -> Result<(), String> {
     use crate::xml::{
         attributes,
@@ -1771,75 +1855,7 @@ fn validate_table_child(node: &crate::drawing::charts::OpaqueElement) -> Result<
                 }
                 signed(&child, "evalOrder")?;
                 let filter_type = required(&child, "type")?;
-                if !matches!(
-                    filter_type.as_str(),
-                    "unknown"
-                        | "count"
-                        | "percent"
-                        | "sum"
-                        | "captionEqual"
-                        | "captionNotEqual"
-                        | "captionBeginsWith"
-                        | "captionNotBeginsWith"
-                        | "captionEndsWith"
-                        | "captionNotEndsWith"
-                        | "captionContains"
-                        | "captionNotContains"
-                        | "captionGreaterThan"
-                        | "captionGreaterThanOrEqual"
-                        | "captionLessThan"
-                        | "captionLessThanOrEqual"
-                        | "captionBetween"
-                        | "captionNotBetween"
-                        | "valueEqual"
-                        | "valueNotEqual"
-                        | "valueGreaterThan"
-                        | "valueGreaterThanOrEqual"
-                        | "valueLessThan"
-                        | "valueLessThanOrEqual"
-                        | "valueBetween"
-                        | "valueNotBetween"
-                        | "dateEqual"
-                        | "dateNotEqual"
-                        | "dateOlderThan"
-                        | "dateOlderThanOrEqual"
-                        | "dateNewerThan"
-                        | "dateNewerThanOrEqual"
-                        | "dateBetween"
-                        | "dateNotBetween"
-                        | "tomorrow"
-                        | "today"
-                        | "yesterday"
-                        | "nextWeek"
-                        | "thisWeek"
-                        | "lastWeek"
-                        | "nextMonth"
-                        | "thisMonth"
-                        | "lastMonth"
-                        | "nextQuarter"
-                        | "thisQuarter"
-                        | "lastQuarter"
-                        | "nextYear"
-                        | "thisYear"
-                        | "lastYear"
-                        | "yearToDate"
-                        | "Q1"
-                        | "Q2"
-                        | "Q3"
-                        | "Q4"
-                        | "M1"
-                        | "M2"
-                        | "M3"
-                        | "M4"
-                        | "M5"
-                        | "M6"
-                        | "M7"
-                        | "M8"
-                        | "M9"
-                        | "M10"
-                        | "M11"
-                        | "M12"
-                ) {
+                if !is_pivot_filter_type(&filter_type) {
                     return Err("invalid native pivot filter type".into());
                 }
                 validate_table_child_extension(&child, true)?;
