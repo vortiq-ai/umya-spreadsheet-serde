@@ -37,7 +37,10 @@ $steps = [ordered]@{
 $failed = @()
 Push-Location (Split-Path $repo)
 try {
+    # A run killed from outside skips the cleanup below and leaves its clone.
+    if (Test-Path $work) { Remove-Item -Recurse -Force $work }
     git clone -q --no-local --no-checkout $repo $work
+    if ($LASTEXITCODE) { throw "clone of $repo failed" }
     git -C $work -c core.autocrlf=false checkout -q --detach $sha
     if ($LASTEXITCODE) { throw "checkout of $sha failed" }
     $env:CARGO_TARGET_DIR = Join-Path $work 'target'
