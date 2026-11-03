@@ -375,7 +375,7 @@ fn workbook_with_apostrophe_sheet_references() -> Workbook {
 #[test]
 fn cell_formulas_on_an_apostrophe_sheet_follow_a_row_insert_and_escape_once() {
     let mut book = workbook_with_apostrophe_sheet_references();
-    book.insert_new_row("Bob's", 1, 1);
+    book.insert_new_row("Bob's", 1, 1).unwrap();
     assert_eq!(
         book.sheet_by_name("Sheet1")
             .unwrap()
@@ -393,7 +393,7 @@ fn cell_formulas_on_an_apostrophe_sheet_follow_a_row_insert_and_escape_once() {
         "'Bob''s'!A2*2"
     );
 
-    book.remove_row("Bob's", 1, 1);
+    book.remove_row("Bob's", 1, 1).unwrap();
     assert_eq!(
         book.sheet_by_name("Sheet1")
             .unwrap()
@@ -422,12 +422,12 @@ fn cell_formulas_distinguish_sheets_with_different_apostrophe_counts() {
     sheet.cell_mut("A1").set_formula("'Bob''s'!A1");
     sheet.cell_mut("A2").set_formula("'Bob''''s'!A1");
 
-    book.insert_new_row("Bob's", 1, 1);
+    book.insert_new_row("Bob's", 1, 1).unwrap();
     let sheet = book.sheet_by_name("Sheet1").unwrap();
     assert_eq!(sheet.cell("A1").unwrap().formula(), "'Bob''s'!A2");
     assert_eq!(sheet.cell("A2").unwrap().formula(), "'Bob''''s'!A1");
 
-    book.remove_row("Bob's", 1, 1);
+    book.remove_row("Bob's", 1, 1).unwrap();
     let sheet = book.sheet_by_name("Sheet1").unwrap();
     assert_eq!(sheet.cell("A1").unwrap().formula(), "'Bob''s'!A1");
     assert_eq!(sheet.cell("A2").unwrap().formula(), "'Bob''''s'!A1");
@@ -448,10 +448,10 @@ fn chart_references_on_an_apostrophe_sheet_follow_a_row_insert() {
     let mut book = workbook_with_apostrophe_sheet_references();
     assert_eq!(apostrophe_chart_reference(&book), "'Bob''s'!$B$1:$B$3");
 
-    book.insert_new_row("Bob's", 1, 1);
+    book.insert_new_row("Bob's", 1, 1).unwrap();
     assert_eq!(apostrophe_chart_reference(&book), "'Bob''s'!$B$2:$B$4");
 
-    book.remove_row("Bob's", 1, 1);
+    book.remove_row("Bob's", 1, 1).unwrap();
     assert_eq!(apostrophe_chart_reference(&book), "'Bob''s'!$B$1:$B$3");
 }
 
@@ -536,24 +536,24 @@ fn assert_raw_chart_references_follow_row_changes(replace_address: bool) {
         let mut book = workbook_with_raw_and_parsed_chart_references(raw, replace_address);
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
 
-        book.insert_new_row("Bob's", 1, 1);
+        book.insert_new_row("Bob's", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$3:$B$5", "$B$2:$B$4");
-        book.remove_row("Bob's", 1, 1);
+        book.remove_row("Bob's", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
 
-        book.remove_row("Bob's", 1, 1);
+        book.remove_row("Bob's", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$1:$B$3", "$B$2:$B$4");
-        book.insert_new_row("Bob's", 1, 1);
+        book.insert_new_row("Bob's", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
 
-        book.insert_new_row("Bob''s", 1, 1);
+        book.insert_new_row("Bob''s", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$3:$B$5");
-        book.remove_row("Bob''s", 1, 1);
+        book.remove_row("Bob''s", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
 
-        book.remove_row("Bob''s", 1, 1);
+        book.remove_row("Bob''s", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$1:$B$3");
-        book.insert_new_row("Bob''s", 1, 1);
+        book.insert_new_row("Bob''s", 1, 1).unwrap();
         assert_raw_and_parsed_chart_references(&book, raw, "$B$2:$B$4", "$B$2:$B$4");
     }
 }

@@ -15,24 +15,23 @@
 
 Please mention in issues if you have any questions.
 
-## Version 3.0.0 has been released
-This update contains breaking changes.
-Please refer to this page when upgrading from version 2.x to 3.x.
-https://github.com/MathNya/umya-spreadsheet/blob/master/CHANGELOG.md
-
+## Version 4.0.0-beta.1 has been released
+With the update to zip, the error types have been updated.
+We plan to update the section on error handling again later.
+For this reason, we are releasing this as a beta version for now.
 
 ## Usage
 ### Installation
 Add the following code to Cargo.toml
 ```toml
 [dependencies]
-umya-spreadsheet = "3.1.0"
+umya-spreadsheet = "3.1.1"
 
 # WebAssembly support
-umya-spreadsheet = { version = "3.1.0", features = ["js"] }
+umya-spreadsheet = { version = "3.1.1", features = ["js"] }
 
 # Use only png for image processing
-umya-spreadsheet = { version = "3.1.0", features = ["image/png"] }
+umya-spreadsheet = { version = "3.1.1", features = ["image/png"] }
 ```
 
 Add the following code to main.rs
@@ -55,6 +54,11 @@ let mut book = umya_spreadsheet::reader::xlsx::lazy_read(path).unwrap();
 ```rust
 let mut book = umya_spreadsheet::new_file();
 ```
+### Print margins
+`PageMargins::has_left()` (and `has_right`, `has_top`, `has_bottom`, `has_header`,
+`has_footer`) distinguishes an unset margin from an explicitly supplied zero.
+Writing preserves explicit values and uses Excel defaults only for unset margins.
+
 ### Write file
 ```rust
 let path = std::path::Path::new("./tests/result_files/bbb.xlsx");
@@ -179,8 +183,10 @@ We would like to express our heartfelt gratitude to them.
 [AlexZhu2001](https://github.com/AlexZhu2001), 
 [attila-lin](https://github.com/attila-lin), 
 [bachhh](https://github.com/bachhh), 
+[ben-schreiber](https://github.com/ben-schreiber), 
 [boseongkim32](https://github.com/boseongkim32), 
 [c-git](https://github.com/c-git), 
+[colin-kiegel](https://github.com/colin-kiegel), 
 [cstkingkey](https://github.com/cstkingkey), 
 [DaimoniX](https://github.com/DaimoniX), 
 [developer0hye](https://github.com/developer0hye), 
@@ -188,6 +194,7 @@ We would like to express our heartfelt gratitude to them.
 [ggodlewski](https://github.com/ggodlewski), 
 [gitter-badger](https://github.com/gitter-badger), 
 [hackers267](https://github.com/hackers267), 
+[HiroyukiFuruno](https://github.com/HiroyukiFuruno), 
 [iancormac84](https://github.com/iancormac84), 
 [jimchan3301](https://github.com/jimchan3301), 
 [jmbrunskill](https://github.com/jmbrunskill), 
@@ -195,9 +202,12 @@ We would like to express our heartfelt gratitude to them.
 [jon-convexent](https://github.com/jon-convexent), 
 [JunWang-Lin](https://github.com/JunWang-Lin), 
 [kazuk](https://github.com/kazuk), 
+[keithadler](https://github.com/keithadler), 
 [kjh618](https://github.com/kjh618), 
 [KyGost](https://github.com/KyGost), 
 [lanej](https://github.com/lanej), 
+[LeandroMarceddu](https://github.com/LeandroMarceddu), 
+[LuisFigueroaG](https://github.com/LuisFigueroaG), 
 [matt-duch](https://github.com/matt-duch), 
 [mxsrm](https://github.com/mxsrm), 
 [nikvoid](https://github.com/nikvoid), 

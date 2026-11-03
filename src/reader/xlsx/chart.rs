@@ -4,21 +4,22 @@ use quick_xml::{
 };
 
 use crate::{
+    XlsxError,
     reader::driver::local_name,
     structs::{
         drawing::charts::ChartSpace,
         raw::RawFile,
     },
-    xml_read_loop,
+    try_xml_read_loop,
 };
 
-pub(crate) fn read(raw_file: &RawFile, chart_space: &mut ChartSpace) {
+pub(crate) fn read(raw_file: &RawFile, chart_space: &mut ChartSpace) -> Result<(), XlsxError> {
     let data = std::io::Cursor::new(raw_file.file_data());
     let mut reader = Reader::from_reader(data);
 
     reader.config_mut().trim_text(true);
 
-    xml_read_loop!(
+    try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
             if local_name(e.name().into_inner()) == b"chartSpace" {
@@ -27,4 +28,6 @@ pub(crate) fn read(raw_file: &RawFile, chart_space: &mut ChartSpace) {
         },
         Event::Eof => break,
     );
+
+    Ok(())
 }

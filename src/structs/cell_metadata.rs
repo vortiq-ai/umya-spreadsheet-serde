@@ -103,31 +103,31 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
     let mut event_count = 0usize;
     let mut namespace_bytes = 0u64;
     if xml.len() as u64 > MAX_METADATA_BYTES {
-        return Err(crate::XlsxError::CellError(
-            "Spreadsheet metadata exceeds the size limit".into(),
+        return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+            "Spreadsheet metadata exceeds the size limit",
         ));
     }
     loop {
         let event = reader
             .read_event()
-            .map_err(|e| crate::XlsxError::CellError(e.to_string()))?;
+            .map_err(|e| crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, e.to_string()))?;
         event_count += 1;
         if event_count > MAX_METADATA_EVENTS {
-            return Err(crate::XlsxError::CellError(
-                "Spreadsheet metadata exceeds the event limit".into(),
+            return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                "Spreadsheet metadata exceeds the event limit",
             ));
         }
         let empty = matches!(event, Event::Empty(_));
         match event {
             Event::Start(e) | Event::Empty(e) => {
                 if stack.is_empty() && root.is_some() {
-                    return Err(crate::XlsxError::CellError(
-                        "Multiple metadata XML roots".into(),
+                    return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                        "Multiple metadata XML roots",
                     ));
                 }
                 for attribute in e.attributes() {
                     let attribute = attribute
-                        .map_err(|error| crate::XlsxError::CellError(error.to_string()))?;
+                        .map_err(|error| crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, error.to_string()))?;
                     if attribute.key.as_ref() != b"xmlns"
                         && !attribute.key.as_ref().starts_with(b"xmlns:")
                         && matches!(
@@ -135,8 +135,8 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
                             ResolveResult::Unknown(_)
                         )
                     {
-                        return Err(crate::XlsxError::CellError(
-                            "Unbound spreadsheet metadata attribute namespace prefix".into(),
+                        return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                            "Unbound spreadsheet metadata attribute namespace prefix",
                         ));
                     }
                 }
@@ -145,8 +145,8 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
                 // before building that tree so a
                 // hostile metadata part cannot exhaust the process stack later.
                 if stack.len() >= 128 {
-                    return Err(crate::XlsxError::CellError(
-                        "Spreadsheet metadata XML exceeds the nesting limit".into(),
+                    return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                        "Spreadsheet metadata XML exceeds the nesting limit",
                     ));
                 }
                 let (ns, _) = reader.resolver().resolve_element(e.name());
@@ -154,8 +154,8 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
                     ResolveResult::Bound(ns) => {
                         namespace_bytes = namespace_bytes.saturating_add(ns.as_ref().len() as u64);
                         if namespace_bytes > MAX_METADATA_BYTES * 4 {
-                            return Err(crate::XlsxError::CellError(
-                                "Spreadsheet metadata exceeds the namespace work limit".into(),
+                            return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                                "Spreadsheet metadata exceeds the namespace work limit",
                             ));
                         }
                         if let Some(namespace) = namespaces.get(ns.as_ref()) {
@@ -168,8 +168,8 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
                         }
                     }
                     ResolveResult::Unknown(_) => {
-                        return Err(crate::XlsxError::CellError(
-                            "Unbound spreadsheet metadata namespace prefix".into(),
+                        return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                            "Unbound spreadsheet metadata namespace prefix",
                         ));
                     }
                     ResolveResult::Unbound => Arc::<str>::from(""),
@@ -191,7 +191,7 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
             }
             Event::End(_) => {
                 let Some(node) = stack.pop() else {
-                    return Err(crate::XlsxError::CellError("Invalid metadata XML".into()));
+                    return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, "Invalid metadata XML"));
                 };
                 if let Some(parent) = stack.last_mut() {
                     parent.push(node);
@@ -201,15 +201,15 @@ fn parse(xml: &[u8]) -> Result<Node, crate::XlsxError> {
             }
             Event::Eof => {
                 return root
-                    .ok_or_else(|| crate::XlsxError::CellError("Incomplete metadata XML".into()));
+                    .ok_or_else(|| crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, "Incomplete metadata XML"));
             }
             e => {
                 if let Some(parent) = stack.last_mut() {
                     parent.children.push(Item::Event(e.into_owned()));
                 } else if let Event::Text(text) = e {
                     if !text.iter().all(u8::is_ascii_whitespace) {
-                        return Err(crate::XlsxError::CellError(
-                            "Text outside metadata XML root".into(),
+                        return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                            "Text outside metadata XML root",
                         ));
                     }
                 }
@@ -251,8 +251,8 @@ impl CellMetadata {
     pub(crate) fn from_xml(xml: &[u8], path: String) -> Result<Self, crate::XlsxError> {
         let root = parse(xml)?;
         if !root.is(b"metadata") {
-            return Err(crate::XlsxError::CellError(
-                "Invalid spreadsheet metadata root".into(),
+            return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                "Invalid spreadsheet metadata root",
             ));
         }
         // Duplicate type/future names are ambiguous and could amplify index
@@ -261,8 +261,8 @@ impl CellMetadata {
         if let Some(types) = root.nodes().find(|n| n.is(b"metadataTypes")) {
             for metadata_type in types.nodes().filter(|n| n.is(b"metadataType")) {
                 if !type_names.insert(metadata_type.attr(b"name").unwrap_or_default()) {
-                    return Err(crate::XlsxError::CellError(
-                        "Duplicate spreadsheet metadata type".into(),
+                    return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                        "Duplicate spreadsheet metadata type",
                     ));
                 }
             }
@@ -270,8 +270,8 @@ impl CellMetadata {
         let mut future_names = HashSet::new();
         for future in root.nodes().filter(|n| n.is(b"futureMetadata")) {
             if !future_names.insert(future.attr(b"name").unwrap_or_default()) {
-                return Err(crate::XlsxError::CellError(
-                    "Duplicate spreadsheet future metadata type".into(),
+                return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                    "Duplicate spreadsheet future metadata type",
                 ));
             }
         }
@@ -439,8 +439,8 @@ impl CellMetadata {
             || property.ns.is_empty()
             || property.ns.as_ref() == MAIN
         {
-            return Err(crate::XlsxError::CellError(
-                "Cell metadata extensions require a type, URI, and namespaced property".into(),
+            return Err(crate::XlsxError::with_message(crate::XlsxErrorKind::Xml, 
+                "Cell metadata extensions require a type, URI, and namespaced property",
             ));
         }
         let mut expected = Writer::new(Vec::new());
@@ -802,8 +802,10 @@ mod tests {
             let mut file = source.by_index(i).unwrap();
             let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
-            output.start_file(file.name(), options).unwrap();
-            if file.name() == "xl/metadata.xml" {
+            // zip 9: a member name is a Result (it may not be valid UTF-8).
+            let name = file.name().unwrap().into_owned();
+            output.start_file(name.as_str(), options).unwrap();
+            if name == "xl/metadata.xml" {
                 output
                     .write_all(&vec![b' '; MAX_METADATA_BYTES as usize + 1])
                     .unwrap();
@@ -828,7 +830,7 @@ mod tests {
             let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
             for i in 0..source.len() {
                 let mut file = source.by_index(i).unwrap();
-                let name = file.name().to_owned();
+                let name = file.name().unwrap().into_owned();
                 let mut contents = Vec::new();
                 file.read_to_end(&mut contents).unwrap();
                 let root_part = target != "/xl/metadata.xml";

@@ -8,6 +8,7 @@ use std::{
 use super::driver;
 use crate::{
     XlsxError,
+    XlsxErrorKind,
     helper::const_str::{
         COMMENTS_NS,
         DRAWINGS_NS,
@@ -50,6 +51,11 @@ pub(crate) mod vml_drawing;
 mod workbook;
 mod workbook_rels;
 pub(crate) mod worksheet;
+// Upstream's worksheet-only namespace reader (5059a8b1). This fork reads every
+// SpreadsheetML part through `reader::spreadsheet_xml::SpreadsheetXml` (3595b5e2),
+// which also resolves attribute names; kept so later upstream merges stay clean.
+#[allow(dead_code)]
+mod worksheet_namespace;
 
 /// read spreadsheet from arbitrary reader.
 /// # Arguments
@@ -86,14 +92,14 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
             let part = driver::zip_by_name(&mut arv, &path)?;
             let cap = crate::structs::cell_metadata::MAX_METADATA_BYTES;
             if part.size() > cap {
-                return Err(XlsxError::CellError(
-                    "Spreadsheet metadata exceeds the size limit".into(),
+                return Err(XlsxError::with_message(XlsxErrorKind::Xml, 
+                    "Spreadsheet metadata exceeds the size limit",
                 ));
             }
             io::Read::read_to_end(&mut io::Read::take(part, cap + 1), &mut xml)?;
             if xml.len() as u64 > cap {
-                return Err(XlsxError::CellError(
-                    "Spreadsheet metadata exceeds the size limit".into(),
+                return Err(XlsxError::with_message(XlsxErrorKind::Xml, 
+                    "Spreadsheet metadata exceeds the size limit",
                 ));
             }
             book.cell_metadata = Some(crate::structs::cell_metadata::CellMetadata::from_xml(
@@ -113,22 +119,22 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
     shared_strings::read(&mut arv, &mut book)?;
     styles::read(&mut arv, &mut book)?;
 
-    for sheet in book.sheet_collection_mut() {
+    for sheet in book.sheet_collection_mut()? {
         for (rel_id, _, rel_target) in &workbook_rel {
             if sheet.r_id() != rel_id {
                 continue;
             }
             let mut raw_worksheet = RawWorksheet::default();
             match source_file {
-                Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file),
-                None => raw_worksheet.read(&mut arv, rel_target),
+                Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file)?,
+                None => raw_worksheet.read(&mut arv, rel_target)?,
             }
             sheet.set_raw_data_of_worksheet(raw_worksheet);
         }
     }
 
     if with_sheet_read {
-        book.read_sheet_collection();
+        book.read_sheet_collection()?;
     }
 
     Ok(book)
@@ -189,9 +195,10 @@ where
         .iter()
         .find(|worksheet| worksheet.name() == sheet_name)
     else {
-        return Err(XlsxError::CellError(format!(
-            "Worksheet '{sheet_name}' not found."
-        )));
+        return Err(XlsxError::with_message(
+            XlsxErrorKind::NotFound,
+            format!("worksheet '{sheet_name}'"),
+        ));
     };
     let shared_string_table = book.shared_string_table();
     let shared_string_table = &*shared_string_table.read().unwrap();
@@ -207,9 +214,9 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
     worksheet: &mut Worksheet,
     shared_string_table: &RwLock<SharedStringTable>,
     stylesheet: &Stylesheet,
-) {
+) -> Result<(), XlsxError> {
     if worksheet.is_deserialized() {
-        return;
+        return Ok(());
     }
 
     let mut raw_data_of_worksheet = worksheet.take_raw_data_of_worksheet();
@@ -219,11 +226,8 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
         &raw_data_of_worksheet,
         shared_string_table,
         stylesheet,
-    )
-    .unwrap();
-    raw_data_of_worksheet
-        .load_relationship_file_data_from_source()
-        .unwrap();
+    )?;
+    raw_data_of_worksheet.load_relationship_file_data_from_source()?;
 
     if let Some(v) = raw_data_of_worksheet.worksheet_relationships() {
         for relationship in v.relationship_list() {
@@ -234,19 +238,19 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
                         worksheet,
                         relationship.raw_file(),
                         raw_data_of_worksheet.drawing_relationships(),
-                    );
+                    )?;
                 }
                 // comment
                 COMMENTS_NS => {
-                    comment::read(worksheet, relationship.raw_file());
+                    comment::read(worksheet, relationship.raw_file())?;
                 }
                 // threaded_comment
                 THREADED_COMMENT_NS => {
-                    threaded_comment::read(worksheet, relationship.raw_file());
+                    threaded_comment::read(worksheet, relationship.raw_file())?;
                 }
                 // table
                 TABLE_NS => {
-                    table::read(worksheet, relationship.raw_file()).unwrap();
+                    table::read(worksheet, relationship.raw_file())?;
                 }
                 // pivot table, pivot cache
                 PIVOT_TABLE_NS => {
@@ -255,7 +259,7 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
                         relationship.raw_file(),
                         raw_data_of_worksheet.pivot_table_relationships(),
                         raw_data_of_worksheet.pivot_cache_relationships(),
-                    );
+                    )?;
                 }
                 _ => {}
             }
@@ -267,8 +271,10 @@ pub(crate) fn raw_to_deserialize_by_worksheet(
                     worksheet,
                     relationship.raw_file(),
                     raw_data_of_worksheet.vml_drawing_relationships(),
-                );
+                )?;
             }
         }
     }
+
+    Ok(())
 }

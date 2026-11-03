@@ -11,7 +11,7 @@ use quick_xml::{
 use super::XlsxError;
 use crate::{
     structs::drawing::Theme,
-    xml_read_loop,
+    try_xml_read_loop,
 };
 
 pub fn read<R: Read + io::Seek>(
@@ -35,7 +35,7 @@ pub fn read<R: Read + io::Seek>(
 
     let mut theme: Theme = Theme::default();
 
-    xml_read_loop!(
+    try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
             if e.name().into_inner() == b"a:theme" {

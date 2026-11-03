@@ -72,6 +72,14 @@ impl DifferentialFormats {
             .style()
     }
 
+    /// The style for a `dxfId`, or `None` when `id` is out of range (upstream
+    /// 9a43b4f6 uses this where a missing format must be told apart).
+    pub(crate) fn find_style(&self, id: usize) -> Option<Style> {
+        self.differential_format
+            .get(id)
+            .map(|differential_format| differential_format.clone().style())
+    }
+
     #[inline]
     #[deprecated(since = "3.0.0", note = "Use style()")]
     pub(crate) fn get_style(&self, id: usize) -> Style {

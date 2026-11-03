@@ -87,23 +87,16 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                             _ => {}
                         }
                     }
-                    if name.is_empty() {
-                        table.set_style_info(Some(TableStyleInfo::new(
-                            &name,
-                            show_first_col,
-                            show_last_col,
-                            show_row_stripes,
-                            show_col_stripes,
-                        )));
-                    } else {
-                        table.set_style_info(Some(TableStyleInfo::new(
-                            &name,
-                            ShowColumn::Hide,
-                            ShowColumn::Hide,
-                            ShowStripes::Hide,
-                            ShowStripes::Hide,
-                        )));
-                    }
+                    table.set_style_info(Some(TableStyleInfo::new(
+                        &name,
+                        show_first_col,
+                        show_last_col,
+                        show_row_stripes,
+                        show_col_stripes,
+                    )));
+                }
+                b"autoFilter" => {
+                    table.auto_filter_mut().set_attributes(&mut reader, e, true);
                 }
                 _ => (),
             },
@@ -161,6 +154,11 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                         }
                     }
                 }
+                b"autoFilter" => {
+                    table
+                        .auto_filter_mut()
+                        .set_attributes(&mut reader, e, false);
+                }
                 _ => (),
             },
             Ok(Event::End(ref e)) => {
@@ -173,7 +171,7 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            Err(e) => return Err(e.into()),
             _ => (),
         }
         buf.clear();

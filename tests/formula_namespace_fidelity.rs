@@ -79,11 +79,11 @@ fn raw_formula_fixture(formulas_and_errors: &[(&str, &str)]) -> Vec<u8> {
         let mut part = source.by_index(index).expect("skeleton part");
         let mut bytes = Vec::new();
         part.read_to_end(&mut bytes).expect("read skeleton part");
-        if part.name() == "xl/worksheets/sheet1.xml" {
+        if part.name().unwrap() == "xl/worksheets/sheet1.xml" {
             bytes = sheet_xml.as_bytes().to_vec();
         }
         output
-            .start_file(part.name(), SimpleFileOptions::default())
+            .start_file(part.name().unwrap(), SimpleFileOptions::default())
             .expect("start fixture part");
         output.write_all(&bytes).expect("write fixture part");
     }

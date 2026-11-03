@@ -168,7 +168,7 @@ fn explicit_dates_preserved_in_eager_and_lazy_readers() {
         for cell in cells.collection() {
             verify_cell(cell);
         }
-        lazy.read_sheet_collection();
+        lazy.read_sheet_collection().unwrap();
         verify_book(&lazy, 14);
     }
 }

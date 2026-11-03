@@ -276,7 +276,7 @@ fn profile_large_string_memory() {
 
     if env::var_os("UMYA_PROFILE_DESERIALIZE").is_some() {
         let sheet_name = env::var("UMYA_PROFILE_SHEET").unwrap_or_else(|_| "Sheet1".to_string());
-        book.read_sheet_by_name(&sheet_name);
+        book.read_sheet_by_name(&sheet_name).unwrap();
         print_large_file_checkpoint("deserialize_sheet", total);
     }
 
@@ -870,12 +870,12 @@ fn insert_and_remove_cells() {
     let path = std::path::Path::new("./tests/test_files/aaa_insertCell.xlsx");
     let mut book = reader::xlsx::read(path).unwrap();
 
-    book.insert_new_row("Sheet1", 2, 3);
-    book.insert_new_column("Sheet1", "B", 3);
-    book.insert_new_column_by_index("Sheet1", 2, 3);
+    book.insert_new_row("Sheet1", 2, 3).unwrap();
+    book.insert_new_column("Sheet1", "B", 3).unwrap();
+    book.insert_new_column_by_index("Sheet1", 2, 3).unwrap();
 
-    book.remove_row("Sheet1", 6, 2);
-    book.remove_column_by_index("Sheet1", 6, 2);
+    book.remove_row("Sheet1", 6, 2).unwrap();
+    book.remove_column_by_index("Sheet1", 6, 2).unwrap();
 
     // writer
     let path = std::path::Path::new("./tests/result_files/bbb_insertCell.xlsx");
@@ -1336,7 +1336,7 @@ fn read_and_wite_theme() {
 fn openpyxl() {
     let path = std::path::Path::new("./tests/test_files/openpyxl.xlsx");
     let book = reader::xlsx::read(path).unwrap();
-    let sheet = book.active_sheet();
+    let sheet = book.active_sheet().unwrap();
 
     assert_eq!(sheet.cell("A1").unwrap().value(), "TEST");
     assert_eq!(sheet.cell("A2").unwrap().value(), " TEST ");
@@ -2020,7 +2020,7 @@ fn issue_225() {
 fn issue_227() {
     let path = std::path::Path::new("./tests/test_files/aaa.xlsx");
     let mut book = reader::xlsx::lazy_read(path).unwrap();
-    book.read_sheet_by_name("Sheet2");
+    book.read_sheet_by_name("Sheet2").unwrap();
     let sheet = book.sheet_by_name("Sheet2").unwrap();
     assert_eq!("3", sheet.cell("B6").unwrap().value());
 }
@@ -2671,7 +2671,7 @@ fn expanded_font_and_fill_colours_survive_all_style_consumers() {
         let mut entry = archive.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == "xl/styles.xml" {
+        if entry.name().unwrap() == "xl/styles.xml" {
             data = String::from_utf8(data)
                 .unwrap()
                 .replace(
@@ -2688,8 +2688,11 @@ fn expanded_font_and_fill_colours_survive_all_style_consumers() {
                 )
                 .into_bytes();
         }
-        out.start_file(entry.name(), zip::write::SimpleFileOptions::default())
-            .unwrap();
+        out.start_file(
+            entry.name().unwrap(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         std::io::Write::write_all(&mut out, &data).unwrap();
     }
     let reopened = reader::xlsx::read_reader(
@@ -2760,7 +2763,7 @@ fn border_colours_import_on_all_sides_from_expanded_xml() {
         let mut entry = archive.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == "xl/styles.xml" {
+        if entry.name().unwrap() == "xl/styles.xml" {
             data = String::from_utf8(data)
                 .unwrap()
                 .replace(
@@ -2769,8 +2772,11 @@ fn border_colours_import_on_all_sides_from_expanded_xml() {
                 )
                 .into_bytes();
         }
-        out.start_file(entry.name(), zip::write::SimpleFileOptions::default())
-            .unwrap();
+        out.start_file(
+            entry.name().unwrap(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         std::io::Write::write_all(&mut out, &data).unwrap();
     }
     let reopened = reader::xlsx::read_reader(
@@ -3140,7 +3146,7 @@ fn chart_legend_absence_roundtrips() {
         let mut zout = zip::ZipWriter::new(std::fs::File::create(&fixture).unwrap());
         for i in 0..zin.len() {
             let mut e = zin.by_index(i).unwrap();
-            let name = e.name().to_string();
+            let name = e.name().unwrap().to_string();
             let mut buf = Vec::new();
             e.read_to_end(&mut buf).unwrap();
             if name.starts_with("xl/charts/chart") && name.ends_with(".xml") {
@@ -3163,7 +3169,7 @@ fn chart_legend_absence_roundtrips() {
         let mut out = Vec::new();
         for i in 0..zip.len() {
             let mut e = zip.by_index(i).unwrap();
-            let name = e.name().to_string();
+            let name = e.name().unwrap().to_string();
             if name.starts_with("xl/charts/chart") && name.ends_with(".xml") {
                 let mut s = String::new();
                 e.read_to_string(&mut s).unwrap();
@@ -3211,7 +3217,7 @@ fn set_legend_present_false_suppresses_legend() {
     std::fs::create_dir_all(out_dir).unwrap();
 
     let mut book = reader::xlsx::read(src).expect("read aaa.xlsx");
-    for sheet in book.sheet_collection_mut().iter_mut() {
+    for sheet in book.sheet_collection_mut().unwrap().iter_mut() {
         for chart in sheet.chart_collection_mut().iter_mut() {
             chart
                 .chart_space_mut()
@@ -3227,7 +3233,7 @@ fn set_legend_present_false_suppresses_legend() {
     let mut with_legend = 0;
     for i in 0..zip.len() {
         let mut e = zip.by_index(i).unwrap();
-        let name = e.name().to_string();
+        let name = e.name().unwrap().to_string();
         if name.starts_with("xl/charts/chart") && name.ends_with(".xml") {
             charts += 1;
             let mut s = String::new();
@@ -3261,5 +3267,13 @@ fn issue_343() {
     let path = std::path::Path::new("./tests/test_files/issue_343.xlsx");
     let mut book = umya_spreadsheet::reader::xlsx::read(path).unwrap();
     let out = std::path::Path::new("./tests/result_files/issue_343.xlsx");
+    umya_spreadsheet::writer::xlsx::write(&book, out).unwrap();
+}
+
+#[test]
+fn issue_363() {
+    let path = std::path::Path::new("./tests/test_files/issue_363.xlsx");
+    let mut book = umya_spreadsheet::reader::xlsx::read(path).unwrap();
+    let out = std::path::Path::new("./tests/result_files/issue_363.xlsx");
     umya_spreadsheet::writer::xlsx::write(&book, out).unwrap();
 }

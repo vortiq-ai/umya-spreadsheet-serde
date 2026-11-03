@@ -14,6 +14,7 @@ use crate::{
 };
 use crate::{
     StringValue,
+    XlsxError,
     helper::{
         const_str::PIVOT_CACHE_DEF_NS,
         coordinate::{
@@ -289,14 +290,13 @@ impl Worksheet {
         &self,
         shared_string_table: &SharedStringTable,
         stylesheet: &Stylesheet,
-    ) -> Cells {
-        assert!(!self.is_deserialized(), "This Worksheet is Deserialized.");
-
-        read_lite(
-            self.raw_data_of_worksheet.as_ref().unwrap(),
-            shared_string_table,
-            stylesheet,
-        )
+    ) -> Result<Cells, XlsxError> {
+        match self.raw_data_of_worksheet.as_ref() {
+            Some(raw_data) if !self.is_deserialized() => {
+                read_lite(raw_data, shared_string_table, stylesheet)
+            }
+            _ => Ok(self.cells.clone()),
+        }
     }
 
     #[deprecated(since = "3.0.0", note = "Use cells_stream()")]
@@ -304,7 +304,7 @@ impl Worksheet {
         &self,
         shared_string_table: &SharedStringTable,
         stylesheet: &Stylesheet,
-    ) -> Cells {
+    ) -> Result<Cells, XlsxError> {
         self.cells_stream(shared_string_table, stylesheet)
     }
 
@@ -1034,6 +1034,11 @@ impl Worksheet {
         let mut auto_filter = AutoFilter::default();
         auto_filter.set_range(range);
         self.auto_filter = Some(auto_filter);
+    }
+
+    #[inline]
+    pub(crate) fn set_auto_filter_obj(&mut self, value: AutoFilter) {
+        self.auto_filter = Some(value);
     }
 
     // Remove Auto Filter.
@@ -2021,8 +2026,15 @@ impl Worksheet {
     /// # Arguments
     /// * `name` - Name. ex) "`DefinedName01`"
     /// * `address` - Address. ex) "A1:A2"
+    /// # Errors
+    /// Currently always succeeds. The `Result` is kept so that validation can
+    /// be added without breaking changes.
     #[inline]
-    pub fn add_defined_name<S: Into<String>>(&mut self, name: S, address: S) -> Result<(), &str> {
+    pub fn add_defined_name<S: Into<String>>(
+        &mut self,
+        name: S,
+        address: S,
+    ) -> Result<(), XlsxError> {
         let mut defined_name = DefinedName::default();
         defined_name.set_name(name.into());
         defined_name.set_address(address.into());
