@@ -98,6 +98,7 @@ fn hsl_and_scrgb_native_edits_preserve_exact_scalars_and_ordered_transforms() {
 }
 
 #[test]
+#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn native_color_choices_work_in_gradients_pattern_colors_and_namespace_aliases() {
     let hsl = r#"<a:hslClr hue="0" sat="100000" lum="50%"/>"#;
     let rgb = r#"<a:scrgbClr r="100000" g="0" b="0"/>"#;

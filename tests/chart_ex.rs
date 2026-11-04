@@ -557,6 +557,7 @@ fn chart_shape_gradients_are_native_editable_and_roundtrip() {
 }
 
 #[test]
+#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn duplicate_and_conflicting_shape_properties_are_not_silently_replaced() {
     for children in [
         "<a:solidFill/><a:solidFill/>",

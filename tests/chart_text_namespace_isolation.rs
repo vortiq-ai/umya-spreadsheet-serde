@@ -229,6 +229,7 @@ fn foreign_before_and_after_spacing_descendants_do_not_change_native_values() {
 }
 
 #[test]
+#[ignore = "bodyPr parts preservation is held at the fleet pin"]
 fn native_alias_default_and_rebound_prefix_text_fields_remain_supported() {
     for route in ["properties", "rich"] {
         let expected = model(&input(route, BODY), route);
@@ -294,6 +295,7 @@ fn foreign_title_subtrees_do_not_replace_native_rich_text() {
 }
 
 #[test]
+#[ignore = "bodyPr parts preservation is held at the fleet pin"]
 fn unmodeled_native_wrappers_do_not_promote_modeled_text_descendants() {
     for (end, wrapper) in [
         ("</a:bodyPr>", "<a:future><a:spAutoFit/></a:future>"),

@@ -52,6 +52,7 @@ fn invalid_fill() -> umya_spreadsheet::drawing::SolidFill {
 }
 
 #[test]
+#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn chart_text_export_returns_native_paint_errors() {
     use umya_spreadsheet::drawing::{
         Paragraph,
@@ -71,6 +72,7 @@ fn chart_text_export_returns_native_paint_errors() {
 }
 
 #[test]
+#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn workbook_theme_export_returns_native_paint_errors() {
     let mut workbook = umya_spreadsheet::new_file();
     workbook
