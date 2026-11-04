@@ -12,10 +12,7 @@ use quick_xml::{
 
 use super::alpha::Alpha;
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -82,7 +79,7 @@ impl PresetColor {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        self.set_val(get_attribute(e, b"val").unwrap());
+        self.set_val(crate::reader::driver::require_attribute(e, b"val")?);
 
         xml_read_loop!(
             reader,

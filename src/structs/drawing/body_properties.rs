@@ -21,10 +21,7 @@ use super::{
 };
 use crate::{
     StringValue,
-    reader::driver::{
-        get_attribute_value,
-        xml_read_loop,
-    },
+    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -279,7 +276,9 @@ impl BodyProperties {
     ) -> Result<(), crate::XlsxError> {
         for attr in e.attributes().with_checks(false).flatten() {
             let key = attr.key.into_inner();
-            let value = get_attribute_value(&attr).unwrap();
+            let value = attr
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                .into_owned();
             match key {
                 b"rot" => {
                     self.rotation.set_value_string(value);

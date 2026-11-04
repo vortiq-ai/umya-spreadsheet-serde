@@ -15,10 +15,7 @@ use super::{
     SchemeColor,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -118,8 +115,8 @@ impl GradientStop {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        if let Some(v) = get_attribute(e, b"pos") {
-            self.set_position(v.parse::<i32>().unwrap());
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"pos")? {
+            self.set_position(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
         }
 
         xml_read_loop!(
