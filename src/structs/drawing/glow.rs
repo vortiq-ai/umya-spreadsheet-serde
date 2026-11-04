@@ -23,9 +23,9 @@ use crate::writer::driver::{
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
-pub struct Glow {    radius:                     Int64Value,
+pub struct Glow {
+    radius:                     Int64Value,
     scheme_color:               Option<Box<SchemeColor>>,
-
     #[cfg_attr(feature = "serde", serde(default))]
     hsl_color:                  Option<Box<HslColor>>,
     #[cfg_attr(feature = "serde", serde(default))]

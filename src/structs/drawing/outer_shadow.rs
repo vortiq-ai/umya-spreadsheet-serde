@@ -27,7 +27,8 @@ use crate::{
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
-pub struct OuterShadow {    blur_radius:                StringValue,
+pub struct OuterShadow {
+    blur_radius:                StringValue,
     alignment:                  StringValue,
     horizontal_ratio:           StringValue,
     vertical_ratio:             StringValue,
@@ -37,7 +38,6 @@ pub struct OuterShadow {    blur_radius:                StringValue,
     preset_color:               Option<Box<PresetColor>>,
     scheme_color:               Option<Box<SchemeColor>>,
     rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
-
     #[cfg_attr(feature = "serde", serde(default))]
     hsl_color:                  Option<Box<HslColor>>,
     #[cfg_attr(feature = "serde", serde(default))]

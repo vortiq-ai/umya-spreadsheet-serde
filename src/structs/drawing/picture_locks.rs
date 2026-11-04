@@ -17,8 +17,8 @@ use crate::{
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
-pub struct PictureLocks {    no_change_aspect:     bool,
-
+pub struct PictureLocks {
+    no_change_aspect:     bool,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:           Option<Box<crate::drawing::ExtensionList>>,
     #[cfg_attr(feature = "serde", serde(default))]

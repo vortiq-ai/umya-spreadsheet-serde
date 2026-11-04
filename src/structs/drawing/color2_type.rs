@@ -26,9 +26,9 @@ use crate::{
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
-pub struct Color2Type {    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
+pub struct Color2Type {
+    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
     system_color:               Option<Box<SystemColor>>,
-
     #[cfg_attr(feature = "serde", serde(default))]
     preset_color:               Option<Box<PresetColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
