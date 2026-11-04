@@ -43,6 +43,12 @@ pub struct BodyProperties {
     bottom_inset:          Int32Value,
     use_paragraph_spacing: BooleanValue,
     shape_auto_fit:        Option<ShapeAutoFit>,
+    // Appended, so the serde layout only grows. Both default on a chart saved before this fork
+    // read them, which is the same as the file not carrying the attribute at all.
+    #[cfg_attr(feature = "serde", serde(default))]
+    vert:                  StringValue,
+    #[cfg_attr(feature = "serde", serde(default))]
+    anchor_ctr:            BooleanValue,
 }
 
 impl BodyProperties {
@@ -268,6 +274,32 @@ impl BodyProperties {
         self
     }
 
+    /// The text flow direction, `vert` on `a:bodyPr`.
+    #[inline]
+    #[must_use]
+    pub fn vert(&self) -> Option<&str> {
+        self.vert.value()
+    }
+
+    #[inline]
+    pub fn set_vert<S: Into<String>>(&mut self, value: S) -> &mut BodyProperties {
+        self.vert.set_value(value);
+        self
+    }
+
+    /// Whether the text box is centred on its anchor, `anchorCtr` on `a:bodyPr`.
+    #[inline]
+    #[must_use]
+    pub fn anchor_ctr(&self) -> bool {
+        self.anchor_ctr.value()
+    }
+
+    #[inline]
+    pub fn set_anchor_ctr(&mut self, value: bool) -> &mut BodyProperties {
+        self.anchor_ctr.set_value(value);
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -311,6 +343,12 @@ impl BodyProperties {
                 }
                 b"anchor" => {
                     self.set_anchor(value);
+                }
+                b"vert" => {
+                    self.vert.set_value_string(value);
+                }
+                b"anchorCtr" => {
+                    self.anchor_ctr.set_value_string(value);
                 }
                 b"wrap" => {
                     self.wrap.set_value_string(value);
@@ -385,6 +423,12 @@ impl BodyProperties {
         }
         if let Some(v) = self.anchor.value() {
             attributes.push(("anchor", v).into());
+        }
+        if let Some(v) = self.vert.value() {
+            attributes.push(("vert", v).into());
+        }
+        if self.anchor_ctr.has_value() {
+            attributes.push(("anchorCtr", self.anchor_ctr.value_string()).into());
         }
         if self.wrap.has_value() {
             attributes.push(("wrap", self.wrap.value_string()).into());

@@ -507,7 +507,6 @@ fn remove_run(chart: &mut Chart, index: usize) {
 }
 
 #[test]
-#[ignore = "bodyPr parts preservation is held at the fleet pin"]
 fn retyping_characters_inside_title_runs_keeps_the_field_and_every_run_property() {
     let mut r = round(true);
     let mut edited = client(&r);
@@ -542,7 +541,6 @@ fn retyping_characters_inside_title_runs_keeps_the_field_and_every_run_property(
 }
 
 #[test]
-#[ignore = "bodyPr parts preservation is held at the fleet pin"]
 fn retyping_the_first_run_and_removing_the_second_keeps_first_run_formatting_and_the_field() {
     let mut r = round(true);
     let mut edited = client(&r);
