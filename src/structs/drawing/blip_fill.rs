@@ -17,11 +17,6 @@ use super::{
     Stretch,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::raw::RawRelationships,
     writer::driver::{
         write_end_tag,
@@ -36,9 +31,25 @@ pub struct BlipFill {
     blip:              Blip,
     source_rectangle:  Option<Box<SourceRectangle>>,
     stretch:           Stretch,
+    #[cfg_attr(feature = "serde", serde(default))]
+    tile:              Option<Box<super::Tile>>,
 }
 
 impl BlipFill {
+    #[must_use]
+    pub fn tile(&self) -> Option<&super::Tile> {
+        self.tile.as_deref()
+    }
+
+    pub fn tile_mut(&mut self) -> Option<&mut super::Tile> {
+        self.tile.as_deref_mut()
+    }
+
+    pub fn set_tile(&mut self, value: super::Tile) -> &mut Self {
+        self.tile = Some(Box::new(value));
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn rotate_with_shape(&self) -> bool {
@@ -133,6 +144,7 @@ impl BlipFill {
 
     #[inline]
     pub fn stretch_mut(&mut self) -> &mut Stretch {
+        self.tile = None;
         &mut self.stretch
     }
 
@@ -144,78 +156,154 @@ impl BlipFill {
 
     #[inline]
     pub fn set_stretch(&mut self, value: Stretch) -> &mut Self {
+        self.tile = None;
         self.stretch = value;
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
+        empty: bool,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        set_string_from_xml!(self, e, rotate_with_shape, "rotWithShape");
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:blip" => {
-                        self.blip
-                            .set_attributes(reader, e, drawing_relationships.unwrap(), false);
-                        }
-                    b"a:stretch" => {
-                        self.stretch.set_attributes(reader, e);
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = match session.current_namespace_scope() {
+            Some(scope) => scope,
+            None => crate::drawing::charts::NamespaceScope::default()
+                .child(owner)
+                .map_err(crate::xml::xml_error)?,
+        };
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"rotWithShape")? {
+            self.set_rotate_with_shape(
+                crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?,
+            );
+        }
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS
+                        || !seen.insert(name.local_name.clone())
+                    {
+                        return Err(crate::xml::xml_error(
+                            "foreign or duplicate drawing blip-fill child",
+                        ));
                     }
-                    _ => (),
-                }
-            },
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"a:blip" => {
-                        self.blip
-                            .set_attributes(reader, e, drawing_relationships.unwrap(), true);
+                    match name.local_name.as_str() {
+                        "blip" => {
+                            self.blip.read_with_session(
+                                reader,
+                                child,
+                                empty,
+                                drawing_relationships,
+                                Some(session),
+                            )?;
                         }
-                    b"a:srcRect" => {
-                        let mut source_rectangle = SourceRectangle::default();
-                        source_rectangle.set_attributes(reader, e);
-                        self.set_source_rectangle(source_rectangle);
+                        "srcRect" => {
+                            let mut value = SourceRectangle::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_source_rectangle(value);
+                        }
+                        "stretch" => {
+                            if seen.contains("tile") {
+                                return Err(crate::xml::xml_error(
+                                    "tile and stretch are mutually exclusive",
+                                ));
+                            }
+                            self.stretch
+                                .read_with_session(reader, child, empty, Some(session))?;
+                        }
+                        "tile" => {
+                            if seen.contains("stretch") {
+                                return Err(crate::xml::xml_error(
+                                    "tile and stretch are mutually exclusive",
+                                ));
+                            }
+                            self.set_tile(super::Tile::read(reader, child, empty, &scope)?);
+                        }
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported drawing blip-fill child",
+                            ));
+                        }
                     }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:blipFill" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:blipFill")
-        );
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing blip fill")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
-    ) {
-        // a:blipFill
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, rel_list, "a:blipFill")
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        rel_list: &mut Vec<(String, String)>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_content(writer, name, |writer| self.blip.write_to(writer, rel_list))
+    }
+
+    pub(crate) fn write_with_embed_id(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        embed: Option<&str>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_content(writer, "a:blipFill", |writer| {
+            self.blip.write_with_embed_id(writer, embed, &[])
+        })
+    }
+
+    fn write_content(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+        write_blip: impl FnOnce(&mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError>,
+    ) -> Result<(), crate::XlsxError> {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.rotate_with_shape.has_value() {
             attributes.push(("rotWithShape", self.rotate_with_shape.value_string()).into());
         }
-        write_start_tag(writer, "a:blipFill", attributes, false);
+        write_start_tag(writer, name, attributes, false);
 
         // a:blip
-        self.blip.write_to(writer, rel_list);
+        write_blip(writer)?;
 
         // a:srcRect
         if let Some(v) = &self.source_rectangle {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:stretch
-        self.stretch.write_to(writer);
+        if let Some(tile) = &self.tile {
+            tile.write_to(writer)?;
+        } else {
+            self.stretch.write_to(writer)?;
+        }
 
-        write_end_tag(writer, "a:blipFill");
+        write_end_tag(writer, name);
+        Ok(())
     }
 }

@@ -15,16 +15,9 @@ use super::{
     PresetCameraValues,
     Rotation,
 };
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -89,29 +82,74 @@ impl Camera {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        set_string_from_xml!(self, e, preset, "prst");
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty_flag, None)
+    }
 
-        if empty_flag {
-            return;
-        }
-
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:rot" {
-                    let mut obj = Rotation::default();
-                    obj.set_attributes(reader, e);
-                    self.rotation = Some(Box::new(obj));
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:camera" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:camera")
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"prst")?;
+        self.preset.set_value(
+            value
+                .parse::<PresetCameraValues>()
+                .map_err(|()| crate::xml::xml_error("invalid DrawingML enumeration"))?,
         );
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
+                    }
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"rot" => {
+                            let mut value = Rotation::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.rotation = Some(Box::new(value));
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
+                }
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

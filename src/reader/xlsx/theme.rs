@@ -3,53 +3,32 @@ use std::io::{
     Read,
 };
 
-use quick_xml::{
-    Reader,
-    events::Event,
-};
-
 use super::XlsxError;
-use crate::{
-    structs::drawing::Theme,
-    try_xml_read_loop,
-};
+use crate::structs::drawing::Theme;
 
 pub fn read<R: Read + io::Seek>(
-    arv: &mut zip::ZipArchive<R>,
+    archive: &mut zip::ZipArchive<R>,
     target: &str,
 ) -> Result<Theme, XlsxError> {
     let path = format!("xl/{target}");
+    // Relationship-backed themes cannot reuse XML without retaining its
+    // dependencies.
+    let retain_source = !has_relationships(archive, &path)?;
     let mut bytes = Vec::new();
-    super::driver::zip_by_name(arv, &path)?.read_to_end(&mut bytes)?;
-    // Keep the part's text, so an unchanged theme is written back as read. Not
-    // when the part has relationships of its own (an image fill): those are not
-    // written, so the text would refer to parts that are not there.
-    if !has_relationships(arv, &path) {
-        if let Ok(xml) = std::str::from_utf8(&bytes) {
-            return Ok(Theme::from_xml(xml));
-        }
-    }
-
-    let mut reader = Reader::from_reader(bytes.as_slice());
-    reader.config_mut().trim_text(true);
-
-    let mut theme: Theme = Theme::default();
-
-    try_xml_read_loop!(
-        reader,
-        Event::Start(ref e) => {
-            if e.name().into_inner() == b"a:theme" {
-                theme.set_attributes(&mut reader, e);
-            }
-        },
-        Event::Eof => break,
-    );
-
-    Ok(theme)
+    super::driver::zip_by_name(archive, &path)?.read_to_end(&mut bytes)?;
+    let xml =
+        std::str::from_utf8(&bytes).map_err(|error| crate::xml::xml_error(error.to_string()))?;
+    Theme::read_xml(xml, retain_source)
 }
 
-/// Whether the part at `path` has a relationships part.
-fn has_relationships<R: Read + io::Seek>(arv: &mut zip::ZipArchive<R>, path: &str) -> bool {
-    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
-    super::driver::zip_by_name(arv, &format!("{dir}/_rels/{file}.rels")).is_ok()
+fn has_relationships<R: Read + io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    path: &str,
+) -> Result<bool, XlsxError> {
+    let (directory, file) = path.rsplit_once('/').unwrap_or(("", path));
+    match super::driver::zip_by_name(archive, &format!("{directory}/_rels/{file}.rels")) {
+        Ok(_) => Ok(true),
+        Err(zip::result::ZipError::FileNotFound) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }

@@ -14,22 +14,19 @@ use base64::{
 };
 use quick_xml::Writer;
 
-use crate::{
-    structs::{
-        MediaObject,
-        drawing::{
-            FillRectangle,
-            PresetGeometry,
-            Stretch,
-            spreadsheet::{
-                MarkerType,
-                OneCellAnchor,
-                Picture,
-                TwoCellAnchor,
-            },
+use crate::structs::{
+    MediaObject,
+    drawing::{
+        FillRectangle,
+        PresetGeometry,
+        Stretch,
+        spreadsheet::{
+            MarkerType,
+            OneCellAnchor,
+            Picture,
+            TwoCellAnchor,
         },
     },
-    traits::AdjustmentCoordinate,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -159,7 +156,13 @@ impl Image {
         let file = File::open(path).unwrap();
         BufReader::new(file).read_to_end(&mut buf).unwrap();
 
-        self.new_image_with_dimensions(size.height as u32, size.width as u32, image_name, buf, marker);
+        self.new_image_with_dimensions(
+            size.height as u32,
+            size.width as u32,
+            image_name,
+            buf,
+            marker,
+        );
     }
 
     pub fn new_image_with_dimensions<B: Into<Vec<u8>>>(
@@ -209,9 +212,7 @@ impl Image {
         one_cell_anchor
             .extent_mut()
             .set_cy(i64::from(height) * 9525);
-        one_cell_anchor
-            .extent_mut()
-            .set_cx(i64::from(width) * 9525);
+        one_cell_anchor.extent_mut().set_cx(i64::from(width) * 9525);
         one_cell_anchor.set_picture(picture);
         self.set_one_cell_anchor(one_cell_anchor);
     }
@@ -370,13 +371,8 @@ impl Image {
                 }
             }
             if let Some(v) = anchor.group_shape() {
-                for pic in v.picture_collection() {
-                    result.push(pic.blip_fill().blip().image());
-                }
-                for shp in v.shape_collection() {
-                    if let Some(bf) = shp.shape_properties().blip_fill() {
-                        result.push(bf.blip().image());
-                    }
+                for child in v.content() {
+                    result.extend(child.media_objects());
                 }
             }
         }
@@ -390,13 +386,8 @@ impl Image {
                 }
             }
             if let Some(v) = anchor.group_shape() {
-                for pic in v.picture_collection() {
-                    result.push(pic.blip_fill().blip().image());
-                }
-                for shp in v.shape_collection() {
-                    if let Some(bf) = shp.shape_properties().blip_fill() {
-                        result.push(bf.blip().image());
-                    }
+                for child in v.content() {
+                    result.extend(child.media_objects());
                 }
             }
         }
@@ -413,98 +404,13 @@ impl Image {
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if let Some(anchor) = self.two_cell_anchor() {
-            anchor.write_to(writer, rel_list, 0);
+            anchor.write_to(writer, rel_list, 0)?;
         }
         if let Some(anchor) = self.one_cell_anchor() {
-            anchor.write_to(writer, rel_list);
+            anchor.write_to(writer, rel_list)?;
         }
-    }
-}
-impl AdjustmentCoordinate for Image {
-    #[inline]
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        // one_cell_anchor
-        if let Some(anchor) = self.one_cell_anchor.as_mut() {
-            anchor.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-
-        // two_cell_anchor
-        if let Some(anchor) = self.two_cell_anchor.as_mut() {
-            anchor.adjustment_insert_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-    }
-
-    #[inline]
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        // one_cell_anchor
-        if let Some(anchor) = self.one_cell_anchor.as_mut() {
-            anchor.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-
-        // two_cell_anchor
-        if let Some(anchor) = self.two_cell_anchor.as_mut() {
-            anchor.adjustment_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-    }
-
-    #[inline]
-    fn is_remove_coordinate(
-        &self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) -> bool {
-        if let Some(anchor) = self.one_cell_anchor.as_ref() {
-            return anchor.is_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        if let Some(anchor) = self.two_cell_anchor.as_ref() {
-            return anchor.is_remove_coordinate(
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-            );
-        }
-        false
+        Ok(())
     }
 }

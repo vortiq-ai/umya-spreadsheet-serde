@@ -15,27 +15,39 @@ use super::{
     BubbleSize,
     CategoryAxisData,
     DataLabels,
+    DataPoint,
+    ErrorBars,
     Explosion,
     Formula,
     Index,
     InvertIfNegative,
     Marker,
     Order,
+    PictureOptions,
+    SeriesFamily,
+    SeriesPartConflictReason,
+    SeriesPartKind,
+    SeriesParts,
+    Shape,
     ShapeProperties,
     Smooth,
+    Trendline,
     Values,
     XValues,
     YValues,
 };
 use crate::{
     drawing::charts::ChartText,
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+        try_xml_read_loop,
+    },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -56,9 +68,191 @@ pub struct AreaChartSeries {
     bubble_3d:          Option<Bubble3D>,
     smooth:             Option<Smooth>,
     data_labels:        Option<DataLabels>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:              Option<Box<SeriesParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    picture_options:    Option<PictureOptions>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    shape:              Option<Shape>,
+}
+
+pub(crate) struct SeriesReferenceParts<'a> {
+    pub(crate) category:   Option<&'a CategoryAxisData>,
+    pub(crate) text:       Option<&'a ChartText>,
+    pub(crate) shape:      Option<&'a ShapeProperties>,
+    pub(crate) marker:     Option<&'a Marker>,
+    pub(crate) labels:     Option<&'a DataLabels>,
+    pub(crate) values:     Option<&'a Values>,
+    pub(crate) xvalues:    Option<&'a XValues>,
+    pub(crate) yvalues:    Option<&'a YValues>,
+    pub(crate) bubble:     Option<&'a BubbleSize>,
+    pub(crate) points:     &'a [DataPoint],
+    pub(crate) trends:     &'a [Trendline],
+    pub(crate) errors:     &'a [ErrorBars],
+    pub(crate) extensions: Option<&'a super::ExtensionList>,
+}
+
+pub(crate) struct SeriesReferencePartsMut<'a> {
+    pub(crate) category:   Option<&'a mut CategoryAxisData>,
+    pub(crate) text:       Option<&'a mut ChartText>,
+    pub(crate) shape:      Option<&'a mut ShapeProperties>,
+    pub(crate) marker:     Option<&'a mut Marker>,
+    pub(crate) labels:     Option<&'a mut DataLabels>,
+    pub(crate) values:     Option<&'a mut Values>,
+    pub(crate) xvalues:    Option<&'a mut XValues>,
+    pub(crate) yvalues:    Option<&'a mut YValues>,
+    pub(crate) bubble:     Option<&'a mut BubbleSize>,
+    pub(crate) points:     &'a mut [DataPoint],
+    pub(crate) trends:     &'a mut [Trendline],
+    pub(crate) errors:     &'a mut [ErrorBars],
+    pub(crate) extensions: Option<&'a mut super::ExtensionList>,
 }
 
 impl AreaChartSeries {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        // Restore these collections from the authoritative chart. Supplied
+        // empty or populated collections cannot suppress restoration; explicit
+        // changes, including removals, already belong to the edited basis.
+        self.parts.clone_from(&previous.parts);
+        usize::from(self.parts.is_some())
+    }
+
+    pub(crate) fn reference_role_parts(&self) -> SeriesReferenceParts<'_> {
+        let (points, trends, errors, extensions) = match self.parts.as_deref() {
+            Some(parts) => parts.reference_role_parts(),
+            None => (&[][..], &[][..], &[][..], None),
+        };
+        SeriesReferenceParts {
+            category: self.category_axis_data.as_ref(),
+            text: self.chart_text.as_ref(),
+            shape: self.shape_properties.as_ref(),
+            marker: self.marker.as_ref(),
+            labels: self.data_labels.as_ref(),
+            values: self.values.as_ref(),
+            xvalues: self.x_values.as_ref(),
+            yvalues: self.y_values.as_ref(),
+            bubble: self.bubble_size.as_ref(),
+            points,
+            trends,
+            errors,
+            extensions,
+        }
+    }
+
+    pub(crate) fn projection_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
+        self.parts = None;
+        self.reference_role_parts_mut()
+    }
+
+    pub(crate) fn reference_role_parts_mut(&mut self) -> SeriesReferencePartsMut<'_> {
+        let (points, trends, errors, extensions) = match self.parts.as_deref_mut() {
+            Some(parts) => parts.reference_role_parts_mut(),
+            None => (&mut [][..], &mut [][..], &mut [][..], None),
+        };
+        SeriesReferencePartsMut {
+            category: self.category_axis_data.as_mut(),
+            text: self.chart_text.as_mut(),
+            shape: self.shape_properties.as_mut(),
+            marker: self.marker.as_mut(),
+            labels: self.data_labels.as_mut(),
+            values: self.values.as_mut(),
+            xvalues: self.x_values.as_mut(),
+            yvalues: self.y_values.as_mut(),
+            bubble: self.bubble_size.as_mut(),
+            points,
+            trends,
+            errors,
+            extensions,
+        }
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> Option<&DataLabels> {
+        self.data_labels.as_ref()
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> Option<&mut DataLabels> {
+        self.data_labels.as_mut()
+    }
+
+    pub(crate) fn points_for_roles(&self) -> impl Iterator<Item = &DataPoint> {
+        self.data_points().iter()
+    }
+
+    pub(crate) fn points_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataPoint> {
+        self.parts.iter_mut().flat_map(|p| p.data_points_mut())
+    }
+
+    pub(crate) fn errors_for_roles(&self) -> impl Iterator<Item = &ErrorBars> {
+        self.error_bars().iter()
+    }
+
+    pub(crate) fn errors_for_roles_mut(&mut self) -> impl Iterator<Item = &mut ErrorBars> {
+        self.parts.iter_mut().flat_map(|p| p.error_bars_mut())
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts.as_deref().and_then(SeriesParts::extensions)
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(SeriesParts::extensions_mut)
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.parts
+            .get_or_insert_with(Default::default)
+            .set_extensions(value);
+        self
+    }
+
+    #[must_use]
+    pub fn error_bars(&self) -> &[ErrorBars] {
+        self.parts()
+            .map(SeriesParts::error_bars)
+            .unwrap_or_default()
+    }
+
+    pub fn error_bars_mut(&mut self) -> &mut Vec<ErrorBars> {
+        self.parts_mut().error_bars_mut()
+    }
+
+    #[must_use]
+    pub fn parts(&self) -> Option<&SeriesParts> {
+        self.parts.as_deref()
+    }
+
+    pub fn parts_mut(&mut self) -> &mut SeriesParts {
+        self.parts.get_or_insert_with(Default::default)
+    }
+
+    #[must_use]
+    pub fn trendlines(&self) -> &[Trendline] {
+        self.parts()
+            .map(SeriesParts::trendlines)
+            .unwrap_or_default()
+    }
+
+    pub fn trendlines_mut(&mut self) -> &mut Vec<Trendline> {
+        self.parts_mut().trendlines_mut()
+    }
+
+    pub(crate) fn trendlines_iter_mut(&mut self) -> impl Iterator<Item = &mut Trendline> {
+        self.parts.iter_mut().flat_map(|p| p.trendlines_mut())
+    }
+
+    pub fn data_points(&self) -> &[DataPoint] {
+        self.parts()
+            .map(SeriesParts::data_points)
+            .unwrap_or_default()
+    }
+
+    pub fn data_points_mut(&mut self) -> &mut Vec<DataPoint> {
+        self.parts_mut().data_points_mut()
+    }
+
     #[must_use]
     pub fn index(&self) -> &Index {
         &self.index
@@ -384,6 +578,46 @@ impl AreaChartSeries {
         self
     }
 
+    /// The column shape of a bar series (box, cylinder, cone, pyramid).
+    #[must_use]
+    pub fn shape(&self) -> Option<&Shape> {
+        self.shape.as_ref()
+    }
+
+    pub fn shape_mut(&mut self) -> Option<&mut Shape> {
+        self.shape.as_mut()
+    }
+
+    pub fn set_shape(&mut self, value: Shape) -> &mut Self {
+        self.shape = Some(value);
+        self
+    }
+
+    pub fn remove_shape(&mut self) -> &mut Self {
+        self.shape = None;
+        self
+    }
+
+    /// How a picture fill is stacked or stretched on a bar or area series.
+    #[must_use]
+    pub fn picture_options(&self) -> Option<&PictureOptions> {
+        self.picture_options.as_ref()
+    }
+
+    pub fn picture_options_mut(&mut self) -> Option<&mut PictureOptions> {
+        self.picture_options.as_mut()
+    }
+
+    pub fn set_picture_options(&mut self, value: PictureOptions) -> &mut Self {
+        self.picture_options = Some(value);
+        self
+    }
+
+    pub fn remove_picture_options(&mut self) -> &mut Self {
+        self.picture_options = None;
+        self
+    }
+
     #[must_use]
     pub fn smooth(&self) -> Option<&Smooth> {
         self.smooth.as_ref()
@@ -421,6 +655,9 @@ impl AreaChartSeries {
     }
 
     pub fn data_labels_mut(&mut self) -> Option<&mut DataLabels> {
+        if let Some(labels) = &mut self.data_labels {
+            labels.mark_owner_present();
+        }
         self.data_labels.as_mut()
     }
 
@@ -431,30 +668,34 @@ impl AreaChartSeries {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Self {
         self.data_labels = Some(value);
+        if let Some(labels) = &mut self.data_labels {
+            labels.mark_owner_present();
+        }
         self
     }
 
-    pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        let mut result: Vec<&mut Formula> = Vec::default();
+    /// Removes the series' `c:dLbls` owner together with everything it
+    /// carries: point labels (`c:dLbl`), its extension list and its hidden
+    /// source parts. Point overrides (`c:dPt`) and every other series part are
+    /// untouched. The series then writes no `c:dLbls`, so it follows its chart
+    /// group's labels; when the group shows labels and this series must not,
+    /// use [`Self::delete_data_labels`] (Excel's form for that case).
+    pub fn remove_data_labels(&mut self) -> &mut Self {
+        self.data_labels = None;
+        self
+    }
 
-        if let Some(v) = &mut self.category_axis_data {
-            if let Some(h) = v.string_reference_mut() {
-                result.push(h.formula_mut());
-            }
-        }
-        if let Some(v) = &mut self.values {
-            result.push(v.number_reference_mut().formula_mut());
-        }
-        if let Some(v) = &mut self.x_values {
-            result.push(v.number_reference_mut().formula_mut());
-        }
-        if let Some(v) = &mut self.y_values {
-            result.push(v.number_reference_mut().formula_mut());
-        }
-        if let Some(v) = &mut self.bubble_size {
-            result.push(v.number_reference_mut().formula_mut());
-        }
-        result
+    /// Replaces the series' data labels with Excel's explicit "no labels"
+    /// owner, `<c:dLbls><c:delete val="1"/></c:dLbls>`, dropping point labels,
+    /// extensions and hidden parts. Excel writes this form when a series turns
+    /// its labels off while its chart group still shows labels. A restoration
+    /// against an older basis never brings the removed owner back.
+    pub fn delete_data_labels(&mut self) -> &mut Self {
+        self.set_data_labels(DataLabels::deleted())
+    }
+
+    pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
+        super::chart_reference_roles::collect_series_formulas_mut(self)
     }
 
     #[deprecated(since = "3.0.0", note = "Use formula_mut()")]
@@ -465,117 +706,416 @@ impl AreaChartSeries {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        try_xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                // A self-closing element has no subtree, so nothing may descend into it.
-                // `<c:errBars>` is not parsed here, so its children surface in THIS loop,
-                // and one of them is `<c:val val="10"/>` - the same name the series uses
-                // for its values, but an attribute-only element. Descending into it sent
-                // `Values::set_attributes` looking for a `</c:val>` that never comes; it
-                // consumed the rest of the part and died on `Eof`.
+                // Each modeled child owns its subtree; unknown future parts are
+                // skipped whole so nested names cannot overwrite the
+                // series fields.
                 let is_empty_element = matches!(n, Event::Empty(_));
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().into_inner())} else {b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,is_empty_element,session)?));},
+                b"errBars" => {
+                        self.error_bars_mut().push(ErrorBars::read_with_session(
+                            reader,e,is_empty_element,session,
+                        )?);
+                    }
+                    b"trendline" => {
+                        self.trendlines_mut().push(Trendline::read(
+                            reader,
+                            e,
+                            is_empty_element,
+                            session,
+                        )?);
+                    }
+                    b"dPt" => {
+                        self.data_points_mut()
+                            .push(DataPoint::read_with_session(reader, e, is_empty_element,
+                                session)?);
+                    }
                     b"tx" => {
                         let mut obj = ChartText::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty_element {
+                            obj.set_attributes(reader, e, session)?;
+                        }
                         self.set_chart_text(obj);
                     }
                     b"marker" => {
                         let mut obj = Marker::default();
-                        obj.set_attributes(reader, e, false);
+                        obj.set_attributes_with_session(reader, e, is_empty_element, session)?;
                         self.set_marker(obj);
                     }
-                b"spPr" => {
-                    let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
-                    self.set_shape_properties(obj);
-                }
-                b"cat" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
+                    b"spPr" => {
+                        let mut obj = ShapeProperties::default();
+                        if !is_empty_element {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
+                        self.set_shape_properties(obj);
+                    }
+                    b"cat" => {
                         let mut obj = CategoryAxisData::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty_element {
+                            obj.set_attributes(reader, e, session)?;
+                        }
                         self.set_category_axis_data(obj);
                     }
-                }
-                b"val" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
+                    b"val" => {
                         let mut obj = Values::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty_element {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
                         self.set_values(obj);
                     }
-                }
-                b"xVal" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
+                    b"xVal" => {
                         let mut obj = XValues::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty_element {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
                         self.set_x_values(obj);
                     }
-                }
-                b"yVal" => {
-                    // `continue` here would skip the loop's `buf.clear()`.
-                    if !is_empty_element {
+                    b"yVal" => {
                         let mut obj = YValues::default();
-                        obj.set_attributes(reader, e);
+                        if !is_empty_element {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
                         self.set_y_values(obj);
                     }
+                    b"bubbleSize" => {
+                        let mut obj = BubbleSize::default();
+                        if !is_empty_element {
+                            obj.set_attributes_with_session(reader, e, session)?;
+                        }
+                        self.set_bubble_size(obj);
+                    }
+                    b"dLbls" => {
+                        let mut obj = DataLabels::default();
+                        if is_empty_element {
+                            obj.mark_empty_import();
+                        } else {
+                            obj.set_attributes(reader, e, session)?;
+                        }
+                        self.set_data_labels(obj);
+                    }
+                    b"idx" => {
+                        self.index.set_attributes(reader, e)?;
+                    }
+                    b"order" => {
+                        self.order.set_attributes(reader, e)?;
+                    }
+                    b"explosion" => {
+                        let mut obj = Explosion::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_explosion(obj);
+                    }
+                    b"invertIfNegative" => {
+                        let mut obj = InvertIfNegative::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_invert_if_negative(obj);
+                    }
+                    b"bubble3D" => {
+                        let mut obj = Bubble3D::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_bubble_3d(obj);
+                    }
+                    b"shape" => {
+                        let mut obj = Shape::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_shape(obj);
+                        if !is_empty_element {
+                            skip_element(reader, e)?;
+                        }
+                    }
+                    b"pictureOptions" => {
+                        self.set_picture_options(PictureOptions::read(
+                            reader,
+                            e,
+                            is_empty_element,
+                            Some(session),
+                        )?);
+                    }
+                    b"smooth" => {
+                        let mut obj = Smooth::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_smooth(obj);
+                    }
+                    _ => {
+                        if !is_empty_element {
+                            skip_element(reader, e)?;
+                        }
+                    }
                 }
-                b"bubbleSize" => {
-                    let mut obj = BubbleSize::default();
-                    obj.set_attributes(reader, e);
-                    self.set_bubble_size(obj);
-                }
-                b"dLbls" => {
-                    let mut obj = DataLabels::default();
-                    obj.set_attributes(reader, e);
-                    self.set_data_labels(obj);
-                }
-                b"idx" => {
-                    self.index.set_attributes(reader, e);
-                }
-                b"order" => {
-                    self.order.set_attributes(reader, e);
-                }
-                b"explosion" => {
-                    let mut obj = Explosion::default();
-                    obj.set_attributes(reader, e);
-                    self.set_explosion(obj);
-                }
-                b"invertIfNegative" => {
-                    let mut obj = InvertIfNegative::default();
-                    obj.set_attributes(reader, e);
-                    self.set_invert_if_negative(obj);
-                }
-                b"bubble3D" => {
-                    let mut obj = Bubble3D::default();
-                    obj.set_attributes(reader, e);
-                    self.set_bubble_3d(obj);
-                }
-                b"smooth" => {
-                    let mut obj = Smooth::default();
-                    obj.set_attributes(reader, e);
-                    self.set_smooth(obj);
-                }
-                _ => (),
-            }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"ser" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:ser"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:ser"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        // c:ser
-        write_start_tag(writer, "c:ser", vec![], false);
+    fn has_part(&self, part: SeriesPartKind) -> bool {
+        match part {
+            SeriesPartKind::Explosion => self.explosion.is_some(),
+            SeriesPartKind::InvertIfNegative => self.invert_if_negative.is_some(),
+            SeriesPartKind::Marker => self.marker.is_some(),
+            SeriesPartKind::Categories => self.category_axis_data.is_some(),
+            SeriesPartKind::Values => self.values.is_some(),
+            SeriesPartKind::XValues => self.x_values.is_some(),
+            SeriesPartKind::YValues => self.y_values.is_some(),
+            SeriesPartKind::BubbleSize => self.bubble_size.is_some(),
+            SeriesPartKind::Bubble3D => self.bubble_3d.is_some(),
+            SeriesPartKind::Smooth => self.smooth.is_some(),
+            SeriesPartKind::Shape => self.shape.is_some(),
+            SeriesPartKind::PictureOptions => self.picture_options.is_some(),
+            SeriesPartKind::DataPoints => !self.data_points().is_empty(),
+            SeriesPartKind::DataLabels => self.data_labels.is_some(),
+            SeriesPartKind::Extensions => self.extensions().is_some(),
+            SeriesPartKind::ErrorBars => !self.error_bars().is_empty(),
+            SeriesPartKind::Trendlines => !self.trendlines().is_empty(),
+        }
+    }
+
+    fn clear_part(&mut self, part: SeriesPartKind) {
+        match part {
+            SeriesPartKind::Explosion => self.explosion = None,
+            SeriesPartKind::InvertIfNegative => self.invert_if_negative = None,
+            SeriesPartKind::Marker => self.marker = None,
+            SeriesPartKind::Categories => self.category_axis_data = None,
+            SeriesPartKind::Values => self.values = None,
+            SeriesPartKind::XValues => self.x_values = None,
+            SeriesPartKind::YValues => self.y_values = None,
+            SeriesPartKind::BubbleSize => self.bubble_size = None,
+            SeriesPartKind::Bubble3D => self.bubble_3d = None,
+            SeriesPartKind::Smooth => self.smooth = None,
+            SeriesPartKind::Shape => self.shape = None,
+            SeriesPartKind::PictureOptions => self.picture_options = None,
+            SeriesPartKind::DataPoints => {
+                if let Some(parts) = self.parts.as_mut() {
+                    parts.data_points_mut().clear();
+                }
+            }
+            SeriesPartKind::DataLabels => self.data_labels = None,
+            SeriesPartKind::Extensions => (),
+            SeriesPartKind::ErrorBars => {
+                if let Some(parts) = self.parts.as_mut() {
+                    parts.error_bars_mut().clear();
+                }
+            }
+            SeriesPartKind::Trendlines => {
+                if let Some(parts) = self.parts.as_mut() {
+                    parts.trendlines_mut().clear();
+                }
+            }
+        }
+    }
+
+    /// The stored parts `family`'s series type cannot hold, as (kind,
+    /// occurrence, reason). Every modeled part is stored at most once.
+    pub(crate) fn part_conflicts(
+        &self,
+        family: SeriesFamily,
+    ) -> Vec<(SeriesPartKind, usize, SeriesPartConflictReason)> {
+        let mut conflicts: Vec<_> = SeriesPartKind::ALL
+            .into_iter()
+            .filter(|part| self.has_part(*part) && !family.allows(*part))
+            .map(|part| (part, 0, SeriesPartConflictReason::NotAllowed))
+            .collect();
+        if let Some(reason) = self
+            .extensions()
+            .and_then(|ext| ext.conflict_for_owner("ser", Some(family)))
+        {
+            conflicts.push((SeriesPartKind::Extensions, 0, reason));
+        }
+        if family.allows(SeriesPartKind::Categories) {
+            if let Some(reason) = self
+                .category_axis_data
+                .as_ref()
+                .and_then(CategoryAxisData::conflict)
+            {
+                conflicts.push((SeriesPartKind::Categories, 0, reason));
+            }
+        }
+        for (part, reason) in [
+            (
+                SeriesPartKind::Values,
+                self.values.as_ref().and_then(Values::conflict),
+            ),
+            (
+                SeriesPartKind::XValues,
+                self.x_values.as_ref().and_then(XValues::conflict),
+            ),
+            (
+                SeriesPartKind::YValues,
+                self.y_values.as_ref().and_then(YValues::conflict),
+            ),
+            (
+                SeriesPartKind::BubbleSize,
+                self.bubble_size.as_ref().and_then(BubbleSize::conflict),
+            ),
+        ] {
+            if let Some(reason) = reason.filter(|_| family.allows(part)) {
+                conflicts.push((part, 0, reason));
+            }
+        }
+        if family.allows(SeriesPartKind::PictureOptions)
+            && self.picture_options.as_ref().is_some_and(|v| !v.is_valid())
+        {
+            conflicts.push((
+                SeriesPartKind::PictureOptions,
+                0,
+                SeriesPartConflictReason::InvalidValue,
+            ));
+        }
+        if family.allows(SeriesPartKind::Marker)
+            && self.marker.as_ref().is_some_and(|v| !v.is_valid())
+        {
+            conflicts.push((
+                SeriesPartKind::Marker,
+                0,
+                SeriesPartConflictReason::InvalidValue,
+            ));
+        }
+        if family.allows(SeriesPartKind::Explosion) {
+            if let Some(explosion) = self.explosion.as_ref().filter(|v| !v.is_valid()) {
+                conflicts.push((
+                    SeriesPartKind::Explosion,
+                    0,
+                    if explosion.has_val() {
+                        SeriesPartConflictReason::InvalidValue
+                    } else {
+                        SeriesPartConflictReason::MissingRequiredChild
+                    },
+                ));
+            }
+        }
+        if !family.allows(SeriesPartKind::DataLabels) && self.data_labels.is_some() {
+            conflicts.push((
+                SeriesPartKind::DataLabels,
+                0,
+                SeriesPartConflictReason::NotAllowed,
+            ));
+        } else if let Some(labels) = &self.data_labels {
+            let reason = if labels.owner_is_absent() {
+                Some(SeriesPartConflictReason::ConflictingChoice)
+            } else {
+                labels.conflict()
+            };
+            if let Some(reason) = reason {
+                conflicts.push((SeriesPartKind::DataLabels, 0, reason));
+            }
+        }
+        for (occurrence, point) in self.data_points().iter().enumerate() {
+            if !family.allows(SeriesPartKind::DataPoints) {
+                conflicts.push((
+                    SeriesPartKind::DataPoints,
+                    occurrence,
+                    SeriesPartConflictReason::NotAllowed,
+                ));
+            } else if !point.is_valid() {
+                conflicts.push((
+                    SeriesPartKind::DataPoints,
+                    occurrence,
+                    if point.index().attribute().is_none() {
+                        SeriesPartConflictReason::MissingRequiredChild
+                    } else {
+                        SeriesPartConflictReason::InvalidValue
+                    },
+                ));
+            }
+        }
+        for (occurrence, trendline) in self.trendlines().iter().enumerate() {
+            let reason = if family.allows(SeriesPartKind::Trendlines) {
+                trendline.conflict()
+            } else {
+                Some(SeriesPartConflictReason::NotAllowed)
+            };
+            if let Some(reason) = reason {
+                conflicts.push((SeriesPartKind::Trendlines, occurrence, reason));
+            }
+        }
+        let limit = super::error_bars::error_bar_limit(family);
+        for (occurrence, bars) in self.error_bars().iter().enumerate() {
+            let reason = if limit == 0 {
+                Some(SeriesPartConflictReason::NotAllowed)
+            } else if occurrence >= limit {
+                Some(SeriesPartConflictReason::TooMany)
+            } else {
+                bars.conflict()
+            };
+            if let Some(reason) = reason {
+                conflicts.push((SeriesPartKind::ErrorBars, occurrence, reason));
+            }
+        }
+        conflicts
+    }
+
+    /// Removes the parts `family`'s series type cannot hold and returns them
+    /// as (kind, occurrence). Everything else, including the index, order,
+    /// name, formatting, data labels and data references, stays.
+    pub(crate) fn remove_parts_not_allowed_in(
+        &mut self,
+        family: SeriesFamily,
+    ) -> Vec<(SeriesPartKind, usize)> {
+        let mut removed: Vec<_> = self
+            .part_conflicts(family)
+            .into_iter()
+            .filter(|(part, _, reason)| {
+                *part != SeriesPartKind::Extensions
+                    && *reason == SeriesPartConflictReason::NotAllowed
+            })
+            .map(|(part, occurrence, _)| (part, occurrence))
+            .collect();
+        for (part, _) in &removed {
+            self.clear_part(*part);
+        }
+        if let Some(extensions) = self.extensions_mut() {
+            removed.extend(
+                extensions
+                    .remove_not_allowed_for_owner("ser", Some(family))
+                    .into_iter()
+                    .map(|occurrence| (SeriesPartKind::Extensions, occurrence)),
+            );
+        }
+        let limit = super::error_bars::error_bar_limit(family);
+        if limit > 0 {
+            removed.extend(
+                (limit..self.error_bars().len())
+                    .map(|occurrence| (SeriesPartKind::ErrorBars, occurrence)),
+            );
+            if let Some(parts) = self.parts.as_mut() {
+                parts.error_bars_mut().truncate(limit);
+            }
+        }
+        removed
+    }
+
+    /// Writes the series as `family`'s series type: only children that type
+    /// has, in its schema order.
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        family: SeriesFamily,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, wb, family, "c:ser")?;
+
+        Ok(())
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        family: SeriesFamily,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
+        write_start_tag(writer, name, vec![], false);
 
         // c:idx
         self.index.write_to(writer);
@@ -585,69 +1125,158 @@ impl AreaChartSeries {
 
         // c:tx
         if let Some(v) = &self.chart_text {
-            v.write_to(writer, wb);
-        }
-
-        // c:explosion
-        if let Some(v) = &self.explosion {
-            v.write_to(writer);
-        }
-
-        // c:invertIfNegative
-        if let Some(v) = &self.invert_if_negative {
-            v.write_to(writer);
-        }
-
-        // c:marker
-        if let Some(v) = &self.marker {
-            v.write_to(writer);
+            v.write_to(writer, wb)?;
         }
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
+            v.write_to(writer)?;
+        }
+
+        // c:explosion
+        if let Some(v) = self
+            .explosion
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Explosion))
+        {
             v.write_to(writer);
+        }
+
+        // c:invertIfNegative
+        if let Some(v) = self
+            .invert_if_negative
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::InvertIfNegative))
+        {
+            v.write_to(writer);
+        }
+
+        // c:pictureOptions
+        if let Some(v) = self
+            .picture_options
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::PictureOptions))
+        {
+            v.write_to(writer);
+        }
+
+        // c:marker
+        if let Some(v) = self
+            .marker
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Marker))
+        {
+            v.write_to(writer)?;
+        }
+
+        // Every family but surface permits ordered point overrides before
+        // labels.
+        if family.allows(SeriesPartKind::DataPoints) {
+            for point in self.data_points() {
+                point.write_to(writer)?;
+            }
         }
 
         // c:dLbls
-        if let Some(v) = &self.data_labels {
-            v.write_to(writer);
+        if let Some(v) = self
+            .data_labels
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::DataLabels))
+        {
+            v.write_to_present(writer, wb)?;
+        }
+
+        if family.allows(SeriesPartKind::Trendlines) {
+            for trendline in self.trendlines() {
+                trendline.write_to(writer, wb)?;
+            }
+        }
+
+        for bars in self
+            .error_bars()
+            .iter()
+            .take(super::error_bars::error_bar_limit(family))
+        {
+            bars.write_to(writer, wb)?;
         }
 
         // c:cat
-        if let Some(v) = &self.category_axis_data {
-            v.write_to(writer, wb);
+        if let Some(v) = self
+            .category_axis_data
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Categories))
+        {
+            v.write_to(writer, wb)?;
         }
 
         // c:val
-        if let Some(v) = &self.values {
-            v.write_to(writer, wb);
+        if let Some(v) = self
+            .values
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Values))
+        {
+            v.write_to(writer, wb)?;
+        }
+
+        // c:shape
+        if let Some(v) = self
+            .shape
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Shape))
+        {
+            v.write_to(writer);
         }
 
         // c:xVal
-        if let Some(v) = &self.x_values {
-            v.write_to(writer, wb);
+        if let Some(v) = self
+            .x_values
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::XValues))
+        {
+            v.write_to(writer, wb)?;
         }
 
         // c:yVal
-        if let Some(v) = &self.y_values {
-            v.write_to(writer, wb);
+        if let Some(v) = self
+            .y_values
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::YValues))
+        {
+            v.write_to(writer, wb)?;
         }
 
         // c:bubbleSize
-        if let Some(v) = &self.bubble_size {
-            v.write_to(writer, wb);
+        if let Some(v) = self
+            .bubble_size
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::BubbleSize))
+        {
+            v.write_to(writer, wb)?;
         }
 
         // c:bubble3D
-        if let Some(v) = &self.bubble_3d {
+        if let Some(v) = self
+            .bubble_3d
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Bubble3D))
+        {
             v.write_to(writer);
         }
 
         // c:smooth
-        if let Some(v) = &self.smooth {
+        if let Some(v) = self
+            .smooth
+            .as_ref()
+            .filter(|_| family.allows(SeriesPartKind::Smooth))
+        {
             v.write_to(writer);
         }
 
-        write_end_tag(writer, "c:ser");
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "ser", Some(family))?;
+        }
+        write_end_tag(writer, name);
+
+        Ok(())
     }
 }

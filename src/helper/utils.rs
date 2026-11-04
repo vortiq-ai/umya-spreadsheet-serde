@@ -18,25 +18,144 @@ pub(crate) fn md5_hash(input: impl AsRef<[u8]>) -> String {
 
 pub(crate) fn unescape_xml_text(e: &quick_xml::events::BytesText<'_>) -> String {
     let decoded = e.decode().unwrap();
-    let mut remaining = decoded.as_ref();
-    let mut output = String::with_capacity(remaining.len());
-    // read_text_into retains XML markup. CDATA contains literal characters,
-    // including ampersands that must neither be decoded nor rejected.
+    let mut output = String::with_capacity(decoded.len());
+    visit_xml_text_parts(decoded.as_ref(), |part, literal| {
+        if literal {
+            output.push_str(part);
+        } else {
+            output.push_str(&quick_xml::escape::unescape(part).unwrap());
+        }
+    });
+    output
+}
+
+// read_text_into retains CDATA markup, whose content is literal XML text.
+fn try_visit_xml_text_parts(
+    mut remaining: &str,
+    mut visit: impl FnMut(&str, bool) -> Result<(), crate::XlsxError>,
+) -> Result<(), crate::XlsxError> {
     while let Some(start) = remaining.find("<![CDATA[") {
-        output.push_str(&quick_xml::escape::unescape(&remaining[..start]).unwrap());
+        visit(&remaining[..start], false)?;
         let content = &remaining[start + 9..];
-        let end = content.find("]]>").expect("unterminated CDATA section");
-        output.push_str(&content[..end]);
+        let end = content
+            .find("]]>")
+            .ok_or_else(|| crate::xml::xml_error("unterminated CDATA section"))?;
+        visit(&content[..end], true)?;
         remaining = &content[end + 3..];
     }
-    output.push_str(&quick_xml::escape::unescape(remaining).unwrap());
-    output
+    visit(remaining, false)
+}
+
+fn visit_xml_text_parts(remaining: &str, mut visit: impl FnMut(&str, bool)) {
+    try_visit_xml_text_parts(remaining, |part, literal| {
+        visit(part, literal);
+        Ok(())
+    })
+    .expect("unterminated CDATA section");
+}
+
+pub(crate) fn try_unescape_xml_text(
+    text: &quick_xml::events::BytesText<'_>,
+) -> Result<String, crate::XlsxError> {
+    let decoded = text
+        .decode()
+        .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+    let mut output = String::with_capacity(decoded.len());
+    try_visit_xml_text_parts(&decoded, |part, literal| {
+        if literal {
+            output.push_str(part);
+        } else {
+            output.push_str(
+                &quick_xml::escape::unescape(part)
+                    .map_err(|error| crate::xml::xml_error(error.to_string()))?,
+            );
+        }
+        Ok(())
+    })?;
+    Ok(output)
+}
+
+pub(crate) fn try_validate_xml_text(
+    text: &quick_xml::events::BytesText<'_>,
+) -> Result<(), crate::XlsxError> {
+    let decoded = text
+        .decode()
+        .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+    try_validate_decoded_xml_text(&decoded)
+}
+
+fn try_validate_decoded_xml_text(decoded: &str) -> Result<(), crate::XlsxError> {
+    try_visit_xml_text_parts(decoded, |part, literal| {
+        if !literal && !references_are_valid(part) {
+            quick_xml::escape::unescape(part)
+                .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+        }
+        Ok(())
+    })
+}
+
+fn decode_xml_text_into(decoded: &str, scratch: &mut String) -> Result<(), crate::XlsxError> {
+    try_visit_xml_text_parts(decoded, |part, literal| {
+        if literal {
+            scratch.push_str(part);
+            return Ok(());
+        }
+        let mut rest = part;
+        while let Some(start) = rest.find('&') {
+            scratch.push_str(&rest[..start]);
+            let end = start
+                + rest[start..]
+                    .find(';')
+                    .ok_or_else(|| crate::xml::xml_error("unterminated XML character reference"))?;
+            let name = &rest[start + 1..end];
+            if let Some(number) = name.strip_prefix('#') {
+                let (digits, radix) = match number.strip_prefix('x') {
+                    Some(hex) => (hex, 16),
+                    None => (number, 10),
+                };
+                let value = u32::from_str_radix(digits, radix)
+                    .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+                let character = char::from_u32(value)
+                    .ok_or_else(|| crate::xml::xml_error("invalid XML character reference"))?;
+                scratch.push(character);
+            } else {
+                let entity = quick_xml::escape::resolve_predefined_entity(name)
+                    .ok_or_else(|| crate::xml::xml_error("unknown XML entity"))?;
+                scratch.push_str(entity);
+            }
+            rest = &rest[end + 1..];
+        }
+        scratch.push_str(rest);
+        Ok(())
+    })
+}
+
+pub(crate) fn try_unescape_xml_text_into(
+    text: &quick_xml::events::BytesText<'_>,
+    scratch: &mut String,
+) -> Result<bool, crate::XlsxError> {
+    let decoded = text
+        .decode()
+        .map_err(|error| crate::xml::xml_error(error.to_string()))?;
+    if !decoded.contains('&')
+        && !decoded.contains("<![CDATA[")
+        && matches!(decoded, std::borrow::Cow::Borrowed(_))
+    {
+        return Ok(false);
+    }
+    try_validate_decoded_xml_text(&decoded)?;
+    scratch.clear();
+    decode_xml_text_into(&decoded, scratch)?;
+    Ok(true)
 }
 
 /// Whether XML 1.0 forbids `c`: the control characters other than tab, line
 /// feed and carriage return, and U+FFFE and U+FFFF.
 fn is_forbidden_in_xml(c: char) -> bool {
-    matches!(c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
+    matches!(
+        c,
+        '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}'
+    )
 }
 
 /// The length of the `_xHHHH_` escape at the start of `s`, if there is one.
@@ -95,6 +214,92 @@ pub(crate) fn unescape_xstring(value: &str) -> std::borrow::Cow<'_, str> {
         i += c.len_utf8();
     }
     std::borrow::Cow::Owned(output)
+}
+
+pub(crate) fn unescape_xstring_owned(value: String) -> String {
+    match unescape_xstring(&value) {
+        std::borrow::Cow::Borrowed(_) => value,
+        std::borrow::Cow::Owned(decoded) => decoded,
+    }
+}
+
+/// Runs the checks `unescape_xml_text` makes, without building its result.
+/// Text whose references all check out here is accepted without allocating;
+/// any other text is handed to `unescape`, which raises its own error.
+pub(crate) fn validate_xml_text(e: &quick_xml::events::BytesText<'_>) {
+    let decoded = e.decode().unwrap();
+    validate_decoded_xml_text(decoded.as_ref());
+}
+
+fn validate_decoded_xml_text(decoded: &str) {
+    visit_xml_text_parts(decoded, |part, literal| {
+        if !literal && !references_are_valid(part) {
+            quick_xml::escape::unescape(part).unwrap();
+        }
+    });
+}
+
+/// Decodes into reused storage only when the text cannot be borrowed raw.
+/// Invalid references go through the original decoder to preserve its errors.
+pub(crate) fn unescape_xml_text_into(
+    e: &quick_xml::events::BytesText<'_>,
+    scratch: &mut String,
+) -> bool {
+    let decoded = e.decode().unwrap();
+    if !decoded.contains('&')
+        && !decoded.contains("<![CDATA[")
+        && matches!(decoded, std::borrow::Cow::Borrowed(_))
+    {
+        return false;
+    }
+    validate_decoded_xml_text(decoded.as_ref());
+    scratch.clear();
+    decode_xml_text_into(decoded.as_ref(), scratch).expect("validated XML text");
+    true
+}
+
+/// Whether `unescape` accepts `raw`: every `&` starts a reference ended by a
+/// `;` with no `&` between, naming a predefined entity or a valid character
+/// reference.
+pub(crate) fn references_are_valid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut from = 0;
+    while let Some(start) = bytes[from..].iter().position(|&byte| byte == b'&') {
+        let start = from + start;
+        let Some(end) = bytes[start + 1..]
+            .iter()
+            .position(|&byte| byte == b'&' || byte == b';')
+        else {
+            return false;
+        };
+        let end = start + 1 + end;
+        if bytes[end] != b';' {
+            return false;
+        }
+        let name = &raw[start + 1..end];
+        let valid = match name.strip_prefix('#') {
+            Some(number) => character_reference_is_valid(number),
+            None => quick_xml::escape::resolve_predefined_entity(name).is_some(),
+        };
+        if !valid {
+            return false;
+        }
+        from = end + 1;
+    }
+    true
+}
+
+/// The number of a character reference: decimal, or hexadecimal after `x`,
+/// unsigned, not zero, and a scalar value.
+fn character_reference_is_valid(number: &str) -> bool {
+    let (digits, radix) = match number.strip_prefix('x') {
+        Some(hex) => (hex, 16),
+        None => (number, 10),
+    };
+    if matches!(digits.as_bytes().first(), Some(b'+' | b'-')) {
+        return false;
+    }
+    u32::from_str_radix(digits, radix).is_ok_and(|code| code != 0 && char::from_u32(code).is_some())
 }
 
 /// A macro that implements the `From` trait for converting from one error type
@@ -240,3 +445,134 @@ pub(crate) use assert_sha256;
 pub(crate) use compile_regex;
 pub(crate) use print_hex;
 pub(crate) use print_sha256_hex;
+
+#[cfg(test)]
+mod tests {
+    use quick_xml::events::BytesText;
+
+    use super::{
+        unescape_xml_text,
+        unescape_xml_text_into,
+        validate_xml_text,
+    };
+
+    fn failure(operation: impl FnOnce()) -> String {
+        let payload =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).unwrap_err();
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => (*payload.downcast::<&str>().unwrap()).to_owned(),
+        }
+    }
+
+    #[test]
+    fn cdata_helpers_preserve_literal_content_and_decode_surrounding_entities() {
+        let mut scratch = String::from("previous value");
+        for (raw, expected) in [
+            ("<![CDATA[plain]]>", "plain"),
+            ("<![CDATA[&bogus;&amp;]]>", "&bogus;&amp;"),
+            ("x<![CDATA[<y>&amp;]]>z", "x<y>&amp;z"),
+            ("A&amp;<![CDATA[<B>&bogus;]]>&#67;", "A&<B>&bogus;C"),
+            ("<![CDATA[a]]>&lt;<![CDATA[b&c]]>", "a<b&c"),
+            ("&lt;![CDATA[&amp;]]&gt;", "<![CDATA[&]]>"),
+        ] {
+            let text = BytesText::from_escaped(raw);
+            assert_eq!(unescape_xml_text(&text), expected, "{raw}");
+            validate_xml_text(&text);
+            assert!(unescape_xml_text_into(&text, &mut scratch), "{raw}");
+            assert_eq!(scratch, expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn cdata_helpers_reject_only_invalid_references_outside_literal_sections() {
+        for (raw, invalid) in [
+            ("&bogus;<![CDATA[valid]]>", "&bogus;"),
+            ("<![CDATA[&AMP;]]>&bogus;", "&bogus;"),
+            ("<![CDATA[valid]]>&#0;", "&#0;"),
+        ] {
+            let expected = format!(
+                "called `Result::unwrap()` on an `Err` value: {:?}",
+                quick_xml::escape::unescape(invalid).unwrap_err()
+            );
+            let text = BytesText::from_escaped(raw);
+            assert_eq!(
+                failure(|| {
+                    unescape_xml_text(&text);
+                }),
+                expected
+            );
+            assert_eq!(failure(|| validate_xml_text(&text)), expected);
+            let mut scratch = String::from("previous value");
+            assert_eq!(
+                failure(|| {
+                    unescape_xml_text_into(&text, &mut scratch);
+                }),
+                expected
+            );
+            assert_eq!(scratch, "previous value");
+        }
+    }
+
+    #[test]
+    fn cdata_validation_and_reused_decoding_allocate_nothing() {
+        let mut scratch = String::with_capacity(512);
+        for (raw, expected) in [
+            ("<![CDATA[plain]]>", "plain"),
+            ("<![CDATA[&bogus;]]>&amp;", "&bogus;&"),
+            ("A&amp;<![CDATA[<B>]]>&#67;", "A&<B>C"),
+        ] {
+            let text = BytesText::from_escaped(raw);
+            let (used_scratch, allocations) = crate::test_alloc::observe(|| {
+                validate_xml_text(&text);
+                unescape_xml_text_into(&text, &mut scratch)
+            });
+            assert!(used_scratch);
+            assert_eq!(scratch, expected);
+            assert_eq!(allocations.total(), 0, "{raw}");
+        }
+        scratch.clear();
+        scratch.push_str("previous value");
+        let text = BytesText::from_escaped("plain");
+        let (used_scratch, allocations) =
+            crate::test_alloc::observe(|| unescape_xml_text_into(&text, &mut scratch));
+        assert!(!used_scratch);
+        assert_eq!(scratch, "previous value");
+        assert_eq!(allocations.total(), 0);
+    }
+}
+
+#[cfg(test)]
+mod fallible_text_tests {
+    use quick_xml::events::BytesText;
+
+    use super::*;
+
+    #[test]
+    fn fallible_decoders_preserve_cdata_entities_and_reused_storage() {
+        let mut scratch = String::with_capacity(128);
+        let text = BytesText::from_escaped("A&amp;<![CDATA[&unknown;]]>&#67;");
+        assert_eq!(try_unescape_xml_text(&text).unwrap(), "A&&unknown;C");
+        let (_, allocations) = crate::test_alloc::observe(|| {
+            try_validate_xml_text(&text).unwrap();
+            assert!(try_unescape_xml_text_into(&text, &mut scratch).unwrap());
+        });
+        assert_eq!(scratch, "A&&unknown;C");
+        assert_eq!(allocations.total(), 0);
+    }
+
+    #[test]
+    fn fallible_decoders_return_errors_without_clearing_existing_scratch() {
+        for raw in ["&unknown;", "&#0;", "<![CDATA[unterminated"] {
+            let text = BytesText::from_escaped(raw);
+            let mut scratch = String::from("previous");
+            assert!(try_unescape_xml_text(&text).is_err(), "{raw}");
+            assert!(try_validate_xml_text(&text).is_err(), "{raw}");
+            assert!(
+                try_unescape_xml_text_into(&text, &mut scratch).is_err(),
+                "{raw}"
+            );
+            assert_eq!(scratch, "previous");
+        }
+    }
+}

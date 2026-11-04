@@ -1,13 +1,6 @@
 use std::io::Cursor;
 
-use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
-};
+use quick_xml::Writer;
 
 use super::{
     BooleanValue,
@@ -16,11 +9,6 @@ use super::{
     UInt32Value,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::{
         MediaObject,
         raw::RawRelationships,
@@ -178,37 +166,56 @@ impl EmbeddedObjectProperties {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        e: &BytesStart,
+    pub(crate) fn from_element(
+        element: &crate::drawing::charts::OpaqueElement,
         relationships: &RawRelationships,
-    ) {
-        let r_id = get_attribute(e, b"r:id").unwrap();
-        let attached_file = relationships.relationship_by_rid(&r_id).raw_file();
-
-        self.image_mut()
-            .set_image_name(attached_file.file_name());
-        self.image_mut()
+    ) -> Result<Self, String> {
+        use crate::{
+            helper::const_str::{
+                REL_OFC_NS,
+                SHEET_MAIN_NS,
+            },
+            xml::{
+                attribute,
+                direct_children,
+                required_attribute,
+                required_child,
+            },
+        };
+        crate::xml::expect(element, SHEET_MAIN_NS, "objectPr")?;
+        let id = required_attribute(element, REL_OFC_NS, "id")?;
+        let mut matches = relationships
+            .relationship_list()
+            .iter()
+            .filter(|item| item.id() == id);
+        let relationship = matches
+            .next()
+            .ok_or_else(|| format!("missing OLE preview relationship {id}"))?;
+        if matches.next().is_some() {
+            return Err(format!("ambiguous OLE preview relationship {id}"));
+        }
+        let attached_file = relationship.raw_file();
+        let mut value = Self::default();
+        value
+            .image_mut()
+            .set_image_name(attached_file.file_name())
             .set_image_data(attached_file.file_data());
-
-        set_string_from_xml!(self, e, default_size, "defaultSize");
-        set_string_from_xml!(self, e, auto_pict, "autoPict");
-
-        xml_read_loop!(
-            reader,
-                Event::Start(ref e) => {
-                    if e.name().into_inner() == b"anchor" {
-                        self.object_anchor.set_attributes(reader, e);
-                    }
-                },
-                Event::End(ref e) => {
-                    if e.name().into_inner() == b"objectPr" {
-                        return
-                    }
-                },
-                Event::Eof => panic!("Error: Could not find {} end element", "objectPr")
-        );
+        if let Some(text) = attribute(element, "", "defaultSize")? {
+            value.set_default_size(crate::xml::parse_bool(text)?);
+        }
+        if let Some(text) = attribute(element, "", "autoPict")? {
+            value.set_auto_pict(crate::xml::parse_bool(text)?);
+        }
+        let children = direct_children(element)?;
+        value.set_object_anchor(ObjectAnchor::from_element(required_child(
+            &children,
+            SHEET_MAIN_NS,
+            "anchor",
+        )?)?);
+        if children.len() != 1 {
+            return Err("unsupported OLE preview child".into());
+        }
+        Ok(value)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, r_id: usize) {

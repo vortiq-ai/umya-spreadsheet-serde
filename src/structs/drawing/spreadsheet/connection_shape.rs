@@ -17,7 +17,6 @@ use super::{
     ShapeStyle,
 };
 use crate::{
-    reader::driver::xml_read_loop,
     structs::raw::RawRelationships,
     writer::driver::{
         write_end_tag,
@@ -32,9 +31,28 @@ pub struct ConnectionShape {
     non_visual_connection_shape_properties: NonVisualConnectionShapeProperties,
     shape_properties:                       ShapeProperties,
     shape_style:                            ShapeStyle,
+    #[cfg_attr(feature = "serde", serde(default))]
+    r#macro:                                Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    published:                              Option<bool>,
 }
 
 impl ConnectionShape {
+    #[must_use]
+    pub fn published(&self) -> bool {
+        self.published.unwrap_or(false)
+    }
+
+    pub fn set_published(&mut self, value: bool) -> &mut Self {
+        self.published = Some(value);
+        self
+    }
+
+    pub fn remove_published(&mut self) -> &mut Self {
+        self.published = None;
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn anchor(&self) -> &Anchor {
@@ -163,55 +181,133 @@ impl ConnectionShape {
         self.shape_style = value;
     }
 
+    #[must_use]
+    pub fn macro_name(&self) -> Option<&str> {
+        self.r#macro.as_deref()
+    }
+
+    pub fn set_macro<S: Into<String>>(&mut self, value: S) {
+        self.r#macro = Some(value.into());
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"xdr:nvCxnSpPr" => {
-                        self.non_visual_connection_shape_properties
-                            .set_attributes(reader, e);
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"macro")? {
+            self.set_macro(value);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"fPublished")? {
+            self.set_published(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::SHEET_DRAWING_NS {
+                        return Err(crate::xml::xml_error("foreign spreadsheet drawing child"));
+                    }
+                    if !seen.insert(name.local_name.clone()) {
+                        return Err(crate::xml::xml_error("duplicate spreadsheet drawing child"));
+                    }
+                    match name.local_name.as_str() {
+                        "nvCxnSpPr" => {
+                            if empty {
+                                return Err(crate::xml::xml_error(
+                                    "empty nonvisual connector properties",
+                                ));
+                            }
+                            self.non_visual_connection_shape_properties
+                                .set_attributes(reader, child, session)?;
                         }
-                    b"xdr:spPr" => {
-                        self.shape_properties.set_attributes(reader, e, drawing_relationships);
+                        "spPr" => {
+                            self.shape_properties.read_with_session(
+                                reader,
+                                child,
+                                empty,
+                                drawing_relationships,
+                                session,
+                            )?;
+                        }
+                        "style" => {
+                            let mut value = ShapeStyle::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_shape_style(value);
+                        }
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported spreadsheet drawing child",
+                            ));
+                        }
                     }
-                    b"xdr:style" => {
-                        self.shape_style.set_attributes(reader, e);
+                }
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if !(seen.contains("nvCxnSpPr") && seen.contains("spPr")) {
+                        return Err(crate::xml::xml_error(
+                            "missing required spreadsheet drawing child",
+                        ));
                     }
-                    _ => (),
+                    return Ok(());
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"xdr:cxnSp" {
-                    return;
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated spreadsheet drawing object",
+                    ));
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:cxnSp")
-        );
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
-    ) {
+        ole_id: usize,
+    ) -> Result<(), crate::XlsxError> {
         // xdr:cxnSp
-        write_start_tag(writer, "xdr:cxnSp", vec![("macro", "").into()], false);
+        let mut attributes = self
+            .r#macro
+            .as_ref()
+            .map(|value| vec![("macro", value.as_str()).into()])
+            .unwrap_or_default();
+        if let Some(value) = self.published {
+            attributes.push(("fPublished", if value { "1" } else { "0" }).into());
+        }
+        write_start_tag(writer, "xdr:cxnSp", attributes, false);
 
         // xdr:nvCxnSpPr
-        self.non_visual_connection_shape_properties.write_to(writer);
+        self.non_visual_connection_shape_properties
+            .write_to(writer, rel_list, ole_id)?;
 
         // xdr:spPr
-        self.shape_properties.write_to(writer, rel_list);
+        self.shape_properties.write_to(writer, rel_list)?;
 
         // xdr:style
-        self.shape_style.write_to(writer);
+        if self.shape_style.line_reference().is_some()
+            || self.shape_style.fill_reference().is_some()
+            || self.shape_style.effect_reference().is_some()
+            || self.shape_style.font_reference().is_some()
+        {
+            self.shape_style.write_to(writer)?;
+        }
 
         write_end_tag(writer, "xdr:cxnSp");
+        Ok(())
     }
 }

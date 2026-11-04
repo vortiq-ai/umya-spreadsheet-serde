@@ -10,8 +10,8 @@ use quick_xml::{
 };
 
 use super::{
-    Coordinate,
     CommentText,
+    Coordinate,
     vml::{
         Fill as VmlFill,
         Path,
@@ -28,13 +28,19 @@ use super::{
     },
 };
 use crate::{
-    helper::coordinate::CellCoordinates, reader::driver::{
+    StringValue,
+    helper::coordinate::CellCoordinates,
+    reader::driver::{
         get_attribute,
         set_string_from_xml,
-    }, structs::vml::Shape, traits::AdjustmentCoordinate, writer::driver::{
+    },
+    structs::vml::Shape,
+    traits::AdjustmentCoordinate,
+    writer::driver::{
         write_end_tag,
         write_start_tag,
-    }, xml_read_loop, StringValue
+    },
+    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -332,6 +338,15 @@ impl Comment {
         write_end_tag(writer, "comment");
     }
 }
+impl Comment {
+    /// Excel moves a comment box with its cell: whole rows and columns, same
+    /// size, never above the first row or left of the first column.
+    fn follow_cell(&mut self, column: u32, row: u32) {
+        let columns = i64::from(self.coordinate.col_num()) - i64::from(column);
+        let rows = i64::from(self.coordinate.row_num()) - i64::from(row);
+        self.anchor_mut().shift(columns, rows);
+    }
+}
 impl AdjustmentCoordinate for Comment {
     #[inline]
     fn adjustment_insert_coordinate(
@@ -341,6 +356,7 @@ impl AdjustmentCoordinate for Comment {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        let (column, row) = (self.coordinate.col_num(), self.coordinate.row_num());
         self.coordinate.adjustment_insert_coordinate(
             root_col_num,
             offset_col_num,
@@ -353,6 +369,7 @@ impl AdjustmentCoordinate for Comment {
             root_row_num,
             offset_row_num,
         );
+        self.follow_cell(column, row);
     }
 
     #[inline]
@@ -363,6 +380,7 @@ impl AdjustmentCoordinate for Comment {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        let (column, row) = (self.coordinate.col_num(), self.coordinate.row_num());
         self.coordinate.adjustment_remove_coordinate(
             root_col_num,
             offset_col_num,
@@ -375,6 +393,7 @@ impl AdjustmentCoordinate for Comment {
             root_row_num,
             offset_row_num,
         );
+        self.follow_cell(column, row);
     }
 
     #[inline]

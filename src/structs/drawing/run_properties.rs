@@ -1,4 +1,7 @@
-use std::io::Cursor;
+use std::{
+    borrow::Cow,
+    io::Cursor,
+};
 
 use quick_xml::{
     Reader,
@@ -23,9 +26,11 @@ use super::{
     TextFontType,
 };
 use crate::{
+    XlsxError,
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::{
         get_attribute,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     structs::StringValue,
     writer::driver::{
@@ -33,6 +38,19 @@ use crate::{
         write_start_tag,
     },
 };
+
+/// The attribute value with its XML entities decoded. Attribute text is read
+/// raw, and the writers escape it again, so it is decoded exactly once, here.
+pub(crate) fn unescape_attribute(value: String) -> String {
+    let decoded = quick_xml::escape::unescape(&value)
+        .ok()
+        .map(Cow::into_owned);
+    decoded.unwrap_or(value)
+}
+
+pub(crate) fn get_unescaped_attribute(e: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+    get_attribute(e, key).map(unescape_attribute)
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -55,9 +73,206 @@ pub struct RunProperties {
     gradient_fill:        Option<Box<GradientFill>>,
     no_fill:              Option<NoFill>,
     effect_list:          Option<Box<EffectList>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:                Option<Box<RunPropertiesParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextUnderline {
+    None,
+    Words,
+    Single,
+    Double,
+    Heavy,
+    Dotted,
+    DottedHeavy,
+    Dash,
+    DashHeavy,
+    DashLong,
+    DashLongHeavy,
+    DotDash,
+    DotDashHeavy,
+    DotDotDash,
+    DotDotDashHeavy,
+    Wavy,
+    WavyHeavy,
+    WavyDouble,
+}
+impl TextUnderline {
+    fn read(v: &str) -> Option<Self> {
+        Some(match v {
+            "none" => Self::None,
+            "words" => Self::Words,
+            "sng" => Self::Single,
+            "dbl" => Self::Double,
+            "heavy" => Self::Heavy,
+            "dotted" => Self::Dotted,
+            "dottedHeavy" => Self::DottedHeavy,
+            "dash" => Self::Dash,
+            "dashHeavy" => Self::DashHeavy,
+            "dashLong" => Self::DashLong,
+            "dashLongHeavy" => Self::DashLongHeavy,
+            "dotDash" => Self::DotDash,
+            "dotDashHeavy" => Self::DotDashHeavy,
+            "dotDotDash" => Self::DotDotDash,
+            "dotDotDashHeavy" => Self::DotDotDashHeavy,
+            "wavy" => Self::Wavy,
+            "wavyHeavy" => Self::WavyHeavy,
+            "wavyDbl" => Self::WavyDouble,
+            _ => return None,
+        })
+    }
+
+    fn xml(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Words => "words",
+            Self::Single => "sng",
+            Self::Double => "dbl",
+            Self::Heavy => "heavy",
+            Self::Dotted => "dotted",
+            Self::DottedHeavy => "dottedHeavy",
+            Self::Dash => "dash",
+            Self::DashHeavy => "dashHeavy",
+            Self::DashLong => "dashLong",
+            Self::DashLongHeavy => "dashLongHeavy",
+            Self::DotDash => "dotDash",
+            Self::DotDashHeavy => "dotDashHeavy",
+            Self::DotDotDash => "dotDotDash",
+            Self::DotDotDashHeavy => "dotDotDashHeavy",
+            Self::Wavy => "wavy",
+            Self::WavyHeavy => "wavyHeavy",
+            Self::WavyDouble => "wavyDbl",
+        }
+    }
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct RunPropertiesParts {
+    underline:                Option<TextUnderline>,
+    underline_uses_text_fill: bool,
+    kerning:                  Option<u32>,
+    baseline:                 Option<i32>,
+    invalid_attributes:       u8,
 }
 
 impl RunProperties {
+    pub(crate) fn strip_export_parts(&mut self) {
+        self.parts = None;
+    }
+
+    pub(crate) fn export_parts_supplied(&self) -> bool {
+        self.parts.is_some()
+    }
+
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        let Some(previous) = &previous.parts else {
+            return 0;
+        };
+        let Some(current) = &mut self.parts else {
+            self.parts = Some(previous.clone());
+            return 1;
+        };
+        let mut restored = false;
+        if current.underline.is_none()
+            && current.invalid_attributes & 1 == 0
+            && (previous.underline.is_some() || previous.invalid_attributes & 1 != 0)
+        {
+            current.underline = previous.underline;
+            current.invalid_attributes |= previous.invalid_attributes & 1;
+            restored = true;
+        }
+        if current.kerning.is_none()
+            && current.invalid_attributes & 2 == 0
+            && (previous.kerning.is_some() || previous.invalid_attributes & 2 != 0)
+        {
+            current.kerning = previous.kerning;
+            current.invalid_attributes |= previous.invalid_attributes & 2;
+            restored = true;
+        }
+        if current.baseline.is_none()
+            && current.invalid_attributes & 4 == 0
+            && (previous.baseline.is_some() || previous.invalid_attributes & 4 != 0)
+        {
+            current.baseline = previous.baseline;
+            current.invalid_attributes |= previous.invalid_attributes & 4;
+            restored = true;
+        }
+        if !current.underline_uses_text_fill && previous.underline_uses_text_fill {
+            current.underline_uses_text_fill = true;
+            restored = true;
+        }
+        usize::from(restored)
+    }
+
+    pub(crate) fn projected_values_match(&self, previous: &Self) -> Result<bool, XlsxError> {
+        let bytes = |value: &Self| -> Result<Vec<u8>, XlsxError> {
+            let mut value = value.clone();
+            value.strip_export_parts();
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            value.write_to_rpr(&mut writer)?;
+            Ok(writer.into_inner().into_inner())
+        };
+        Ok(self.text == previous.text && bytes(self)? == bytes(previous)?)
+    }
+
+    #[must_use]
+    pub fn underline(&self) -> Option<TextUnderline> {
+        self.parts.as_ref().and_then(|p| p.underline)
+    }
+
+    pub fn set_underline(&mut self, v: Option<TextUnderline>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.underline = v;
+        p.invalid_attributes &= !1;
+    }
+
+    #[must_use]
+    pub fn underline_uses_text_fill(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_some_and(|p| p.underline_uses_text_fill)
+    }
+
+    pub fn set_underline_uses_text_fill(&mut self, v: bool) {
+        self.parts
+            .get_or_insert_with(Default::default)
+            .underline_uses_text_fill = v;
+    }
+
+    #[must_use]
+    pub fn kerning(&self) -> Option<u32> {
+        self.parts.as_ref().and_then(|p| p.kerning)
+    }
+
+    pub fn set_kerning(&mut self, v: Option<u32>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.kerning = v;
+        p.invalid_attributes &= !2;
+    }
+
+    #[must_use]
+    pub fn baseline(&self) -> Option<i32> {
+        self.parts.as_ref().and_then(|p| p.baseline)
+    }
+
+    pub fn set_baseline(&mut self, v: Option<i32>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.baseline = v;
+        p.invalid_attributes &= !4;
+    }
+
+    #[must_use]
+    pub fn supplemental_attributes_valid(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_none_or(|p| p.invalid_attributes == 0)
+            && usize::from(self.solid_fill.is_some())
+                + usize::from(self.gradient_fill.is_some())
+                + usize::from(self.no_fill.is_some())
+                <= 1
+    }
+
     #[inline]
     #[must_use]
     pub fn text(&self) -> &str {
@@ -488,121 +703,197 @@ impl RunProperties {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        if let Some(v) = get_attribute(e, b"kumimoji") {
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"u")? {
+            let parsed = TextUnderline::read(&v);
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.underline = parsed;
+            p.invalid_attributes |= u8::from(parsed.is_none());
+        }
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"kern")? {
+            let parsed = crate::xml::parse_i32(&v)
+                .ok()
+                .filter(|value| (0..=400_000).contains(value))
+                .and_then(|value| u32::try_from(value).ok());
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.kerning = parsed;
+            p.invalid_attributes |= u8::from(parsed.is_none()) << 1;
+        }
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"baseline")? {
+            let parsed = crate::xml::parse_i32(&v).ok();
+            let p = self.parts.get_or_insert_with(Default::default);
+            p.baseline = parsed;
+            p.invalid_attributes |= u8::from(parsed.is_none()) << 2;
+        }
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"kumimoji")? {
+            crate::xml::parse_bool(&v).map_err(crate::xml::xml_error)?;
             self.set_kumimoji(v);
         }
-        if let Some(v) = get_attribute(e, b"lang") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"lang")? {
             self.set_language(v);
         }
-        if let Some(v) = get_attribute(e, b"altLang") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"altLang")? {
             self.set_alternative_language(v);
         }
-        if let Some(v) = get_attribute(e, b"b") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"b")? {
+            crate::xml::parse_bool(&v).map_err(crate::xml::xml_error)?;
             self.set_bold(v);
         }
-        if let Some(v) = get_attribute(e, b"sz") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"sz")? {
+            let size = crate::xml::parse_i32(&v).map_err(crate::xml::xml_error)?;
+            if !(100..=400_000).contains(&size) {
+                return Err(crate::xml::xml_error(
+                    "DrawingML font size is outside its schema range",
+                ));
+            }
             self.set_sz(v);
         }
-        if let Some(v) = get_attribute(e, b"strike") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"strike")? {
+            if !matches!(v.as_str(), "noStrike" | "sngStrike" | "dblStrike") {
+                return Err(crate::xml::xml_error("invalid DrawingML text strike"));
+            }
             self.set_strike(v);
         }
-        if let Some(v) = get_attribute(e, b"i") {
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"i")? {
+            crate::xml::parse_bool(&v).map_err(crate::xml::xml_error)?;
             self.set_italic(v);
         }
-        if let Some(v) = get_attribute(e, b"cap") {
-            self.capital.set_value_string(v);
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"cap")? {
+            self.capital
+                .set_value(v.parse().map_err(|()| {
+                    crate::xml::xml_error("invalid DrawingML text capitalization")
+                })?);
         }
-        if let Some(v) = get_attribute(e, b"spc") {
-            self.spacing.set_value_string(v);
+        if let Some(v) = crate::reader::driver::read_attribute(e, b"spc")? {
+            let value = crate::xml::parse_i32(&v).map_err(crate::xml::xml_error)?;
+            if !(-400_000..=400_000).contains(&value) {
+                return Err(crate::xml::xml_error(
+                    "DrawingML character spacing is outside its schema range",
+                ));
+            }
+            self.set_spacing(value);
         }
 
         if empty_flag {
-            return;
+            return Ok(());
         }
 
-        xml_read_loop!(
+        let end = e.name().into_inner().to_vec();
+        try_xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:solidFill" => {
-                    let mut obj = SolidFill::default();
-                    obj.set_attributes(reader, e);
-                    self.set_solid_fill(obj);
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !is_empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
                 }
-                b"a:ln" => {
-                    let mut obj = Outline::default();
-                    obj.set_attributes(reader, e);
-                    self.set_outline(obj);
-                }
-                b"a:gradFill" => {
-                    let mut obj = GradientFill::default();
-                    obj.set_attributes(reader, e);
-                    self.set_gradient_fill(obj);
-                }
-                b"a:effectLst" => {
-                    let mut effect_list = EffectList::default();
-                    effect_list.set_attributes(reader, e, is_empty);
-                    self.set_effect_list(effect_list);
-                }
-                b"a:latin" => {
-                    let mut obj = TextFontType::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_latin_font(obj);
-                }
-                b"a:ea" => {
-                    let mut obj = TextFontType::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_east_asian_font(obj);
-                }
-                b"a:cs" => {
-                    let mut obj = TextFontType::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_complex_script_font(obj);
-                }
-                b"a:noFill" => {
-                    let obj = NoFill::default();
-                    NoFill::set_attributes(reader, e, is_empty);
-                    self.set_no_fill(obj);
-                }
-                _ => (),
+                let name = crate::reader::driver::local_name(e.name().into_inner());
+                match name {
+                    b"uFillTx" => {
+                        crate::reader::driver::validate_attributes(e)?;
+                        if !is_empty { crate::reader::driver::consume_empty_element(reader, e)?; }
+                        let parts = self.parts.get_or_insert_with(Default::default);
+                        parts.underline_uses_text_fill = true;
+                    }
+                    b"solidFill" => {
+                        let mut obj = SolidFill::default();
+                        obj.read_with_session(reader, e, is_empty, session)?;
+                        self.set_solid_fill(obj);
+                    }
+                    b"ln" => {
+                        let mut obj = Outline::default();
+                        obj.read_with_session(reader, e, is_empty, session)?;
+                        self.set_outline(obj);
+                    }
+                    b"gradFill" => {
+                        let mut obj = GradientFill::default();
+                        obj.read_with_session(reader, e, is_empty, session)?;
+                        self.set_gradient_fill(obj);
+                    }
+                    b"effectLst" => {
+                        let mut effect_list = EffectList::default();
+                        effect_list.read_with_session(reader, e, is_empty, session)?;
+                        self.set_effect_list(effect_list);
+                    }
+                    b"latin" => {
+                        let mut obj = TextFontType::default();
+                        obj.set_attributes(reader, e, is_empty)?;
+                        self.set_latin_font(obj);
+                    }
+                    b"ea" => {
+                        let mut obj = TextFontType::default();
+                        obj.set_attributes(reader, e, is_empty)?;
+                        self.set_east_asian_font(obj);
+                    }
+                    b"cs" => {
+                        let mut obj = TextFontType::default();
+                        obj.set_attributes(reader, e, is_empty)?;
+                        self.set_complex_script_font(obj);
+                    }
+                    b"noFill" => {
+                        let obj = NoFill::default();
+                        NoFill::set_attributes(reader, e, is_empty)?;
+                        self.set_no_fill(obj);
+                    }
+                    _ => {
+                        if !is_empty {
+                            crate::reader::driver::skip_element(reader, e)?;
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                match e.name().into_inner() {
-                    b"a:rPr" | b"a:endParaRPr" | b"a:defRPr" => return,
-                    _ => (),
+                if e.name().into_inner() == end.as_slice() {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!(
-                "Error: Could not find {} end element",
-                "a:rPr, a:endParaRPr, a:defRPr"
-            )
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text properties")),
         );
     }
 
     #[inline]
-    pub(crate) fn write_to_rpr(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:rPr");
+    pub(crate) fn write_to_rpr(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:rPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_end_para_rpr(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:endParaRPr");
+    pub(crate) fn write_to_end_para_rpr(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:endParaRPr")
     }
 
     #[inline]
-    pub(crate) fn write_to_def_rpr(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
-        self.write_to(writer, "a:defRPr");
+    pub(crate) fn write_to_def_rpr(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), XlsxError> {
+        self.write_to(writer, "a:defRPr")
     }
 
-    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, tag_name: &str) {
+    fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        tag_name: &str,
+    ) -> Result<(), XlsxError> {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.kumimoji.has_value() {
             attributes.push(("kumimoji", self.kumimoji.value_str()).into());
@@ -632,58 +923,100 @@ impl RunProperties {
         if self.strike.has_value() {
             attributes.push(("strike", self.strike.value_str()).into());
         }
-        if self.solid_fill.is_some()
+        let kern = self.kerning().map(|v| v.to_string());
+        let baseline = self.baseline().map(|v| v.to_string());
+        if let Some(v) = self.underline() {
+            attributes.push(("u", v.xml()).into());
+        }
+        if let Some(v) = &kern {
+            attributes.push(("kern", v.as_str()).into());
+        }
+        if let Some(v) = &baseline {
+            attributes.push(("baseline", v.as_str()).into());
+        }
+        if self.underline_uses_text_fill()
+            || self.solid_fill.is_some()
             || self.outline.is_some()
             || self.latin_font.is_some()
             || self.east_asian_font.is_some()
             || self.gradient_fill.is_some()
             || self.effect_list.is_some()
+            || self.complex_script_font.is_some()
+            || self.no_fill.is_some()
         {
             write_start_tag(writer, tag_name, attributes, false);
 
-            // a:solidFill
-            if let Some(v) = &self.solid_fill {
-                v.write_to(writer);
-            }
-
-            // a:ln
+            // Native character-property sequence: line, fill choice, effects,
+            // fonts.
             if let Some(v) = &self.outline {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
-
-            // a:latin
+            if let Some(v) = &self.solid_fill {
+                v.write_to(writer)?;
+            } else if let Some(v) = &self.gradient_fill {
+                v.write_to(writer)?;
+            } else if self.no_fill.is_some() {
+                NoFill::write_to(writer);
+            }
+            if let Some(v) = &self.effect_list {
+                v.write_to(writer)?;
+            }
+            if self.underline_uses_text_fill() {
+                write_start_tag(writer, "a:uFillTx", vec![], true);
+            }
             if let Some(v) = &self.latin_font {
                 v.write_to_latin(writer);
             }
-
-            // a:ea
             if let Some(v) = &self.east_asian_font {
                 v.write_to_ea(writer);
             }
-
-            // a:cs
             if let Some(v) = &self.complex_script_font {
                 v.write_to_cs(writer);
-            }
-
-            // a:gradFill
-            if let Some(v) = &self.gradient_fill {
-                v.write_to(writer);
-            }
-
-            // a:noFill
-            if self.no_fill.is_some() {
-                NoFill::write_to(writer);
-            }
-
-            // a:effectLst
-            if let Some(v) = &self.effect_list {
-                v.write_to(writer);
             }
 
             write_end_tag(writer, tag_name);
         } else {
             write_start_tag(writer, tag_name, attributes, true);
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn underline_and_numeric_attributes_roundtrip() {
+        let xml = "<a:rPr u=\"wavyDbl\" kern=\"1200\" baseline=\"-2000\"><a:uFillTx/></a:rPr>";
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let mut buf = Vec::new();
+        let e = match reader.read_event_into(&mut buf).unwrap() {
+            Event::Start(e) => e.into_owned(),
+            _ => panic!("expected run properties"),
+        };
+        let mut p = RunProperties::default();
+        p.read_with_session(&mut reader, &e, false, None).unwrap();
+        assert_eq!(p.underline(), Some(TextUnderline::WavyDouble));
+        assert_eq!(p.kerning(), Some(1200));
+        assert_eq!(p.baseline(), Some(-2000));
+        assert!(p.underline_uses_text_fill());
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        p.write_to_rpr(&mut writer).unwrap();
+        let out = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+        for part in [
+            "u=\"wavyDbl\"",
+            "kern=\"1200\"",
+            "baseline=\"-2000\"",
+            "<a:uFillTx/>",
+        ] {
+            assert!(out.contains(part));
+        }
+    }
+    #[test]
+    fn conflicting_fill_choices_are_diagnosed() {
+        let mut value = RunProperties::default();
+        value.set_solid_fill(SolidFill::default());
+        value.set_no_fill(NoFill::default());
+        assert!(!value.supplemental_attributes_valid());
     }
 }

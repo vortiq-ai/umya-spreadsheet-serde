@@ -8,13 +8,7 @@ use quick_xml::{
 };
 
 use super::super::Int32Value;
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-    },
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -85,12 +79,36 @@ impl Rotation {
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
-        _reader: &mut Reader<R>,
+        reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, latitude, "lat");
-        set_string_from_xml!(self, e, longitude, "lon");
-        set_string_from_xml!(self, e, revolution, "rev");
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"lat")?;
+        self.latitude
+            .set_value(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
+        let value = crate::reader::driver::require_attribute(owner, b"lon")?;
+        self.longitude
+            .set_value(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
+        let value = crate::reader::driver::require_attribute(owner, b"rev")?;
+        self.revolution
+            .set_value(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
+        if !empty {
+            crate::structs::drawing::color_transform::consume_paint_leaf(reader, owner, session)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

@@ -2,6 +2,10 @@ use std::borrow::Cow;
 
 use crate::helper::utils::compile_regex;
 
+pub(crate) fn name_eq_ignore_case(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right) || left.to_lowercase() == right.to_lowercase()
+}
+
 #[must_use]
 pub fn split_address(address: &str) -> (&str, &str) {
     address
@@ -9,6 +13,25 @@ pub fn split_address(address: &str) -> (&str, &str) {
         .map_or(("", address), |(sheet_name, range)| {
             (sheet_name.trim_matches(&['\'', '"'][..]), range)
         })
+}
+
+/// Split a qualifier without losing literal quotes.
+/// Consumers unescape apostrophes.
+pub(crate) fn split_reference_address(address: &str) -> (&str, &str) {
+    let error_start = address.rfind('#').filter(|&start| {
+        (start == 0 || address.as_bytes()[start - 1] == b'!')
+            && address[start..].parse::<crate::CellErrorType>().is_ok()
+    });
+    let (sheet, range) = match error_start {
+        Some(0) => ("", address),
+        Some(start) => (&address[..start - 1], &address[start..]),
+        None => address.rsplit_once('!').unwrap_or(("", address)),
+    };
+    let sheet = sheet
+        .strip_prefix('\'')
+        .and_then(|inner| inner.strip_suffix('\''))
+        .unwrap_or(sheet);
+    (sheet, range)
 }
 
 #[must_use]
@@ -315,4 +338,33 @@ fn is_address_test() {
     assert!(!is_address("Sheet1!A1:B"));
     assert!(!is_address("Sheet1!A:B2"));
     assert!(!is_address("Sheet1"));
+}
+
+#[test]
+fn reference_address_preserves_literal_quotes_and_escaped_apostrophes() {
+    assert_eq!(split_reference_address("'\"Data\"'!A1"), ("\"Data\"", "A1"));
+    assert_eq!(split_reference_address("'Data\"'!A1"), ("Data\"", "A1"));
+    assert_eq!(
+        split_reference_address("'\"D''x\"'!#REF!"),
+        ("\"D''x\"", "#REF!")
+    );
+    assert_eq!(split_reference_address("'''Edge'''!A1"), ("''Edge''", "A1"));
+    assert_eq!(
+        split_reference_address("'\"Data\":Other'!A1"),
+        ("\"Data\":Other", "A1")
+    );
+    assert_eq!(split_reference_address("A1"), ("", "A1"));
+    // Keep the existing public splitter's lexical contract.
+    assert_eq!(split_address("'\"Data\"'!A1"), ("Data", "A1"));
+}
+
+#[test]
+fn reference_address_keeps_complete_excel_errors() {
+    for error in [
+        "#DIV/0!", "#N/A", "#NAME?", "#NULL!", "#NUM!", "#REF!", "#VALUE!", "#DATA!",
+    ] {
+        assert_eq!(split_reference_address(error), ("", error));
+        let qualified = format!("'Bob''s Data'!{error}");
+        assert_eq!(split_reference_address(&qualified), ("Bob''s Data", error));
+    }
 }

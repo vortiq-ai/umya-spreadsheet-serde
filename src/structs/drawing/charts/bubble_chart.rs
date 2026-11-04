@@ -16,13 +16,17 @@ use super::{
     AxisId,
     BubbleScale,
     DataLabels,
+    SeriesFamily,
     ShowNegativeBubbles,
+    SizeRepresents,
     VaryColors,
+    XmlBoolean,
 };
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -40,9 +44,120 @@ pub struct BubbleChart {
     bubble_scale:           BubbleScale,
     show_negative_bubbles:  ShowNegativeBubbles,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    bubble_3d:              Option<XmlBoolean>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    size_represents:        Option<SizeRepresents>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl BubbleChart {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        )
+    }
+
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn projection_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.reference_group_parts_mut()
+    }
+
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    /// The 3-D effect of every bubble in the group (`c:bubble3D`).
+    #[must_use]
+    pub fn bubble_3d(&self) -> Option<&XmlBoolean> {
+        self.bubble_3d.as_ref()
+    }
+
+    pub fn set_bubble_3d(&mut self, value: XmlBoolean) -> &mut Self {
+        self.bubble_3d = Some(value);
+        self
+    }
+
+    pub fn remove_bubble_3d(&mut self) -> &mut Self {
+        self.bubble_3d = None;
+        self
+    }
+
+    /// Whether bubble size stands for area or width (`c:sizeRepresents`);
+    /// Excel treats an absent element as area.
+    #[must_use]
+    pub fn size_represents(&self) -> Option<&SizeRepresents> {
+        self.size_represents.as_ref()
+    }
+
+    pub fn size_represents_mut(&mut self) -> Option<&mut SizeRepresents> {
+        self.size_represents.as_mut()
+    }
+
+    pub fn set_size_represents(&mut self, value: SizeRepresents) -> &mut Self {
+        self.size_represents = Some(value);
+        self
+    }
+
+    pub fn remove_size_represents(&mut self) -> &mut Self {
+        self.size_represents = None;
+        self
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn vary_colors(&self) -> &VaryColors {
         &self.vary_colors
@@ -105,6 +220,7 @@ impl BubbleChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -115,6 +231,7 @@ impl BubbleChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut BubbleChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -201,53 +318,72 @@ impl BubbleChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        self.data_labels.mark_group_absent();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
-                    _ => (),
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
+                    }
+                    b"bubble3D" => {
+                        self.bubble_3d = Some(XmlBoolean::read(e));
+                    }
+                    b"sizeRepresents" => {
+                        let mut obj = SizeRepresents::default();
+                        obj.set_attributes(reader, e)?;
+                        self.size_represents = Some(obj);
                     }
                     b"bubbleScale" => {
-                        self.bubble_scale.set_attributes(reader, e);
+                        self.bubble_scale.set_attributes(reader, e)?;
                     }
                     b"showNegBubbles" => {
-                        self.show_negative_bubbles.set_attributes(reader, e);
+                        self.show_negative_bubbles.set_attributes(reader, e)?;
                     }
                     b"axId" => {
                         let mut obj = AxisId::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.add_axis_id(obj);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"bubbleChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:bubbleChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:bubbleChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:bubbleChart
         write_start_tag(writer, "c:bubbleChart", vec![], false);
 
@@ -256,11 +392,16 @@ impl BubbleChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Bubble)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb)?;
+
+        // c:bubble3D
+        if let Some(v) = &self.bubble_3d {
+            v.write_to(writer, "c:bubble3D");
+        }
 
         // c:bubbleScale
         self.bubble_scale.write_to(writer);
@@ -268,11 +409,21 @@ impl BubbleChart {
         // c:showNegBubbles
         self.show_negative_bubbles.write_to(writer);
 
+        // c:sizeRepresents
+        if let Some(v) = &self.size_represents {
+            v.write_to(writer);
+        }
+
         // c:axId
         for v in &self.axis_id {
             v.write_to(writer);
         }
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "bubbleChart", Some(SeriesFamily::Bubble))?;
+        }
         write_end_tag(writer, "c:bubbleChart");
+
+        Ok(())
     }
 }

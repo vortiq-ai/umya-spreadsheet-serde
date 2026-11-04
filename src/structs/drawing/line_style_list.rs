@@ -11,7 +11,7 @@ use quick_xml::{
 
 use super::Outline;
 use crate::{
-    reader::driver::xml_read_loop,
+    XlsxError,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -61,38 +61,79 @@ impl LineStyleList {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"a:ln" {
-                    let mut obj = Outline::default();
-                    obj.set_attributes(reader, e);
-                    self.outline_collection.push(obj);
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(owner)?;
+
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        return Err(crate::xml::xml_error("foreign Theme child"));
+                    }
+                    crate::reader::driver::validate_attributes(child)?;
+                    match crate::reader::driver::local_name(child.name().as_ref()) {
+                        b"ln" => {
+                            let mut value = Outline::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.outline_collection.push(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:lnStyleLst" {
-                    return
+                Event::End(ref child) if child.name().as_ref() == end.as_slice() => {
+                    return Ok(());
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "lnStyleLst")
-        );
+                Event::Text(ref text)
+                    if !text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+                {
+                    return Err(crate::xml::xml_error("unexpected text in Theme container"));
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated Theme owner")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // a:lnStyleLst
         write_start_tag(writer, "a:lnStyleLst", vec![], false);
 
         // a:ln
         for v in &self.outline_collection {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:lnStyleLst");
+        Ok(())
     }
 }

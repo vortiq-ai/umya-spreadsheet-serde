@@ -1,5 +1,6 @@
 // cacheFields
 use std::io::Cursor;
+
 use quick_xml::{
     Reader,
     Writer,
@@ -10,7 +11,6 @@ use quick_xml::{
 };
 
 use crate::{
-    reader::driver::xml_read_loop,
     structs::CacheField,
     writer::driver::{
         write_end_tag,
@@ -54,44 +54,84 @@ impl CacheFields {
         self
     }
 
-    #[inline]
-    pub(crate) fn hash_code(&self) -> String {
-        crate::helper::utils::md5_hash(self.list.iter().map(CacheField::hash_code).collect::<String>())
-    }
-
-    #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        element: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        self.set_attributes_scoped(
             reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"cacheField" {
-                    let mut obj = CacheField::default();
-                    obj.set_attributes(reader, e);
-                    self.add_list_mut(obj);
+            element,
+            false,
+            &crate::drawing::charts::NamespaceScope::with_bindings([(
+                None,
+                "http://schemas.openxmlformats.org/spreadsheetml/2006/main".into(),
+            )]),
+        )
+    }
+
+    pub(crate) fn set_attributes_scoped<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        element: &BytesStart,
+        empty: bool,
+        parent: &crate::drawing::charts::NamespaceScope,
+    ) -> Result<(), crate::XlsxError> {
+        use crate::xml::{
+            attributes,
+            expect,
+            unsigned,
+            xml_error,
+        };
+        const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        let header = crate::drawing::charts::OpaqueElement::read(reader, element, true, parent)
+            .map_err(xml_error)?;
+        expect(&header, NS, "cacheFields").map_err(xml_error)?;
+        attributes(
+            &header,
+            &["count"],
+            &[(crate::helper::const_str::MC_NS, "Ignorable")],
+        )
+        .map_err(xml_error)?;
+        let expected = unsigned(&header, "count").map_err(xml_error)?;
+        let mut list = Vec::new();
+        if !empty {
+            let scope = parent.child(element).map_err(xml_error)?;
+            let end = element.name().as_ref().to_vec();
+            let mut buffer = Vec::new();
+            loop {
+                match reader.read_event_into(&mut buffer)? {
+                    ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                        let mut field = CacheField::default();
+                        field.set_attributes_scoped(
+                            reader,
+                            child,
+                            matches!(event, Event::Empty(_)),
+                            &scope,
+                        )?;
+                        list.push(field);
+                    }
+                    Event::End(ref node) if node.name().as_ref() == end => break,
+                    Event::Text(ref text) if text.iter().all(u8::is_ascii_whitespace) => {}
+                    Event::Comment(_) => {}
+                    Event::Eof => return Err(xml_error("missing cacheFields end element")),
+                    _ => return Err(xml_error("unexpected native cache field list content")),
                 }
-            },
-            // `<cacheField/>` holds a position in the pivot cache; dropping it
-            // misaligns every later field against its cached values.
-            Event::Empty(ref e) => {
-                if e.name().local_name().into_inner() == b"cacheField" {
-                    self.add_list_mut(CacheField::default());
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"cacheFields" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "cacheFields")
-        );
+                buffer.clear();
+            }
+        }
+        if expected.is_some_and(|count| count as usize != list.len()) {
+            return Err(xml_error("cache field count mismatch"));
+        }
+        self.list = list;
+        Ok(())
     }
 
     #[inline]
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // cacheFields
         write_start_tag(
             writer,
@@ -102,9 +142,10 @@ impl CacheFields {
 
         // cacheField
         for sheet_view in &self.list {
-            sheet_view.write_to(writer);
+            sheet_view.write_to(writer)?;
         }
 
         write_end_tag(writer, "cacheFields");
+        Ok(())
     }
 }

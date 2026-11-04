@@ -8,10 +8,7 @@ use quick_xml::{
 };
 
 use super::super::super::UInt32Value;
-use crate::{
-    reader::driver::get_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -39,8 +36,11 @@ impl CrossingAxis {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        let value = crate::xml::parse_u32(&crate::reader::driver::require_attribute(e, b"val")?)
+            .map_err(crate::xml::xml_error)?;
+        self.val.set_value(value);
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

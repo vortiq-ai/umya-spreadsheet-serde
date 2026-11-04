@@ -29,10 +29,11 @@ pub struct PageSetup {
     scale:          UInt32Value,
     fit_to_height:  UInt32Value,
     fit_to_width:   UInt32Value,
-    fit_to_page:    BooleanValue,
     horizontal_dpi: UInt32Value,
     vertical_dpi:   UInt32Value,
     object_data:    Option<Vec<u8>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    fit_to_page:    BooleanValue,
 }
 
 impl PageSetup {
@@ -256,17 +257,8 @@ impl PageSetup {
         set_string_from_xml!(self, e, horizontal_dpi, "horizontalDpi");
         set_string_from_xml!(self, e, vertical_dpi, "verticalDpi");
 
-        // `<pageSetup r:id="..">` points at printerSettings*.bin -- page margins
-        // and paper size. It is OPTIONAL, and a dangling reference is common:
-        // tools that rewrite a workbook drop the printerSettings part and its
-        // <Relationship> entry but leave this attribute behind. Excel opens
-        // those files fine. Both the missing-.rels case and the missing-rId case
-        // must therefore be skipped, not panicked on -- otherwise one absent
-        // print-layout blob costs the whole workbook.
-        //
-        // Observed 2026-09-07 on two customer files whose eight worksheets each
-        // carry `<pageSetup r:id="rId1"/>` with no rId1 defined and no
-        // printerSettings part in the archive.
+        // Printer settings are optional. Match Excel by tolerating a missing
+        // relationship file or a dangling r:id without failing the workbook.
         if let Some(r_id) = get_attribute(e, b"r:id") {
             if let Some(attached_file) =
                 relationships.and_then(|rels| rels.try_relationship_by_rid(&r_id))

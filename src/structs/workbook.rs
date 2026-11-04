@@ -3,18 +3,43 @@ use std::sync::{
     RwLock,
 };
 
+#[path = "workbook_reference_hosts.rs"]
+mod reference_hosts;
+
+#[path = "workbook_sheet_visibility.rs"]
+mod sheet_visibility;
+
+#[path = "workbook_sheet_copy.rs"]
+mod sheet_copy;
+
+#[path = "workbook_sheet_chart_names.rs"]
+mod sheet_chart_names;
+
+#[path = "workbook_deleted_drawing_names.rs"]
+mod deleted_drawing_names;
+#[path = "model_geometry.rs"]
+mod model_geometry;
+#[path = "table_reference_removal.rs"]
+mod table_reference_removal;
+
 use crate::{
     StringValue,
     XlsxError,
     XlsxErrorKind,
     helper::{
         address::{
-            split_address,
+            name_eq_ignore_case,
+            split_reference_address,
             unescape_sheet_name,
         },
         coordinate::column_index_from_string,
     },
-    reader::xlsx::raw_to_deserialize_by_worksheet,
+    reader::xlsx::{
+        LazyChartPartProvider,
+        SourceCacheSession,
+        finish_worksheet_materializations,
+        prepare_worksheet_materialization,
+    },
     structs::{
         Address,
         CellValue,
@@ -22,79 +47,910 @@ use crate::{
         DefinedName,
         Properties,
         SharedStringTable,
+        SlicerCache,
         Stylesheet,
         WorkbookProtection,
         WorkbookView,
         Worksheet,
-        drawing::Theme,
+        drawing::{
+            Theme,
+            charts::ChartSourceCacheReport,
+        },
     },
-    traits::{
-        AdjustmentCoordinate,
-        AdjustmentCoordinateWithSheet,
-    },
+    traits::AdjustmentCoordinateWithSheet,
 };
+
+/// Whether the pivot cache list is derived from the worksheets held or was
+/// settled while they were all held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PivotCacheListState {
+    #[default]
+    Derived,
+    Settled,
+}
 
 /// A Workbook Object.
 /// The starting point of all struct.
 #[derive(Clone, Default, Debug)]
 pub struct Workbook {
-    properties:            Properties,
-    work_sheet_collection: Vec<Worksheet>,
-    macros_code:           Option<Vec<u8>>,
-    jsa_macros_code:       Option<Vec<u8>>,
-    code_name:             StringValue,
-    ribbon_xml_data:       StringValue,
-    theme:                 Theme,
-    stylesheet:            Stylesheet,
-    shared_string_table:   Arc<RwLock<SharedStringTable>>,
-    workbook_view:         WorkbookView,
-    backup_context_types:  Vec<(Box<str>, Box<str>)>,
-    pivot_caches:          Vec<(Box<str>, Box<str>, Box<str>)>,
-    workbook_protection:   Option<Box<WorkbookProtection>>,
-    defined_names:         Vec<DefinedName>,
-    /// `<calcPr iterate=.. iterateCount=.. iterateDelta=..>` — Excel's iterative
-    /// calculation settings. A model with a DELIBERATE circular reference (an LBO
-    /// where debt drives interest drives cash flow drives debt) sets these, and
-    /// Excel converges it. The writer previously hardcoded a bare
-    /// `<calcPr calcId="122211"/>`, so a workbook read WITH these settings was
-    /// written back WITHOUT them and Excel then refused to converge a file it had
-    /// computed fine before the round trip.
-    iterative_calc:        Option<(u32, f64)>,
-    iterate_enabled:       bool,
+    properties:               Properties,
+    work_sheet_collection:    Vec<Worksheet>,
+    chart_cache_report:       ChartSourceCacheReport,
+    macros_code:              Option<Vec<u8>>,
+    jsa_macros_code:          Option<Vec<u8>>,
+    code_name:                StringValue,
+    ribbon_xml_data:          StringValue,
+    theme:                    Theme,
+    stylesheet:               Stylesheet,
+    shared_string_table:      Arc<RwLock<SharedStringTable>>,
+    workbook_view:            WorkbookView,
+    package_content_types:    Arc<super::content_types::PackageContentTypes>,
+    pivot_caches:             Vec<(Box<str>, Box<str>, Box<str>)>,
+    /// The pivot cache list was settled against the worksheets and is final:
+    /// a streaming export no longer holds the worksheets that would settle it.
+    pivot_caches_state:       PivotCacheListState,
+    workbook_protection:      Option<Box<WorkbookProtection>>,
+    defined_names:            Vec<DefinedName>,
+    /// `<calcPr iterate=.. iterateCount=.. iterateDelta=..>` — Excel's
+    /// iterative calculation settings. A model with a DELIBERATE circular
+    /// reference (an LBO where debt drives interest drives cash flow drives
+    /// debt) sets these, and Excel converges it. The writer previously
+    /// hardcoded a bare `<calcPr calcId="122211"/>`, so a workbook read
+    /// WITH these settings was written back WITHOUT them and Excel then
+    /// refused to converge a file it had computed fine before the round
+    /// trip.
+    iterative_calc:           Option<(u32, f64)>,
+    iterate_enabled:          bool,
     /// `<calcPr fullCalcOnLoad="1">` — tells Excel to recompute every formula
     /// when the file opens. Use it when a formula cache is missing, stale, or
     /// produced by a different calculation engine. Cached values still serve
     /// readers that do not recalculate.
-    full_calc_on_load:     bool,
+    full_calc_on_load:        bool,
+    date1904:                 bool,
     pub(crate) cell_metadata: Option<super::cell_metadata::CellMetadata>,
-    date1904:              bool,
+    /// Bytes of the workbook connections part, kept verbatim so pivot cache
+    /// `connectionId` references keep resolving after a save. The writer
+    /// always emits them as `xl/connections.xml`.
+    pub(crate) connections:   Option<Vec<u8>>,
+    slicer_caches:            Vec<SlicerCache>,
+    /// Workbook extension list entries in source order. Slicer cache lists
+    /// are regenerated from `slicer_caches`; every other entry is kept
+    /// verbatim.
+    pub(crate) extensions:    Vec<super::slicer::WorkbookExtension>,
+    /// Slicer cache relationship ids read from the workbook extension lists,
+    /// consumed while the package is read.
+    pub(crate) slicer_refs:   Vec<super::slicer::SlicerPartReference>,
+    timeline_caches:          Vec<super::timeline::TimelineCache>,
+    /// Pivot caches a slicer or timeline still reads after their last pivot
+    /// table is removed, by workbook cache id.
+    pub(crate) pivot_orphans: Vec<(u32, super::PivotCacheDefinition)>,
+}
+
+type FrozenPivotCharts = Vec<(
+    usize,
+    Vec<Option<crate::drawing::charts::pivot_chart_data::FrozenPivotChart>>,
+)>;
+
+// Precomputed decisions are kept separate from model mutation: an unresolved
+// reference must not leave half a workbook adjusted.
+struct WorkbookReferencePlan {
+    global_names:        Vec<Option<String>>,
+    scoped_names:        Vec<Vec<Option<String>>>,
+    sheets:              Vec<SheetReferencePlan>,
+    pivot_cache_sources: Vec<PivotCacheSourcePlan>,
+}
+struct SheetReferencePlan {
+    index:              usize,
+    cells:              Vec<((u32, u32), crate::structs::CellFormula)>,
+    charts:             Vec<Vec<crate::drawing::charts::reference_edit_engine::FormulaEdit>>,
+    extension_formulas: Vec<Option<String>>,
+}
+enum PivotCacheSourceOwner {
+    Live { sheet: usize, pivot: usize },
+    Retained { cache: usize },
+}
+struct PivotCacheSourcePlan {
+    owner:  PivotCacheSourceOwner,
+    source: super::WorksheetSource,
+}
+
+fn prepare_pivot_cache_source(
+    source: &super::WorksheetSource,
+    edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+) -> Result<Option<super::WorksheetSource>, XlsxError> {
+    use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
+
+    let mut address = source.address().clone();
+    if !source.name().is_empty() && address.range().range().is_empty() {
+        let mut updated = source.clone();
+        for edit in edits {
+            if let crate::drawing::charts::ChartReferenceEdit::RenameSheet { old, new } =
+                edit.edit()
+            {
+                if name_eq_ignore_case(updated.address().sheet_name(), old) {
+                    updated.address_mut().set_sheet_name(new);
+                }
+            }
+        }
+        return Ok(
+            (updated.address().sheet_name() != source.address().sheet_name()).then_some(updated),
+        );
+    }
+    if address.sheet_name().is_empty() || address.range().range().is_empty() {
+        return Ok(None);
+    }
+    let mut changed = false;
+    for edit in edits {
+        let range = address.range().range();
+        let reference = crate::helper::address::join_address(address.sheet_name(), &range);
+        let decision = edit_prepared_formula_text(&reference, "", edit, false);
+        if decision.invalidated != 0 {
+            // Excel keeps the source as written when its sheet or its whole
+            // range is deleted.
+            break;
+        }
+        if decision.text == reference {
+            continue;
+        }
+        let (sheet, range) = split_reference_address(&decision.text);
+        if sheet.is_empty() || range.is_empty() || range.contains("#REF!") {
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!(
+                    "reference edit cannot represent pivot cache worksheet source {reference:?}"
+                ),
+            ));
+        }
+        address.set_sheet_name(unescape_sheet_name(sheet).into_owned());
+        address.range_mut().set_range(range.to_owned());
+        changed = true;
+    }
+    if changed {
+        let mut updated = source.clone();
+        updated.set_address(address);
+        Ok(Some(updated))
+    } else {
+        Ok(None)
+    }
+}
+
+// Prepared ChartEx results of a sheet deletion: the converted charts of the
+// remaining hosts and the `_xlchart` names no chart refers to any more.
+struct ChartExSheetDeletion {
+    charts:        Vec<(usize, Vec<crate::drawing::charts::ChartExSpace>)>,
+    removed_names: Vec<(String, Option<u32>)>,
+}
+
+#[cfg(test)]
+mod reference_adjustment_tests {
+    use crate::drawing::charts::{
+        ReferenceCell,
+        ReferenceRect,
+    };
+
+    fn cell(column: u32, row: u32) -> ReferenceCell {
+        ReferenceCell { column, row }
+    }
+    fn rect(first: (u32, u32), last: (u32, u32)) -> ReferenceRect {
+        ReferenceRect {
+            first: cell(first.0, first.1),
+            last:  cell(last.0, last.1),
+        }
+    }
+
+    #[test]
+    fn reference_plan_is_read_only_until_applied_and_preserves_cell_formula_metadata() {
+        use crate::drawing::charts::ChartReferenceEdit;
+        let mut book = crate::new_file();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((1, 1))
+            .set_formula("Sheet1!B2")
+            .set_formula_result_number(12);
+        book.sheet_mut(0)
+            .unwrap()
+            .add_defined_name("TestName", "Sheet1!$B$2")
+            .unwrap();
+        let edit = ChartReferenceEdit::InsertRows {
+            sheet: "Sheet1".into(),
+            at:    2,
+            count: 1,
+        };
+        let plan = book
+            .prepare_workbook_reference_adjustment(&[0], &edit)
+            .unwrap();
+        assert_eq!(
+            book.sheet(0).unwrap().cell((1, 1)).unwrap().formula(),
+            "Sheet1!B2"
+        );
+        assert_eq!(
+            book.sheet(0).unwrap().defined_names()[0].address(),
+            "Sheet1!$B$2"
+        );
+        book.apply_workbook_reference_adjustment(plan, &edit);
+        assert_eq!(
+            book.sheet(0).unwrap().cell((1, 1)).unwrap().formula(),
+            "Sheet1!B3"
+        );
+        assert_eq!(
+            book.sheet(0).unwrap().defined_names()[0].address(),
+            "Sheet1!$B$3"
+        );
+    }
+
+    #[test]
+    fn geometry_moves_cross_sheet_and_clears_old_destination_even_for_empty_source_cells() {
+        let mut book = crate::new_file();
+        book.new_sheet("Other").unwrap();
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((2, 2))
+            .set_value("source");
+        book.sheet_mut(1)
+            .unwrap()
+            .cell_mut((5, 8))
+            .set_value("overwritten");
+        book.sheet_mut(1)
+            .unwrap()
+            .cell_mut((5, 9))
+            .set_value("clear blank");
+        book.relocate_cells_only("Sheet1", &rect((2, 2), (2, 3)), "Other", cell(5, 8))
+            .unwrap();
+        assert!(book.sheet(0).unwrap().cell((2, 2)).is_none());
+        assert_eq!(
+            book.sheet(1).unwrap().cell((5, 8)).unwrap().value(),
+            "source"
+        );
+        assert!(book.sheet(1).unwrap().cell((5, 9)).is_none());
+    }
+
+    #[test]
+    fn geometry_handles_overlapping_left_up_move_and_rejects_invalid_destination_before_changes() {
+        let mut book = crate::new_file();
+        for (row, value) in [(2, "a"), (3, "b"), (4, "c")] {
+            book.sheet_mut(0)
+                .unwrap()
+                .cell_mut((3, row))
+                .set_value(value);
+        }
+        book.relocate_cells_only("Sheet1", &rect((3, 3), (3, 4)), "Sheet1", cell(3, 2))
+            .unwrap();
+        assert_eq!(book.sheet(0).unwrap().cell((3, 2)).unwrap().value(), "b");
+        assert_eq!(book.sheet(0).unwrap().cell((3, 3)).unwrap().value(), "c");
+        assert!(book.sheet(0).unwrap().cell((3, 4)).is_none());
+        assert!(
+            book.relocate_cells_only("Sheet1", &rect((3, 2), (3, 3)), "Sheet1", cell(0, 1))
+                .is_err()
+        );
+        assert_eq!(book.sheet(0).unwrap().cell((3, 2)).unwrap().value(), "b");
+    }
+
+    fn four_sheet_book(active: u32) -> crate::Workbook {
+        let mut book = crate::new_file();
+        book.set_sheet_name(0, "A").unwrap();
+        for name in ["B", "C", "D"] {
+            book.new_sheet(name).unwrap();
+        }
+        book.workbook_view_mut().set_active_tab(active);
+        book
+    }
+
+    #[test]
+    fn removing_an_earlier_sheet_keeps_the_same_sheet_active() {
+        let mut book = four_sheet_book(2);
+        book.remove_sheet_by_name("A").unwrap();
+        assert_eq!(book.workbook_view().active_tab(), 1);
+        assert_eq!(book.sheet(1).unwrap().name(), "C");
+    }
+
+    #[test]
+    fn removing_the_active_last_sheet_activates_the_previous_one() {
+        let mut book = four_sheet_book(3);
+        book.remove_sheet_by_name("D").unwrap();
+        assert_eq!(book.workbook_view().active_tab(), 2);
+        assert_eq!(book.sheet(2).unwrap().name(), "C");
+    }
 }
 
 impl Workbook {
-    /// Returns whether a one-based cell `cm` index identifies a native dynamic array.
-    /// Unrelated cell metadata must not be treated as dynamic-array identity.
+    /// Preflight all required raw metadata, then capture their ordinary reader
+    /// baselines before any semantic or geometry edit is performed.
+    pub(crate) fn prepare_reference_hosts(
+        &mut self,
+        required: &[&str],
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) -> Result<Vec<usize>, XlsxError> {
+        let mut hosts = reference_hosts::discover(self, required, edit)?;
+        hosts.extend(self.raw_pivot_cache_hosts());
+        hosts.sort_unstable();
+        hosts.dedup();
+        reference_hosts::materialize(self, &hosts)?;
+        Ok(hosts)
+    }
+
+    // Live cache definitions are loaded with pivot tables on their host sheets.
+    fn raw_pivot_cache_hosts(&self) -> Vec<usize> {
+        self.work_sheet_collection
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sheet)| {
+                if sheet.is_deserialized() {
+                    return None;
+                }
+                let has_pivot_table = sheet
+                    .raw_data_of_worksheet()
+                    .relationships_list()
+                    .iter()
+                    .flat_map(crate::raw::RawRelationships::relationship_list)
+                    .any(|relationship| {
+                        relationship.get_type() == crate::helper::const_str::PIVOT_TABLE_NS
+                            && relationship.target_mode() != "External"
+                    });
+                has_pivot_table.then_some(index)
+            })
+            .collect()
+    }
+
+    /// Preflight names on every sheet and formula owners on materialized hosts
+    /// before any reference or cell geometry is changed. Defined names are
+    /// already available from workbook.xml even when their sheet remains raw.
+    fn prepare_workbook_reference_adjustment(
+        &self,
+        hosts: &[usize],
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) -> Result<WorkbookReferencePlan, XlsxError> {
+        use crate::drawing::charts::reference_edit_engine::{
+            PreparedReferenceEdit,
+            edit_prepared_formula_text,
+        };
+        let prepared = PreparedReferenceEdit::new(edit).map_err(|e| {
+            XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("reference edit: {e:?}"),
+            )
+        })?;
+        let pivot_cache_sources =
+            self.prepare_pivot_cache_source_adjustments(std::slice::from_ref(&prepared))?;
+        let decide = |text: &str, host: &str| -> Option<String> {
+            let result = edit_prepared_formula_text(text, host, &prepared, false);
+            (result.text != text).then_some(result.text)
+        };
+        let mut global_names = Vec::with_capacity(self.defined_names.len());
+        for name in &self.defined_names {
+            let host = if name.has_local_sheet_id() {
+                self.work_sheet_collection
+                    .get(name.local_sheet_id() as usize)
+                    .map_or("", Worksheet::name)
+            } else {
+                ""
+            };
+            global_names.push(decide(&name.address(), host));
+        }
+        let scoped_names = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| {
+                sheet
+                    .defined_names()
+                    .iter()
+                    .map(|name| decide(&name.address(), sheet.name()))
+                    .collect()
+            })
+            .collect();
+        let mut sheets = Vec::with_capacity(hosts.len());
+        for &index in hosts {
+            let sheet = &self.work_sheet_collection[index];
+            let host = sheet.name();
+            let mut cells = Vec::new();
+            for cell in sheet.cells() {
+                if cell.is_formula() {
+                    let c = cell.coordinate();
+                    let moving = match edit {
+                        crate::drawing::charts::ChartReferenceEdit::MoveRange {
+                            source_sheet,
+                            source,
+                            ..
+                        } => {
+                            name_eq_ignore_case(host, source_sheet)
+                                && (source.first.column..=source.last.column).contains(&c.col_num())
+                                && (source.first.row..=source.last.row).contains(&c.row_num())
+                        }
+                        crate::drawing::charts::ChartReferenceEdit::RenameSheet { .. }
+                        | crate::drawing::charts::ChartReferenceEdit::DeleteSheet { .. }
+                        | crate::drawing::charts::ChartReferenceEdit::InsertRows { .. }
+                        | crate::drawing::charts::ChartReferenceEdit::InsertColumns { .. }
+                        | crate::drawing::charts::ChartReferenceEdit::DeleteRows { .. }
+                        | crate::drawing::charts::ChartReferenceEdit::DeleteColumns { .. } => false,
+                    };
+                    if let Some(original) = cell.cell_value().formula_obj() {
+                        let mut formula = original.clone();
+                        if formula.adjust_reference_texts_prepared(host, &prepared, moving) {
+                            cells.push(((c.col_num(), c.row_num()), formula));
+                        }
+                    }
+                }
+            }
+            let charts = sheet.prepare_chart_space_edits(host, &prepared);
+            let extension_formulas = sheet.prepare_extension_formula_edits(host, &prepared);
+            sheets.push(SheetReferencePlan {
+                index,
+                cells,
+                charts,
+                extension_formulas,
+            });
+        }
+        Ok(WorkbookReferencePlan {
+            global_names,
+            scoped_names,
+            sheets,
+            pivot_cache_sources,
+        })
+    }
+
+    fn prepare_pivot_cache_source_adjustments(
+        &self,
+        edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+    ) -> Result<Vec<PivotCacheSourcePlan>, XlsxError> {
+        let mut plans = Vec::new();
+        for (sheet_index, sheet) in self.work_sheet_collection.iter().enumerate() {
+            for (pivot_index, pivot) in sheet.pivot_tables().iter().enumerate() {
+                let Some(source) = pivot
+                    .pivot_cache_definition()
+                    .cache_source()
+                    .worksheet_source()
+                else {
+                    continue;
+                };
+                if let Some(source) = prepare_pivot_cache_source(source, edits)? {
+                    plans.push(PivotCacheSourcePlan {
+                        owner: PivotCacheSourceOwner::Live {
+                            sheet: sheet_index,
+                            pivot: pivot_index,
+                        },
+                        source,
+                    });
+                }
+            }
+        }
+        for (cache_index, (_, definition)) in self.pivot_orphans.iter().enumerate() {
+            let Some(source) = definition.cache_source().worksheet_source() else {
+                continue;
+            };
+            if let Some(source) = prepare_pivot_cache_source(source, edits)? {
+                plans.push(PivotCacheSourcePlan {
+                    owner: PivotCacheSourceOwner::Retained { cache: cache_index },
+                    source,
+                });
+            }
+        }
+        Ok(plans)
+    }
+
+    fn apply_pivot_cache_source_adjustments(&mut self, plans: Vec<PivotCacheSourcePlan>) {
+        for plan in plans {
+            let definition = match plan.owner {
+                PivotCacheSourceOwner::Live { sheet, pivot } => self.work_sheet_collection[sheet]
+                    .pivot_tables_mut()[pivot]
+                    .pivot_cache_definition_mut(),
+                PivotCacheSourceOwner::Retained { cache } => &mut self.pivot_orphans[cache].1,
+            };
+            *definition
+                .cache_source_mut()
+                .worksheet_source_mut()
+                .expect("preflighted pivot cache worksheet source") = plan.source;
+        }
+    }
+
+    fn apply_workbook_reference_adjustment(
+        &mut self,
+        plan: WorkbookReferencePlan,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) {
+        for (name, decision) in self.defined_names.iter_mut().zip(plan.global_names) {
+            if let Some(text) = decision {
+                name.set_string_value(text);
+            }
+        }
+        for (sheet, decisions) in self.work_sheet_collection.iter_mut().zip(plan.scoped_names) {
+            for (name, decision) in sheet.defined_names_mut().iter_mut().zip(decisions) {
+                if let Some(text) = decision {
+                    name.set_string_value(text);
+                }
+            }
+        }
+        for sheet_plan in plan.sheets {
+            let sheet = &mut self.work_sheet_collection[sheet_plan.index];
+            for (coordinate, formula) in sheet_plan.cells {
+                let cell = sheet.cell_mut(coordinate);
+                // The preflight clone preserves formula metadata and adjusts
+                // both serialized text and any authoritative shared view.
+                let preserve_error =
+                    matches!(cell.raw_value(), crate::structs::CellRawValue::Error(_));
+                cell.cell_value_mut().set_formula_obj(formula);
+                if !preserve_error {
+                    cell.cell_value_mut().set_formula_result_blank();
+                }
+            }
+            sheet.apply_chart_space_edits(sheet_plan.charts, edit);
+            sheet.apply_extension_formula_edits(sheet_plan.extension_formulas);
+        }
+        self.apply_pivot_cache_source_adjustments(plan.pivot_cache_sources);
+    }
+
+    /// Excel's result for a deleted chart source sheet: the dimensions and
+    /// texts that read it are removed (`ChartExSpace::adjust_references`), and
+    /// so are the hidden `_xlchart` names that no remaining formula uses.
+    fn prepare_chart_ex_sheet_deletion(
+        &self,
+        hosts: &[usize],
+        deleted: usize,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) -> Result<ChartExSheetDeletion, XlsxError> {
+        use crate::drawing::charts::{
+            ChartExDefinedNameReference,
+            ChartExDefinedNameSource,
+            reference_edit_engine::{
+                PreparedReferenceEdit,
+                edit_prepared_formula_text,
+            },
+        };
+        let prepared = PreparedReferenceEdit::new(edit).map_err(|error| {
+            XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("reference edit: {error:?}"),
+            )
+        })?;
+        let mut candidates: Vec<(ChartExDefinedNameSource, Option<u32>)> = Vec::new();
+        let global = self.defined_names.iter().map(|name| {
+            let host = if name.has_local_sheet_id() {
+                self.work_sheet_collection
+                    .get(name.local_sheet_id() as usize)
+                    .map_or("", Worksheet::name)
+            } else {
+                ""
+            };
+            (name, host)
+        });
+        let on_sheets = self.work_sheet_collection.iter().flat_map(|sheet| {
+            sheet
+                .defined_names()
+                .iter()
+                .map(|name| (name, sheet.name()))
+        });
+        for (name, host) in global.chain(on_sheets) {
+            let scope = name.has_local_sheet_id().then(|| name.local_sheet_id());
+            if name.name().to_ascii_lowercase().starts_with("_xlchart.")
+                && edit_prepared_formula_text(&name.address(), host, &prepared, false).invalidated
+                    > 0
+                && !candidates.iter().any(|(known, known_scope)| {
+                    name_eq_ignore_case(&known.reference.name, name.name()) && *known_scope == scope
+                })
+            {
+                candidates.push((
+                    ChartExDefinedNameSource {
+                        reference: ChartExDefinedNameReference {
+                            name:            name.name().to_owned(),
+                            sheet:           None,
+                            workbook_scoped: false,
+                        },
+                        address:   name.address(),
+                    },
+                    scope,
+                ));
+            }
+        }
+        let sources: Vec<_> = candidates
+            .iter()
+            .map(|(source, _)| source.clone())
+            .collect();
+        let mut charts = Vec::with_capacity(hosts.len());
+        let mut surviving = Vec::new();
+        for &host in hosts.iter().filter(|&&host| host != deleted) {
+            let sheet = &self.work_sheet_collection[host];
+            let results = sheet
+                .prepare_chart_ex_sheet_deletion(sheet.name(), edit, &sources)
+                .map_err(|error| {
+                    XlsxError::with_message(
+                        XlsxErrorKind::InvalidArgument,
+                        format!("ChartEx reference edit: {error}"),
+                    )
+                })?;
+            let mut spaces = Vec::with_capacity(results.len());
+            for (space, _) in results {
+                space.visit_formulas(&mut |formula| {
+                    surviving.push((sheet.name().to_owned(), formula.address_str()));
+                });
+                spaces.push(space);
+            }
+            charts.push((host, spaces));
+        }
+        let unused = self.generated_names_without_chart_ex_consumer(
+            candidates
+                .iter()
+                .map(|(source, scope)| (source.reference.name.to_lowercase(), *scope))
+                .collect(),
+            &surviving,
+        );
+        Ok(ChartExSheetDeletion {
+            charts,
+            removed_names: candidates
+                .into_iter()
+                .filter(|(source, scope)| {
+                    unused.contains(&(source.reference.name.to_lowercase(), *scope))
+                })
+                .map(|(source, scope)| (source.reference.name, scope))
+                .collect(),
+        })
+    }
+
+    fn apply_chart_ex_sheet_deletion(&mut self, deletion: ChartExSheetDeletion) {
+        for (host, spaces) in deletion.charts {
+            self.work_sheet_collection[host].apply_chart_ex_sheet_deletion(spaces);
+        }
+        let removed = |name: &DefinedName| {
+            deletion.removed_names.iter().any(|(removed, scope)| {
+                name_eq_ignore_case(removed, name.name())
+                    && *scope == name.has_local_sheet_id().then(|| name.local_sheet_id())
+            })
+        };
+        self.defined_names.retain(|name| !removed(name));
+        for sheet in &mut self.work_sheet_collection {
+            sheet.defined_names_mut().retain(|name| !removed(name));
+        }
+    }
+
+    /// Move an inclusive source rectangle to a one-based destination cell.
+    /// Reference decisions are preflighted before formula or geometry changes.
+    pub fn move_range(
+        &mut self,
+        source_sheet: &str,
+        source: crate::drawing::charts::ReferenceRect,
+        destination_sheet: &str,
+        destination: crate::drawing::charts::ReferenceCell,
+    ) -> Result<(), XlsxError> {
+        use crate::drawing::charts::{
+            ChartReferenceEdit,
+            reference_edit_engine::PreparedReferenceEdit,
+        };
+        let edit = ChartReferenceEdit::MoveRange {
+            source_sheet: source_sheet.into(),
+            source,
+            destination_sheet: destination_sheet.into(),
+            destination,
+        };
+        PreparedReferenceEdit::new(&edit).map_err(|e| {
+            XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("reference edit: {e:?}"),
+            )
+        })?;
+        self.find_sheet_index_by_name(source_sheet)?;
+        self.find_sheet_index_by_name(destination_sheet)?;
+        let hosts = self.prepare_reference_hosts(&[source_sheet, destination_sheet], &edit)?;
+        let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
+        self.apply_workbook_reference_adjustment(plan, &edit);
+        self.relocate_cells_only(source_sheet, &source, destination_sheet, destination)
+    }
+
+    // Legacy row/column entrypoints have no Result channel. Complete every
+    // metadata scan before materialization, and retain their existing reader
+    // panic-on-I/O boundary rather than silently dropping dependent hosts.
+    fn structural_reference_hosts(
+        &mut self,
+        sheet: &str,
+        edits: &[crate::drawing::charts::ChartReferenceEdit],
+    ) -> Vec<usize> {
+        // Invalid structural edit coordinates or a missing sheet are outside
+        // this legacy void API's accepted domain; leave the workbook unchanged.
+        if self.find_sheet_index_by_name(sheet).is_err()
+            || edits.iter().any(|edit| {
+                crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new(edit)
+                    .is_err()
+            })
+        {
+            return Vec::new();
+        }
+        let mut hosts = Vec::new();
+        for edit in edits {
+            let found = reference_hosts::discover(self, &[sheet], edit).unwrap_or_else(|error| {
+                panic!("cannot discover workbook reference hosts: {error}")
+            });
+            hosts.extend(found);
+        }
+        hosts.extend(self.raw_pivot_cache_hosts());
+        hosts.sort_unstable();
+        hosts.dedup();
+        reference_hosts::materialize(self, &hosts)
+            .unwrap_or_else(|error| panic!("cannot deserialize workbook reference hosts: {error}"));
+        hosts
+    }
+
+    fn adjust_global_and_raw_defined_names(
+        &mut self,
+        edits: &[crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>],
+    ) {
+        use crate::drawing::charts::reference_edit_engine::edit_prepared_formula_text;
+        let sheet_names: Vec<_> = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| sheet.name().to_owned())
+            .collect();
+        for prepared in edits {
+            for name in &mut self.defined_names {
+                let host = if name.has_local_sheet_id() {
+                    sheet_names
+                        .get(name.local_sheet_id() as usize)
+                        .map_or("", String::as_str)
+                } else {
+                    ""
+                };
+                let before = name.address();
+                let decision = edit_prepared_formula_text(&before, host, prepared, false);
+                if decision.text != before {
+                    name.set_string_value(decision.text);
+                }
+            }
+            // Discovered hosts have already been materialized and adjust their
+            // names with their cell/chart semantics. Raw sheets need only this
+            // in-memory metadata edit, never a new reader/cache baseline.
+            for sheet in &mut self.work_sheet_collection {
+                if !sheet.is_deserialized() {
+                    sheet.adjust_defined_names_for_prepared(prepared);
+                }
+            }
+        }
+    }
+
+    /// Geometry-only building block for the coordinated workbook move. This
+    /// does not adjust references; callers must preflight and dispatch the
+    /// prepared `ChartReferenceEdit` separately before exposing a public move.
+    pub(crate) fn relocate_cells_only(
+        &mut self,
+        source_sheet: &str,
+        source: &crate::drawing::charts::ReferenceRect,
+        destination_sheet: &str,
+        destination: crate::drawing::charts::ReferenceCell,
+    ) -> Result<(), XlsxError> {
+        let first = &source.first;
+        let last = &source.last;
+        if first.column == 0
+            || first.row == 0
+            || first.column > last.column
+            || first.row > last.row
+            || last.column > 16_384
+            || last.row > 1_048_576
+            || destination.column == 0
+            || destination.row == 0
+        {
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                "invalid move coordinates",
+            ));
+        }
+        let last_column = destination
+            .column
+            .checked_add(last.column - first.column)
+            .filter(|v| *v <= 16_384)
+            .ok_or_else(|| {
+                XlsxError::with_message(
+                    XlsxErrorKind::InvalidArgument,
+                    "move exceeds column bounds",
+                )
+            })?;
+        let last_row = destination
+            .row
+            .checked_add(last.row - first.row)
+            .filter(|v| *v <= 1_048_576)
+            .ok_or_else(|| {
+                XlsxError::with_message(XlsxErrorKind::InvalidArgument, "move exceeds row bounds")
+            })?;
+        let source_index = self.find_sheet_index_by_name(source_sheet)?;
+        let destination_index = self.find_sheet_index_by_name(destination_sheet)?;
+        let source_cells: Vec<_> = self
+            .sheet_mut(source_index)?
+            .cells()
+            .into_iter()
+            .filter(|cell| {
+                let coordinate = cell.coordinate();
+                (first.column..=last.column).contains(&coordinate.col_num())
+                    && (first.row..=last.row).contains(&coordinate.row_num())
+            })
+            .cloned()
+            .collect();
+        let source_coordinates: Vec<_> = source_cells
+            .iter()
+            .map(|cell| (cell.coordinate().col_num(), cell.coordinate().row_num()))
+            .collect();
+        let target_coordinates: Vec<_> = self
+            .sheet_mut(destination_index)?
+            .cells()
+            .into_iter()
+            .filter_map(|cell| {
+                let coordinate = cell.coordinate();
+                ((destination.column..=last_column).contains(&coordinate.col_num())
+                    && (destination.row..=last_row).contains(&coordinate.row_num()))
+                .then_some((coordinate.col_num(), coordinate.row_num()))
+            })
+            .collect();
+        for coordinate in source_coordinates {
+            self.sheet_mut(source_index)?.remove_cell(coordinate);
+        }
+        for coordinate in target_coordinates {
+            self.sheet_mut(destination_index)?.remove_cell(coordinate);
+        }
+        for mut cell in source_cells {
+            let new_col = destination.column + cell.coordinate().col_num() - first.column;
+            let new_row = destination.row + cell.coordinate().row_num() - first.row;
+            cell.coordinate_mut()
+                .set_col_num(new_col)
+                .set_row_num(new_row);
+            self.sheet_mut(destination_index)?.set_cell(cell);
+        }
+        Ok(())
+    }
+
+    /// Import outcomes, accumulated as sheets materialize. Eager reads finish
+    /// the report before returning; lazy reads finish after all original
+    /// sheets materialize. Repeated access never charges a cache again.
+    ///
+    /// These are historical import costs, not live accounting after chart
+    /// edits, copies or stripping. Budget warnings use `over_cap_caches`.
+    /// Lazy references into previously materialized sheets conservatively
+    /// lose source labels even if those sheets were never edited. See
+    /// [`ChartSourceCacheReport`] for the remaining lazy differences.
+    #[must_use]
+    pub fn chart_source_cache_report(&self) -> &ChartSourceCacheReport {
+        &self.chart_cache_report
+    }
+
+    pub(crate) fn chart_source_cache_report_mut(&mut self) -> &mut ChartSourceCacheReport {
+        &mut self.chart_cache_report
+    }
+
+    /// Returns whether a one-based cell `cm` index identifies a native dynamic
+    /// array. Unrelated cell metadata must not be treated as dynamic-array
+    /// identity.
     #[must_use]
     pub fn is_dynamic_array_metadata(&self, cell_meta_index: u32) -> bool {
-        self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_dynamic(cell_meta_index))
+        self.cell_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_dynamic(cell_meta_index))
     }
 
     /// Ensure a standard XLDAPR dynamic-array record exists and return its
     /// one-based cell metadata index. Assign this to the array anchor's `cm`.
     /// Existing records and their indices are retained.
     pub fn ensure_dynamic_array_metadata(&mut self) -> u32 {
-        self.cell_metadata.get_or_insert_with(Default::default).ensure_dynamic()
+        self.cell_metadata
+            .get_or_insert_with(Default::default)
+            .ensure_dynamic()
     }
 
     /// Ensure a namespaced cell-metadata extension exists without replacing
     /// existing types or records. Properties must be a single XML element.
-    pub fn ensure_cell_metadata_extension(&mut self, type_name: &str, extension_uri: &str, properties_xml: &str) -> Result<u32, XlsxError> {
-        self.cell_metadata.get_or_insert_with(Default::default).ensure_extension(type_name, extension_uri, properties_xml)
+    pub fn ensure_cell_metadata_extension(
+        &mut self,
+        type_name: &str,
+        extension_uri: &str,
+        properties_xml: &str,
+    ) -> Result<u32, XlsxError> {
+        self.cell_metadata
+            .get_or_insert_with(Default::default)
+            .ensure_extension(type_name, extension_uri, properties_xml)
     }
 
     /// Resolve a cell cm index to a property of a named metadata extension.
     #[must_use]
-    pub fn is_cell_metadata_extension(&self, cm: u32, type_name: &str, namespace: &str, local_name: &str) -> bool {
-        self.cell_metadata.as_ref().is_some_and(|metadata| metadata.is_extension(cm, type_name, namespace, local_name))
+    pub fn is_cell_metadata_extension(
+        &self,
+        cm: u32,
+        type_name: &str,
+        namespace: &str,
+        local_name: &str,
+    ) -> bool {
+        self.cell_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_extension(cm, type_name, namespace, local_name))
     }
 
     // ************************
@@ -108,15 +964,11 @@ impl Workbook {
     /// # Examples
     /// ```
     /// let mut book = umya_spreadsheet::new_file();
-    /// book.insert_new_row("Sheet1", 2, 3).unwrap();
+    /// book.insert_new_row("Sheet1", 2, 3);
     /// ```
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
     #[inline]
-    pub fn insert_new_row(&mut self, sheet_name: &str, row_index: u32, num_rows: u32) -> Result<(), XlsxError> {
-        self.read_sheet_collection()?;
+    pub fn insert_new_row(&mut self, sheet_name: &str, row_index: u32, num_rows: u32) {
         self.adjustment_insert_coordinate_with_sheet(sheet_name, 0, 0, row_index, num_rows);
-        Ok(())
     }
 
     /// Insert new columns.
@@ -127,18 +979,11 @@ impl Workbook {
     /// # Examples
     /// ```
     /// let mut book = umya_spreadsheet::new_file();
-    /// book.insert_new_column("Sheet1", "B", 3).unwrap();
+    /// book.insert_new_column("Sheet1", "B", 3);
     /// ```
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
     #[inline]
-    pub fn insert_new_column(
-        &mut self,
-        sheet_name: &str,
-        column: &str,
-        num_columns: u32,
-    ) -> Result<(), XlsxError> {
-        self.insert_new_column_by_index(sheet_name, column_index_from_string(column), num_columns)
+    pub fn insert_new_column(&mut self, sheet_name: &str, column: &str, num_columns: u32) {
+        self.insert_new_column_by_index(sheet_name, column_index_from_string(column), num_columns);
     }
 
     /// Insert new columns.
@@ -149,20 +994,16 @@ impl Workbook {
     /// # Examples
     /// ```rust
     /// let mut book = umya_spreadsheet::new_file();
-    /// book.insert_new_column_by_index("Sheet1", 2, 3).unwrap();
+    /// book.insert_new_column_by_index("Sheet1", 2, 3);
     /// ```
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
     #[inline]
     pub fn insert_new_column_by_index(
         &mut self,
         sheet_name: &str,
         column_index: u32,
         num_columns: u32,
-    ) -> Result<(), XlsxError> {
-        self.read_sheet_collection()?;
+    ) {
         self.adjustment_insert_coordinate_with_sheet(sheet_name, column_index, num_columns, 0, 0);
-        Ok(())
     }
 
     /// Remove rows.
@@ -173,15 +1014,11 @@ impl Workbook {
     /// # Examples
     /// ```rust
     /// let mut book = umya_spreadsheet::new_file();
-    /// book.remove_row("Sheet1", 2, 3).unwrap();
+    /// book.remove_row("Sheet1", 2, 3);
     /// ```
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
     #[inline]
-    pub fn remove_row(&mut self, sheet_name: &str, row_index: u32, num_rows: u32) -> Result<(), XlsxError> {
-        self.read_sheet_collection()?;
+    pub fn remove_row(&mut self, sheet_name: &str, row_index: u32, num_rows: u32) {
         self.adjustment_remove_coordinate_with_sheet(sheet_name, 0, 0, row_index, num_rows);
-        Ok(())
     }
 
     /// Remove columns.
@@ -192,18 +1029,11 @@ impl Workbook {
     /// # Examples
     /// ```rust
     /// let mut book = umya_spreadsheet::new_file();
-    /// book.remove_column("Sheet1", "B", 3).unwrap();
+    /// book.remove_column("Sheet1", "B", 3);
     /// ```
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
     #[inline]
-    pub fn remove_column(
-        &mut self,
-        sheet_name: &str,
-        column: &str,
-        num_columns: u32,
-    ) -> Result<(), XlsxError> {
-        self.remove_column_by_index(sheet_name, column_index_from_string(column), num_columns)
+    pub fn remove_column(&mut self, sheet_name: &str, column: &str, num_columns: u32) {
+        self.remove_column_by_index(sheet_name, column_index_from_string(column), num_columns);
     }
 
     /// Remove columns.
@@ -214,20 +1044,16 @@ impl Workbook {
     /// # Examples
     /// ```rust
     /// let mut book = umya_spreadsheet::new_file();
-    /// book.remove_column_by_index("Sheet1", 2, 3).unwrap();
+    /// book.remove_column_by_index("Sheet1", 2, 3);
     /// ```
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
     #[inline]
     pub fn remove_column_by_index(
         &mut self,
         sheet_name: &str,
         column_index: u32,
         num_columns: u32,
-    ) -> Result<(), XlsxError> {
-        self.read_sheet_collection()?;
+    ) {
         self.adjustment_remove_coordinate_with_sheet(sheet_name, column_index, num_columns, 0, 0);
-        Ok(())
     }
 
     /// Gets the cell value by specifying an address.
@@ -243,7 +1069,7 @@ impl Workbook {
     #[inline]
     #[must_use]
     pub fn cell_value_by_address(&self, address: &str) -> Vec<&CellValue> {
-        let (sheet_name, range) = split_address(address);
+        let (sheet_name, range) = split_reference_address(address);
         match self.sheet_by_name(&unescape_sheet_name(sheet_name)) {
             Ok(sheet) => sheet.cell_value_by_range(range),
             Err(_) => vec![],
@@ -537,12 +1363,21 @@ impl Workbook {
         self
     }
 
-    /// Get Work Sheet List.
+    /// Get all loaded worksheets without materializing raw sheets.
+    ///
+    /// # Panics
+    /// Panics if any worksheet has not been deserialized.
+    #[must_use]
+    pub fn sheet_collection(&self) -> &[Worksheet] {
+        self.try_sheet_collection()
+            .unwrap_or_else(|error| panic!("cannot access unloaded worksheets: {error}"))
+    }
+
+    /// Get all worksheets only when every sheet has been deserialized.
+    ///
     /// # Errors
-    /// Returns [`XlsxErrorKind::NotDeserialized`] if any worksheet has not been
-    /// deserialized yet. Use [`Workbook::read_sheet_collection`] or
-    /// [`Workbook::sheet_collection_no_check`].
-    pub fn sheet_collection(&self) -> Result<&[Worksheet], XlsxError> {
+    /// Returns [`XlsxErrorKind::NotDeserialized`] if a worksheet is still raw.
+    pub fn try_sheet_collection(&self) -> Result<&[Worksheet], XlsxError> {
         if self
             .work_sheet_collection
             .iter()
@@ -554,13 +1389,13 @@ impl Workbook {
         }
     }
 
+    #[must_use]
     #[deprecated(since = "3.0.0", note = "Use sheet_collection()")]
-    pub fn get_sheet_collection(&self) -> Result<&[Worksheet], XlsxError> {
+    pub fn get_sheet_collection(&self) -> &[Worksheet] {
         self.sheet_collection()
     }
 
-    /// Get Work Sheet List.
-    /// No check deserialized.
+    /// Worksheets without checking whether they have been deserialized.
     #[inline]
     #[must_use]
     pub fn sheet_collection_no_check(&self) -> &[Worksheet] {
@@ -574,24 +1409,36 @@ impl Workbook {
         self.sheet_collection_no_check()
     }
 
-    /// Get Work Sheet List in mutable.
+    /// Worksheets without materializing them.
+    pub(crate) fn sheet_collection_unchecked_mut(&mut self) -> &mut [Worksheet] {
+        &mut self.work_sheet_collection
+    }
+
+    /// Materialize and get all worksheets mutably.
+    ///
+    /// # Panics
+    /// Panics if a worksheet cannot be deserialized.
+    #[inline]
+    pub fn sheet_collection_mut(&mut self) -> &mut [Worksheet] {
+        self.try_sheet_collection_mut()
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheets: {error}"))
+    }
+
+    /// Materialize and get all worksheets mutably.
+    ///
     /// # Errors
     /// Returns an error if a worksheet cannot be deserialized.
-    #[inline]
-    pub fn sheet_collection_mut(&mut self) -> Result<&mut [Worksheet], XlsxError> {
-        self.read_sheet_collection()?;
+    pub fn try_sheet_collection_mut(&mut self) -> Result<&mut [Worksheet], XlsxError> {
+        self.try_read_sheet_collection()?;
         Ok(&mut self.work_sheet_collection)
     }
 
     #[inline]
     #[deprecated(since = "3.0.0", note = "Use sheet_collection_mut()")]
-    pub fn get_sheet_collection_mut(&mut self) -> Result<&mut [Worksheet], XlsxError> {
+    pub fn get_sheet_collection_mut(&mut self) -> &mut [Worksheet] {
         self.sheet_collection_mut()
     }
 
-    /// Get Work Sheet Count.
-    /// # Return value
-    /// * `usize` - Work Sheet Count.
     #[inline]
     #[must_use]
     pub fn sheet_count(&self) -> usize {
@@ -605,11 +1452,23 @@ impl Workbook {
         self.sheet_count()
     }
 
-    /// deserialize by all worksheet.
-    /// # Errors
-    /// Returns an error if a worksheet cannot be deserialized.
+    /// Deserialize all worksheets.
+    ///
+    /// # Panics
+    /// Panics if a worksheet cannot be deserialized.
     #[inline]
-    pub fn read_sheet_collection(&mut self) -> Result<&mut Self, XlsxError> {
+    pub fn read_sheet_collection(&mut self) -> &mut Self {
+        self.try_read_sheet_collection()
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheets: {error}"))
+    }
+
+    /// Deserialize all worksheets, retaining successful sheets if a later read
+    /// fails.
+    ///
+    /// # Errors
+    /// Returns the first worksheet read error. Earlier successful sheets retain
+    /// their original import/cache baselines; the failed sheet remains raw.
+    pub fn try_read_sheet_collection(&mut self) -> Result<&mut Self, XlsxError> {
         if self
             .work_sheet_collection
             .iter()
@@ -619,43 +1478,101 @@ impl Workbook {
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
-        for worksheet in &mut self.work_sheet_collection {
+        let mut session = SourceCacheSession::deferred();
+        session.set_content_types(self.package_content_types());
+        session.set_pivot_cache_bindings(self.pivot_cache_bindings());
+        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
+        let mut staged = Vec::new();
+        let mut result = Ok(());
+        for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
             if !worksheet.is_deserialized() {
-                raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet)?;
+                match prepare_worksheet_materialization(
+                    worksheet,
+                    &shared_string_table,
+                    &stylesheet,
+                    &mut session,
+                    &mut provider,
+                ) {
+                    Ok(Some(transaction)) => staged.push((index, transaction)),
+                    Ok(None) => (),
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
             }
         }
+        finish_worksheet_materializations(self, staged, &mut session, &mut provider)?;
+        result?;
         Ok(self)
     }
 
-    /// deserialize a worksheet.
-    /// # Errors
-    /// Returns [`XlsxErrorKind::NotFound`] if `index` is out of range, or an
-    /// error if the worksheet cannot be deserialized.
+    /// Deserialize one worksheet.
+    ///
+    /// # Panics
+    /// Panics if the index is missing or the worksheet cannot be deserialized.
     #[inline]
-    pub fn read_sheet(&mut self, index: usize) -> Result<&mut Self, XlsxError> {
+    pub fn read_sheet(&mut self, index: usize) -> &mut Self {
+        self.try_read_sheet(index)
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheet: {error}"))
+    }
+
+    /// Deserialize one worksheet without opening unrelated sheets.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] for an invalid index, or its read
+    /// error.
+    pub fn try_read_sheet(&mut self, index: usize) -> Result<&mut Self, XlsxError> {
         let is_deserialized = self
             .work_sheet_collection
             .get(index)
             .map(Worksheet::is_deserialized)
-            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
+            .ok_or_else(|| XlsxError::new(XlsxErrorKind::NotFound))?;
         if is_deserialized {
             return Ok(self);
         }
         let shared_string_table = self.shared_string_table();
         let stylesheet = self.stylesheet().clone();
-        let worksheet = &mut self.work_sheet_collection[index];
-        raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet)?;
+        let mut session = SourceCacheSession::deferred();
+        session.set_content_types(self.package_content_types());
+        session.set_pivot_cache_bindings(self.pivot_cache_bindings());
+        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
+        let staged = prepare_worksheet_materialization(
+            &mut self.work_sheet_collection[index],
+            &shared_string_table,
+            &stylesheet,
+            &mut session,
+            &mut provider,
+        )?;
+        if let Some(staged) = staged {
+            finish_worksheet_materializations(
+                self,
+                vec![(index, staged)],
+                &mut session,
+                &mut provider,
+            )?;
+        }
         Ok(self)
     }
 
-    /// deserialize a worksheet.
-    /// # Errors
-    /// Returns [`XlsxErrorKind::NotFound`] if no worksheet has `sheet_name`, or
-    /// an error if the worksheet cannot be deserialized.
+    /// Deserialize a named worksheet.
+    ///
+    /// # Panics
+    /// Panics if the name is missing or the worksheet cannot be deserialized.
     #[inline]
-    pub fn read_sheet_by_name(&mut self, sheet_name: &str) -> Result<&mut Self, XlsxError> {
+    pub fn read_sheet_by_name(&mut self, sheet_name: &str) -> &mut Self {
+        self.try_read_sheet_by_name(sheet_name)
+            .unwrap_or_else(|error| panic!("cannot deserialize worksheet: {error}"))
+    }
+
+    /// Deserialize a named worksheet without opening unrelated sheets.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] for a missing name, or its read
+    /// error.
+    pub fn try_read_sheet_by_name(&mut self, sheet_name: &str) -> Result<&mut Self, XlsxError> {
         let index = self.find_sheet_index_by_name(sheet_name)?;
-        self.read_sheet(index)
+        self.try_read_sheet(index)
     }
 
     #[inline]
@@ -727,19 +1644,8 @@ impl Workbook {
     /// # Return value
     /// * `Result<&mut Worksheet, XlsxError>`.
     pub fn sheet_mut(&mut self, index: usize) -> Result<&mut Worksheet, XlsxError> {
-        let is_deserialized = self
-            .work_sheet_collection
-            .get(index)
-            .map(Worksheet::is_deserialized)
-            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
-        if is_deserialized {
-            return Ok(&mut self.work_sheet_collection[index]);
-        }
-        let shared_string_table = self.shared_string_table();
-        let stylesheet = self.stylesheet().clone();
-        let worksheet = &mut self.work_sheet_collection[index];
-        raw_to_deserialize_by_worksheet(worksheet, &shared_string_table, &stylesheet)?;
-        Ok(worksheet)
+        self.try_read_sheet(index)?;
+        Ok(&mut self.work_sheet_collection[index])
     }
 
     #[deprecated(since = "3.0.0", note = "Use sheet_mut()")]
@@ -764,43 +1670,71 @@ impl Workbook {
         self.sheet_by_name_mut(sheet_name)
     }
 
+    /// Activate a visible worksheet. Invalid or hidden indexes leave the
+    /// current worksheet active, as does failure to read a lazy worksheet.
     #[inline]
     pub fn set_active_sheet(&mut self, index: u32) -> &mut Self {
-        self.workbook_view_mut().set_active_tab(index);
+        if self
+            .work_sheet_collection
+            .get(index as usize)
+            .is_some_and(|sheet| matches!(sheet.state(), crate::structs::SheetStateValues::Visible))
+        {
+            // The existing setter cannot return a materialization error.
+            // Selection is changed only after both sheets can be read.
+            drop(self.select_visible_sheet(index as usize));
+        }
         self
     }
 
-    /// Get Active Work Sheet.
-    /// # Return value
-    /// * `Result<&Worksheet, XlsxError>`.
+    /// Get the loaded active worksheet.
+    ///
+    /// # Panics
+    /// Panics if the active worksheet is missing or has not been deserialized.
+    #[inline]
+    #[must_use]
+    pub fn active_sheet(&self) -> &Worksheet {
+        self.try_active_sheet()
+            .unwrap_or_else(|error| panic!("cannot access active worksheet: {error}"))
+    }
+
+    /// Get the loaded active worksheet.
+    ///
     /// # Errors
     /// Same as [`Workbook::sheet`].
     #[inline]
-    pub fn active_sheet(&self) -> Result<&Worksheet, XlsxError> {
-        let index = self.workbook_view().active_tab();
-        self.sheet(index as usize)
+    pub fn try_active_sheet(&self) -> Result<&Worksheet, XlsxError> {
+        self.sheet(self.workbook_view().active_tab() as usize)
     }
 
     #[inline]
+    #[must_use]
     #[deprecated(since = "3.0.0", note = "Use active_sheet()")]
-    pub fn get_active_sheet(&self) -> Result<&Worksheet, XlsxError> {
+    pub fn get_active_sheet(&self) -> &Worksheet {
         self.active_sheet()
     }
 
-    /// Get Active Work Sheet in mutable.
-    /// # Return value
-    /// * `Result<&mut Worksheet, XlsxError>`.
+    /// Materialize and get the active worksheet mutably.
+    ///
+    /// # Panics
+    /// Panics if the active worksheet is missing or cannot be deserialized.
+    #[inline]
+    pub fn active_sheet_mut(&mut self) -> &mut Worksheet {
+        self.try_active_sheet_mut()
+            .unwrap_or_else(|error| panic!("cannot deserialize active worksheet: {error}"))
+    }
+
+    /// Materialize and get the active worksheet mutably.
+    ///
     /// # Errors
     /// Same as [`Workbook::sheet_mut`].
     #[inline]
-    pub fn active_sheet_mut(&mut self) -> Result<&mut Worksheet, XlsxError> {
-        let index = self.workbook_view().active_tab();
-        self.sheet_mut(index as usize)
+    pub fn try_active_sheet_mut(&mut self) -> Result<&mut Worksheet, XlsxError> {
+        self.sheet_mut(self.workbook_view().active_tab() as usize)
     }
 
     #[inline]
     #[deprecated(since = "3.0.0", note = "Use active_sheet_mut()")]
-    pub fn get_active_sheet_mut(&mut self) -> Result<&mut Worksheet, XlsxError> {
+    pub fn get_active_sheet_mut(&mut self) -> &mut Worksheet {
         self.active_sheet_mut()
     }
 
@@ -810,9 +1744,39 @@ impl Workbook {
     /// # Return value
     /// * `Result<&mut Worksheet, XlsxError>` - OK:added work sheet. Err:Error.
     #[inline]
-    pub fn add_sheet(&mut self, value: Worksheet) -> Result<&mut Worksheet, XlsxError> {
+    pub fn add_sheet(&mut self, mut value: Worksheet) -> Result<&mut Worksheet, XlsxError> {
         let title = value.name();
-        Workbook::check_sheet_name(self, title)?;
+        self.check_sheet_name(title, None)?;
+        if let Some(source) = self
+            .work_sheet_collection
+            .iter()
+            .position(|sheet| !value.sheet_id().is_empty() && sheet.sheet_id() == value.sheet_id())
+        {
+            let mut prepared = self.clone();
+            let mut copy = value.clone();
+            prepared.try_read_sheet(source)?;
+            prepared.read_sheet_copy(source, &mut copy)?;
+            if prepared.work_sheet_collection[source].has_same_copy_identities(&copy) {
+                if matches!(copy.state(), crate::structs::SheetStateValues::VeryHidden) {
+                    return Err(XlsxError::with_message(
+                        XlsxErrorKind::InvalidArgument,
+                        "a very hidden worksheet cannot be copied",
+                    ));
+                }
+                prepared.prepare_sheet_copy(source, &mut copy)?;
+                prepared.work_sheet_collection.push(copy);
+                *self = prepared;
+                return Ok(self.work_sheet_collection.last_mut().unwrap());
+            }
+        }
+        if value.sheet_id().is_empty()
+            || self
+                .work_sheet_collection
+                .iter()
+                .any(|sheet| sheet.sheet_id() == value.sheet_id())
+        {
+            value.set_sheet_id(self.next_sheet_id()?);
+        }
         self.work_sheet_collection.push(value);
         Ok(self.work_sheet_collection.last_mut().unwrap())
     }
@@ -825,6 +1789,67 @@ impl Workbook {
         std::mem::take(&mut self.work_sheet_collection)
     }
 
+    pub(crate) fn replace_sheet_collection(&mut self, sheets: Vec<Worksheet>) -> Vec<Worksheet> {
+        std::mem::replace(&mut self.work_sheet_collection, sheets)
+    }
+
+    fn prepare_frozen_pivot_charts(
+        &self,
+        hosts: &[usize],
+        sheet: &str,
+        include: impl Fn(&crate::drawing::charts::ChartSpace) -> bool,
+    ) -> Result<FrozenPivotCharts, XlsxError> {
+        let mut snapshots = Vec::new();
+        for &host in hosts {
+            let mut frozen = Vec::new();
+            self.work_sheet_collection[host].visit_chart_spaces(&mut |space| {
+                frozen.push(
+                    (space.is_linked_to_pivot_sheet(sheet) && include(space)).then(|| {
+                        crate::drawing::charts::pivot_chart_data::FrozenPivotChart::new(space, self)
+                    }),
+                );
+            });
+            snapshots.push((
+                host,
+                frozen
+                    .into_iter()
+                    .map(Option::transpose)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
+        Ok(snapshots)
+    }
+
+    fn apply_frozen_pivot_charts(
+        &mut self,
+        snapshots: FrozenPivotCharts,
+        local_sheet: Option<&str>,
+    ) {
+        for (host, frozen) in snapshots {
+            let local =
+                local_sheet.is_some_and(|id| self.work_sheet_collection[host].sheet_id() == id);
+            let mut frozen = frozen.into_iter();
+            self.work_sheet_collection[host].visit_chart_spaces_mut(&mut |space| {
+                if let Some(Some(frozen)) = frozen.next() {
+                    frozen.apply(space);
+                    if local && space.chart().plot_area().chart_groups().count() == 1 {
+                        let mut index = 0;
+                        for group in space.chart_mut().plot_area_mut().chart_groups_mut() {
+                            for series in group.series_mut().area_chart_series_mut() {
+                                index += 1;
+                                let mut text = crate::drawing::charts::ChartText::default();
+                                let mut value = crate::drawing::charts::NumericValue::default();
+                                value.set_text(format!("Series{index}"));
+                                text.set_numeric_value(value);
+                                series.set_chart_text(text);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     /// Remove Work Sheet.
     /// # Arguments
     /// * `index` - sheet index
@@ -832,10 +1857,107 @@ impl Workbook {
     /// * `Result<(), XlsxError>` - OK:removed worksheet. Err:Error.
     #[inline]
     pub fn remove_sheet(&mut self, index: usize) -> Result<(), XlsxError> {
-        if self.work_sheet_collection.len() <= index {
-            return Err(XlsxError::new(XlsxErrorKind::NotFound));
+        self.check_sheet_removal_visibility(index)?;
+        let name = self
+            .work_sheet_collection
+            .get(index)
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?
+            .name()
+            .to_owned();
+        let mut unique_names = std::collections::HashSet::new();
+        if self
+            .work_sheet_collection
+            .iter()
+            .any(|sheet| !unique_names.insert(sheet.name().to_lowercase()))
+        {
+            return Err(XlsxError::new(XlsxErrorKind::NameDuplicate));
         }
-        self.work_sheet_collection.remove(index);
+        let sheet_order = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| sheet.name().to_owned())
+            .collect();
+        let edit = crate::drawing::charts::ChartReferenceEdit::DeleteSheet {
+            sheet: name.clone(),
+            sheet_order,
+        };
+        self.prepare_slicer_reconciliation()?;
+        let hosts = self.prepare_reference_hosts(&[&name], &edit)?;
+        // Freeze while the pivot cells and their references still exist.
+        self.try_read_sheet(index)?;
+        let frozen = self.prepare_frozen_pivot_charts(&hosts, &name, |_| true)?;
+        let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
+        let chart_ex = self.prepare_chart_ex_sheet_deletion(&hosts, index, &edit)?;
+        self.apply_workbook_reference_adjustment(plan, &edit);
+        self.apply_frozen_pivot_charts(frozen, None);
+        self.apply_chart_ex_sheet_deletion(chart_ex);
+        let mut deleted_locals = Vec::new();
+        for names in std::iter::once(&mut self.defined_names).chain(
+            self.work_sheet_collection
+                .iter_mut()
+                .map(Worksheet::defined_names_mut),
+        ) {
+            names.retain(|name| {
+                let deleted = name.has_local_sheet_id() && name.local_sheet_id() as usize == index;
+                if deleted {
+                    deleted_locals.push(name.clone());
+                }
+                !deleted
+            });
+        }
+        let removed = self.work_sheet_collection.remove(index);
+        // Globals may be stored on the sheet containing their first address.
+        // Their semantic scope survives removal of that physical owner.
+        self.defined_names
+            .extend(removed.defined_names().iter().cloned());
+        self.reconcile_slicers_after_sheet_removal(&removed);
+        for mut name in deleted_locals {
+            let collides = self
+                .defined_names
+                .iter()
+                .chain(
+                    self.work_sheet_collection
+                        .iter()
+                        .flat_map(Worksheet::defined_names),
+                )
+                .any(|existing| {
+                    !existing.has_local_sheet_id()
+                        && name_eq_ignore_case(existing.name(), name.name())
+                });
+            if !collides && reference_hosts::references_current_workbook_name(self, name.name()) {
+                // Match Excel's current-workbook fallback: an existing global
+                // wins a collision; a surviving reference otherwise retains a
+                // global #REF! tombstone. Unreferenced local names disappear.
+                name.clear_local_sheet_id();
+                name.set_string_value("#REF!");
+                self.defined_names.push(name);
+            }
+        }
+        // localSheetId is a zero-based workbook index, not a stable sheet ID.
+        // Later scopes shift with their owners after deleted locals are removed.
+        for name in &mut self.defined_names {
+            if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
+                name.set_local_sheet_id(name.local_sheet_id() - 1);
+            }
+        }
+        for sheet in &mut self.work_sheet_collection {
+            for name in sheet.defined_names_mut() {
+                if name.has_local_sheet_id() && name.local_sheet_id() as usize > index {
+                    name.set_local_sheet_id(name.local_sheet_id() - 1);
+                }
+            }
+        }
+        // An active tab past the last sheet makes Excel refuse the file.
+        let active = self.workbook_view().active_tab();
+        let last =
+            u32::try_from(self.work_sheet_collection.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let kept = (active - u32::from(index < active as usize)).min(last);
+        if kept != active {
+            self.workbook_view_mut().set_active_tab(kept);
+        }
+        if index == active as usize || self.needs_sheet_visibility_reconciliation() {
+            self.reconcile_sheet_visibility()?;
+        }
         Ok(())
     }
 
@@ -845,14 +1967,8 @@ impl Workbook {
     /// # Return value
     /// * `Result<(), XlsxError>` - OK:removed worksheet. Err:Error.
     pub fn remove_sheet_by_name(&mut self, sheet_name: &str) -> Result<(), XlsxError> {
-        let cnt_before = self.work_sheet_collection.len();
-        self.work_sheet_collection
-            .retain(|x| x.name() != sheet_name);
-        let cnt_after = self.work_sheet_collection.len();
-        if cnt_before == cnt_after {
-            return Err(XlsxError::new(XlsxErrorKind::NotFound));
-        }
-        Ok(())
+        let index = self.find_sheet_index_by_name(sheet_name)?;
+        self.remove_sheet(index)
     }
 
     /// Add New Work Sheet.
@@ -866,9 +1982,77 @@ impl Workbook {
         sheet_title: S,
     ) -> Result<&mut Worksheet, XlsxError> {
         let v = sheet_title.into();
-        Workbook::check_sheet_name(self, &v)?;
-        let sheet_id = (self.work_sheet_collection.len() + 1).to_string();
-        Ok(Workbook::add_new_sheet_crate(self, sheet_id, v.clone()))
+        self.check_sheet_name(&v, None)?;
+        let sheet_id = self.next_sheet_id()?;
+        Ok(Workbook::add_new_sheet_crate(self, sheet_id, v))
+    }
+
+    /// Set a worksheet's stable `sheetId` by its zero-based index.
+    ///
+    /// The ID must be a positive base-10 `u32` that is not used by another
+    /// worksheet. It is stored in its normalized decimal form.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] if `index` does not identify a
+    /// worksheet, or [`XlsxErrorKind::InvalidArgument`] if the ID is invalid
+    /// or already used by another worksheet.
+    pub fn set_sheet_id<S: Into<String>>(
+        &mut self,
+        index: usize,
+        sheet_id: S,
+    ) -> Result<(), XlsxError> {
+        self.work_sheet_collection
+            .get(index)
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?;
+
+        let parsed_id = sheet_id
+            .into()
+            .parse::<u32>()
+            .ok()
+            .filter(|id| *id != 0)
+            .ok_or_else(|| {
+                XlsxError::with_message(
+                    XlsxErrorKind::InvalidArgument,
+                    "invalid worksheet id: expected a positive integer",
+                )
+            })?;
+
+        for (other_index, worksheet) in self.work_sheet_collection.iter().enumerate() {
+            if other_index == index {
+                continue;
+            }
+            let other_id = worksheet.sheet_id().parse::<u32>().map_err(|_| {
+                XlsxError::with_message(XlsxErrorKind::InvalidArgument, "invalid worksheet id")
+            })?;
+            if other_id == parsed_id {
+                return Err(XlsxError::with_message(
+                    XlsxErrorKind::InvalidArgument,
+                    "duplicate worksheet id",
+                ));
+            }
+        }
+
+        self.work_sheet_collection[index].set_sheet_id(parsed_id.to_string());
+        Ok(())
+    }
+
+    fn next_sheet_id(&self) -> Result<String, XlsxError> {
+        let ids = self
+            .work_sheet_collection
+            .iter()
+            .map(|sheet| {
+                sheet.sheet_id().parse::<u32>().map_err(|_| {
+                    XlsxError::with_message(XlsxErrorKind::InvalidArgument, "invalid worksheet id")
+                })
+            })
+            .collect::<Result<std::collections::HashSet<_>, _>>()?;
+        let mut id = 1u32;
+        while ids.contains(&id) {
+            id = id.checked_add(1).ok_or_else(|| {
+                XlsxError::with_message(XlsxErrorKind::InvalidArgument, "worksheet ids exhausted")
+            })?;
+        }
+        Ok(id.to_string())
     }
 
     /// (This method is crate only.)
@@ -903,22 +2087,41 @@ impl Workbook {
         sheet_name: S,
     ) -> Result<(), XlsxError> {
         let sheet_name_str = sheet_name.into();
-        Workbook::check_sheet_name(self, sheet_name_str.as_ref())?;
-        self.work_sheet_collection
-            .get_mut(index)
-            .map(|sheet| {
-                sheet.set_name(sheet_name_str);
-            })
-            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))
+        let old = self
+            .work_sheet_collection
+            .get(index)
+            .ok_or(XlsxError::new(XlsxErrorKind::NotFound))?
+            .name()
+            .to_owned();
+        self.check_sheet_name(&sheet_name_str, Some(index))?;
+        let edit = crate::drawing::charts::ChartReferenceEdit::RenameSheet {
+            old: old.clone(),
+            new: sheet_name_str.clone(),
+        };
+        let hosts = self.prepare_reference_hosts(&[&old], &edit)?;
+        let plan = self.prepare_workbook_reference_adjustment(&hosts, &edit)?;
+        self.apply_workbook_reference_adjustment(plan, &edit);
+        for &host in &hosts {
+            self.work_sheet_collection[host].visit_chart_spaces_mut(&mut |space| {
+                space.rename_pivot_source_sheet(&old, &sheet_name_str);
+            });
+        }
+        self.work_sheet_collection[index].set_name_after_reference_adjustment(sheet_name_str);
+        Ok(())
     }
 
     /// (This method is crate only.)
     /// Check for duplicate sheet name.
-    pub(crate) fn check_sheet_name(&self, value: &str) -> Result<(), XlsxError> {
+    pub(crate) fn check_sheet_name(
+        &self,
+        value: &str,
+        except: Option<usize>,
+    ) -> Result<(), XlsxError> {
         if self
             .work_sheet_collection
             .iter()
-            .any(|work_sheet| value == work_sheet.name())
+            .enumerate()
+            .any(|(index, sheet)| Some(index) != except && name_eq_ignore_case(value, sheet.name()))
         {
             Err(XlsxError::new(XlsxErrorKind::NameDuplicate))
         } else {
@@ -980,9 +2183,36 @@ impl Workbook {
             .any(Worksheet::has_defined_names)
     }
 
+    /// Workbook `pivotCache` entries as (`cacheId`, resolved definition part).
+    pub(crate) fn pivot_cache_bindings(&self) -> Arc<Vec<(String, String)>> {
+        Arc::new(
+            self.pivot_caches
+                .iter()
+                .filter(|(_, _, target)| !target.is_empty())
+                .map(|(_, id, target)| {
+                    (
+                        id.to_string(),
+                        crate::reader::driver::join_paths("xl", target),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn package_content_types(&self) -> Arc<super::content_types::PackageContentTypes> {
+        Arc::clone(&self.package_content_types)
+    }
+
+    pub(crate) fn set_package_content_types(
+        &mut self,
+        value: super::content_types::PackageContentTypes,
+    ) {
+        self.package_content_types = Arc::new(value);
+    }
+
     #[inline]
     pub(crate) fn backup_context_types(&self) -> &[(Box<str>, Box<str>)] {
-        &self.backup_context_types
+        self.package_content_types.overrides()
     }
 
     #[inline]
@@ -996,22 +2226,93 @@ impl Workbook {
         &mut self,
         value: impl Into<Vec<(String, String)>>,
     ) -> &mut Self {
-        self.backup_context_types = value
-            .into()
-            .into_iter()
-            .map(|(a, b)| (a.into_boxed_str(), b.into_boxed_str()))
-            .collect();
+        Arc::make_mut(&mut self.package_content_types).set_overrides(value.into());
         self
+    }
+
+    /// Native slicer caches of the workbook.
+    #[inline]
+    #[must_use]
+    pub fn slicer_caches(&self) -> &[SlicerCache] {
+        &self.slicer_caches
+    }
+
+    #[inline]
+    pub fn slicer_caches_mut(&mut self) -> &mut Vec<SlicerCache> {
+        &mut self.slicer_caches
+    }
+
+    /// Timeline caches of the workbook.
+    #[inline]
+    #[must_use]
+    pub fn timeline_caches(&self) -> &[super::timeline::TimelineCache] {
+        &self.timeline_caches
+    }
+
+    #[inline]
+    pub fn timeline_caches_mut(&mut self) -> &mut Vec<super::timeline::TimelineCache> {
+        &mut self.timeline_caches
+    }
+
+    /// The pivot caches kept without a pivot table because a slicer or a
+    /// timeline still reads them, as Excel keeps them when their last pivot
+    /// table is removed: workbook cache id and definition. The cache goes
+    /// when nothing reads it any more.
+    pub fn retained_pivot_caches(
+        &self,
+    ) -> impl Iterator<Item = (u32, &super::PivotCacheDefinition)> {
+        self.pivot_orphans
+            .iter()
+            .filter(|(_, definition)| self.retained_pivot_cache_list(definition).is_some())
+            .map(|(id, definition)| (*id, definition))
+    }
+
+    /// Release the retained pivot caches nothing reads any more.
+    pub(crate) fn remove_unused_retained_pivot_caches(&mut self) {
+        let orphans = std::mem::take(&mut self.pivot_orphans);
+        self.pivot_orphans = orphans
+            .into_iter()
+            .filter(|(_, definition)| self.retained_pivot_cache_list(definition).is_some())
+            .collect();
+    }
+
+    /// The timeline caches and the worksheets together, for changes that
+    /// touch both.
+    pub(crate) fn timeline_parts_mut(
+        &mut self,
+    ) -> (&mut Vec<super::timeline::TimelineCache>, &mut [Worksheet]) {
+        (&mut self.timeline_caches, &mut self.work_sheet_collection)
+    }
+
+    /// The custom timeline styles of the stylesheet and the default style.
+    #[must_use]
+    pub fn timeline_styles(&self) -> Option<&super::timeline::TimelineStyles> {
+        self.stylesheet.timeline_styles()
     }
 
     #[must_use]
     pub fn pivot_caches(&self) -> Vec<(String, String, String)> {
+        if self.pivot_caches_state == PivotCacheListState::Settled {
+            return self
+                .pivot_caches
+                .iter()
+                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+                .collect();
+        }
         let mut result: Vec<(String, String, String)> = Vec::new();
         for (val1, val2, val3) in &self.pivot_caches {
             let val3_up = format!("xl/{val3}");
 
-            // Check if this cache is referenced by any worksheet's pivot cache definitions
-            // (for existing files)
+            if self
+                .retained_pivot_caches()
+                .any(|(id, _)| id.to_string() == **val2)
+            {
+                result.push((val1.to_string(), val2.to_string(), val3.to_string()));
+                continue;
+            }
+
+            // Check if this cache is referenced by any worksheet's pivot cache
+            // definitions (for existing files)
             let mut found_in_raw_data = false;
             for worksheet in self.sheet_collection_no_check() {
                 for pivot_cache_definition in worksheet.pivot_cache_definition_collection() {
@@ -1028,8 +2329,8 @@ impl Workbook {
                 }
             }
 
-            // If not found in raw data, check if any worksheet has pivot tables (for newly
-            // created pivot tables)
+            // If not found in raw data, check if any worksheet has pivot tables
+            // (for newly created pivot tables)
             if !found_in_raw_data {
                 for worksheet in self.sheet_collection_no_check() {
                     if !worksheet.pivot_tables().is_empty()
@@ -1057,6 +2358,27 @@ impl Workbook {
             value.2.into_boxed_str(),
         ));
         self
+    }
+
+    /// Settle the pivot cache list against the worksheets now held, so it
+    /// stays the same after the worksheets are streamed out.
+    pub(crate) fn resolve_pivot_caches(&mut self) {
+        let settled = self.pivot_caches();
+        self.set_pivot_cache_collection(settled);
+        self.pivot_caches_state = PivotCacheListState::Settled;
+    }
+
+    pub(crate) fn set_pivot_cache_collection(&mut self, caches: Vec<(String, String, String)>) {
+        self.pivot_caches = caches
+            .into_iter()
+            .map(|(relationship, id, target)| {
+                (
+                    relationship.into_boxed_str(),
+                    id.into_boxed_str(),
+                    target.into_boxed_str(),
+                )
+            })
+            .collect();
     }
 
     #[inline]
@@ -1191,8 +2513,9 @@ impl Workbook {
         self.full_calc_on_load
     }
 
-    /// Ask Excel to recalculate everything on open. This can fill missing caches
-    /// and replace stale or engine-specific cached results with Excel's values.
+    /// Ask Excel to recalculate everything on open. This can fill missing
+    /// caches and replace stale or engine-specific cached results with
+    /// Excel's values.
     #[inline]
     pub fn set_full_calc_on_load(&mut self, enabled: bool) {
         self.full_calc_on_load = enabled;
@@ -1228,23 +2551,80 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        for worksheet in &mut self.work_sheet_collection {
+        use crate::drawing::charts::ChartReferenceEdit;
+        if (offset_col_num != 0
+            && (!(1..=16_384).contains(&root_col_num) || offset_col_num > 16_384))
+            || (offset_row_num != 0
+                && (!(1..=1_048_576).contains(&root_row_num) || offset_row_num > 1_048_576))
+        {
+            return;
+        }
+        let mut edits = Vec::new();
+        if offset_col_num != 0 {
+            edits.push(ChartReferenceEdit::InsertColumns {
+                sheet: sheet_name.into(),
+                at:    root_col_num,
+                count: offset_col_num,
+            });
+        }
+        if offset_row_num != 0 {
+            edits.push(ChartReferenceEdit::InsertRows {
+                sheet: sheet_name.into(),
+                at:    root_row_num,
+                count: offset_row_num,
+            });
+        }
+        if edits.is_empty() {
+            return;
+        }
+        // No hosts: a missing sheet or an invalid edit, which leaves the
+        // workbook, pivot cache sources included, unchanged.
+        let hosts = self.structural_reference_hosts(sheet_name, &edits);
+        if hosts.is_empty() {
+            return;
+        }
+        let Some(mut model_geometry) = self.prepare_workbook_model_geometry(
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            false,
+        ) else {
+            return;
+        };
+        model_geometry.adjust_reference_edits(&mut edits);
+        let Ok(prepared) = edits
+            .iter()
+            .map(crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return;
+        };
+        let Ok(pivot_cache_sources) = self.prepare_pivot_cache_source_adjustments(&prepared) else {
+            return;
+        };
+        model_geometry.apply_table_reference_removal(self);
+        model_geometry.apply_frozen_charts(self);
+        self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
+        self.adjust_global_and_raw_defined_names(&prepared);
+        for index in hosts {
+            let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {
-                worksheet.adjustment_insert_coordinate(
-                    root_col_num,
-                    offset_col_num,
-                    root_row_num,
-                    offset_row_num,
+                model_geometry.adjust_geometry(
+                    worksheet,
+                    (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                    false,
                 );
             }
-            worksheet.adjustment_insert_coordinate_with_sheet(
+            model_geometry.adjust_sheet_references(
+                worksheet,
                 sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
+                (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                false,
             );
         }
+        self.finish_workbook_model_geometry(&model_geometry);
     }
 
     fn adjustment_remove_coordinate_with_sheet(
@@ -1255,23 +2635,93 @@ impl AdjustmentCoordinateWithSheet for Workbook {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        for worksheet in &mut self.work_sheet_collection {
+        use crate::drawing::charts::ChartReferenceEdit;
+        if (offset_col_num != 0
+            && (!(1..=16_384).contains(&root_col_num) || offset_col_num > 16_384))
+            || (offset_row_num != 0
+                && (!(1..=1_048_576).contains(&root_row_num) || offset_row_num > 1_048_576))
+        {
+            return;
+        }
+        let mut edits = Vec::new();
+        if offset_col_num != 0 {
+            edits.push(ChartReferenceEdit::DeleteColumns {
+                sheet:   sheet_name.into(),
+                columns: (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385))
+                    .collect(),
+            });
+        }
+        if offset_row_num != 0 {
+            edits.push(ChartReferenceEdit::DeleteRows {
+                sheet: sheet_name.into(),
+                rows:  (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577))
+                    .collect(),
+            });
+        }
+        if edits.is_empty() {
+            return;
+        }
+        // No hosts: a missing sheet or an invalid edit, which leaves the
+        // workbook, pivot cache sources included, unchanged.
+        let hosts = self.structural_reference_hosts(sheet_name, &edits);
+        if hosts.is_empty() {
+            return;
+        }
+        let Some(mut model_geometry) = self.prepare_workbook_model_geometry(
+            sheet_name,
+            root_col_num,
+            offset_col_num,
+            root_row_num,
+            offset_row_num,
+            true,
+        ) else {
+            return;
+        };
+        model_geometry.adjust_reference_edits(&mut edits);
+        let Ok(prepared) = edits
+            .iter()
+            .map(crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit::new)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return;
+        };
+        let Ok(pivot_cache_sources) = self.prepare_pivot_cache_source_adjustments(&prepared) else {
+            return;
+        };
+        model_geometry.apply_table_reference_removal(self);
+        model_geometry.apply_frozen_charts(self);
+        self.apply_pivot_cache_source_adjustments(pivot_cache_sources);
+        self.adjust_global_and_raw_defined_names(&prepared);
+        let mut removed = crate::drawing::spreadsheet::DrawingRemovals::default();
+        for index in hosts {
+            let worksheet = &mut self.work_sheet_collection[index];
             if worksheet.name() == sheet_name {
-                worksheet.adjustment_remove_coordinate(
-                    root_col_num,
-                    offset_col_num,
-                    root_row_num,
-                    offset_row_num,
+                let geometry = model_geometry.adjust_geometry(
+                    worksheet,
+                    (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                    true,
                 );
+                removed.caches.extend(geometry.caches);
+                removed.chart_formulas.extend(geometry.chart_formulas);
             }
-            worksheet.adjustment_remove_coordinate_with_sheet(
+            model_geometry.adjust_sheet_references(
+                worksheet,
                 sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
+                (root_col_num, offset_col_num, root_row_num, offset_row_num),
+                true,
             );
         }
+        if !removed.caches.is_empty() || !removed.chart_formulas.is_empty() {
+            // The views and ChartEx that still use what was released can be on
+            // any sheet. Like the host discovery above, this void API keeps
+            // the reader's panic-on-I/O boundary.
+            self.try_read_sheet_collection().unwrap_or_else(|error| {
+                panic!("cannot read sheets to release drawing bindings: {error}")
+            });
+            self.reconcile_removed_drawing_caches(&removed.caches.into_iter().collect());
+            self.reconcile_removed_drawing_chart_names(sheet_name, &removed.chart_formulas);
+        }
+        self.finish_workbook_model_geometry(&model_geometry);
     }
 }
 
@@ -1282,9 +2732,6 @@ mod full_calc_on_load_tests {
     /// A missing formula cache is invisible to readers that do not recalculate;
     /// a present cache can still be stale or engine-specific. The flag tells
     /// Excel to replace either form with its own calculation on open.
-    ///
-    /// Task 129 (2026-08-28): 30 formulas exported as `<f>..</f><v/>` and the
-    /// football-field chart drew nothing.
     #[test]
     fn emits_full_calc_on_load_only_when_asked() {
         for enabled in [false, true] {
@@ -1306,10 +2753,53 @@ mod full_calc_on_load_tests {
             }
             let has = xml.contains(r#"fullCalcOnLoad="1""#);
             assert_eq!(
-                has, enabled,
+                has,
+                enabled,
                 "fullCalcOnLoad present={has} but expected {enabled}; calcPr was: {}",
-                xml.split("<calcPr").nth(1).unwrap_or("<none>").split('>').next().unwrap_or("")
+                xml.split("<calcPr")
+                    .nth(1)
+                    .unwrap_or("<none>")
+                    .split('>')
+                    .next()
+                    .unwrap_or("")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sheet_identity_tests {
+    use std::io::Cursor;
+
+    #[test]
+    fn sheet_ids_survive_export_reordering_and_new_sheet_allocation() {
+        let mut book = crate::new_file();
+        book.work_sheet_collection[0].set_sheet_id("17");
+        book.new_sheet("Second").unwrap().set_sheet_id("2");
+        assert_eq!(book.new_sheet("Third").unwrap().sheet_id(), "1");
+        book.work_sheet_collection.swap(0, 1);
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut bytes).unwrap();
+        for eager in [true, false] {
+            let restored = crate::reader::xlsx::read_reader(Cursor::new(&bytes), eager).unwrap();
+            assert_eq!(
+                restored
+                    .sheet_collection_no_check()
+                    .iter()
+                    .map(|s| (s.name(), s.sheet_id()))
+                    .collect::<Vec<_>>(),
+                vec![("Second", "2"), ("Sheet1", "17"), ("Third", "1")]
+            );
+        }
+    }
+
+    #[test]
+    fn cloned_sheets_get_a_distinct_id_without_renumbering_the_source() {
+        let mut book = crate::new_file();
+        let mut copy = book.sheet(0).unwrap().clone();
+        copy.set_name("Copy");
+        book.add_sheet(copy).unwrap();
+        assert_eq!(book.sheet(0).unwrap().sheet_id(), "1");
+        assert_eq!(book.sheet(1).unwrap().sheet_id(), "2");
     }
 }

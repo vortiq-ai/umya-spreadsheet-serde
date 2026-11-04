@@ -41,7 +41,7 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     write_new_line(&mut writer);
 
     // a:theme
-    theme.write_to(&mut writer);
+    theme.write_to(&mut writer)?;
 
     writer_mng.add_writer(PKG_THEME, writer)
 }

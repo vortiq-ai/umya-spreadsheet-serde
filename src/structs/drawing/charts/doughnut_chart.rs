@@ -16,12 +16,14 @@ use super::{
     DataLabels,
     FirstSliceAngle,
     HoleSize,
+    SeriesFamily,
     VaryColors,
 };
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -38,9 +40,79 @@ pub struct DoughnutChart {
     data_labels:            DataLabels,
     first_slice_angle:      FirstSliceAngle,
     hole_size:              HoleSize,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl DoughnutChart {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        )
+    }
+
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn projection_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.reference_group_parts_mut()
+    }
+
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn vary_colors(&self) -> &VaryColors {
         &self.vary_colors
@@ -103,6 +175,7 @@ impl DoughnutChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -113,6 +186,7 @@ impl DoughnutChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut DoughnutChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -169,44 +243,55 @@ impl DoughnutChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        self.data_labels.mark_group_absent();
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                 b"ser" => {
                     let mut obj = AreaChartSeries::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session)?;
                     self.area_chart_series_list_mut()
                         .add_area_chart_series(obj);
                 }
                 b"dLbls" => {
-                    self.data_labels.set_attributes(reader, e);
+                    self.data_labels.set_attributes(reader, e, session)?;
                 }
-                _ => (),
+                _ => skip_element(reader, e)?,
             },
-            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                 b"varyColors" => {
-                    self.vary_colors.set_attributes(reader, e);
+                    self.vary_colors.set_attributes(reader, e)?;
                 }
                 b"firstSliceAng" => {
-                    self.first_slice_angle.set_attributes(reader, e);
+                    self.first_slice_angle.set_attributes(reader, e)?;
                 }
                 b"holeSize" => {
-                    self.hole_size.set_attributes(reader, e);
+                    self.hole_size.set_attributes(reader, e)?;
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"doughnutChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:doughnutChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:doughnutChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:doughnutChart
         write_start_tag(writer, "c:doughnutChart", vec![], false);
 
@@ -215,11 +300,11 @@ impl DoughnutChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Pie)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:firstSliceAng
         self.first_slice_angle.write_to(writer);
@@ -227,6 +312,11 @@ impl DoughnutChart {
         // c:holeSize
         self.hole_size.write_to(writer);
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "doughnutChart", Some(SeriesFamily::Pie))?;
+        }
         write_end_tag(writer, "c:doughnutChart");
+
+        Ok(())
     }
 }

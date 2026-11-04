@@ -10,19 +10,25 @@ use quick_xml::{
     },
 };
 
-use super::super::{
-    BodyProperties,
-    ListStyle,
-    Paragraph,
+use super::{
+    super::{
+        BodyProperties,
+        ListStyle,
+        Paragraph,
+        paragraph::TextEditLoss,
+    },
+    text_properties::TextBodyParts,
 };
 use crate::{
+    XlsxError,
     drawing::Run,
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::local_name,
+    try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -31,9 +37,135 @@ pub struct RichText {
     body_properties: BodyProperties,
     list_style:      ListStyle,
     paragraph:       Vec<Paragraph>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:           Option<Box<TextBodyParts>>,
 }
 
 impl RichText {
+    pub(crate) fn strip_export_parts(&mut self) {
+        self.parts = None;
+        self.body_properties.strip_export_parts();
+        self.list_style.strip_export_parts();
+        for paragraph in &mut self.paragraph {
+            paragraph.strip_export_parts();
+        }
+    }
+
+    pub(crate) fn projected_structure_matches(&self, previous: &Self) -> bool {
+        self.paragraph.len() == previous.paragraph.len()
+            && self
+                .paragraph
+                .iter()
+                .zip(&previous.paragraph)
+                .all(|(current, previous)| current.projected_structure_matches(previous))
+    }
+
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
+        if !self.projected_structure_matches(previous) {
+            return Ok(0);
+        }
+        let mut restored = self.restore_body_parts(previous)?;
+        for (current, previous) in self.paragraph.iter_mut().zip(&previous.paragraph) {
+            restored += current.restore_export_parts(previous)?;
+        }
+        Ok(restored)
+    }
+
+    fn restore_body_parts(&mut self, previous: &Self) -> Result<usize, XlsxError> {
+        let mut restored = 0;
+        if self.parts.is_none() {
+            if let Some(parts) = &previous.parts {
+                let mut parts = parts.clone();
+                if !self
+                    .list_style
+                    .projected_values_match(&previous.list_style)?
+                {
+                    parts.list_style_present = true;
+                }
+                self.parts = Some(parts);
+                restored += 1;
+            }
+        }
+        restored += self
+            .body_properties
+            .restore_export_parts(&previous.body_properties);
+        restored += self.list_style.restore_export_parts(&previous.list_style);
+        Ok(restored)
+    }
+
+    /// Restores the hidden parts of `previous` after an edit that may have
+    /// changed the text, the way Excel keeps them (see
+    /// `Paragraph::restore_edited_export_parts`): body, list-style and
+    /// paragraph parts stay, a run keeps its own parts at its position, and
+    /// only removed runs, removed paragraphs and the fields that followed them
+    /// leave. Each removal is reported with its position. A changed text is
+    /// always an in-place edit; whole replacement is `set_text` on the
+    /// complete chart, not something restoration infers.
+    pub(crate) fn restore_edited_export_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<usize, XlsxError> {
+        let mut restored = self.restore_body_parts(previous)?;
+        let mut report_loss = |paragraph: usize, loss: &TextEditLoss| {
+            if loss.runs > 0 {
+                // The library cannot tell which run an edit removed, only how
+                // many: the runs past the new count lose their own parts.
+                report.removed_incompatible_parts += loss.runs;
+                report.diagnostics.push(format!(
+                    "text edit dropped the own parts of {} removed run(s) of paragraph:{paragraph}",
+                    loss.runs
+                ));
+            }
+            for (field, before_run) in &loss.fields {
+                report.removed_incompatible_parts += 1;
+                report.diagnostics.push(format!(
+                    "text edit dropped field:{field} before run:{before_run} of \
+                     paragraph:{paragraph}"
+                ));
+            }
+        };
+        for (index, (current, previous)) in self
+            .paragraph
+            .iter_mut()
+            .zip(&previous.paragraph)
+            .enumerate()
+        {
+            let mut loss = TextEditLoss::default();
+            restored += current.restore_edited_export_parts(previous, &mut loss)?;
+            report_loss(index, &loss);
+        }
+        // A paragraph without an authoritative counterpart keeps no hidden
+        // parts: a client cannot introduce them.
+        for added in self.paragraph.iter_mut().skip(previous.paragraph.len()) {
+            added.strip_export_parts();
+        }
+        for (index, removed) in previous
+            .paragraph
+            .iter()
+            .enumerate()
+            .skip(self.paragraph.len())
+        {
+            report_loss(
+                index,
+                &TextEditLoss {
+                    runs:   removed.run().len(),
+                    fields: removed
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(field, positioned)| (field, positioned.before_run))
+                        .collect(),
+                },
+            );
+        }
+        Ok(restored)
+    }
+
+    /// Replaces the whole text with one run (Excel `ChartTitle.Text = ...`).
+    /// Call it on the complete chart: a stripped copy carries no intent, so a
+    /// `set_text` before `restore_export_parts` is restored as an in-place
+    /// edit and the previous fields come back.
     #[inline]
     pub fn set_text<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.paragraph.clear();
@@ -81,6 +213,9 @@ impl RichText {
     }
 
     pub fn list_style_mut(&mut self) -> &mut ListStyle {
+        self.parts
+            .get_or_insert_with(Default::default)
+            .list_style_present = true;
         &mut self.list_style
     }
 
@@ -90,6 +225,9 @@ impl RichText {
     }
 
     pub fn set_list_style(&mut self, value: ListStyle) {
+        self.parts
+            .get_or_insert_with(Default::default)
+            .list_style_present = true;
         self.list_style = value;
     }
 
@@ -117,43 +255,86 @@ impl RichText {
         self.paragraph.push(value);
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
-                b"p" => {
-                    let mut paragraph = Paragraph::default();
-                    paragraph.set_attributes(reader, e);
-                    self.add_paragraph(paragraph);
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(e)?;
+        self.parts = Some(Box::new(TextBodyParts::default()));
+        let mut body_present = false;
+        let mut list_present = false;
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
+                    None => true,
+                };
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
                 }
-                b"bodyPr" => {
-                    let mut body_properties = BodyProperties::default();
-                    body_properties.set_attributes(reader, e, false);
-                    self.set_body_properties(body_properties);
+                match local_name(e.name().as_ref()) {
+                    b"p" => {
+                        if !body_present {
+                            return Err(crate::xml::xml_error("DrawingML paragraph precedes body properties"));
+                        }
+                        let mut paragraph = Paragraph::default();
+                        if empty {
+                            crate::reader::driver::validate_attributes(e)?;
+                            paragraph.mark_empty_import();
+                        } else {
+                            paragraph.read_with_session(reader, e, session)?;
+                        }
+                        self.add_paragraph(paragraph);
+                    }
+                    b"lstStyle" => {
+                        if !body_present || list_present || !self.paragraph.is_empty() {
+                            return Err(crate::xml::xml_error("duplicate or misplaced DrawingML list style"));
+                        }
+                        list_present = true;
+                        if let Some(parts) = &mut self.parts { parts.list_style_present = true; }
+                        if empty {
+                            crate::reader::driver::validate_attributes(e)?;
+                        } else {
+                            self.list_style.read_with_session(reader, e, session)?;
+                        }
+                    }
+                    b"bodyPr" => {
+                        if body_present || !self.paragraph.is_empty() {
+                            return Err(crate::xml::xml_error("duplicate or misplaced DrawingML body properties"));
+                        }
+                        body_present = true;
+                        let mut properties = BodyProperties::default();
+                        properties.read_with_session(reader, e, empty, session)?;
+                        self.set_body_properties(properties);
+                    }
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
-                _ => (),
             },
-            Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"bodyPr" {
-                    let mut body_properties = BodyProperties::default();
-                    body_properties.set_attributes(reader, e, true);
-                    self.set_body_properties(body_properties);
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => {
+                if !body_present || self.paragraph.is_empty() {
+                    return Err(crate::xml::xml_error("DrawingML text body requires body properties and a paragraph"));
                 }
+                return Ok(());
             },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"rich" {
-                    return;
-                }
+            Event::Text(ref text)
+                if !text.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+            {
+                return Err(crate::xml::xml_error("unexpected text in DrawingML text body"));
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:rich"),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML text body")),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // c:rich
         write_start_tag(writer, "c:rich", vec![], false);
 
@@ -161,12 +342,50 @@ impl RichText {
         self.body_properties.write_to(writer);
 
         // a:lstStyle
-        write_start_tag(writer, "a:lstStyle", vec![], true);
+        if self
+            .parts
+            .as_ref()
+            .is_none_or(|parts| parts.list_style_present)
+        {
+            self.list_style.write_to(writer)?;
+        }
 
         for content in &self.paragraph {
-            content.write_to(writer);
+            content.write_to(writer)?;
         }
 
         write_end_tag(writer, "c:rich");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn absent_list_style_is_preserved_and_mutable_access_marks_presence() {
+        let mut reader = Reader::from_reader(b"<c:rich><a:bodyPr/><a:p/></c:rich>".as_slice());
+        let mut buf = Vec::new();
+        let e = match reader.read_event_into(&mut buf).unwrap() {
+            Event::Start(e) => e.into_owned(),
+            _ => panic!("expected rich text"),
+        };
+        let mut value = RichText::default();
+        value.read_with_session(&mut reader, &e, None).unwrap();
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        value.write_to(&mut writer).unwrap();
+        assert!(
+            !String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("lstStyle")
+        );
+        value.list_style_mut();
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        value.write_to(&mut writer).unwrap();
+        assert!(
+            String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("<a:lstStyle/>")
+        );
     }
 }

@@ -132,6 +132,20 @@ pub fn excel_to_date_time_chrono(excel_timestamp: f64) -> NaiveDateTime {
 /// ```
 #[must_use]
 pub fn excel_to_date_time_parts(excel_timestamp: f64) -> (jiff::civil::Date, i64, f64) {
+    let (base_date, days, time) = excel_to_date_time_parts_checked(excel_timestamp)
+        .expect("input was out of supported range");
+    (base_date, days, time)
+}
+
+fn excel_to_date_time_parts_checked(
+    excel_timestamp: f64,
+) -> Result<(jiff::civil::Date, i64, f64), jiff::Error> {
+    if !excel_timestamp.is_finite() {
+        return Err(jiff::Error::from_args(format_args!(
+            "Excel timestamp must be finite"
+        )));
+    }
+
     let base_date = if excel_timestamp < 61f64 {
         // Allow adjustment for 1900 Leap Year in MS Excel
         jiff::civil::date(1899, 12, 31)
@@ -141,9 +155,13 @@ pub fn excel_to_date_time_parts(excel_timestamp: f64) -> (jiff::civil::Date, i64
 
     let days = excel_timestamp.floor();
     let time = excel_timestamp - days;
-    let days: i64 = cast(days).unwrap();
+    let days: i64 = cast(days).ok_or_else(|| {
+        jiff::Error::from_args(format_args!(
+            "Excel timestamp is outside the supported range"
+        ))
+    })?;
 
-    (base_date, days, time)
+    Ok((base_date, days, time))
 }
 
 /// Converts an Excel timestamp to a [`jiff::civil::DateTime`] object with
@@ -207,17 +225,21 @@ pub fn excel_to_date_time_jiff(excel_timestamp: f64) -> jiff::civil::DateTime {
 ///
 /// # Error
 ///
-/// This returns an error when the input causes the number of days since the
-/// `base_date` to be outside of the supported range for `jiff` spans. See
-/// [`jiff::Span::days`] for relevant bounds.
+/// This returns an error when the input is non-finite or when the converted
+/// date/time falls outside the supported range for `jiff` spans and dates.
 pub fn excel_to_date_time_jiff_checked(
     excel_timestamp: f64,
 ) -> Result<jiff::civil::DateTime, jiff::Error> {
-    let (base_date, days, time) = excel_to_date_time_parts(excel_timestamp);
-    let seconds: i64 = cast((time * (24.0 * 60.0 * 60.0)).round())
-        .expect("this cast should never fail because `time` should be a value between 0 and 1");
+    let (base_date, days, time) = excel_to_date_time_parts_checked(excel_timestamp)?;
+    let seconds: i64 = cast((time * (24.0 * 60.0 * 60.0)).round()).ok_or_else(|| {
+        jiff::Error::from_args(format_args!(
+            "Excel timestamp has an invalid time component"
+        ))
+    })?;
 
-    Ok(base_date.at(0, 0, 0, 0) + jiff::Span::new().try_days(days)?.seconds(seconds))
+    base_date
+        .at(0, 0, 0, 0)
+        .checked_add(jiff::Span::new().try_days(days)?.seconds(seconds))
 }
 
 /// Converts an Excel timestamp to a [`jiff::civil::DateTime`] object with
@@ -723,5 +745,12 @@ mod tests {
             actual.is_err(),
             "Value is out of range of jiff::Span days and should be rejected"
         );
+
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
+            assert!(
+                excel_to_date_time_jiff_checked(value).is_err(),
+                "non-finite or out-of-range Excel timestamp {value} should be rejected"
+            );
+        }
     }
 }

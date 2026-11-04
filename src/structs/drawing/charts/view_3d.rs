@@ -11,6 +11,8 @@ use quick_xml::{
 };
 
 use super::{
+    DepthPercent,
+    HeightPercent,
     Perspective,
     RightAngleAxes,
     RotateX,
@@ -19,7 +21,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -34,9 +36,54 @@ pub struct View3D {
     rotate_y:         Option<RotateY>,
     right_angle_axes: Option<RightAngleAxes>,
     perspective:      Option<Perspective>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    height_percent:   Option<HeightPercent>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    depth_percent:    Option<DepthPercent>,
 }
 
 impl View3D {
+    /// The chart height as a percentage of its base (`c:hPercent`). Excel
+    /// leaves it out while the chart autoscales.
+    #[must_use]
+    pub fn height_percent(&self) -> Option<&HeightPercent> {
+        self.height_percent.as_ref()
+    }
+
+    pub fn height_percent_mut(&mut self) -> Option<&mut HeightPercent> {
+        self.height_percent.as_mut()
+    }
+
+    pub fn set_height_percent(&mut self, value: HeightPercent) -> &mut Self {
+        self.height_percent = Some(value);
+        self
+    }
+
+    pub fn remove_height_percent(&mut self) -> &mut Self {
+        self.height_percent = None;
+        self
+    }
+
+    /// The chart depth as a percentage of its base (`c:depthPercent`).
+    #[must_use]
+    pub fn depth_percent(&self) -> Option<&DepthPercent> {
+        self.depth_percent.as_ref()
+    }
+
+    pub fn depth_percent_mut(&mut self) -> Option<&mut DepthPercent> {
+        self.depth_percent.as_mut()
+    }
+
+    pub fn set_depth_percent(&mut self, value: DepthPercent) -> &mut Self {
+        self.depth_percent = Some(value);
+        self
+    }
+
+    pub fn remove_depth_percent(&mut self) -> &mut Self {
+        self.depth_percent = None;
+        self
+    }
+
     #[must_use]
     pub fn rotate_x(&self) -> Option<&RotateX> {
         self.rotate_x.as_ref()
@@ -140,41 +187,52 @@ impl View3D {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        source_owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = source_owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
             Event::Empty(ref e) => {
                 match local_name(e.name().0) {
                     b"rotX" => {
                         let mut obj = RotateX::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_rotate_x(obj);
+                    }
+                    b"hPercent" => {
+                        let mut obj = HeightPercent::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_height_percent(obj);
+                    }
+                    b"depthPercent" => {
+                        let mut obj = DepthPercent::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_depth_percent(obj);
                     }
                     b"rotY" => {
                         let mut obj = RotateY::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_rotate_y(obj);
                     }
                     b"rAngAx" => {
                         let mut obj = RightAngleAxes::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_right_angle_axes(obj);
                     }
                     b"perspective" => {
                         let mut obj = Perspective::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.set_perspective(obj);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"view3D" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:view3D")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:view3D")))
         );
     }
 
@@ -187,8 +245,18 @@ impl View3D {
             v.write_to(writer);
         }
 
+        // c:hPercent
+        if let Some(v) = &self.height_percent {
+            v.write_to(writer);
+        }
+
         // c:rotY
         if let Some(v) = &self.rotate_y {
+            v.write_to(writer);
+        }
+
+        // c:depthPercent
+        if let Some(v) = &self.depth_percent {
             v.write_to(writer);
         }
 

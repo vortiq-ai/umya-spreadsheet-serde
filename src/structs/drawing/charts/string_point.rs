@@ -3,30 +3,78 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
+use super::numeric_data::{
+    children,
+    read_text,
+};
 // c:pt
-use super::NumericValue;
+use super::{
+    NumericValue,
+    SeriesPartConflictReason,
+    XmlUnsignedInt,
+};
 use crate::{
     reader::driver::local_name,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct StringPoint {
     numeric_value: NumericValue,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:         Option<Box<StringPointParts>>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+struct StringPointParts {
+    index:         XmlUnsignedInt,
+    value_present: bool,
+    invalid:       bool,
+}
 impl StringPoint {
+    #[must_use]
+    pub fn index(&self) -> Option<&XmlUnsignedInt> {
+        self.parts.as_deref().map(|parts| &parts.index)
+    }
+
+    pub fn set_index(&mut self, value: XmlUnsignedInt) -> &mut Self {
+        self.parts
+            .get_or_insert_with(|| {
+                Box::new(StringPointParts {
+                    value_present: true,
+                    ..Default::default()
+                })
+            })
+            .index = value;
+        self
+    }
+
+    #[must_use]
+    pub fn value_present(&self) -> bool {
+        self.parts.as_ref().is_none_or(|p| p.value_present)
+    }
+
+    #[must_use]
+    pub fn conflict(&self) -> Option<SeriesPartConflictReason> {
+        self.parts.as_ref().and_then(|parts| {
+            if !parts.value_present || parts.index.attribute().is_none() {
+                Some(SeriesPartConflictReason::MissingRequiredChild)
+            } else if parts.invalid || parts.index.val().is_none() {
+                Some(SeriesPartConflictReason::InvalidValue)
+            } else {
+                None
+            }
+        })
+    }
+
     #[must_use]
     pub fn numeric_value(&self) -> &NumericValue {
         &self.numeric_value
@@ -39,6 +87,9 @@ impl StringPoint {
     }
 
     pub fn numeric_value_mut(&mut self) -> &mut NumericValue {
+        if let Some(parts) = &mut self.parts {
+            parts.value_present = true;
+        }
         &mut self.numeric_value
     }
 
@@ -48,6 +99,9 @@ impl StringPoint {
     }
 
     pub fn set_numeric_value(&mut self, value: NumericValue) -> &mut Self {
+        if let Some(parts) = &mut self.parts {
+            parts.value_present = true;
+        }
         self.numeric_value = value;
         self
     }
@@ -55,27 +109,87 @@ impl StringPoint {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        *self = Self::read(reader, owner, false)?;
+        Ok(())
+    }
+
+    pub(crate) fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+    ) -> Result<Self, crate::XlsxError> {
+        Self::read_common(reader, e, empty, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<Self, crate::XlsxError> {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+
+        let mut result = Self::default();
+        let mut parts = StringPointParts::default();
+        parts
+            .index
+            .set_lexical_attribute(crate::reader::driver::read_attribute(e, b"idx")?);
+        let mut values = 0;
+        parts.invalid = !children(
             reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().0) == b"v" {
-                    self.numeric_value.set_attributes(reader, e);
-                }
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if !match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } || local_name(child.name().into_inner()) != b"v"
+                    {
+                        return Ok(false);
+                    }
+                    values += 1;
+                    match read_text(reader, child, empty)? {
+                        Some(value) => {
+                            result.numeric_value.set_text(value);
+                            parts.value_present = true;
+                        }
+                        None => parts.invalid = true,
+                    }
+                    true
+                })
             },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"pt" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:pt"),
-        );
+        )? || parts.invalid;
+        parts.invalid |= values > 1;
+        result.parts = Some(Box::new(parts));
+        Ok(result)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, index: u32) {
-        // c:pt
-        let index_str = index.to_string();
+        if self.conflict().is_some() {
+            return;
+        }
+        // Imported identity belongs to this point even after vector edits.
+        let index_str = self
+            .parts
+            .as_ref()
+            .and_then(|p| p.index.attribute())
+            .map_or_else(|| index.to_string(), str::to_owned);
         write_start_tag(writer, "c:pt", vec![("idx", &index_str).into()], false);
 
         // c:v

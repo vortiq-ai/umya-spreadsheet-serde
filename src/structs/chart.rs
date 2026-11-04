@@ -1,6 +1,15 @@
 use crate::{
-    drawing::charts::{NumericValue, RichText}, office2010::drawing::charts::Style, structs::{
+    drawing::charts::{
+        NumericValue,
+        RichText,
+    },
+    office2010::drawing::charts::Style,
+    structs::{
+        ChartType,
         drawing::{
+            Paragraph,
+            Run,
+            RunProperties,
             charts::{
                 Area3DChart,
                 AreaChart,
@@ -16,6 +25,7 @@ use crate::{
                 BubbleSize,
                 CategoryAxis,
                 CategoryAxisData,
+                ChartLines,
                 ChartSpace,
                 ChartText,
                 CrossBetweenValues,
@@ -28,6 +38,8 @@ use crate::{
                 Line3DChart,
                 LineChart,
                 MajorGridlines,
+                Marker,
+                MarkerStyleValues,
                 OfPieChart,
                 OfPieValues,
                 OrientationValues,
@@ -40,31 +52,38 @@ use crate::{
                 RotateX,
                 RotateY,
                 ScatterChart,
+                SeriesAxis,
+                SeriesFamily,
+                ShapeProperties,
                 ShapeValues,
                 ShowLeaderLines,
                 Smooth,
+                StockChart,
                 StringLiteral,
                 StringPoint,
                 StringReference,
+                Surface3DChart,
+                SurfaceChart,
+                Symbol,
                 TextProperties,
                 TickLabelPositionValues,
                 TickMarkValues,
                 Title,
+                UpDownBars,
                 ValueAxis,
                 Values,
                 View3D,
                 XValues,
                 YValues,
-            }, spreadsheet::{
+            },
+            spreadsheet::{
                 GraphicFrame,
                 MarkerType,
                 TwoCellAnchor,
-            }, Paragraph, Run, RunProperties
-        }, ChartType
-    }, traits::{
-        AdjustmentCoordinate,
-        AdjustmentCoordinateWithSheet,
-    }
+            },
+        },
+    },
+    traits::AdjustmentCoordinateWithSheet,
 };
 
 /// ## Supported chart types
@@ -80,6 +99,10 @@ use crate::{
 /// * `PieChart`
 /// * `RadarChart`
 /// * `ScatterChart`
+/// * `StockChart` (high-low-close with three series, open-high-low-close with
+///   four)
+/// * `SurfaceChart` (top view)
+/// * `Surface3DChart`
 ///
 /// Other types will be supported sequentially.
 ///
@@ -147,6 +170,59 @@ impl Default for Chart {
     }
 }
 impl Chart {
+    /// Adjust native chart references for an edit in one-based Excel geometry.
+    ///
+    /// Coordinates must be in the native worksheet grid and a `DeleteSheet`
+    /// must supply its complete pre-delete sheet order. An out-of-domain edit
+    /// leaves this chart unchanged; the report still counts visited references.
+    /// Workbook operations validate their arguments through their existing
+    /// APIs.
+    pub fn adjust_references(
+        &mut self,
+        host_sheet: &str,
+        edit: &crate::drawing::charts::ChartReferenceEdit,
+    ) -> crate::drawing::charts::ReferenceAdjustmentReport {
+        use crate::drawing::charts::{
+            ReferenceAdjustmentReport,
+            chart_reference_roles::{
+                ReferenceGrammar,
+                visit_mut,
+                visit_ref,
+            },
+            reference_edit_engine::{
+                PreparedReferenceEdit,
+                edit_prepared_formula_text,
+            },
+        };
+        if self.two_cell_anchor.graphic_frame().is_none() {
+            return ReferenceAdjustmentReport::default();
+        }
+        let Ok(prepared) = PreparedReferenceEdit::new(edit) else {
+            let mut report = ReferenceAdjustmentReport::default();
+            report.preserved_opaque_extensions =
+                visit_ref(self.chart_space(), &mut |_metadata, _target| {
+                    report.visited += 1;
+                });
+            return report;
+        };
+        let mut report = ReferenceAdjustmentReport::default();
+        report.preserved_opaque_extensions =
+            visit_mut(self.chart_space_mut(), &mut |metadata, mut target| {
+                report.visited += 1;
+                let decision = edit_prepared_formula_text(
+                    &target.formula().address_str(),
+                    host_sheet,
+                    &prepared,
+                    metadata.grammar == ReferenceGrammar::LabelRangeFormula,
+                );
+                if target.replace_for_edit(edit, &decision.text) {
+                    report.changed += 1;
+                }
+                report.invalidated += decision.invalidated;
+            });
+        report
+    }
+
     #[inline]
     pub fn set_title<S: Into<String>>(&mut self, value: S) -> &mut Self {
         let title = self.make_title(value);
@@ -305,6 +381,308 @@ impl Chart {
             .chart_space()
     }
 
+    fn clear_package_bindings(&mut self) {
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |_, frame| {
+                frame.set_source_parts(None);
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |_, frame| {
+                frame.clear_source_part();
+            });
+    }
+
+    fn restore_package_bindings(&mut self, previous: &Self) {
+        use std::collections::HashMap;
+
+        use crate::drawing::spreadsheet::DrawingFrameKey;
+
+        self.clear_package_bindings();
+        let mut current_counts: HashMap<DrawingFrameKey, usize> = HashMap::new();
+        let mut previous_counts: HashMap<DrawingFrameKey, usize> = HashMap::new();
+        self.two_cell_anchor.visit_standard_frames(&mut |key, _| {
+            *current_counts.entry(key).or_default() += 1;
+        });
+        self.two_cell_anchor.visit_extended_frames(&mut |key, _| {
+            *current_counts.entry(key).or_default() += 1;
+        });
+        previous
+            .two_cell_anchor
+            .visit_standard_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_default() += 1;
+            });
+        previous
+            .two_cell_anchor
+            .visit_extended_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_default() += 1;
+            });
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |key, frame| {
+                if current_counts.get(&key) != Some(&1) || previous_counts.get(&key) != Some(&1) {
+                    return;
+                }
+                previous
+                    .two_cell_anchor
+                    .visit_standard_frames(&mut |old_key, old| {
+                        let identity = frame
+                            .non_visual_graphic_frame_properties()
+                            .non_visual_drawing_properties();
+                        let old_identity = old
+                            .non_visual_graphic_frame_properties()
+                            .non_visual_drawing_properties();
+                        if key == old_key
+                            && identity.has_id()
+                            && identity.same_restore_identity(old_identity)
+                        {
+                            frame.restore_source_parts(old);
+                        }
+                    });
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |key, frame| {
+                if current_counts.get(&key) != Some(&1) || previous_counts.get(&key) != Some(&1) {
+                    return;
+                }
+                previous
+                    .two_cell_anchor
+                    .visit_extended_frames(&mut |old_key, old| {
+                        let identity = frame.frame_properties().non_visual_drawing_properties();
+                        let old_identity = old.frame_properties().non_visual_drawing_properties();
+                        if key == old_key
+                            && identity.has_id()
+                            && identity.same_restore_identity(old_identity)
+                        {
+                            frame.restore_source_part(old);
+                        }
+                    });
+            });
+    }
+
+    /// Remove source caches and export-only metadata from a projection.
+    /// Persistence, trusted copies and history keep the complete chart.
+    pub fn strip_export_parts(&mut self) {
+        self.strip_source_caches();
+        self.clear_package_bindings();
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |_, frame| {
+                crate::drawing::charts::chart_reference_roles::strip_export_parts(
+                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                );
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |_, frame| {
+                crate::drawing::charts::chart_metadata_restoration::strip_extended_space(
+                    frame.chart_space_mut(),
+                );
+            });
+    }
+
+    /// Restore omitted export metadata from the authoritative native
+    /// chart after applying requested editable changes to that basis. Keep
+    /// the true before-state separately for history. Explicit removals must
+    /// already be applied to `previous`; projection omission is not removal.
+    /// Ambiguous owners are reported, never paired by collection position.
+    /// A changed text in the restored copy is an in-place edit: runs keep their
+    /// parts and fields stay. Replacing a whole text (`RichText::set_text`)
+    /// must be done on the complete chart, after restoration.
+    /// If restoration fails, both charts remain unchanged.
+    pub fn restore_export_parts(
+        &mut self,
+        previous: &Chart,
+    ) -> Result<crate::drawing::charts::RestoreReport, crate::XlsxError> {
+        let mut restored = self.clone();
+        let report = restored.restore_frame_export_parts(previous)?;
+        *self = restored;
+        Ok(report)
+    }
+
+    fn restore_frame_export_parts(
+        &mut self,
+        previous: &Chart,
+    ) -> Result<crate::drawing::charts::RestoreReport, crate::XlsxError> {
+        use std::collections::HashMap;
+
+        use crate::drawing::charts::{
+            RestoreReport,
+            chart_metadata_restoration,
+            chart_reference_roles,
+        };
+
+        self.restore_package_bindings(previous);
+        let mut current_counts = HashMap::new();
+        let mut previous_counts = HashMap::new();
+        self.two_cell_anchor.visit_standard_frames(&mut |key, _| {
+            *current_counts.entry(key).or_insert(0usize) += 1;
+        });
+        self.two_cell_anchor.visit_extended_frames(&mut |key, _| {
+            *current_counts.entry(key).or_insert(0usize) += 1;
+        });
+        previous
+            .two_cell_anchor
+            .visit_standard_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_insert(0usize) += 1;
+            });
+        previous
+            .two_cell_anchor
+            .visit_extended_frames(&mut |key, _| {
+                *previous_counts.entry(key).or_insert(0usize) += 1;
+            });
+        let mut result = Ok(RestoreReport::default());
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |key, frame| {
+                if result.is_err() {
+                    return;
+                }
+                let mut matched = false;
+                if current_counts.get(&key) == Some(&1) && previous_counts.get(&key) == Some(&1) {
+                    previous
+                        .two_cell_anchor
+                        .visit_standard_frames(&mut |old_key, old| {
+                            let identity = frame
+                                .non_visual_graphic_frame_properties()
+                                .non_visual_drawing_properties();
+                            let old_identity = old
+                                .non_visual_graphic_frame_properties()
+                                .non_visual_drawing_properties();
+                            if key == old_key && identity.same_restore_identity(old_identity) {
+                                matched = true;
+                                match chart_metadata_restoration::restore_space(
+                                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                                    old.graphic().graphic_data().chart_space(),
+                                ) {
+                                    Ok(restored) => {
+                                        if let Ok(report) = &mut result {
+                                            report.merge(restored);
+                                        }
+                                    }
+                                    Err(error) => result = Err(error),
+                                }
+                            }
+                        });
+                }
+                if !matched {
+                    let space = frame.graphic_mut().graphic_data_mut().chart_space_mut();
+                    crate::drawing::charts::clear_source_caches(space);
+                    chart_reference_roles::strip_export_parts(space);
+                    if let Ok(report) = &mut result {
+                        report.incompatible_owners += 1;
+                        report.diagnostics.push(format!(
+                            "discarded export metadata for unmatched/ambiguous chart frame {}",
+                            key.relationship_key()
+                        ));
+                    }
+                }
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |key, frame| {
+                if result.is_err() {
+                    return;
+                }
+                let mut matched = false;
+                if current_counts.get(&key) == Some(&1) && previous_counts.get(&key) == Some(&1) {
+                    previous
+                        .two_cell_anchor
+                        .visit_extended_frames(&mut |old_key, old| {
+                            let identity = frame.frame_properties().non_visual_drawing_properties();
+                            let old_identity =
+                                old.frame_properties().non_visual_drawing_properties();
+                            if key == old_key && identity.same_restore_identity(old_identity) {
+                                matched = true;
+                                match chart_metadata_restoration::restore_extended_space(
+                                    frame.chart_space_mut(),
+                                    old.chart_space(),
+                                ) {
+                                    Ok(restored) => {
+                                        if let Ok(report) = &mut result {
+                                            report.merge(restored);
+                                        }
+                                    }
+                                    Err(error) => result = Err(error),
+                                }
+                            }
+                        });
+                }
+                if !matched {
+                    chart_metadata_restoration::strip_extended_space(frame.chart_space_mut());
+                    if let Ok(report) = &mut result {
+                        report.incompatible_owners += 1;
+                        report.diagnostics.push(format!(
+                            "discarded export metadata for unmatched/ambiguous ChartEx frame {}",
+                            key.relationship_key()
+                        ));
+                    }
+                }
+            });
+        result
+    }
+
+    /// Removes the source caches of every string reference of the chart: the
+    /// labels an imported file stored that the cells cannot reproduce. They
+    /// only matter when the chart is exported to a file, so strip a copy that
+    /// is sent anywhere else; the chart then no longer carries them, however
+    /// many its file stored.
+    pub fn strip_source_caches(&mut self) {
+        self.two_cell_anchor
+            .visit_standard_frames_mut(&mut |_, frame| {
+                crate::drawing::charts::clear_source_caches(
+                    frame.graphic_mut().graphic_data_mut().chart_space_mut(),
+                );
+            });
+        self.two_cell_anchor
+            .visit_extended_frames_mut(&mut |_, frame| {
+                frame.chart_space_mut().strip_imported_caches();
+            });
+    }
+
+    /// Remove untrusted source caches, for example from a newly supplied chart.
+    /// Only caches retained by a trusted reader or chart are authoritative.
+    pub fn clear_source_caches(&mut self) {
+        self.strip_source_caches();
+    }
+
+    /// Discards incoming source caches, then adopts trusted caches
+    /// from `previous` by exact formula, reference role and existing identity.
+    /// Series categories and series text each use their explicitly present
+    /// series index (`c:idx`); axis titles use an explicitly present `c:axId`.
+    /// Trendline-label text uses the explicit series index and exact formula
+    /// as its role, so reordering labels cannot transfer caches; repeated
+    /// formula roles within the same series are ambiguous and never adopted.
+    /// Explicit zero is valid. A role/ID must occur exactly once in each chart,
+    /// counting even references without caches or with invalid guards. Missing
+    /// or ambiguous identities do not match. Previous empty slots stay empty.
+    /// Group kind, axis bindings and traversal position do not affect matching.
+    /// Other incoming edits are preserved. Formula guards must still match.
+    /// A surviving ID and formula keep their cache across reordering, group
+    /// changes and axis moves. Reusing or renumbering an ID with the same role
+    /// and formula is indistinguishable from the previous reference: adoption
+    /// prevents transfers across different keys, not undetectable ID reuse.
+    ///
+    /// Persist full charts with ordinary serde. Strip projected copies, adopt
+    /// on replacement, and clear caches on newly supplied charts. Serde does
+    /// not establish trust: counts and runs drive export iteration. Trusted
+    /// import, reload, undo and native copies keep caches.
+    /// The import budget does not limit subsequent chart copies or snapshots.
+    ///
+    /// Renaming a sheet does not rewrite formulas or guards. Without formula
+    /// updates formerly valid references write unavailable displays as empty
+    /// values. With updated formulas the guard differs and generated output
+    /// uses current displays. Originally unavailable displays keep the
+    /// optional-value equality rule, including `None == None`.
+    pub fn adopt_source_caches(&mut self, previous: &Chart) {
+        let Some(frame) = self.two_cell_anchor.graphic_frame_mut() else {
+            return;
+        };
+        let space = frame.graphic_mut().graphic_data_mut().chart_space_mut();
+        if let Some(previous) = previous.two_cell_anchor.graphic_frame() {
+            crate::drawing::charts::adopt_source_caches(
+                space,
+                previous.graphic().graphic_data().chart_space(),
+            );
+        } else {
+            crate::drawing::charts::clear_source_caches(space);
+        }
+    }
+
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use chart_space()")]
@@ -379,6 +757,15 @@ impl Chart {
             ChartType::ScatterChart => {
                 self.new_chart_scatter_chart(&area_chart_series_list);
             }
+            ChartType::StockChart => {
+                self.new_chart_stock_chart(&area_chart_series_list);
+            }
+            ChartType::SurfaceChart => {
+                self.new_chart_surface_chart(&area_chart_series_list);
+            }
+            ChartType::Surface3DChart => {
+                self.new_chart_surface_3d_chart(&area_chart_series_list);
+            }
         }
 
         self
@@ -420,7 +807,10 @@ impl Chart {
     }
 
     #[inline]
-    fn convert_series(area_chart_series_list: &[&str], smooth: bool) -> AreaChartSeriesList {
+    fn convert_series(
+        area_chart_series_list: &[&str],
+        family: SeriesFamily,
+    ) -> AreaChartSeriesList {
         let mut acsl_obj = AreaChartSeriesList::default();
         area_chart_series_list
             .iter()
@@ -441,20 +831,209 @@ impl Chart {
                 acs_object.index_mut().set_val(u32::try_from(idx).unwrap());
                 acs_object.order_mut().set_val(u32::try_from(idx).unwrap());
                 acs_object.set_values(values);
-                if smooth {
-                    acs_object.set_smooth(Smooth::default());
-                } else {
-                    let mut invert_if_negative = InvertIfNegative::default();
-                    invert_if_negative.set_val(0f64);
-                    acs_object.set_invert_if_negative(invert_if_negative);
+                match family {
+                    SeriesFamily::Line => {
+                        acs_object.set_smooth(Smooth::default());
+                    }
+                    SeriesFamily::Bar => {
+                        let mut invert_if_negative = InvertIfNegative::default();
+                        invert_if_negative.set_val(0f64);
+                        acs_object.set_invert_if_negative(invert_if_negative);
+                    }
+                    _ => (),
                 }
                 acsl_obj.add_area_chart_series(acs_object);
             });
         acsl_obj
     }
 
+    // The frame every created chart shares: language, optional 3-D view,
+    // right-hand legend, visible-only plotting and print settings.
+    fn new_chart_frame(
+        &self,
+        view_3d: Option<View3D>,
+        fill_plot: impl FnOnce(&mut PlotArea),
+    ) -> GraphicFrame {
+        let mut style = Style::default();
+        style.set_val('2');
+        let mut graphic_frame = GraphicFrame::default();
+        let space = graphic_frame
+            .graphic_mut()
+            .graphic_data_mut()
+            .chart_space_mut();
+        space.editing_language_mut().set_val(&self.default_language);
+        let chart = space.chart_mut();
+        if let Some(view_3d) = view_3d {
+            chart.set_view_3d(view_3d);
+        }
+        fill_plot(chart.plot_area_mut());
+        chart
+            .legend_mut()
+            .legend_position_mut()
+            .set_val(LegendPositionValues::Right);
+        chart.legend_mut().set_layout(Layout::default());
+        chart.plot_visible_only_mut().set_val(true);
+        chart
+            .display_blanks_as_mut()
+            .set_val(DisplayBlanksAsValues::Zero);
+        space.set_print_settings(Self::make_print_settings());
+        space.set_style(style);
+        graphic_frame
+    }
+
+    fn default_category_axis(id: u32, crossing: u32) -> CategoryAxis {
+        let mut axis = CategoryAxis::default();
+        axis.axis_id_mut().set_val(id);
+        axis.scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        axis.major_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.minor_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        axis.tick_crossing_axis_mut().set_val(crossing);
+        axis.auto_labeled_mut().set_val(true);
+        axis.label_offset_mut().set_val(100);
+        axis
+    }
+
+    fn default_value_axis(id: u32, crossing: u32) -> ValueAxis {
+        let mut axis = ValueAxis::default();
+        axis.axis_id_mut().set_val(id);
+        axis.scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        axis.axis_position_mut().set_val(AxisPositionValues::Left);
+        axis.set_major_gridlines(MajorGridlines::default());
+        axis.numbering_format_mut().set_format_code("General");
+        axis.numbering_format_mut().set_source_linked(true);
+        axis.major_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.minor_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        axis.tick_crossing_axis_mut().set_val(crossing);
+        axis
+    }
+
+    fn default_series_axis(id: u32, crossing: u32) -> SeriesAxis {
+        let mut axis = SeriesAxis::default();
+        axis.axis_id_mut().set_val(id);
+        axis.scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        axis.axis_position_mut().set_val(AxisPositionValues::Bottom);
+        axis.major_tick_mark_mut().set_val(TickMarkValues::Outside);
+        axis.minor_tick_mark_mut().set_val(TickMarkValues::None);
+        axis.tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        axis.tick_crossing_axis_mut().set_val(crossing);
+        axis
+    }
+
+    fn axis_ids(ids: &[u32]) -> Vec<AxisId> {
+        ids.iter()
+            .map(|id| {
+                let mut axis_id = AxisId::default();
+                axis_id.set_val(*id);
+                axis_id
+            })
+            .collect()
+    }
+
+    // Excel hides the line between the points of a stock series; the
+    // high-low lines and bars carry the chart.
+    fn hide_series_lines(series_list: &mut AreaChartSeriesList) {
+        for series in series_list.area_chart_series_mut() {
+            let mut outline = crate::drawing::Outline::default();
+            outline.set_width(38_100);
+            outline.set_cap_type("rnd");
+            outline.set_no_fill(crate::drawing::NoFill::default());
+            let mut shape = ShapeProperties::default();
+            shape.set_outline(outline);
+            series.set_shape_properties(shape);
+            let mut symbol = Symbol::default();
+            symbol.set_val(MarkerStyleValues::None);
+            let mut marker = Marker::default();
+            marker.set_symbol(symbol);
+            series.set_marker(marker);
+        }
+    }
+
+    /// Three series are high-low-close (high-low lines), four are
+    /// open-high-low-close (high-low lines and up/down bars), the layouts of
+    /// Excel's `xlStockHLC` and `xlStockOHLC`. Any other count is kept as
+    /// given, as Excel keeps it in a saved file.
+    pub(crate) fn new_chart_stock_chart(&mut self, area_chart_series_list: &[&str]) {
+        let mut acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Line);
+        Self::hide_series_lines(&mut acsl_obj);
+        let mut stock_chart = StockChart::default();
+        stock_chart.set_area_chart_series_list(acsl_obj);
+        stock_chart.set_hi_low_lines(Some(ChartLines::default()));
+        if area_chart_series_list.len() == 4 {
+            let mut bars = UpDownBars::default();
+            bars.set_up_bars(Some(ChartLines::default()));
+            bars.set_down_bars(Some(ChartLines::default()));
+            stock_chart.set_up_down_bars(Some(bars));
+        }
+        stock_chart.set_axis_id(Self::axis_ids(&[213_468_160, 169_590_080]));
+        let frame = self.new_chart_frame(None, |plot| {
+            plot.set_stock_chart(stock_chart);
+            plot.add_category_axis(Self::default_category_axis(213_468_160, 169_590_080));
+            plot.add_value_axis(Self::default_value_axis(169_590_080, 213_468_160));
+        });
+        self.two_cell_anchor.set_graphic_frame(frame);
+    }
+
+    // A surface is plotted over a category, a value and a series axis, as
+    // Excel does for the 3-D and the top-view types.
+    fn surface_axes(plot: &mut PlotArea) {
+        plot.add_category_axis(Self::default_category_axis(213_468_160, 169_590_080));
+        plot.add_value_axis(Self::default_value_axis(169_590_080, 213_468_160));
+        plot.add_series_axis(Self::default_series_axis(110_000_000, 169_590_080));
+    }
+
+    fn surface_view(rotate_x: i8, rotate_y: u16) -> View3D {
+        let mut x = RotateX::default();
+        x.set_val(rotate_x);
+        let mut y = RotateY::default();
+        y.set_val(rotate_y);
+        let mut view_3d = View3D::default();
+        view_3d.set_rotate_x(x);
+        view_3d.set_rotate_y(y);
+        view_3d
+    }
+
+    /// The top view of a surface (`xlSurfaceTopView`).
+    pub(crate) fn new_chart_surface_chart(&mut self, area_chart_series_list: &[&str]) {
+        let mut surface_chart = SurfaceChart::default();
+        surface_chart.set_area_chart_series_list(Self::convert_series(
+            area_chart_series_list,
+            SeriesFamily::Surface,
+        ));
+        surface_chart.set_axis_id(Self::axis_ids(&[213_468_160, 169_590_080, 110_000_000]));
+        let frame = self.new_chart_frame(Some(Self::surface_view(90, 0)), |plot| {
+            plot.set_surface_chart(surface_chart);
+            Self::surface_axes(plot);
+        });
+        self.two_cell_anchor.set_graphic_frame(frame);
+    }
+
+    pub(crate) fn new_chart_surface_3d_chart(&mut self, area_chart_series_list: &[&str]) {
+        let mut surface_chart = Surface3DChart::default();
+        surface_chart.set_area_chart_series_list(Self::convert_series(
+            area_chart_series_list,
+            SeriesFamily::Surface,
+        ));
+        surface_chart.set_axis_id(Self::axis_ids(&[213_468_160, 169_590_080, 110_000_000]));
+        let frame = self.new_chart_frame(Some(Self::surface_view(15, 20)), |plot| {
+            plot.set_surface_3d_chart(surface_chart);
+            Self::surface_axes(plot);
+        });
+        self.two_cell_anchor.set_graphic_frame(frame);
+    }
+
     pub(crate) fn new_chart_line_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Line);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -599,13 +1178,16 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Line);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
 
         let mut axis_id2 = AxisId::default();
         axis_id2.set_val(169_590_080);
+
+        let mut axis_id3 = AxisId::default();
+        axis_id3.set_val(110_000_000);
 
         let mut line_3d_chart = Line3DChart::default();
         line_3d_chart
@@ -614,6 +1196,7 @@ impl Chart {
         line_3d_chart.set_area_chart_series_list(acsl_obj);
         line_3d_chart.add_axis_id(axis_id1);
         line_3d_chart.add_axis_id(axis_id2);
+        line_3d_chart.add_axis_id(axis_id3);
 
         let mut category_axis = CategoryAxis::default();
         category_axis.axis_id_mut().set_val(213_468_160);
@@ -659,6 +1242,26 @@ impl Chart {
             .set_val(TickLabelPositionValues::NextTo);
         value_axis.tick_crossing_axis_mut().set_val(213_468_160);
 
+        let mut series_axis = SeriesAxis::default();
+        series_axis.axis_id_mut().set_val(110_000_000);
+        series_axis
+            .scaling_mut()
+            .orientation_mut()
+            .set_val(OrientationValues::MinMax);
+        series_axis
+            .axis_position_mut()
+            .set_val(AxisPositionValues::Right);
+        series_axis
+            .major_tick_mark_mut()
+            .set_val(TickMarkValues::None);
+        series_axis
+            .minor_tick_mark_mut()
+            .set_val(TickMarkValues::None);
+        series_axis
+            .tick_label_position_mut()
+            .set_val(TickLabelPositionValues::NextTo);
+        series_axis.tick_crossing_axis_mut().set_val(169_590_080);
+
         let layout = Layout::default();
         let mut style = Style::default();
         style.set_val('2');
@@ -702,6 +1305,13 @@ impl Chart {
             .graphic_data_mut()
             .chart_space_mut()
             .chart_mut()
+            .plot_area_mut()
+            .add_series_axis(series_axis);
+        graphic_frame
+            .graphic_mut()
+            .graphic_data_mut()
+            .chart_space_mut()
+            .chart_mut()
             .legend_mut()
             .legend_position_mut()
             .set_val(LegendPositionValues::Right);
@@ -740,7 +1350,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_pie_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Pie);
 
         let mut show_leader_lines = ShowLeaderLines::default();
         show_leader_lines.set_val(true);
@@ -748,9 +1358,11 @@ impl Chart {
         let mut pie_chart = PieChart::default();
         pie_chart.vary_colors_mut().set_val(true);
         pie_chart.set_area_chart_series_list(acsl_obj);
-        pie_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        pie_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let layout = Layout::default();
         let mut style = Style::default();
@@ -760,9 +1372,11 @@ impl Chart {
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -844,7 +1458,7 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Pie);
 
         let mut show_leader_lines = ShowLeaderLines::default();
         show_leader_lines.set_val(true);
@@ -852,9 +1466,11 @@ impl Chart {
         let mut pie_3d_chart = Pie3DChart::default();
         pie_3d_chart.vary_colors_mut().set_val(true);
         pie_3d_chart.set_area_chart_series_list(acsl_obj);
-        pie_3d_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        pie_3d_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let layout = Layout::default();
         let mut style = Style::default();
@@ -864,9 +1480,11 @@ impl Chart {
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -988,9 +1606,11 @@ impl Chart {
         let mut doughnut_chart = DoughnutChart::default();
         doughnut_chart.vary_colors_mut().set_val(true);
         doughnut_chart.set_area_chart_series_list(acsl_obj);
-        doughnut_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        doughnut_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
         doughnut_chart.hole_size_mut().set_val(50);
 
         let layout = Layout::default();
@@ -1054,7 +1674,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_area_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Area);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1193,7 +1813,7 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Area);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1329,7 +1949,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_bar_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, false);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Bar);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1473,7 +2093,7 @@ impl Chart {
         view_3d.set_rotate_y(rotate_y);
         view_3d.set_right_angle_axes(right_angle_axes);
 
-        let acsl_obj = Self::convert_series(area_chart_series_list, false);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Bar);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -1612,7 +2232,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_of_pie_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, false);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Pie);
 
         let mut show_leader_lines = ShowLeaderLines::default();
         show_leader_lines.set_val(true);
@@ -1620,18 +2240,23 @@ impl Chart {
         let mut of_pie_chart = OfPieChart::default();
         of_pie_chart.of_pie_type_mut().set_val(OfPieValues::Bar);
         of_pie_chart.vary_colors_mut().set_val(true);
+        of_pie_chart.second_pie_size_mut().set_val(75);
         of_pie_chart.set_area_chart_series_list(acsl_obj);
-        of_pie_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        of_pie_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let default_run_properties = RunProperties::default();
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -1776,9 +2401,11 @@ impl Chart {
         bubble_chart.bubble_scale_mut().set_val(100);
         bubble_chart.add_axis_id(axis_id1);
         bubble_chart.add_axis_id(axis_id2);
-        bubble_chart
-            .data_labels_mut()
-            .set_show_leader_lines(show_leader_lines);
+        bubble_chart.set_data_labels(
+            crate::drawing::charts::DataLabels::constructed_with_show_leader_lines(
+                show_leader_lines,
+            ),
+        );
 
         let mut value_axis_1 = ValueAxis::default();
         value_axis_1.axis_id_mut().set_val(213_468_160);
@@ -1840,9 +2467,11 @@ impl Chart {
         let mut end_paragraph_run_properties = RunProperties::default();
         end_paragraph_run_properties.set_language(&self.default_language);
         let mut paragraph = Paragraph::default();
-        paragraph.paragraph_properties_mut().set_right_to_left("0");
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
+            .set_right_to_left("0");
+        paragraph
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.set_end_para_run_properties(end_paragraph_run_properties);
 
@@ -1923,7 +2552,7 @@ impl Chart {
     }
 
     pub(crate) fn new_chart_radar_chart(&mut self, area_chart_series_list: &[&str]) {
-        let acsl_obj = Self::convert_series(area_chart_series_list, true);
+        let acsl_obj = Self::convert_series(area_chart_series_list, SeriesFamily::Radar);
 
         let mut axis_id1 = AxisId::default();
         axis_id1.set_val(213_468_160);
@@ -2087,12 +2716,8 @@ impl Chart {
                     .set_text("General");
                 acs_object.set_y_values(y_values);
 
-                let mut invert_if_negative = InvertIfNegative::default();
-                invert_if_negative.set_val(0f64);
-
                 acs_object.index_mut().set_val(idx);
                 acs_object.order_mut().set_val(idx);
-                acs_object.set_invert_if_negative(invert_if_negative);
                 acsl_obj.add_area_chart_series(acs_object);
 
                 acs_object = AreaChartSeries::default();
@@ -2261,14 +2886,14 @@ impl Chart {
         run_properties.set_alternative_language("en-US");
 
         let mut run = Run::default();
-        run.set_run_properties(run_properties);
+        run.set_native_chart_run_properties(run_properties);
         run.set_text(value);
 
         let default_run_properties = RunProperties::default();
 
         let mut paragraph = Paragraph::default();
         paragraph
-            .paragraph_properties_mut()
+            .native_chart_paragraph_properties_mut()
             .set_default_run_properties(default_run_properties);
         paragraph.add_run(run);
 
@@ -2284,55 +2909,6 @@ impl Chart {
         title
     }
 }
-impl AdjustmentCoordinate for Chart {
-    #[inline]
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.two_cell_anchor.as_mut().adjustment_insert_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
-    }
-
-    #[inline]
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.two_cell_anchor.as_mut().adjustment_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
-    }
-
-    #[inline]
-    fn is_remove_coordinate(
-        &self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) -> bool {
-        self.two_cell_anchor.as_ref().is_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        )
-    }
-}
 impl AdjustmentCoordinateWithSheet for Chart {
     #[inline]
     fn adjustment_insert_coordinate_with_sheet(
@@ -2343,15 +2919,26 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.two_cell_anchor
-            .as_mut()
-            .adjustment_insert_coordinate_with_sheet(
-                sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
+        if offset_col_num != 0 {
+            self.adjust_references(
+                "",
+                &crate::drawing::charts::ChartReferenceEdit::InsertColumns {
+                    sheet: sheet_name.into(),
+                    at:    root_col_num,
+                    count: offset_col_num,
+                },
             );
+        }
+        if offset_row_num != 0 {
+            self.adjust_references(
+                "",
+                &crate::drawing::charts::ChartReferenceEdit::InsertRows {
+                    sheet: sheet_name.into(),
+                    at:    root_row_num,
+                    count: offset_row_num,
+                },
+            );
+        }
     }
 
     #[inline]
@@ -2363,14 +2950,27 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.two_cell_anchor
-            .as_mut()
-            .adjustment_remove_coordinate_with_sheet(
-                sheet_name,
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
+        if offset_col_num != 0 {
+            let columns =
+                (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385)).collect();
+            self.adjust_references(
+                "",
+                &crate::drawing::charts::ChartReferenceEdit::DeleteColumns {
+                    sheet: sheet_name.into(),
+                    columns,
+                },
             );
+        }
+        if offset_row_num != 0 {
+            let rows = (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577))
+                .collect();
+            self.adjust_references(
+                "",
+                &crate::drawing::charts::ChartReferenceEdit::DeleteRows {
+                    sheet: sheet_name.into(),
+                    rows,
+                },
+            );
+        }
     }
 }

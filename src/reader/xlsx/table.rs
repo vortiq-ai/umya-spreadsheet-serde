@@ -14,12 +14,14 @@ use crate::structs::{
     TableColumn,
     TableStyleInfo,
     Worksheet,
+    XlsxErrorKind,
     raw::RawFile,
 };
 
 pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<(), XlsxError> {
     let data = std::io::Cursor::new(table_file.file_data());
-    let mut reader = Reader::from_reader(data);
+    let mut reader =
+        Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(data)?);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut table = Table::default();
@@ -31,6 +33,9 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                     table_column = TableColumn::default();
                     for attr in e.attributes().with_checks(false).flatten() {
                         match attr.key.0 {
+                            b"id" => {
+                                table_column.set_id(parse_id(&get_attribute_value(&attr)?)?);
+                            }
                             b"name" => {
                                 let attr_val = get_attribute_value(&attr)?;
                                 table_column.set_name(attr_val);
@@ -62,7 +67,7 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                         let attr_val = get_attribute_value(&attr)?;
                         match attr.key.0 {
                             b"name" => {
-                                name = attr_val;
+                                name = quick_xml::escape::unescape(&attr_val)?.into_owned();
                             }
                             b"showFirstColumn" => {
                                 if attr_val == "1" {
@@ -95,8 +100,11 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                         show_col_stripes,
                     )));
                 }
-                b"autoFilter" => {
-                    table.auto_filter_mut().set_attributes(&mut reader, e, true);
+                _ if crate::reader::spreadsheet_xml::is_native_start(e, b"autoFilter") => {
+                    table
+                        .auto_filter_mut()
+                        .set_attributes(&mut reader, e, true)
+                        .map_err(crate::xml::xml_error)?;
                 }
                 _ => (),
             },
@@ -112,6 +120,9 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                     for attr in e.attributes().with_checks(false).flatten() {
                         let attr_val = get_attribute_value(&attr)?;
                         match attr.key.0 {
+                            b"id" => {
+                                table.set_id(parse_id(&attr_val)?);
+                            }
                             b"displayName" => {
                                 table.set_display_name(&attr_val);
                             }
@@ -138,6 +149,9 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                     table_column = TableColumn::default();
                     for attr in e.attributes().with_checks(false).flatten() {
                         match attr.key.0 {
+                            b"id" => {
+                                table_column.set_id(parse_id(&get_attribute_value(&attr)?)?);
+                            }
                             b"name" => {
                                 let attr_val = get_attribute_value(&attr)?;
                                 table_column.set_name(attr_val);
@@ -154,10 +168,11 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
                         }
                     }
                 }
-                b"autoFilter" => {
+                _ if crate::reader::spreadsheet_xml::is_native_start(e, b"autoFilter") => {
                     table
                         .auto_filter_mut()
-                        .set_attributes(&mut reader, e, false);
+                        .set_attributes(&mut reader, e, false)
+                        .map_err(crate::xml::xml_error)?;
                 }
                 _ => (),
             },
@@ -181,4 +196,16 @@ pub(crate) fn read(worksheet: &mut Worksheet, table_file: &RawFile) -> Result<()
         worksheet.add_table(table);
     }
     Ok(())
+}
+
+fn parse_id(value: &str) -> Result<u32, XlsxError> {
+    value
+        .trim_matches([' ', '\t', '\r', '\n'])
+        .parse()
+        .map_err(|_| {
+            XlsxError::with_message(
+                XlsxErrorKind::Xml,
+                format!("invalid table identity: {value}"),
+            )
+        })
 }

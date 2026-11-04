@@ -3,18 +3,12 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::super::StringValue;
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    XlsxError,
     writer::driver::write_start_tag,
 };
 
@@ -109,39 +103,32 @@ impl TextFontType {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        if let Some(v) = get_attribute(e, b"typeface") {
-            self.set_typeface(v);
+    ) -> Result<(), XlsxError> {
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"typeface")? {
+            self.set_typeface(value);
         }
-        if let Some(v) = get_attribute(e, b"pitchFamily") {
-            self.set_pitch_family(v);
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"pitchFamily")? {
+            crate::xml::trim_xml_whitespace(&value)
+                .parse::<i8>()
+                .map_err(|_| crate::xml::xml_error("invalid DrawingML font pitch family"))?;
+            self.set_pitch_family(value);
         }
-        if let Some(v) = get_attribute(e, b"charset") {
-            self.set_charset(v);
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"charset")? {
+            crate::xml::trim_xml_whitespace(&value)
+                .parse::<i8>()
+                .map_err(|_| crate::xml::xml_error("invalid DrawingML font character set"))?;
+            self.set_charset(value);
         }
-        if let Some(v) = get_attribute(e, b"panose") {
-            self.set_panose(v);
+        if let Some(value) = crate::reader::driver::read_attribute(e, b"panose")? {
+            if value.len() != 20 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(crate::xml::xml_error("invalid DrawingML font Panose value"));
+            }
+            self.set_panose(value);
         }
-
-        if empty_flag {
-            return;
+        if !empty_flag {
+            crate::reader::driver::consume_empty_element(reader, e)?;
         }
-
-        xml_read_loop!(
-            reader,
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:latin" {
-                    return;
-                }
-                if e.name().into_inner() == b"a:cs" {
-                    return;
-                }
-                if e.name().into_inner() == b"a:ea" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:latin,a:cs,a:ea")
-        );
+        Ok(())
     }
 
     #[inline]

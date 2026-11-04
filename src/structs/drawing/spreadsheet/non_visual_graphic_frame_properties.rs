@@ -14,12 +14,9 @@ use super::{
     NonVisualDrawingProperties,
     NonVisualGraphicFrameDrawingProperties,
 };
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -113,47 +110,124 @@ impl NonVisualGraphicFrameProperties {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"xdr:cNvPr" | b"cNvPr" => {
-                        self.non_visual_drawing_properties
-                            .set_attributes(reader, e, true);
-                    },
-                    b"xdr:cNvGraphicFramePr" | b"cNvGraphicFramePr" => {
-                        NonVisualGraphicFrameDrawingProperties::set_attributes(reader, e);
-                    },
-                    _ => (),
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let parent = session.current_namespace_scope().unwrap_or_default();
+        let scope = parent
+            .child(owner)
+            .map_err(super::extended_chart::drawing_error)?;
+        let _guard = session.enter_child_scope(owner)?;
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let child_scope = scope
+                        .child(child)
+                        .map_err(super::extended_chart::drawing_error)?;
+                    let name = child_scope
+                        .resolve(child.name().as_ref(), false)
+                        .map_err(super::extended_chart::drawing_error)?;
+                    if name.namespace_uri != crate::helper::const_str::SHEET_DRAWING_NS
+                        || !seen.insert(name.local_name.clone())
+                    {
+                        return Err(super::extended_chart::drawing_error(
+                            "foreign or duplicate nonvisual drawing child",
+                        ));
+                    }
+                    match name.local_name.as_str() {
+                        "cNvPr" => {
+                            self.non_visual_drawing_properties =
+                                NonVisualDrawingProperties::read_with_scope(
+                                    reader, child, empty, &scope,
+                                )
+                                .map_err(super::extended_chart::drawing_error)?;
+                        }
+                        "cNvGraphicFramePr" => {
+                            self.non_visual_graphic_frame_drawing_properties
+                                .read_with_scope(reader, child, empty, &scope)?;
+                        }
+                        _ => {
+                            return Err(super::extended_chart::drawing_error(
+                                "unsupported nonvisual drawing child",
+                            ));
+                        }
+                    }
                 }
-            },
-            Event::Start(ref e) => {
-                if matches!(e.name().into_inner(), b"xdr:cNvPr" | b"cNvPr") {
-                    self.non_visual_drawing_properties
-                        .set_attributes(reader, e, false);
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if !seen.contains("cNvPr") || !seen.contains("cNvGraphicFramePr") {
+                        return Err(super::extended_chart::drawing_error(
+                            "missing required nonvisual drawing child",
+                        ));
+                    }
+                    return Ok(());
                 }
-            },
-            Event::End(ref e) => {
-                if matches!(e.name().into_inner(), b"xdr:nvGraphicFramePr" | b"nvGraphicFramePr") {
-                    return
+                Event::Eof => {
+                    return Err(super::extended_chart::drawing_error(
+                        "unterminated nonvisual drawing properties",
+                    ));
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:nvGraphicFramePr")
-        );
+                ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+                    if !crate::reader::driver::decode_xml_character_event(event)?
+                        .is_some_and(|text| crate::xml::trim_xml_whitespace(&text).is_empty())
+                    {
+                        return Err(super::extended_chart::drawing_error(
+                            "non-whitespace nonvisual drawing content",
+                        ));
+                    }
+                }
+                Event::Comment(_) | Event::PI(_) => (),
+                _ => {
+                    return Err(super::extended_chart::drawing_error(
+                        "invalid nonvisual drawing event",
+                    ));
+                }
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        relationships: &[(String, String)],
+        ole_id: usize,
+    ) -> Result<(), crate::XlsxError> {
         // xdr:nvGraphicFramePr
         write_start_tag(writer, "xdr:nvGraphicFramePr", vec![], false);
 
         // xdr:cNvPr
-        self.non_visual_drawing_properties.write_to(writer, 0);
+        self.non_visual_drawing_properties
+            .write_to(writer, ole_id, relationships)?;
 
         // xdr:cNvGraphicFramePr
-        NonVisualGraphicFrameDrawingProperties::write_to(writer);
+        self.non_visual_graphic_frame_drawing_properties
+            .write_to(writer, relationships)?;
 
         write_end_tag(writer, "xdr:nvGraphicFramePr");
+        Ok(())
+    }
+
+    pub(crate) fn visit_relationships(
+        &self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str),
+    ) {
+        self.non_visual_drawing_properties
+            .visit_relationships(visit);
+        self.non_visual_graphic_frame_drawing_properties
+            .visit_relationships(visit);
+    }
+
+    pub(crate) fn visit_relationships_mut(
+        &mut self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &mut String),
+    ) {
+        self.non_visual_drawing_properties
+            .visit_relationships_mut(visit);
+        self.non_visual_graphic_frame_drawing_properties
+            .visit_relationships_mut(visit);
     }
 }

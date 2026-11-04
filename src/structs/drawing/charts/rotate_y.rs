@@ -8,10 +8,7 @@ use quick_xml::{
 };
 
 use super::super::super::UInt16Value;
-use crate::{
-    reader::driver::get_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -39,8 +36,21 @@ impl RotateY {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        let value = crate::reader::driver::read_attribute(e, b"val")?
+            .map(|value| crate::xml::parse_u32(&value))
+            .transpose()
+            .map_err(crate::xml::xml_error)?
+            .unwrap_or(0);
+        if !(0..=360).contains(&value) {
+            return Err(crate::xml::xml_error(
+                "chart rotate_y value is out of range",
+            ));
+        }
+        self.val.set_value(
+            u16::try_from(value).map_err(|error| crate::xml::xml_error(error.to_string()))?,
+        );
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

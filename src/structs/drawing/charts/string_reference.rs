@@ -13,13 +13,19 @@ use quick_xml::{
 use super::Formula;
 use super::StringCache;
 use crate::{
-    reader::driver::local_name,
+    reader::{
+        driver::local_name,
+        xlsx::{
+            SourceCacheSession,
+            finalize_parsed_string_cache,
+            register_parsed_string_cache,
+        },
+    },
     structs::Workbook,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -29,9 +35,46 @@ pub struct StringReference {
     string_cache: StringCache,
     #[cfg_attr(feature = "serde", serde(default))]
     cached_value: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:   Option<Box<super::ExtensionList>>,
 }
 
 impl StringReference {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        let previous = if self.formula.address_str() == previous.formula.address_str() {
+            previous.extensions.as_ref()
+        } else {
+            None
+        };
+        super::chart_metadata_restoration::replace_hidden_parts(&mut self.extensions, previous)
+    }
+
+    // A retaining Formula projection must consume these disjoint fields once.
+    pub(crate) fn split_formula_extensions_mut(
+        &mut self,
+    ) -> (&mut Formula, Option<&mut super::ExtensionList>) {
+        (&mut self.formula, self.extensions.as_deref_mut())
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions = None;
+        None
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     /// The imported label at cache index zero, before workbook values are
     /// resolved.
     #[must_use]
@@ -92,29 +135,164 @@ impl StringReference {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
-                b"f" => {
-                    self.formula.set_attributes(reader, e);
-                }
-                b"strCache" => {
-                    self.cached_value = StringCache::set_attributes(reader, e);
-                }
-                _ => (),
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"strRef" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strRef"),
-        );
+        e: &BytesStart,
+        session: &SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_named(reader, e, session, b"strCache")?;
+        Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    /// Reads a real reference-shaped owner from the original chart reader.
+    /// The cache wrapper differs in the registered label extension vocabulary,
+    /// but admission, descriptors and deferred source spans have one owner.
+    pub(crate) fn read_named<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &SourceCacheSession,
+        cache_name: &[u8],
+    ) -> Result<(), crate::XlsxError> {
+        self.read_named_with(reader, e, session, cache_name, |_, _, _, _| Ok(false))?;
+        Ok(())
+    }
+
+    /// Returns direct formula/cache occurrence counts. Extension owners retain
+    /// invalid cardinality themselves; this is the single source-cache parser.
+    pub(crate) fn read_named_with<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &SourceCacheSession,
+        cache_name: &[u8],
+        mut extra: impl FnMut(
+            &mut Reader<R>,
+            &BytesStart,
+            bool,
+            (usize, usize),
+        ) -> Result<bool, crate::XlsxError>,
+    ) -> Result<(usize, usize, bool), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
+        let namespace = if cache_name == b"strCache" {
+            super::extension_registry::NS_C
+        } else {
+            super::extension_registry::NS_C15
+        };
+        let end = e.name().into_inner().to_vec();
+        let mut counts = (0, 0);
+        let mut ordered = true;
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            let start = reader.buffer_position();
+            match reader.read_event_into(&mut buffer)? {
+                Event::Start(e) => match if session.accepts_child_namespace(&e, namespace)? {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
+                    b"extLst" if cache_name == b"strCache" => {
+                        self.set_extensions(Some(super::ExtensionList::read(
+                            reader, &e, false, session,
+                        )?));
+                    }
+                    b"f" => {
+                        ordered &= counts.1 == 0;
+                        counts.0 += 1;
+                        self.formula.set_attributes(reader, &e)?;
+                    }
+                    name if name == cache_name => {
+                        ordered &= counts.0 > 0;
+                        counts.1 += 1;
+                        if session.is_deferred() {
+                            let summary;
+                            (self.cached_value, self.string_cache, summary) =
+                                StringCache::read_deferred_named(
+                                    reader,
+                                    self.formula.address_str(),
+                                    e.name().into_inner(),
+                                    true,
+                                )?;
+                            register_parsed_string_cache(
+                                session,
+                                &mut self.string_cache,
+                                Some((start, reader.buffer_position())),
+                                summary,
+                            );
+                        } else {
+                            (self.cached_value, self.string_cache) = StringCache::set_attributes(
+                                reader,
+                                &e,
+                                self.formula.address_str(),
+                            )?;
+                            register_parsed_string_cache(
+                                session,
+                                &mut self.string_cache,
+                                None,
+                                None,
+                            );
+                        }
+                    }
+                    _ => {
+                        if !extra(reader, &e, false, counts)? {
+                            crate::reader::driver::skip_element(reader, &e)?;
+                        }
+                    }
+                },
+                Event::Empty(e) => match if session.accepts_child_namespace(&e, namespace)? {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                } {
+                    b"extLst" if cache_name == b"strCache" => {
+                        self.set_extensions(Some(super::ExtensionList::read(
+                            reader, &e, true, session,
+                        )?));
+                    }
+                    b"f" => {
+                        ordered &= counts.1 == 0;
+                        counts.0 += 1;
+                        self.formula = Formula::default();
+                    }
+                    name if name == cache_name => {
+                        ordered &= counts.0 > 0;
+                        counts.1 += 1;
+                        self.string_cache = StringCache::empty_source(self.formula.address_str());
+                        register_parsed_string_cache(
+                            session,
+                            &mut self.string_cache,
+                            session
+                                .is_deferred()
+                                .then_some((start, reader.buffer_position())),
+                            None,
+                        );
+                    }
+                    _ => {
+                        extra(reader, &e, true, counts)?;
+                    }
+                },
+                Event::End(e) if e.name().into_inner() == end.as_slice() => {
+                    finalize_parsed_string_cache(
+                        session,
+                        &mut self.string_cache,
+                        self.formula.address_str(),
+                    );
+                    return Ok((counts.0, counts.1, ordered));
+                }
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated string reference owner".to_string(),
+                    ));
+                }
+                _ => (),
+            }
+        }
+    }
+
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:strRef
         write_start_tag(writer, "c:strRef", vec![], false);
 
@@ -122,8 +300,13 @@ impl StringReference {
         self.formula.write_to(writer);
 
         // c:strCache
-        StringCache::write_to(writer, self.formula(), wb);
+        self.string_cache.write_to(writer, self.formula(), wb);
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "strRef", None)?;
+        }
         write_end_tag(writer, "c:strRef");
+
+        Ok(())
     }
 }

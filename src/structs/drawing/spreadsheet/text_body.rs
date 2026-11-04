@@ -14,12 +14,9 @@ use super::super::{
     ListStyle,
     Paragraph,
 };
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -118,50 +115,70 @@ impl TextBody {
         self.paragraph.push(value);
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:p" => {
-                        let mut paragraph = Paragraph::default();
-                        paragraph.set_attributes(reader, e);
-                        self.add_paragraph(paragraph);
+        owner: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if empty {
+            return Ok(());
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::DRAWINGML_MAIN_NS {
+                        return Err(crate::xml::xml_error("foreign drawing text child"));
                     }
-                    b"a:bodyPr" => {
-                        let mut body_properties = BodyProperties::default();
-                        body_properties.set_attributes(reader, e, false);
-                        self.set_body_properties(body_properties);
+                    match name.local_name.as_str() {
+                        "p" => {
+                            let mut value = Paragraph::default();
+                            if empty {
+                                value.mark_empty_import();
+                            } else {
+                                value.read_with_session(reader, child, Some(session))?;
+                            }
+                            self.add_paragraph(value);
+                        }
+                        "bodyPr" => {
+                            let mut value = BodyProperties::default();
+                            value.read_with_session(reader, child, empty, Some(session))?;
+                            self.set_body_properties(value);
+                        }
+                        "lstStyle" => {
+                            let mut value = ListStyle::default();
+                            if !empty {
+                                value.read_with_session(reader, child, Some(session))?;
+                            }
+                            self.set_list_style(value);
+                        }
+                        _ => return Err(crate::xml::xml_error("unsupported drawing text child")),
                     }
-                    b"a:lstStyle" => {
-                        let mut obj = ListStyle::default();
-                        obj.set_attributes(reader, e);
-                        self.set_list_style(obj);
-                    }
-                    _ => (),
                 }
-            },
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"a:bodyPr" {
-                    let mut body_properties = BodyProperties::default();
-                    body_properties.set_attributes(reader, e, true);
-                    self.set_body_properties(body_properties);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"xdr:txBody" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "xdr:txBody")
-        );
+                Event::End(child) if child.name().as_ref() == end.as_slice() => return Ok(()),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing text body")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // xdr:txBody
         write_start_tag(writer, "xdr:txBody", vec![], false);
 
@@ -169,12 +186,13 @@ impl TextBody {
         self.body_properties.write_to(writer);
 
         // a:lstStyle
-        self.list_style.write_to(writer);
+        self.list_style.write_to(writer)?;
 
         for content in &self.paragraph {
-            content.write_to(writer);
+            content.write_to(writer)?;
         }
 
         write_end_tag(writer, "xdr:txBody");
+        Ok(())
     }
 }

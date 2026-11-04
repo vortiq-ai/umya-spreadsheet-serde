@@ -1,4 +1,8 @@
-use super::AreaChartSeries;
+use super::{
+    AreaChartSeries,
+    SeriesFamily,
+    SeriesPartRemoval,
+};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -34,5 +38,23 @@ impl AreaChartSeriesList {
     pub fn add_area_chart_series(&mut self, value: AreaChartSeries) -> &mut Self {
         self.area_chart_series.push(value);
         self
+    }
+
+    /// Removes from every series the parts `family`'s series type cannot
+    /// hold, for an explicit change of the group's series type, and returns
+    /// what was removed. Indices, order, names, formatting, data labels and
+    /// data references stay.
+    pub fn remove_parts_not_allowed_in(&mut self, family: SeriesFamily) -> Vec<SeriesPartRemoval> {
+        let mut removed = Vec::new();
+        for (series_index, series) in self.area_chart_series.iter_mut().enumerate() {
+            removed.extend(series.remove_parts_not_allowed_in(family).into_iter().map(
+                |(part, occurrence)| SeriesPartRemoval {
+                    series_index,
+                    part,
+                    occurrence,
+                },
+            ));
+        }
+        removed
     }
 }

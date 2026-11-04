@@ -11,6 +11,7 @@ use quick_xml::{
 };
 
 use super::{
+    ExtensionList,
     Height,
     HeightMode,
     LayoutTarget,
@@ -22,12 +23,14 @@ use super::{
     WidthMode,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -42,9 +45,41 @@ pub struct ManualLayout {
     top_mode:      Option<TopMode>,
     width:         Option<Width>,
     width_mode:    Option<WidthMode>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:         Option<Box<ManualLayoutParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct ManualLayoutParts {
+    extensions: Option<ExtensionList>,
 }
 
 impl ManualLayout {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.parts,
+            previous.parts.as_ref(),
+        )
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts = None;
+        None
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts.as_mut().and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+    }
+
     #[must_use]
     pub fn height(&self) -> Option<&Height> {
         self.height.as_ref()
@@ -283,76 +318,105 @@ impl ManualLayout {
             && self.width_mode.is_none()
     }
 
+    pub(crate) fn is_valid(&self) -> bool {
+        self.left.as_ref().is_none_or(Left::is_valid)
+            && self.top.as_ref().is_none_or(Top::is_valid)
+            && self.width.as_ref().is_none_or(Width::is_valid)
+            && self.height.as_ref().is_none_or(Height::is_valid)
+            && self.left_mode.as_ref().is_none_or(LeftMode::is_valid)
+            && self.top_mode.as_ref().is_none_or(TopMode::is_valid)
+            && self.width_mode.as_ref().is_none_or(WidthMode::is_valid)
+            && self.height_mode.as_ref().is_none_or(HeightMode::is_valid)
+            && self
+                .layout_target
+                .as_ref()
+                .is_none_or(LayoutTarget::is_valid)
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
+        let end = e.name().into_inner().to_vec();
+        try_xml_read_loop!(
             reader,
-            Event::Empty(ref e) => match local_name(e.name().0) {
-                b"h" => {
-                    let mut obj = Height::default();
-                    obj.set_attributes(reader, e);
-                    self.set_height(obj);
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                let empty=matches!(event,Event::Empty(_));
+                let mut consumed=false;
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().0)} else {b""} {
+                    b"extLst" => { self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)?)); consumed=true; },
+                    b"h" => {
+                        let mut obj = Height::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_height(obj);
+                    }
+                    b"hMode" => {
+                        let mut obj = HeightMode::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_height_mode(obj);
+                    }
+                    b"layoutTarget" => {
+                        let mut obj = LayoutTarget::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_layout_target(obj);
+                    }
+                    b"x" => {
+                        let mut obj = Left::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_left(obj);
+                    }
+                    b"xMode" => {
+                        let mut obj = LeftMode::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_left_mode(obj);
+                    }
+                    b"y" => {
+                        let mut obj = Top::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_top(obj);
+                    }
+                    b"yMode" => {
+                        let mut obj = TopMode::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_top_mode(obj);
+                    }
+                    b"w" => {
+                        let mut obj = Width::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_width(obj);
+                    }
+                    b"wMode" => {
+                        let mut obj = WidthMode::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_width_mode(obj);
+                    }
+                    _ => (),
                 }
-                b"hMode" => {
-                    let mut obj = HeightMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_height_mode(obj);
+                if !empty && !consumed {
+                    crate::reader::driver::skip_element(reader, e)?;
                 }
-                b"layoutTarget" => {
-                    let mut obj = LayoutTarget::default();
-                    obj.set_attributes(reader, e);
-                    self.set_layout_target(obj);
-                }
-                b"x" => {
-                    let mut obj = Left::default();
-                    obj.set_attributes(reader, e);
-                    self.set_left(obj);
-                }
-                b"xMode" => {
-                    let mut obj = LeftMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_left_mode(obj);
-                }
-                b"y" => {
-                    let mut obj = Top::default();
-                    obj.set_attributes(reader, e);
-                    self.set_top(obj);
-                }
-                b"yMode" => {
-                    let mut obj = TopMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_top_mode(obj);
-                }
-                b"w" => {
-                    let mut obj = Width::default();
-                    obj.set_attributes(reader, e);
-                    self.set_width(obj);
-                }
-                b"wMode" => {
-                    let mut obj = WidthMode::default();
-                    obj.set_attributes(reader, e);
-                    self.set_width_mode(obj);
-                }
-                _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"manualLayout" {
-                    return;
+                if e.name().into_inner() == end.as_slice() {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:manualLayout"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:manualLayout"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // c:manualLayout
         write_start_tag(writer, "c:manualLayout", vec![], false);
 
-        // c:hMode
-        if let Some(v) = &self.height_mode {
+        // c:layoutTarget
+        if let Some(v) = &self.layout_target {
             v.write_to(writer);
         }
 
@@ -371,8 +435,8 @@ impl ManualLayout {
             v.write_to(writer);
         }
 
-        // c:h
-        if let Some(v) = &self.height {
+        // c:hMode
+        if let Some(v) = &self.height_mode {
             v.write_to(writer);
         }
 
@@ -391,11 +455,16 @@ impl ManualLayout {
             v.write_to(writer);
         }
 
-        // c:layoutTarget
-        if let Some(v) = &self.layout_target {
+        // c:h
+        if let Some(v) = &self.height {
             v.write_to(writer);
         }
 
+        if let Some(v) = self.extensions() {
+            v.write_for_owner(writer, None, "manualLayout", None)?;
+        }
         write_end_tag(writer, "c:manualLayout");
+
+        Ok(())
     }
 }

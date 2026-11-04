@@ -14,12 +14,14 @@ use super::{
     AreaChartSeries,
     AreaChartSeriesList,
     DataLabels,
+    SeriesFamily,
     VaryColors,
 };
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -34,9 +36,79 @@ pub struct Pie3DChart {
     vary_colors:            VaryColors,
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            DataLabels,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl Pie3DChart {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        )
+    }
+
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn projection_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.reference_group_parts_mut()
+    }
+
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn vary_colors(&self) -> &VaryColors {
         &self.vary_colors
@@ -99,6 +171,7 @@ impl Pie3DChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -109,45 +182,60 @@ impl Pie3DChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Pie3DChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(owner)?;
+        let end = owner.name().into_inner().to_vec();
+        self.data_labels.mark_group_absent();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
-                    _ => (),
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"varyColors" {
-                    self.vary_colors.set_attributes(reader, e);
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {
+                    local_name(e.name().into_inner())
+                } else { b"" } {
+                    b"extLst" => { self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?)); },
+                    b"dLbls" => self.data_labels.mark_empty_import(),
+                    b"varyColors" => { self.vary_colors.set_attributes(reader, e)?; },
+                    _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"pie3DChart" {
-                    return;
+                if e.name().into_inner() == end.as_slice() {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:pie3DChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:pie3DChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:pie3DChart
         write_start_tag(writer, "c:pie3DChart", vec![], false);
 
@@ -156,12 +244,17 @@ impl Pie3DChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Pie)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb)?;
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "pie3DChart", Some(SeriesFamily::Pie))?;
+        }
         write_end_tag(writer, "c:pie3DChart");
+
+        Ok(())
     }
 }

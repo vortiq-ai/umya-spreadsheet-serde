@@ -15,8 +15,6 @@ use crate::{
         formula::{
             FormulaToken,
             adjustment_formula_coordinate,
-            adjustment_insert_formula_coordinate,
-            adjustment_remove_formula_coordinate,
             parse_to_tokens,
             render,
         },
@@ -50,7 +48,6 @@ use crate::{
 #[derive(Clone, Default, Debug, PartialEq, PartialOrd)]
 pub struct CellFormula {
     bx:             BooleanValue,
-    calculate_cell: BooleanValue,
     data_table_2d:  BooleanValue,
     data_table_row: BooleanValue,
     formula_type:   EnumValue<CellFormulaValues>,
@@ -62,6 +59,8 @@ pub struct CellFormula {
     shared_index:   UInt32Value,
     text:           StringValue,
     text_view:      StringValue,
+    #[cfg_attr(feature = "serde", serde(default))]
+    calculate_cell: BooleanValue,
 }
 impl CellFormula {
     #[inline]
@@ -220,7 +219,7 @@ impl CellFormula {
     pub fn get_r2(&self) -> &str {
         self.r2()
     }
-    
+
     #[inline]
     pub fn set_r2<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.r2.set_value(value);
@@ -360,6 +359,17 @@ impl CellFormula {
         self
     }
 
+    pub(crate) fn rewrite_reference_texts(&mut self, rewrite: &impl Fn(&str) -> String) {
+        for text in [&mut self.text, &mut self.text_view] {
+            if text.has_value() {
+                let changed = rewrite(text.value_str());
+                if changed != text.value_str() {
+                    text.set_value(changed);
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
@@ -383,9 +393,9 @@ impl CellFormula {
 
         if !is_empty {
             let mut buf = Vec::new();
-            let text = reader
-                    .read_text_into(e.name(), &mut buf).unwrap();
-            self.text.set_value(crate::helper::utils::unescape_xml_text(&text));
+            let text = reader.read_text_into(e.name(), &mut buf).unwrap();
+            self.text
+                .set_value(crate::helper::utils::unescape_xml_text(&text));
         }
 
         // Shared
@@ -469,10 +479,11 @@ impl CellFormula {
             // `t="array"` used to be suppressed here ("Not SUPPORT Array"),
             // which silently downgraded every Ctrl-Shift-Enter array to a plain
             // formula on write. That is not harmless: the members of the array
-            // `ref` rectangle are ordinary cells in the file, so Excel 365 reads
-            // the bare `<f>` as a SPILLING formula, finds them occupied and
-            // returns `#SPILL!`. The `ref` itself already reaches the output
-            // through the `self.reference` branch below.
+            // `ref` rectangle are ordinary cells in the file, so Excel 365
+            // reads the bare `<f>` as a SPILLING formula, finds
+            // them occupied and returns `#SPILL!`. The `ref` itself
+            // already reaches the output through the
+            // `self.reference` branch below.
             attributes.push(("t", formula_type_str).into());
         }
 
@@ -498,9 +509,6 @@ impl CellFormula {
         let mut reference_str = String::new();
         let mut wrote_ref = false;
         if self.formula_type.value() == &CellFormulaValues::DataTable {
-            // A data table formula is only written in its first cell, and
-            // `ref` holds the range of cells it fills. `wrote_ref` keeps the
-            // fallback below from writing it a second time.
             if self.reference.has_value() {
                 attributes.push(("ref", self.reference.value_str()).into());
                 wrote_ref = true;
@@ -520,16 +528,18 @@ impl CellFormula {
             }
         }
 
-        // A What-If Data Table anchor carries its own `ref` — the block it drives,
-        // e.g. `<f t="dataTable" ref="AG18:AK22" dt2D="1" dtr="1" r1="C20" r2="C31"/>`.
-        // The reader parses it into `self.reference` (the `b"ref"` arm above) but this
-        // writer only ever emitted `ref` for SHARED formulas, from the lookup above, so
-        // the attribute was dropped and the table reached Excel as a dead block of
-        // static values.
+        // A What-If Data Table anchor carries its own `ref` — the block it
+        // drives, e.g. `<f t="dataTable" ref="AG18:AK22" dt2D="1"
+        // dtr="1" r1="C20" r2="C31"/>`. The reader parses it into
+        // `self.reference` (the `b"ref"` arm above) but this
+        // writer only ever emitted `ref` for SHARED formulas, from the lookup
+        // above, so the attribute was dropped and the table reached
+        // Excel as a dead block of static values.
         //
-        // Guarded on `wrote_ref`: a shared master has BOTH a parsed `self.reference`
-        // and a shared-list-derived one. Emitting both yields a duplicate XML attribute,
-        // which makes Excel repair every workbook that contains shared formulas.
+        // Guarded on `wrote_ref`: a shared master has BOTH a parsed
+        // `self.reference` and a shared-list-derived one. Emitting both
+        // yields a duplicate XML attribute, which makes Excel repair
+        // every workbook that contains shared formulas.
         if !wrote_ref && self.reference.has_value() {
             attributes.push(("ref", self.reference.value_str()).into());
         }
@@ -544,6 +554,72 @@ impl CellFormula {
         write_end_tag(writer, "f");
     }
 }
+impl CellFormula {
+    pub(crate) fn adjust_array_geometry(
+        &mut self,
+        same_sheet: bool,
+        root_col: u32,
+        col_count: u32,
+        root_row: u32,
+        row_count: u32,
+        remove: bool,
+    ) {
+        if !same_sheet {
+            return;
+        }
+        if remove {
+            if let Some(reference) =
+                self.array_reference_after_removal(root_col, col_count, root_row, row_count)
+            {
+                self.reference.set_value(reference);
+            }
+        } else if let Some(mut range) = self.array_reference_range() {
+            range.adjustment_insert_coordinate(root_col, col_count, root_row, row_count);
+            self.reference.set_value(range.range());
+        }
+    }
+
+    pub(crate) fn adjust_reference_texts_prepared(
+        &mut self,
+        host: &str,
+        prepared: &crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit<'_>,
+        moved: bool,
+    ) -> bool {
+        use crate::drawing::charts::reference_edit_engine::{
+            edit_prepared_formula_text,
+            edit_prepared_formula_text_for_moved_cell,
+        };
+        let mut changed = false;
+        for text in [&mut self.text, &mut self.text_view] {
+            if let Some(before) = text.value() {
+                let result = if moved {
+                    edit_prepared_formula_text_for_moved_cell(before, host, prepared, false)
+                } else {
+                    edit_prepared_formula_text(before, host, prepared, false)
+                };
+                if result.text != before {
+                    text.set_value(result.text);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn adjust_reference_texts(
+        &mut self,
+        host: &str,
+        edits: &[crate::drawing::charts::ChartReferenceEdit],
+    ) {
+        use crate::drawing::charts::reference_edit_engine::PreparedReferenceEdit;
+        for edit in edits {
+            let Ok(prepared) = PreparedReferenceEdit::new(edit) else {
+                return;
+            };
+            self.adjust_reference_texts_prepared(host, &prepared, false);
+        }
+    }
+}
 impl AdjustmentCoordinateWith2Sheet for CellFormula {
     #[inline]
     fn adjustment_insert_coordinate_with_2sheet(
@@ -555,6 +631,7 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        use crate::drawing::charts::ChartReferenceEdit;
         // An array's ref describes owned cells on this sheet, not references in
         // the formula text. Its geometry moves even when its coordinates use $.
         if self_sheet_name == sheet_name {
@@ -568,32 +645,22 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
                 self.reference.set_value(range.range());
             }
         }
-        if let Some(v) = self.text.value() {
-            let formula = adjustment_insert_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text.set_value(formula);
+        let mut edits = Vec::new();
+        if offset_col_num != 0 {
+            edits.push(ChartReferenceEdit::InsertColumns {
+                sheet: sheet_name.into(),
+                at:    root_col_num,
+                count: offset_col_num,
+            });
         }
-        if let Some(v) = self.text_view.value() {
-            let formula = adjustment_insert_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text_view.set_value(formula);
+        if offset_row_num != 0 {
+            edits.push(ChartReferenceEdit::InsertRows {
+                sheet: sheet_name.into(),
+                at:    root_row_num,
+                count: offset_row_num,
+            });
         }
+        self.adjust_reference_texts(self_sheet_name, &edits);
     }
 
     #[inline]
@@ -606,6 +673,7 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
+        use crate::drawing::charts::ChartReferenceEdit;
         if self_sheet_name == sheet_name {
             if let Some(reference) = self.array_reference_after_removal(
                 root_col_num,
@@ -616,32 +684,22 @@ impl AdjustmentCoordinateWith2Sheet for CellFormula {
                 self.reference.set_value(reference);
             }
         }
-        if let Some(v) = self.text.value() {
-            let formula = adjustment_remove_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text.set_value(formula);
+        let mut edits = Vec::new();
+        if offset_col_num != 0 {
+            edits.push(ChartReferenceEdit::DeleteColumns {
+                sheet:   sheet_name.into(),
+                columns: (root_col_num..root_col_num.saturating_add(offset_col_num).min(16_385))
+                    .collect(),
+            });
         }
-        if let Some(v) = self.text_view.value() {
-            let formula = adjustment_remove_formula_coordinate(
-                &mut parse_to_tokens(format!("={v}")),
-                root_col_num,
-                offset_col_num,
-                root_row_num,
-                offset_row_num,
-                sheet_name,
-                self_sheet_name,
-                false,
-            );
-            self.text_view.set_value(formula);
+        if offset_row_num != 0 {
+            edits.push(ChartReferenceEdit::DeleteRows {
+                sheet: sheet_name.into(),
+                rows:  (root_row_num..root_row_num.saturating_add(offset_row_num).min(1_048_577))
+                    .collect(),
+            });
         }
+        self.adjust_reference_texts(self_sheet_name, &edits);
     }
 }
 

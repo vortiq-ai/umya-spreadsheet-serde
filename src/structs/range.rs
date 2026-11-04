@@ -20,6 +20,27 @@ pub struct Range {
 }
 
 impl Range {
+    /// Writes a range whose two corners are the same cell as that cell, as
+    /// Excel does (`H2:H2` becomes `H2`). Whole-row and whole-column ranges
+    /// (`A:A`, `5:5`) keep both ends: only complete cell coordinates collapse.
+    pub(crate) fn collapse_single_cell(&mut self) {
+        let complete = self.start_col.is_some()
+            && self.start_row.is_some()
+            && self.end_col.is_some()
+            && self.end_row.is_some();
+        if !complete {
+            return;
+        }
+        let same_col = self.start_col.as_ref().map(ColumnReference::num)
+            == self.end_col.as_ref().map(ColumnReference::num);
+        let same_row = self.start_row.as_ref().map(RowReference::num)
+            == self.end_row.as_ref().map(RowReference::num);
+        if same_col && same_row {
+            self.end_col = None;
+            self.end_row = None;
+        }
+    }
+
     pub fn set_range<S: Into<String>>(&mut self, value: S) -> &mut Self {
         let org_value = value.into();
         // Split any page reference
@@ -30,6 +51,10 @@ impl Range {
             matches!(coordinate_collection.len(), 1 | 2),
             "Non-standard coordinate"
         );
+        self.start_col = None;
+        self.start_row = None;
+        self.end_col = None;
+        self.end_row = None;
 
         let (
             row,         //

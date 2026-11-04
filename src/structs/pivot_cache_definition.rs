@@ -17,11 +17,6 @@ use crate::{
         SHEET_MAIN_NS,
         SHEET_MS_REVISION_NS,
     },
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::{
         ByteValue,
         CacheFields,
@@ -51,9 +46,135 @@ pub struct PivotCacheDefinition {
     /// Raw XML data for pivotCacheRecords (if available from template).
     /// Written alongside the cache definition as pivotCacheRecordsN.xml.
     raw_cache_records:       Vec<u8>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:              Vec<crate::structs::slicer::PivotCacheExtension>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    revision_uid:            Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions_present:      bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    hierarchies:             Option<crate::structs::PivotCacheHierarchies>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    properties:              PivotCacheProperties,
+    #[cfg_attr(feature = "serde", serde(default))]
+    calculated_items:        Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    calculated_members:      Option<crate::drawing::charts::OpaqueElement>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    native_metadata:         Vec<crate::drawing::charts::OpaqueElement>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, Default)]
+pub struct PivotCacheProperties {
+    pub invalid:                Option<bool>,
+    pub save_data:              Option<bool>,
+    pub refresh_on_load:        Option<bool>,
+    pub optimize_memory:        Option<bool>,
+    pub enable_refresh:         Option<bool>,
+    pub refreshed_date_iso:     Option<String>,
+    pub background_query:       Option<bool>,
+    pub missing_items_limit:    Option<u32>,
+    pub upgrade_on_refresh:     Option<bool>,
+    pub tuple_cache:            Option<bool>,
+    pub support_subquery:       Option<bool>,
+    pub support_advanced_drill: Option<bool>,
+}
 impl PivotCacheDefinition {
+    pub fn hierarchies_mut(&mut self) -> &mut Option<crate::structs::PivotCacheHierarchies> {
+        &mut self.hierarchies
+    }
+
+    #[must_use]
+    pub fn properties(&self) -> &PivotCacheProperties {
+        &self.properties
+    }
+
+    pub fn properties_mut(&mut self) -> &mut PivotCacheProperties {
+        &mut self.properties
+    }
+
+    pub fn from_xml(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = Reader::from_reader(bytes);
+        let mut value = None;
+        loop {
+            match reader.read_event().map_err(|error| error.to_string())? {
+                Event::Start(ref root) if value.is_none() => {
+                    let mut result = Self::default();
+                    result
+                        .set_attributes(&mut reader, root)
+                        .map_err(|error| error.to_string())?;
+                    value = Some(result);
+                }
+                Event::Decl(_) if value.is_none() => {}
+                Event::Comment(_) | Event::PI(_) => {}
+                Event::Text(ref text) if text.iter().all(u8::is_ascii_whitespace) => {}
+                Event::Eof => {
+                    return value.ok_or_else(|| "missing native pivot document root".into());
+                }
+                _ => return Err("invalid content outside native pivot root".into()),
+            }
+        }
+    }
+
+    pub fn to_xml(&self) -> Result<Vec<u8>, String> {
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        self.write_to(&mut writer)
+            .map_err(|error| error.to_string())?;
+        Ok(writer.into_inner().into_inner())
+    }
+
+    #[must_use]
+    pub fn hierarchies(&self) -> Option<&crate::structs::PivotCacheHierarchies> {
+        self.hierarchies.as_ref()
+    }
+
+    pub fn set_hierarchies(
+        &mut self,
+        value: Option<crate::structs::PivotCacheHierarchies>,
+    ) -> &mut Self {
+        self.hierarchies = value;
+        self
+    }
+
+    #[must_use]
+    pub fn slicer_properties(&self) -> Option<&crate::structs::slicer::PivotCacheSlicerProperties> {
+        self.extensions.iter().find_map(|entry| match entry {
+            crate::structs::slicer::PivotCacheExtension::SlicerProperties {
+                properties, ..
+            } => Some(properties),
+            crate::structs::slicer::PivotCacheExtension::Future(_) => None,
+        })
+    }
+
+    pub fn set_slicer_properties(
+        &mut self,
+        value: crate::structs::slicer::PivotCacheSlicerProperties,
+    ) -> &mut Self {
+        if let Some(properties) = self.extensions.iter_mut().find_map(|entry| match entry {
+            crate::structs::slicer::PivotCacheExtension::SlicerProperties {
+                properties, ..
+            } => Some(properties),
+            crate::structs::slicer::PivotCacheExtension::Future(_) => None,
+        }) {
+            *properties = value;
+        } else {
+            self.extensions.push(
+                crate::structs::slicer::PivotCacheExtension::SlicerProperties {
+                    uri:        "{725AE2AE-9491-48be-B2B4-4EB974FC3084}".into(),
+                    properties: value,
+                },
+            );
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn slicer_cache_id(&self) -> Option<u32> {
+        self.slicer_properties()
+            .and_then(|value| value.pivot_cache_id)
+    }
+
     #[inline]
     #[must_use]
     pub fn id(&self) -> &str {
@@ -281,20 +402,16 @@ impl PivotCacheDefinition {
         cache_def
     }
 
-    #[inline]
-    pub(crate) fn hash_code(&self) -> String {
-        crate::helper::utils::md5_hash(format!(
-            "{}{}{}{}{}{}{}{}{}",
-            self.id.value_str(),
-            self.refreshed_by.value_str(),
-            self.refreshed_date.value_string(),
-            self.created_version.value_string(),
-            self.refreshed_version.value_string(),
-            self.min_refreshable_version.value_string(),
-            self.record_count.value_string(),
-            self.cache_source.hash_code(),
-            self.cache_fields.hash_code(),
-        ))
+    pub(crate) fn hash_code(&self) -> Result<String, crate::XlsxError> {
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        self.write_to(&mut writer)?;
+        let definition = writer.into_inner().into_inner();
+        let mut bytes = Vec::with_capacity(16 + definition.len() + self.raw_cache_records.len());
+        bytes.extend_from_slice(&(definition.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&definition);
+        bytes.extend_from_slice(&(self.raw_cache_records.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&self.raw_cache_records);
+        Ok(crate::helper::utils::md5_hash(bytes))
     }
 
     #[inline]
@@ -302,42 +419,168 @@ impl PivotCacheDefinition {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, id, "r:id");
-        set_string_from_xml!(self, e, refreshed_by, "refreshedBy");
-        set_string_from_xml!(self, e, refreshed_date, "refreshedDate");
-        set_string_from_xml!(self, e, created_version, "createdVersion");
-        set_string_from_xml!(self, e, refreshed_version, "refreshedVersion");
-        set_string_from_xml!(self, e, min_refreshable_version, "minRefreshableVersion");
-        set_string_from_xml!(self, e, record_count, "recordCount");
-
-        xml_read_loop!(
+    ) -> Result<(), crate::XlsxError> {
+        use crate::xml::{
+            boolean,
+            double,
+            optional_xstring_attribute,
+            unsigned,
+            xml_error,
+        };
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(e)
+            .map_err(xml_error)?;
+        for attribute in e.attributes() {
+            let attribute = attribute.map_err(xml_error)?;
+            if attribute.key.as_ref() == b"xmlns" || attribute.key.as_ref().starts_with(b"xmlns:") {
+                continue;
+            }
+            if scope
+                .resolve(attribute.key.as_ref(), true)
+                .map_err(xml_error)?
+                .is(SHEET_MS_REVISION_NS, "uid")
+            {
+                self.revision_uid = Some(
+                    attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(xml_error)?
+                        .into_owned(),
+                );
+            }
+        }
+        if !scope
+            .resolve(e.name().as_ref(), false)
+            .map_err(xml_error)?
+            .is(SHEET_MAIN_NS, "pivotCacheDefinition")
+        {
+            return Err(xml_error("expected native pivot cache definition root"));
+        }
+        let header = crate::drawing::charts::OpaqueElement::read(
+            reader,
+            e,
+            true,
+            &crate::drawing::charts::NamespaceScope::default(),
+        )
+        .map_err(xml_error)?;
+        if let Some((_, id)) = header
+            .attributes
+            .iter()
+            .find(|(name, _)| name.is(REL_OFC_NS, "id"))
+        {
+            self.id.set_value(id.clone());
+        }
+        if let Some(value) = optional_xstring_attribute(&header, "refreshedBy") {
+            self.refreshed_by.set_value(value);
+        }
+        if let Some(value) = double(&header, "refreshedDate").map_err(xml_error)? {
+            self.refreshed_date.set_value(value);
+        }
+        for (name, target) in [
+            ("createdVersion", &mut self.created_version),
+            ("refreshedVersion", &mut self.refreshed_version),
+            ("minRefreshableVersion", &mut self.min_refreshable_version),
+        ] {
+            if let Some(value) = unsigned(&header, name).map_err(xml_error)? {
+                target.set_value(
+                    u8::try_from(value).map_err(|_| xml_error(format!("invalid {name}")))?,
+                );
+            }
+        }
+        if let Some(value) = unsigned(&header, "recordCount").map_err(xml_error)? {
+            self.record_count.set_value(value);
+        }
+        self.properties.invalid = boolean(&header, "invalid").map_err(xml_error)?;
+        self.properties.save_data = boolean(&header, "saveData").map_err(xml_error)?;
+        self.properties.refresh_on_load = boolean(&header, "refreshOnLoad").map_err(xml_error)?;
+        self.properties.optimize_memory = boolean(&header, "optimizeMemory").map_err(xml_error)?;
+        self.properties.enable_refresh = boolean(&header, "enableRefresh").map_err(xml_error)?;
+        self.properties.refreshed_date_iso =
+            optional_xstring_attribute(&header, "refreshedDateIso");
+        self.properties.background_query =
+            boolean(&header, "backgroundQuery").map_err(xml_error)?;
+        self.properties.missing_items_limit =
+            unsigned(&header, "missingItemsLimit").map_err(xml_error)?;
+        self.properties.upgrade_on_refresh =
+            boolean(&header, "upgradeOnRefresh").map_err(xml_error)?;
+        self.properties.tuple_cache = boolean(&header, "tupleCache").map_err(xml_error)?;
+        self.properties.support_subquery =
+            boolean(&header, "supportSubquery").map_err(xml_error)?;
+        self.properties.support_advanced_drill =
+            boolean(&header, "supportAdvancedDrill").map_err(xml_error)?;
+        crate::try_xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
-                if e.name().into_inner() == b"cacheSource" {
+                let name = scope.child(e).map_err(xml_error)?
+                    .resolve(e.name().as_ref(), false).map_err(xml_error)?;
+                if ["kpis", "tupleCache", "dimensions", "measureGroups", "maps"]
+                    .iter().any(|local| name.is(SHEET_MAIN_NS, local))
+                {
+                    if self.native_metadata.iter()
+                        .any(|node| node.name.is(SHEET_MAIN_NS, &name.local_name))
+                    {
+                        return Err(xml_error("duplicate pivot cache metadata"));
+                    }
+                    let node = crate::drawing::charts::OpaqueElement::read_detached(
+                        reader, e, is_empty, &scope,
+                    ).map_err(xml_error)?;
+                    validate_cache_metadata(&node).map_err(xml_error)?;
+                    self.native_metadata.push(node);
+                    continue;
+                }
+                if name.is(SHEET_MAIN_NS, "calculatedItems") || name.is(SHEET_MAIN_NS, "calculatedMembers") {
+                    let target = if name.local_name == "calculatedItems" { &mut self.calculated_items } else { &mut self.calculated_members };
+                    if target.is_some() { return Err(xml_error("duplicate pivot cache calculations")); }
+                    let node = crate::drawing::charts::OpaqueElement::read_detached(
+                        reader, e, is_empty, &scope,
+                    ).map_err(xml_error)?;
+                    validate_calculations(&node).map_err(xml_error)?;
+                    *target = Some(node);
+                    continue;
+                }
+                if scope.child(e).map_err(xml_error)?.resolve(e.name().as_ref(), false).map_err(xml_error)?.is(SHEET_MAIN_NS, "extLst") {
+                    let extensions = crate::structs::slicer::read_pivot_cache_extensions(
+                        reader, e, is_empty, &scope,
+                    ).map_err(xml_error)?;
+                    if self.extensions_present{return Err(xml_error("duplicate cache definition extension list"));}
+                    self.extensions_present = true;
+                    self.extensions = extensions;
+                }
+                if name.is(SHEET_MAIN_NS, "cacheSource") {
                     let mut obj = CacheSource::default();
-                    obj.set_attributes(reader, e, is_empty);
+                    obj.set_attributes(reader, e, is_empty, &scope)?;
                     self.set_cache_source(obj);
                 }
-                if e.name().into_inner() == b"cacheFields" {
+                if scope.child(e).map_err(xml_error)?.resolve(e.name().as_ref(),false).map_err(xml_error)?.is(SHEET_MAIN_NS,"cacheHierarchies") {
+                    if self.hierarchies.is_some(){return Err(xml_error("duplicate native cache hierarchies"));}
+                    self.hierarchies = Some(crate::structs::PivotCacheHierarchies::read(
+                        reader, e, is_empty, &scope,
+                    ).map_err(xml_error)?);
+                }
+                if name.is(SHEET_MAIN_NS, "cacheFields") {
                     let mut obj = CacheFields::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_scoped(reader, e, is_empty, &scope)?;
                     self.set_cache_fields(obj);
                 }
             },
             Event::End(ref e) => {
-                if e.name().into_inner() == b"pivotCacheDefinition" {
-                    return
+                if scope.resolve(e.name().as_ref(), false).map_err(xml_error)?
+                    .is(SHEET_MAIN_NS, "pivotCacheDefinition")
+                {
+                    return Ok(())
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "pivotCacheDefinition")
+            Event::Eof => return Err(xml_error("missing pivotCacheDefinition end element"))
         );
     }
 
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        use crate::xml::xml_error;
         // pivotCacheDefinition
         let mut attributes: crate::structs::AttrCollection = vec![
             ("xmlns", SHEET_MAIN_NS).into(),
@@ -374,14 +617,289 @@ impl PivotCacheDefinition {
             attributes.push(("recordCount", &record_count_str).into());
         }
 
+        if let Some(uid) = &self.revision_uid {
+            attributes.push(("xr:uid", uid.as_str()).into());
+        }
+        if let Some(value) = self.properties.invalid {
+            attributes.push(("invalid", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.save_data {
+            attributes.push(("saveData", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.refresh_on_load {
+            attributes.push(("refreshOnLoad", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.optimize_memory {
+            attributes.push(("optimizeMemory", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.enable_refresh {
+            attributes.push(("enableRefresh", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = &self.properties.refreshed_date_iso {
+            attributes.push(("refreshedDateIso", value.as_str()).into());
+        }
+        if let Some(value) = self.properties.background_query {
+            attributes.push(("backgroundQuery", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.missing_items_limit {
+            attributes.push(("missingItemsLimit", value.to_string()).into());
+        }
+        if let Some(value) = self.properties.upgrade_on_refresh {
+            attributes.push(("upgradeOnRefresh", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.tuple_cache {
+            attributes.push(("tupleCache", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.support_subquery {
+            attributes.push(("supportSubquery", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.properties.support_advanced_drill {
+            attributes.push(("supportAdvancedDrill", if value { "1" } else { "0" }).into());
+        }
         write_start_tag(writer, "pivotCacheDefinition", attributes, false);
 
         // cacheSource
-        self.cache_source.write_to(writer);
+        self.cache_source.write_to(writer)?;
 
         // cacheFields
-        self.cache_fields.write_to(writer);
+        self.cache_fields.write_to(writer)?;
 
+        if let Some(hierarchies) = &self.hierarchies {
+            hierarchies.write_to(writer).map_err(xml_error)?;
+        }
+        let scope = crate::drawing::charts::NamespaceScope::with_bindings([
+            (None, SHEET_MAIN_NS.into()),
+            (Some("r".into()), REL_OFC_NS.into()),
+            (Some("mc".into()), MC_NS.into()),
+            (Some("xr".into()), SHEET_MS_REVISION_NS.into()),
+        ]);
+        let mut names = std::collections::HashSet::new();
+        for node in &self.native_metadata {
+            validate_cache_metadata(node).map_err(xml_error)?;
+            if !names.insert(node.name.local_name.as_str()) {
+                return Err(xml_error("duplicate pivot cache metadata"));
+            }
+        }
+        for name in ["kpis", "tupleCache"] {
+            if let Some(node) = self
+                .native_metadata
+                .iter()
+                .find(|node| node.name.is(SHEET_MAIN_NS, name))
+            {
+                node.write_to(writer, &scope).map_err(xml_error)?;
+            }
+        }
+        for calculations in [&self.calculated_items, &self.calculated_members]
+            .into_iter()
+            .flatten()
+        {
+            validate_calculations(calculations).map_err(xml_error)?;
+            calculations.write_to(writer, &scope).map_err(xml_error)?;
+        }
+        for name in ["dimensions", "measureGroups", "maps"] {
+            if let Some(node) = self
+                .native_metadata
+                .iter()
+                .find(|node| node.name.is(SHEET_MAIN_NS, name))
+            {
+                node.write_to(writer, &scope).map_err(xml_error)?;
+            }
+        }
+        crate::structs::slicer::write_pivot_cache_extensions(
+            writer,
+            &self.extensions,
+            self.extensions_present,
+        )
+        .map_err(xml_error)?;
         write_end_tag(writer, "pivotCacheDefinition");
+        Ok(())
     }
+}
+
+fn validate_calculations(node: &crate::drawing::charts::OpaqueElement) -> Result<(), String> {
+    use crate::xml::{
+        attributes,
+        boolean,
+        direct_children,
+        expect,
+        required,
+        signed,
+        unsigned,
+    };
+    let qualified = &[(MC_NS, "Ignorable")];
+    attributes(node, &["count"], qualified)?;
+    let members = node.name.is(SHEET_MAIN_NS, "calculatedMembers");
+    let children = direct_children(node)?;
+    if children.is_empty()
+        || unsigned(node, "count")?.is_some_and(|count| count as usize != children.len())
+    {
+        return Err("invalid pivot cache calculation count".into());
+    }
+    for child in children {
+        if members {
+            expect(&child, SHEET_MAIN_NS, "calculatedMember")?;
+            attributes(
+                &child,
+                &[
+                    "name",
+                    "mdx",
+                    "memberName",
+                    "hierarchy",
+                    "parent",
+                    "solveOrder",
+                    "set",
+                ],
+                qualified,
+            )?;
+            required(&child, "name")?;
+            required(&child, "mdx")?;
+            signed(&child, "solveOrder")?;
+            boolean(&child, "set")?;
+        } else {
+            expect(&child, SHEET_MAIN_NS, "calculatedItem")?;
+            attributes(&child, &["field", "formula"], qualified)?;
+            unsigned(&child, "field")?;
+        }
+        let descendants = direct_children(&child)?;
+        let mut next = 0;
+        if !members {
+            let area = descendants
+                .first()
+                .ok_or("calculated item requires pivotArea")?;
+            expect(area, SHEET_MAIN_NS, "pivotArea")?;
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            area.write_to(
+                &mut writer,
+                &crate::drawing::charts::NamespaceScope::default(),
+            )?;
+            let bytes = writer.into_inner().into_inner();
+            let mut reader = Reader::from_reader(bytes.as_slice());
+            match reader.read_event().map_err(|error| error.to_string())? {
+                ref event @ (Event::Start(ref root) | Event::Empty(ref root)) => {
+                    crate::structs::PivotArea::read(
+                        &mut reader,
+                        root,
+                        matches!(event, Event::Empty(_)),
+                        &crate::drawing::charts::NamespaceScope::default(),
+                    )?;
+                }
+                _ => return Err("invalid calculated item area".into()),
+            }
+            next = 1;
+        }
+        if let Some(extension) = descendants.get(next) {
+            expect(extension, SHEET_MAIN_NS, "extLst")?;
+            next += 1;
+        }
+        if next != descendants.len() {
+            return Err("unexpected pivot cache calculation child".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_cache_metadata(node: &crate::drawing::charts::OpaqueElement) -> Result<(), String> {
+    use crate::xml::{
+        attributes,
+        boolean,
+        direct_children,
+        expect,
+        no_children,
+        required,
+        unsigned,
+    };
+    let qualified = &[(MC_NS, "Ignorable")];
+    if node.name.is(SHEET_MAIN_NS, "tupleCache") {
+        attributes(node, &[], qualified)?;
+        let order = ["entries", "sets", "queryCache", "serverFormats", "extLst"];
+        let mut next = 0;
+        for child in direct_children(node)? {
+            let index = order
+                .iter()
+                .position(|name| child.name.is(SHEET_MAIN_NS, name))
+                .ok_or("invalid tuple cache child")?;
+            if index < next {
+                return Err("duplicate or out-of-order tuple cache child".into());
+            }
+            next = index + 1;
+            if index == 4 {
+                continue;
+            }
+            attributes(&child, &["count"], qualified)?;
+            let entries = direct_children(&child)?;
+            if (index < 3 && entries.is_empty())
+                || unsigned(&child, "count")?.is_some_and(|count| count as usize != entries.len())
+            {
+                return Err("invalid tuple cache collection count".into());
+            }
+            for entry in entries {
+                let valid = match index {
+                    0 => ["m", "n", "e", "s"]
+                        .iter()
+                        .any(|name| entry.name.is(SHEET_MAIN_NS, name)),
+                    1 => entry.name.is(SHEET_MAIN_NS, "set"),
+                    2 => entry.name.is(SHEET_MAIN_NS, "query"),
+                    3 => entry.name.is(SHEET_MAIN_NS, "serverFormat"),
+                    _ => false,
+                };
+                if !valid {
+                    return Err("invalid tuple cache collection entry".into());
+                }
+            }
+        }
+        return Ok(());
+    }
+    let (entry_name, allowed, required_names): (&str, &[&str], &[&str]) =
+        if node.name.is(SHEET_MAIN_NS, "kpis") {
+            (
+                "kpi",
+                &[
+                    "uniqueName",
+                    "value",
+                    "caption",
+                    "displayFolder",
+                    "measureGroup",
+                    "parent",
+                    "goal",
+                    "status",
+                    "trend",
+                    "weight",
+                    "time",
+                ],
+                &["uniqueName", "value"],
+            )
+        } else if node.name.is(SHEET_MAIN_NS, "dimensions") {
+            (
+                "dimension",
+                &["name", "uniqueName", "caption", "measure"],
+                &["name", "uniqueName", "caption"],
+            )
+        } else if node.name.is(SHEET_MAIN_NS, "measureGroups") {
+            ("measureGroup", &["name", "caption"], &["name", "caption"])
+        } else if node.name.is(SHEET_MAIN_NS, "maps") {
+            ("map", &["measureGroup", "dimension"], &[])
+        } else {
+            return Err("unexpected pivot cache metadata owner".into());
+        };
+    attributes(node, &["count"], qualified)?;
+    let entries = direct_children(node)?;
+    if unsigned(node, "count")?.is_some_and(|count| count as usize != entries.len()) {
+        return Err("pivot cache metadata count mismatch".into());
+    }
+    for entry in entries {
+        expect(&entry, SHEET_MAIN_NS, entry_name)?;
+        attributes(&entry, allowed, qualified)?;
+        for name in required_names {
+            required(&entry, name)?;
+        }
+        if entry_name == "dimension" {
+            boolean(&entry, "measure")?;
+        }
+        if entry_name == "map" {
+            unsigned(&entry, "measureGroup")?;
+            unsigned(&entry, "dimension")?;
+        }
+        no_children(&entry)?;
+    }
+    Ok(())
 }

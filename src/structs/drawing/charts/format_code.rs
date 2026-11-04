@@ -40,10 +40,11 @@ impl FormatCode {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         let mut buf = Vec::new();
-        let text = reader.read_text_into(e.name(), &mut buf).unwrap();
-        self.set_text(crate::helper::utils::unescape_xml_text(&text));
+        let text = reader.read_text_into(e.name(), &mut buf)?;
+        self.set_text(crate::helper::utils::try_unescape_xml_text(&text)?);
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

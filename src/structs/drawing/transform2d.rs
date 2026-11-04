@@ -12,10 +12,6 @@ use quick_xml::{
 
 use crate::{
     StringValue,
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
     structs::drawing::{
         Point2DType,
         PositiveSize2DType,
@@ -213,50 +209,93 @@ impl Transform2D {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        if let Some(v) = get_attribute(e, b"rot") {
-            self.set_rot(v);
-        }
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
+    }
 
-        if let Some(v) = get_attribute(e, b"flipH") {
-            self.set_flip_h(v);
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"rot")? {
+            let _validated = crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?;
+            self.set_rot(value);
         }
-
-        if let Some(v) = get_attribute(e, b"flipV") {
-            self.set_flip_v(v);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"flipH")? {
+            let _validated = crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?;
+            self.set_flip_h(value);
         }
-
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:off" => {
-                        self.offset.set_attributes(reader, e, is_empty);
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"flipV")? {
+            let _validated = crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?;
+            self.set_flip_v(value);
+        }
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
                     }
-                    b"a:ext" => {
-                        self.extents.set_attributes(reader, e, is_empty);
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"off" => {
+                            self.offset
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"ext" => {
+                            self.extents
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"chOff" => {
+                            let mut value = Point2DType::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_child_offset(value);
+                        }
+                        b"chExt" => {
+                            let mut value = PositiveSize2DType::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_child_extents(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    b"a:chOff" => {
-                        let mut obj = Point2DType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_child_offset(obj);
-                    }
-                    b"a:chExt" => {
-                        let mut obj = PositiveSize2DType::default();
-                        obj.set_attributes(reader, e, is_empty);
-                        self.set_child_extents(obj);
-                    }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:xfrm" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:xfrm")
-        );
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

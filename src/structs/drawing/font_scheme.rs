@@ -15,10 +15,7 @@ use super::{
     FontCollectionType,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        xml_read_loop,
-    },
+    XlsxError,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -113,35 +110,94 @@ impl FontScheme {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        if let Some(v) = get_attribute(e, b"name") {
-            self.name.set_value(v);
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(owner)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"name")? {
+            self.name.set_value(value);
         }
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                b"a:majorFont" => {
-                    self.major_font.set_attributes(reader, e);
+        if empty {
+            return Err(crate::xml::xml_error("Theme owner requires child content"));
+        }
+        let mut seen = 0u32;
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        return Err(crate::xml::xml_error("foreign Theme child"));
+                    }
+                    crate::reader::driver::validate_attributes(child)?;
+                    match crate::reader::driver::local_name(child.name().as_ref()) {
+                        b"majorFont" => {
+                            if seen & 1 != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1;
+                            self.major_font.read_with_session(
+                                reader,
+                                child,
+                                child_empty,
+                                session,
+                            )?;
+                        }
+                        b"minorFont" => {
+                            if seen & (1 << 1) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 1;
+                            self.minor_font.read_with_session(
+                                reader,
+                                child,
+                                child_empty,
+                                session,
+                            )?;
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
                 }
-                b"a:minorFont" => {
-                    self.minor_font.set_attributes(reader, e);
+                Event::End(ref child) if child.name().as_ref() == end.as_slice() => {
+                    if seen & 3 != 3 {
+                        return Err(crate::xml::xml_error(
+                            "Theme owner is missing required children",
+                        ));
+                    }
+                    return Ok(());
                 }
+                Event::Text(ref text)
+                    if !text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+                {
+                    return Err(crate::xml::xml_error("unexpected text in Theme container"));
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated Theme owner")),
                 _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:fontScheme" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:fontScheme")
-        );
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

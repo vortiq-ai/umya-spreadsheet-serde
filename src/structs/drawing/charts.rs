@@ -1,5 +1,13 @@
+mod group_lines;
+
 mod chart;
 pub use self::chart::*;
+
+mod chart_ex;
+pub use self::chart_ex::*;
+
+pub(crate) mod chart_ex_values;
+pub use self::chart_ex_values::WorkbookChartExResolver;
 
 mod layout;
 pub use self::layout::*;
@@ -12,6 +20,14 @@ pub use self::plot_area::*;
 
 mod chart_group;
 pub use self::chart_group::*;
+
+mod chart_series_identity;
+
+pub(crate) mod chart_metadata_restoration;
+pub use self::chart_metadata_restoration::RestoreReport;
+
+mod series_family;
+pub use self::series_family::*;
 
 mod title;
 pub use self::title::*;
@@ -57,6 +73,11 @@ pub use self::width_mode::*;
 
 mod chart_space;
 pub use self::chart_space::*;
+mod display_units;
+pub use self::display_units::*;
+mod pivot_format;
+pub use self::pivot_format::*;
+mod pivot_axis_cache_roles;
 
 mod date1904;
 pub use self::date1904::*;
@@ -105,6 +126,10 @@ pub use self::number_reference::*;
 
 mod formula;
 pub use self::formula::*;
+mod chart_reference_edit;
+pub use self::chart_reference_edit::*;
+pub(crate) mod chart_reference_roles;
+pub(crate) mod reference_edit_engine;
 
 mod numbering_cache;
 pub use self::numbering_cache::*;
@@ -198,6 +223,8 @@ pub use self::value_axis::*;
 
 mod major_gridlines;
 pub use self::major_gridlines::*;
+mod minor_gridlines;
+pub use self::minor_gridlines::*;
 
 mod numbering_format;
 pub use self::numbering_format::*;
@@ -208,8 +235,31 @@ pub use self::cross_between::*;
 mod legend_position;
 pub use self::legend_position::*;
 
+mod chart_drawing;
+pub use self::chart_drawing::*;
 mod print_settings;
 pub use self::print_settings::*;
+
+mod data_table;
+pub use self::data_table::*;
+
+mod pivot_source;
+pub use self::pivot_source::*;
+
+mod pivot_options;
+pub use self::pivot_options::PivotChartOptions;
+
+mod chart_protection;
+pub use self::chart_protection::*;
+
+mod color_map_override;
+pub use self::color_map_override::*;
+
+mod external_data;
+pub use self::external_data::*;
+
+mod user_shapes;
+pub use self::user_shapes::*;
 
 mod header_footer;
 pub use self::header_footer::*;
@@ -256,6 +306,9 @@ pub use self::string_reference::*;
 mod string_cache;
 pub use self::string_cache::*;
 
+mod chart_source_caches;
+pub use self::chart_source_caches::*;
+
 mod scatter_chart;
 pub use self::scatter_chart::*;
 
@@ -279,6 +332,15 @@ pub use self::bar_chart::*;
 
 mod gap_width;
 pub use self::gap_width::*;
+
+mod percent_element;
+pub use self::percent_element::*;
+
+mod split_type;
+pub use self::split_type::*;
+
+mod size_represents;
+pub use self::size_represents::*;
 
 mod overlap;
 pub use self::overlap::*;
@@ -444,3 +506,83 @@ pub use self::time_unit_values::*;
 
 mod base_time_unit;
 pub use self::base_time_unit::*;
+
+mod axis_scalar;
+mod xml_scalar;
+pub use self::xml_scalar::*;
+mod picture_options;
+pub use self::picture_options::*;
+mod data_point;
+pub use self::data_point::*;
+mod series_parts;
+pub use self::series_parts::*;
+
+mod trendline;
+pub use self::trendline::*;
+mod trendline_label;
+pub use self::trendline_label::*;
+
+mod data_label_position;
+pub use self::data_label_position::*;
+mod data_label;
+pub use self::data_label::*;
+mod numeric_data;
+pub use self::numeric_data::*;
+mod error_bars;
+pub use self::error_bars::*;
+
+mod extension_names;
+pub use self::extension_names::{
+    NamespaceScope,
+    QName,
+};
+mod chart_namespaces;
+pub(crate) use self::chart_namespaces::*;
+mod opaque_element;
+pub use self::opaque_element::*;
+mod extension_payload_leaves;
+pub use self::extension_payload_leaves::*;
+
+mod chart_lines;
+pub use self::chart_lines::*;
+
+mod up_down_bars;
+pub use self::up_down_bars::*;
+
+mod band_format;
+pub use self::band_format::*;
+
+mod wireframe;
+pub use self::wireframe::*;
+
+mod stock_chart;
+pub use self::stock_chart::*;
+
+mod surface_chart;
+pub use self::surface_chart::*;
+
+mod reference_sequence;
+pub use self::reference_sequence::*;
+
+mod label_reference;
+pub use self::label_reference::*;
+
+mod axis_data_source;
+pub use self::axis_data_source::*;
+
+mod category_filter_exceptions;
+pub use self::category_filter_exceptions::*;
+
+mod extension_payload;
+pub use self::extension_payload::*;
+
+mod extension_list;
+pub use self::extension_list::*;
+
+mod extension_registry;
+
+#[cfg(test)]
+#[path = "charts/extension_leaves_tests.rs"]
+mod extension_leaves_tests;
+
+pub(crate) mod pivot_chart_data;

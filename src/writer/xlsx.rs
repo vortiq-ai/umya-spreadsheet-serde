@@ -36,6 +36,7 @@ pub(crate) mod pivot_table;
 pub(crate) mod printer_settings;
 pub(crate) mod rels;
 pub(crate) mod shared_strings;
+pub(crate) mod slicer;
 pub(crate) mod styles;
 pub(crate) mod table;
 pub(crate) mod theme;
@@ -48,20 +49,76 @@ pub(crate) mod workbook_rels;
 pub(crate) mod worksheet;
 pub(crate) mod worksheet_rels;
 
+fn validate_chart_exports(wb: &Workbook) -> Result<(), XlsxError> {
+    // Validate before creating the ZIP writer or emitting any chart payload.
+    // The original typed state is left untouched and remains available to the
+    // caller.
+    for (sheet_index, sheet) in wb.sheet_collection_no_check().iter().enumerate() {
+        if !sheet.has_drawing_object() {
+            continue;
+        }
+        let mut chart_index = 0;
+        let mut failure = None;
+        sheet.visit_chart_spaces(&mut |space| {
+            let conflicts = space.export_conflicts(wb);
+            if !conflicts.is_empty() && failure.is_none() {
+                failure = Some(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "chart export rejected at sheet[{sheet_index}] chart[{chart_index}]: {}",
+                        conflicts.join(", ")
+                    ),
+                ));
+            }
+            chart_index += 1;
+        });
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+    }
+    chart::validate_picture_exports(wb)
+}
+
+/// Writes the workbook-level parts whose relationships `workbook_rels` emits
+/// (cell metadata and connections); both writers must call this so a
+/// relationship is never written without its part.
+pub(crate) fn write_workbook_data_parts<W: io::Write + io::Seek>(
+    wb: &Workbook,
+    writer_manager: &mut WriterManager<W>,
+) -> Result<(), XlsxError> {
+    if let Some(metadata) = &wb.cell_metadata {
+        let writer = quick_xml::Writer::new(io::Cursor::new(metadata.xml()));
+        writer_manager.add_writer(&metadata.path, writer)?;
+    }
+
+    if let Some(data) = &wb.connections {
+        let writer = quick_xml::Writer::new(io::Cursor::new(data.clone()));
+        writer_manager.add_writer(crate::structs::cell_metadata::CONNECTIONS_PATH, writer)?;
+    }
+    Ok(())
+}
+
 fn write_zip_to_writer<W: io::Write + io::Seek>(
     wb: &Workbook,
     writer: W,
     is_light: bool,
 ) -> Result<(), XlsxError> {
+    let prepared = pivot_cache::prepare_workbook(wb)?;
+    let wb = prepared.as_ref();
+    validate_chart_exports(wb)?;
     let arv = zip::ZipWriter::new(writer);
     let mut writer_manager = WriterManager::new(arv);
+    writer_manager.reserve_pivot_caches(&pivot_cache::declared_caches(wb)?.order);
+    writer_manager.reserve_table_ids(wb)?;
+    wb.validate_slicers(Some(writer_manager.table_ids()))?;
+    pivot_cache::write_retained_caches(wb, &mut writer_manager)?;
+    writer_manager.reserve_drawing_parts(wb);
+    chart::prepare_picture_graph(wb, &mut writer_manager)?;
+
     {
         writer_manager.set_is_light(is_light);
 
-        if let Some(metadata) = &wb.cell_metadata {
-            let writer = quick_xml::Writer::new(io::Cursor::new(metadata.xml()));
-            writer_manager.add_writer(&metadata.path, writer)?;
-        }
+        write_workbook_data_parts(wb, &mut writer_manager)?;
 
         // Add docProps
         doc_props_app::write(wb, &mut writer_manager)?;
@@ -75,6 +132,10 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
 
         let shared_string_table = wb.shared_string_table();
         let mut stylesheet = wb.stylesheet().clone();
+        stylesheet.set_export_default_value();
+        if !wb.timeline_caches().is_empty() {
+            stylesheet.ensure_timeline_styles();
+        }
 
         // Process each worksheet
         wb.sheet_collection_no_check()
@@ -83,12 +144,14 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
             .try_for_each(|(index, worksheet)| {
                 let worksheet_no = index + 1;
                 if worksheet.is_deserialized() {
+                    let slicers = slicer::kinds(wb, worksheet)?;
                     worksheet::write(
                         worksheet_no.try_into().unwrap(),
                         worksheet,
                         &shared_string_table,
                         &mut stylesheet,
                         wb.has_macros(),
+                        slicers,
                         &mut writer_manager,
                     )
                 } else {
@@ -108,22 +171,14 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
                     return Ok(());
                 }
 
-                // Add charts
-                let chart_no_list: Result<Vec<String>, XlsxError> = worksheet
-                    .worksheet_drawing()
-                    .chart_collection()
-                    .iter()
-                    .map(|chart| chart::write(chart.chart_space(), wb, &mut writer_manager))
-                    .collect();
-
-                let chart_no_list = chart_no_list?;
+                let chart_parts = chart::write_parts(worksheet, wb, &mut writer_manager, &[])?;
 
                 // Add drawing and its relationships
                 let (drawing_no, rel_list) = drawing::write(worksheet, &mut writer_manager)?;
                 drawing_rels::write(
                     worksheet,
                     &drawing_no,
-                    &chart_no_list,
+                    &chart_parts,
                     &rel_list,
                     &mut writer_manager,
                 )?;
@@ -137,6 +192,8 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
                     &rel_list,
                     &mut writer_manager,
                 )?;
+                let header_footer_vml_no =
+                    vml_drawing::write_header_footer(worksheet, &mut writer_manager)?;
 
                 // Add comments
                 let comment_no = comment::write(worksheet, &mut writer_manager)?;
@@ -150,6 +207,7 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
 
                 // Add Media
                 media::write(worksheet, &mut writer_manager)?;
+                drawing::write_dependencies(worksheet, &mut writer_manager)?;
 
                 // Add printer settings
                 let printer_settings_no = worksheet
@@ -163,8 +221,12 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
                 let table_no_list = table::write(worksheet, &mut writer_manager)?;
 
                 // Add pivot tables and caches
-                let pivot_table_no_list = pivot_table::write(worksheet, &mut writer_manager)?;
-                let pivot_cache_no_list = pivot_cache::write(worksheet, &mut writer_manager)?;
+                let (pivot_table_no_list, pivot_cache_no_list) =
+                    pivot_cache::write_sheet_parts(worksheet, &mut writer_manager)?;
+
+                // Add slicer parts
+                let slicer_parts =
+                    slicer::write_worksheet_parts(wb, worksheet, &mut writer_manager)?;
 
                 // Add worksheet relationships
                 worksheet_rels::write(
@@ -172,6 +234,7 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
                     &worksheet_no.to_string(),
                     &drawing_no,
                     &vml_drawing_no,
+                    &header_footer_vml_no,
                     &comment_no,
                     &threaded_comment_no,
                     &ole_object_no_list,
@@ -180,9 +243,13 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
                     &table_no_list,
                     &pivot_table_no_list,
                     &pivot_cache_no_list,
+                    &slicer_parts,
                     &mut writer_manager,
                 )
             })?;
+
+        // Add slicer caches
+        let workbook_extension_parts = slicer::write_caches(wb, &mut writer_manager)?;
 
         // Finalize file list and add remaining components
         writer_manager.file_list_sort();
@@ -191,7 +258,12 @@ fn write_zip_to_writer<W: io::Write + io::Seek>(
         workbook::write(wb, &mut writer_manager)?;
 
         let has_shared_string_table = shared_string_table.read().unwrap().has_value();
-        workbook_rels::write(wb, has_shared_string_table, &mut writer_manager)?;
+        workbook_rels::write(
+            wb,
+            has_shared_string_table,
+            &workbook_extension_parts,
+            &mut writer_manager,
+        )?;
         content_types::write(wb, &mut writer_manager)?;
     }
 
@@ -244,6 +316,7 @@ pub fn write_writer_light<W: io::Write>(wb: &Workbook, mut writer: W) -> Result<
 /// let _unused = umya_spreadsheet::writer::xlsx::write(&book, path);
 /// ```
 pub fn write<P: AsRef<Path>>(wb: &Workbook, path: P) -> Result<(), XlsxError> {
+    validate_chart_exports(wb)?;
     let path_tmp = make_tmp_path(path.as_ref());
     if let Err(v) = write_zip_to_writer(wb, io::BufWriter::new(File::create(&path_tmp)?), false) {
         fs::remove_file(path_tmp)?;
@@ -266,6 +339,7 @@ pub fn write<P: AsRef<Path>>(wb: &Workbook, path: P) -> Result<(), XlsxError> {
 /// let _unused = umya_spreadsheet::writer::xlsx::write_light(&book, path);
 /// ```
 pub fn write_light<P: AsRef<Path>>(wb: &Workbook, path: P) -> Result<(), XlsxError> {
+    validate_chart_exports(wb)?;
     let path_tmp = make_tmp_path(path.as_ref());
     if let Err(v) = write_zip_to_writer(wb, io::BufWriter::new(File::create(&path_tmp)?), true) {
         fs::remove_file(path_tmp)?;

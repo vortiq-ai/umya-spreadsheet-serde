@@ -15,16 +15,19 @@ use super::{
     AreaChartSeriesList,
     AxisId,
     BarDirection,
+    ChartLines,
     DataLabels,
     GapWidth,
     Grouping,
     Overlap,
+    SeriesFamily,
     VaryColors,
 };
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -44,9 +47,106 @@ pub struct BarChart {
     gap_width:              GapWidth,
     overlap:                Overlap,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    series_lines:           Vec<ChartLines>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl BarChart {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_lines::restore_export_parts(&mut self.series_lines, &previous.series_lines)
+            + super::chart_metadata_restoration::replace_hidden_parts(
+                &mut self.extensions,
+                previous.extensions.as_ref(),
+            )
+    }
+
+    /// The series lines drawn between stacked bars (`c:serLines`).
+    #[must_use]
+    pub fn series_lines(&self) -> &[ChartLines] {
+        &self.series_lines
+    }
+
+    pub fn series_lines_mut(&mut self) -> &mut Vec<ChartLines> {
+        &mut self.series_lines
+    }
+
+    pub fn add_series_lines(&mut self, value: ChartLines) -> &mut Self {
+        self.series_lines.push(value);
+        self
+    }
+
+    pub fn remove_series_lines(&mut self) -> &mut Self {
+        self.series_lines.clear();
+        self
+    }
+
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn projection_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+        Option<&mut [ChartLines]>,
+    ) {
+        self.extensions = None;
+        super::chart_lines::strip_export_parts(&mut self.series_lines);
+        self.reference_group_parts_mut()
+    }
+
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+        Option<&mut [ChartLines]>,
+    ) {
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+            Some(self.series_lines.as_mut_slice()),
+        )
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn bar_direction(&self) -> &BarDirection {
         &self.bar_direction
@@ -159,6 +259,7 @@ impl BarChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -169,6 +270,7 @@ impl BarChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut BarChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -255,59 +357,76 @@ impl BarChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        self.data_labels.mark_group_absent();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
-                    _ => (),
+                    b"serLines" => {
+                        self.series_lines.push(ChartLines::read(reader, e, false, session)?);
+                    }
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                     b"barDir" => {
-                        self.bar_direction.set_attributes(reader, e);
+                        self.bar_direction.set_attributes(reader, e)?;
                     }
                     b"grouping" => {
-                        self.grouping.set_attributes(reader, e);
+                        self.grouping.set_bar_attributes(reader, e)?;
                     }
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
                     }
                     b"gapWidth" => {
-                        self.gap_width.set_attributes(reader, e);
+                        self.gap_width.set_attributes(reader, e)?;
                     }
                     b"overlap" => {
-                        self.overlap.set_attributes(reader, e);
+                        self.overlap.set_attributes(reader, e)?;
+                    }
+                    b"serLines" => {
+                        self.series_lines.push(ChartLines::read(reader, e, true, session)?);
                     }
                     b"axId" => {
                         let mut obj = AxisId::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.add_axis_id(obj);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"barChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:barChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:barChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:barChart
         write_start_tag(writer, "c:barChart", vec![], false);
 
@@ -322,11 +441,11 @@ impl BarChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Bar)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:gapWidth
         self.gap_width.write_to(writer);
@@ -334,11 +453,21 @@ impl BarChart {
         // c:overlap
         self.overlap.write_to(writer);
 
+        // c:serLines
+        for line in &self.series_lines {
+            line.write_group_line(writer, "c:serLines")?;
+        }
+
         // c:axId
         for v in &self.axis_id {
             v.write_to(writer);
         }
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "barChart", Some(SeriesFamily::Bar))?;
+        }
         write_end_tag(writer, "c:barChart");
+
+        Ok(())
     }
 }

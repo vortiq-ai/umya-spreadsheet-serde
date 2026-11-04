@@ -13,6 +13,7 @@ use super::{
     AutoTitleDeleted,
     BackWall,
     DisplayBlanksAs,
+    DrawingChartParts,
     Floor,
     Formula,
     Legend,
@@ -24,17 +25,20 @@ use super::{
     View3D,
 };
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        skip_element,
+        try_xml_read_loop,
+    },
     structs::Workbook,
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct Chart {
     title:                         Option<Title>,
@@ -55,6 +59,290 @@ pub struct Chart {
     plot_visible_only:             PlotVisibleOnly,
     display_blanks_as:             DisplayBlanksAs,
     show_data_labels_over_maximum: ShowDataLabelsOverMaximum,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:                         Option<Box<DrawingChartParts>>,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Chart {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "title",
+            "auto_title_deleted",
+            "view_3d",
+            "floor",
+            "side_wall",
+            "back_wall",
+            "plot_area",
+            "legend",
+            "legend_present",
+            "plot_visible_only",
+            "display_blanks_as",
+            "show_data_labels_over_maximum",
+            "parts",
+        ];
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Chart;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("Chart")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Ok(Chart {
+                    title:                         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                    auto_title_deleted:            seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?,
+                    view_3d:                       seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?,
+                    floor:                         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?,
+                    side_wall:                     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?,
+                    back_wall:                     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?,
+                    plot_area:                     seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?,
+                    legend:                        seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(7, &self))?,
+                    legend_present:                seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(8, &self))?,
+                    plot_visible_only:             seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(9, &self))?,
+                    display_blanks_as:             seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(10, &self))?,
+                    show_data_labels_over_maximum: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(11, &self))?,
+                    parts:                         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(12, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut title = None;
+                let mut auto_title_deleted = None;
+                let mut view_3d = None;
+                let mut floor = None;
+                let mut side_wall = None;
+                let mut back_wall = None;
+                let mut plot_area = None;
+                let mut legend = None;
+                let mut legend_present = None;
+                let mut plot_visible_only = None;
+                let mut display_blanks_as = None;
+                let mut show_data_labels_over_maximum = None;
+                let mut parts = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "title" => {
+                            if title.is_some() {
+                                return Err(serde::de::Error::duplicate_field("title"));
+                            }
+                            title = Some(map.next_value()?);
+                        }
+                        "auto_title_deleted" => {
+                            if auto_title_deleted.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "auto_title_deleted",
+                                ));
+                            }
+                            auto_title_deleted = Some(map.next_value()?);
+                        }
+                        "view_3d" => {
+                            if view_3d.is_some() {
+                                return Err(serde::de::Error::duplicate_field("view_3d"));
+                            }
+                            view_3d = Some(map.next_value()?);
+                        }
+                        "floor" => {
+                            if floor.is_some() {
+                                return Err(serde::de::Error::duplicate_field("floor"));
+                            }
+                            floor = Some(map.next_value()?);
+                        }
+                        "side_wall" => {
+                            if side_wall.is_some() {
+                                return Err(serde::de::Error::duplicate_field("side_wall"));
+                            }
+                            side_wall = Some(map.next_value()?);
+                        }
+                        "back_wall" => {
+                            if back_wall.is_some() {
+                                return Err(serde::de::Error::duplicate_field("back_wall"));
+                            }
+                            back_wall = Some(map.next_value()?);
+                        }
+                        "plot_area" => {
+                            if plot_area.is_some() {
+                                return Err(serde::de::Error::duplicate_field("plot_area"));
+                            }
+                            plot_area = Some(map.next_value()?);
+                        }
+                        "legend" => {
+                            if legend.is_some() {
+                                return Err(serde::de::Error::duplicate_field("legend"));
+                            }
+                            legend = Some(map.next_value()?);
+                        }
+                        "legend_present" => {
+                            if legend_present.is_some() {
+                                return Err(serde::de::Error::duplicate_field("legend_present"));
+                            }
+                            legend_present = Some(map.next_value()?);
+                        }
+                        "plot_visible_only" => {
+                            if plot_visible_only.is_some() {
+                                return Err(serde::de::Error::duplicate_field("plot_visible_only"));
+                            }
+                            plot_visible_only = Some(map.next_value()?);
+                        }
+                        "display_blanks_as" => {
+                            if display_blanks_as.is_some() {
+                                return Err(serde::de::Error::duplicate_field("display_blanks_as"));
+                            }
+                            display_blanks_as = Some(map.next_value()?);
+                        }
+                        "show_data_labels_over_maximum" => {
+                            if show_data_labels_over_maximum.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "show_data_labels_over_maximum",
+                                ));
+                            }
+                            show_data_labels_over_maximum = Some(map.next_value()?);
+                        }
+                        "parts" => {
+                            if parts.is_some() {
+                                return Err(serde::de::Error::duplicate_field("parts"));
+                            }
+                            parts = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                Ok(Chart {
+                    title:                         title.unwrap_or(None),
+                    auto_title_deleted:            auto_title_deleted
+                        .ok_or_else(|| serde::de::Error::missing_field("auto_title_deleted"))?,
+                    view_3d:                       view_3d.unwrap_or(None),
+                    floor:                         floor.unwrap_or(None),
+                    side_wall:                     side_wall.unwrap_or(None),
+                    back_wall:                     back_wall.unwrap_or(None),
+                    plot_area:                     plot_area
+                        .ok_or_else(|| serde::de::Error::missing_field("plot_area"))?,
+                    legend:                        legend
+                        .ok_or_else(|| serde::de::Error::missing_field("legend"))?,
+                    // Historical writers always emitted the stored legend.
+                    legend_present:                legend_present.unwrap_or(true),
+                    plot_visible_only:             plot_visible_only
+                        .ok_or_else(|| serde::de::Error::missing_field("plot_visible_only"))?,
+                    display_blanks_as:             display_blanks_as
+                        .ok_or_else(|| serde::de::Error::missing_field("display_blanks_as"))?,
+                    show_data_labels_over_maximum: show_data_labels_over_maximum.ok_or_else(
+                        || serde::de::Error::missing_field("show_data_labels_over_maximum"),
+                    )?,
+                    parts:                         parts.unwrap_or(None),
+                })
+            }
+        }
+        deserializer.deserialize_struct("Chart", FIELDS, Visitor)
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod pivot_serialization_tests {
+    use super::*;
+    #[test]
+    fn current_chart_encoding_matches_the_derived_field_sequence() {
+        let chart = Chart::default();
+        let current = bincode::serialize(&(
+            &chart.title,
+            &chart.auto_title_deleted,
+            &chart.view_3d,
+            &chart.floor,
+            &chart.side_wall,
+            &chart.back_wall,
+            &chart.plot_area,
+            &chart.legend,
+            &chart.legend_present,
+            &chart.plot_visible_only,
+            &chart.display_blanks_as,
+            &chart.show_data_labels_over_maximum,
+            &chart.parts,
+        ))
+        .unwrap();
+        assert_eq!(bincode::serialize(&chart).unwrap(), current);
+        let restored: Chart = bincode::deserialize(&current).unwrap();
+        assert_eq!(bincode::serialize(&restored).unwrap(), current);
+        let legacy = bincode::serialize(&(
+            &chart.title,
+            &chart.auto_title_deleted,
+            &chart.view_3d,
+            &chart.floor,
+            &chart.side_wall,
+            &chart.back_wall,
+            &chart.plot_area,
+            &chart.legend,
+            &chart.plot_visible_only,
+            &chart.display_blanks_as,
+            &chart.show_data_labels_over_maximum,
+        ))
+        .unwrap();
+        assert!(bincode::deserialize::<Chart>(&legacy).is_err());
+    }
+
+    #[test]
+    fn chart_prefix_and_pivot_owner_tail_are_exact() {
+        let mut chart = Chart {
+            legend_present: false,
+            ..Chart::default()
+        };
+        let prefix = bincode::serialize(&(
+            &chart.title,
+            &chart.auto_title_deleted,
+            &chart.view_3d,
+            &chart.floor,
+            &chart.side_wall,
+            &chart.back_wall,
+            &chart.plot_area,
+            &chart.legend,
+            &chart.legend_present,
+            &chart.plot_visible_only,
+            &chart.display_blanks_as,
+            &chart.show_data_labels_over_maximum,
+        ))
+        .unwrap();
+        let absent = bincode::serialize(&chart).unwrap();
+        assert_eq!(&absent[..prefix.len()], prefix.as_slice());
+        assert_eq!(absent.len(), prefix.len() + 1);
+        chart.set_pivot_formats(Vec::new());
+        let empty = bincode::serialize(&chart).unwrap();
+        assert_eq!(&empty[..prefix.len()], prefix.as_slice());
+        assert_eq!(empty.len(), prefix.len() + 28);
+        assert_eq!(empty[prefix.len()], 1);
+        let restored: Chart = bincode::deserialize(&empty).unwrap();
+        assert_eq!(restored.pivot_formats().unwrap().len(), 0);
+    }
 }
 
 impl Default for Chart {
@@ -75,6 +363,7 @@ impl Default for Chart {
             plot_visible_only:             PlotVisibleOnly::default(),
             display_blanks_as:             DisplayBlanksAs::default(),
             show_data_labels_over_maximum: ShowDataLabelsOverMaximum::default(),
+            parts:                         None,
         }
     }
 }
@@ -82,6 +371,160 @@ impl Default for Chart {
 impl Chart {
     pub const LANG_EN_GB: &'static str = "en_GB";
     pub const LANG_JA_JP: &'static str = "ja-JP";
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts
+            .as_deref()
+            .and_then(DrawingChartParts::extensions)
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(DrawingChartParts::extensions_mut)
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        if self.parts.is_some() || value.is_some() {
+            self.parts
+                .get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                .set_extensions(value);
+        }
+        self
+    }
+
+    /// Number of additional source extLst wrappers merged into the first list.
+    #[must_use]
+    pub fn normalized_extension_lists(&self) -> usize {
+        self.parts
+            .as_deref()
+            .map_or(0, DrawingChartParts::normalized_extension_lists)
+    }
+
+    pub(crate) fn restore_export_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<usize, crate::XlsxError> {
+        Ok(match (&mut self.parts, &previous.parts) {
+            (None, Some(previous)) => {
+                self.parts = Some(previous.clone());
+                previous.record_pivot_recreation(report);
+                1
+            }
+            (Some(current), Some(previous)) => current.restore_export_parts(previous, report)?,
+            (Some(current), None) => {
+                current.discard_root_extensions(report);
+                current.discard_untrusted_pivots(report);
+                self.parts = None;
+                0
+            }
+            _ => 0,
+        })
+    }
+
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::ChartParts<'_> {
+        super::chart_reference_roles::ChartParts {
+            title:       self.title.as_ref(),
+            plot:        &self.plot_area,
+            legend:      &self.legend,
+            floor:       self.floor.as_ref(),
+            side_wall:   self.side_wall.as_ref(),
+            back_wall:   self.back_wall.as_ref(),
+            pivot_parts: self.parts.as_deref(),
+        }
+    }
+
+    pub(crate) fn projection_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::ChartPartsMut<'_> {
+        self.parts = None;
+        self.reference_role_parts_mut()
+    }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::ChartPartsMut<'_> {
+        super::chart_reference_roles::ChartPartsMut {
+            title:       self.title.as_mut(),
+            plot:        &mut self.plot_area,
+            legend:      &mut self.legend,
+            floor:       self.floor.as_mut(),
+            side_wall:   self.side_wall.as_mut(),
+            back_wall:   self.back_wall.as_mut(),
+            pivot_parts: self.parts.as_deref_mut(),
+        }
+    }
+
+    pub(crate) fn duplicate_containers_for_roles(&self) -> &[DrawingChartParts] {
+        self.duplicate_pivot_containers()
+    }
+
+    pub(crate) fn duplicate_containers_for_roles_mut(&mut self) -> &mut [DrawingChartParts] {
+        self.duplicate_pivot_containers_mut().unwrap_or_default()
+    }
+
+    pub fn pivot_container_has_conflict(&self) -> bool {
+        self.parts
+            .as_deref()
+            .is_some_and(DrawingChartParts::container_has_conflict)
+    }
+
+    /// Invalid pivot and display-unit states must be rejected by the shared
+    /// export preflight before any XML for this chart is emitted.
+    pub fn export_conflicts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self
+            .parts
+            .as_deref()
+            .is_some_and(DrawingChartParts::has_conflict)
+        {
+            out.push("chart/pivotFmts".to_owned());
+        }
+        for (index, axis) in self.plot_area.value_axis().iter().enumerate() {
+            if axis.display_units_has_conflict() {
+                out.push(format!("chart/plotArea/valAx[{index}]/dispUnits"));
+            }
+        }
+        out
+    }
+
+    pub fn pivot_formats(&self) -> Option<&[super::PivotFormat]> {
+        self.parts
+            .as_deref()
+            .and_then(DrawingChartParts::pivot_formats)
+    }
+
+    pub fn pivot_formats_mut(&mut self) -> Option<&mut [super::PivotFormat]> {
+        self.parts
+            .as_deref_mut()
+            .and_then(DrawingChartParts::pivot_formats_mut)
+    }
+
+    pub fn duplicate_pivot_containers(&self) -> &[DrawingChartParts] {
+        self.parts
+            .as_deref()
+            .map(DrawingChartParts::duplicate_containers)
+            .unwrap_or_default()
+    }
+
+    pub fn duplicate_pivot_containers_mut(&mut self) -> Option<&mut [DrawingChartParts]> {
+        self.parts
+            .as_deref_mut()
+            .map(DrawingChartParts::duplicate_containers_mut)
+    }
+
+    pub fn set_pivot_formats(&mut self, values: Vec<super::PivotFormat>) -> &mut Self {
+        self.parts
+            .get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+            .set_pivot_formats(values);
+        self
+    }
+
+    pub(crate) fn legend_for_roles_mut(&mut self) -> &mut Legend {
+        &mut self.legend
+    }
 
     #[must_use]
     pub fn title(&self) -> Option<&Title> {
@@ -105,6 +548,17 @@ impl Chart {
 
     pub fn set_title(&mut self, value: Title) -> &mut Self {
         self.title = Some(value);
+        self
+    }
+
+    /// Deletes the chart title the way Excel does: no `c:title` is written and
+    /// `c:autoTitleDeleted` is set to 1, so Excel does not synthesise a title
+    /// from the series name. The title's rich text, fields, layout, shape and
+    /// every other part leave with it; a restoration against a basis that still
+    /// has the title reports the owner as removed and never brings it back.
+    pub fn remove_title(&mut self) -> &mut Self {
+        self.title = None;
+        self.auto_title_deleted.set_val(true);
         self
     }
 
@@ -382,7 +836,7 @@ impl Chart {
     }
 
     pub fn formula_mut(&mut self) -> Vec<&mut Formula> {
-        self.plot_area_mut().formula_mut()
+        super::chart_reference_roles::collect_chart_formulas_mut(self)
     }
 
     #[deprecated(since = "3.0.0", note = "Use formula_mut()")]
@@ -393,85 +847,131 @@ impl Chart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
         // Reset legend presence so "no legend in source" round-trips through
         // the writer. Default-constructed Charts have `legend_present == true`
         // for backwards compatibility; on a real read we start over and let
         // the loop below set it only if `<c:legend>` is actually present.
         self.legend_present = false;
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session)?;
                     self.set_title(obj);
                 }
                 b"view3D" => {
                     let mut obj = View3D::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e)?;
                     self.set_view_3d(obj);
+                }
+                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_pivot_container(reader, e, false, session)?;
+                }
+                b"extLst" => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_extensions(reader, e, false, session)?;
                 }
                 b"floor" => {
                     let mut obj = Floor::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_floor(obj);
                 }
                 b"sideWall" => {
                     let mut obj = SideWall::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_side_wall(obj);
                 }
                 b"backWall" => {
                     let mut obj = BackWall::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_back_wall(obj);
                 }
                 b"plotArea" => {
-                    self.plot_area.set_attributes(reader, e);
+                    self.plot_area.set_attributes(reader, e, session)?;
                 }
                 b"legend" => {
-                    self.legend.set_attributes(reader, e);
+                    self.legend.set_attributes(reader, e, session)?;
                     self.legend_present = true;
                 }
-                _ => (),
+                _ => skip_element(reader, e)?,
             },
-            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                b"pivotFmts" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_pivot_container(reader, e, true, session)?;
+                }
+                b"extLst" => {
+                    self.parts.get_or_insert_with(|| Box::new(DrawingChartParts::default()))
+                        .read_extensions(reader, e, true, session)?;
+                }
+                b"title" => {
+                    self.set_title(Title::default());
+                }
+                b"view3D" => {
+                    self.set_view_3d(View3D::default());
+                }
+                b"floor" => {
+                    self.set_floor(Floor::default());
+                }
+                b"sideWall" => {
+                    self.set_side_wall(SideWall::default());
+                }
+                b"backWall" => {
+                    self.set_back_wall(BackWall::default());
+                }
+                b"legend" => {
+                    self.legend_present = true;
+                }
                 b"autoTitleDeleted" => {
-                    self.auto_title_deleted.set_attributes(reader, e);
+                    self.auto_title_deleted.set_attributes(reader, e)?;
                 }
                 b"plotVisOnly" => {
-                    self.plot_visible_only.set_attributes(reader, e);
+                    self.plot_visible_only.set_attributes(reader, e)?;
                 }
                 b"dispBlanksAs" => {
-                    self.display_blanks_as.set_attributes(reader, e);
+                    self.display_blanks_as.set_attributes(reader, e)?;
                 }
                 b"showDLblsOverMax" => {
-                    self.show_data_labels_over_maximum.set_attributes(reader, e);
+                    self.show_data_labels_over_maximum.set_attributes(reader, e)?;
                 }
                 _ => (),
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"chart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:chart"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:chart"))),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:chart
         write_start_tag(writer, "c:chart", vec![], false);
 
         // c:title
         if let Some(v) = &self.title {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:autoTitleDeleted
         self.auto_title_deleted.write_to(writer);
+
+        // c:pivotFmts (schema position immediately after autoTitleDeleted).
+        if let Some(parts) = &self.parts {
+            parts.write_to(writer, wb)?;
+        }
 
         // c:view3D
         if let Some(v) = &self.view_3d {
@@ -480,27 +980,27 @@ impl Chart {
 
         // c:floor
         if let Some(v) = &self.floor {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:sideWall
         if let Some(v) = &self.side_wall {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:backWall
         if let Some(v) = &self.back_wall {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:plotArea
-        self.plot_area.write_to(writer, wb);
+        self.plot_area.write_to(writer, wb)?;
 
         // c:legend - gated on `legend_present` so a chart whose source xlsx
         // had no `<c:legend>` element (or whose author explicitly hid the
         // legend) round-trips faithfully without re-emitting a default legend.
         if self.legend_present {
-            self.legend.write_to(writer);
+            self.legend.write_to(writer)?;
         }
 
         // c:plotVisOnly
@@ -512,7 +1012,13 @@ impl Chart {
         // c:showDLblsOverMax
         self.show_data_labels_over_maximum.write_to(writer);
 
+        if let Some(extensions) = self.extensions() {
+            extensions.write_for_owner(writer, Some(wb), "chart", None)?;
+        }
+
         write_end_tag(writer, "c:chart");
+
+        Ok(())
     }
 }
 impl AdjustmentCoordinateWithSheet for Chart {
@@ -524,12 +1030,14 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.plot_area.adjustment_insert_coordinate_with_sheet(
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Chart(self),
             sheet_name,
             root_col_num,
             offset_col_num,
             root_row_num,
             offset_row_num,
+            false,
         );
     }
 
@@ -541,12 +1049,14 @@ impl AdjustmentCoordinateWithSheet for Chart {
         root_row_num: u32,
         offset_row_num: u32,
     ) {
-        self.plot_area.adjustment_remove_coordinate_with_sheet(
+        super::chart_reference_roles::adjust_coordinate_scope(
+            super::chart_reference_roles::ReferenceScopeMut::Chart(self),
             sheet_name,
             root_col_num,
             offset_col_num,
             root_row_num,
             offset_row_num,
+            true,
         );
     }
 }

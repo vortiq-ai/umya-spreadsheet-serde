@@ -191,53 +191,30 @@ impl Color {
     /// Convert hex string to ARGB8
     #[must_use]
     pub fn hex_to_argb8(hex: &str) -> Option<ARGB8> {
-        if hex.len() == 9 && hex.starts_with('#') {
-            let a = u8::from_str_radix(&hex[1..3], 16).ok()?;
-            let r = u8::from_str_radix(&hex[3..5], 16).ok()?;
-            let g = u8::from_str_radix(&hex[5..7], 16).ok()?;
-            let b = u8::from_str_radix(&hex[7..9], 16).ok()?;
-
-            Some(ARGB8 { a, r, g, b })
-        } else if hex.len() == 8 {
-            let a = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let r = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let g = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let b = u8::from_str_radix(&hex[6..8], 16).ok()?;
-
-            Some(ARGB8 { a, r, g, b })
-        } else if hex.len() == 7 && hex.starts_with('#') {
-            let a = 0xFF;
-            let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
-            let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
-            let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
-
-            Some(ARGB8 { a, r, g, b })
-        } else if hex.len() == 6 {
-            let a = 0xFF;
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-
-            Some(ARGB8 { a, r, g, b })
-        } else if (hex.len() == 4 && hex.starts_with('#')) || hex.len() == 3 {
-            // To pass an integration test where the hex string is "#333".
-            // https://github.com/MathNya/umya-spreadsheet/pull/113
-            // https://github.com/MathNya/umya-spreadsheet/pull/250#issuecomment-2566258423
-            // https://www.w3schools.com/css/css_colors_hex.asp
-
-            let padded_hex = hex
-                .replace('#', "")
-                .chars()
-                .map(|c| c.to_string().repeat(2))
-                .collect::<String>();
-            let a = 0xFF;
-            let r = u8::from_str_radix(&padded_hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&padded_hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&padded_hex[4..6], 16).ok()?;
-
-            Some(ARGB8 { a, r, g, b })
-        } else {
-            None
+        let hex = hex.strip_prefix('#').unwrap_or(hex);
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        match hex.len() {
+            8 => Some(ARGB8 {
+                a: u8::from_str_radix(&hex[0..2], 16).ok()?,
+                r: u8::from_str_radix(&hex[2..4], 16).ok()?,
+                g: u8::from_str_radix(&hex[4..6], 16).ok()?,
+                b: u8::from_str_radix(&hex[6..8], 16).ok()?,
+            }),
+            6 => Some(ARGB8 {
+                a: 0xFF,
+                r: u8::from_str_radix(&hex[0..2], 16).ok()?,
+                g: u8::from_str_radix(&hex[2..4], 16).ok()?,
+                b: u8::from_str_radix(&hex[4..6], 16).ok()?,
+            }),
+            3 => Some(ARGB8 {
+                a: 0xFF,
+                r: u8::from_str_radix(&hex[0..1], 16).ok()? * 17,
+                g: u8::from_str_radix(&hex[1..2], 16).ok()? * 17,
+                b: u8::from_str_radix(&hex[2..3], 16).ok()? * 17,
+            }),
+            _ => None,
         }
     }
 
@@ -282,9 +259,13 @@ impl Color {
     /// let theme = book.theme();
     /// ```
     #[must_use]
-    pub fn argb_with_theme(&self, theme: &Theme) -> Cow<'static, str> {
-        if self.indexed.is_some() {
-            return self.argb_str().into();
+    pub fn argb_with_theme(&self, theme: &Theme) -> Option<Cow<'static, str>> {
+        if let Some(index) = self.indexed {
+            return INDEX_TO_COLOR
+                .get(&index)
+                .copied()
+                .or(self.argb)
+                .map(|color| Self::argb8_to_hex(color).into());
         }
         if let Some(key) = self.theme_index {
             if let Some(v) = theme
@@ -292,19 +273,21 @@ impl Color {
                 .color_scheme()
                 .color_map()
                 .get(key as usize)
+                .and_then(Option::as_ref)
             {
                 if let Some(tint) = self.tint {
-                    return calc_tint(v, tint).into();
+                    return Some(calc_tint(v, tint).into());
                 }
-                return v.clone().into();
+                return Some(v.clone().into());
             }
+            return None;
         }
-        self.argb_str().clone().into()
+        self.argb.map(|color| Self::argb8_to_hex(color).into())
     }
 
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use argb_with_theme()")]
-    pub fn get_argb_with_theme(&self, theme: &Theme) -> Cow<'static, str> {
+    pub fn get_argb_with_theme(&self, theme: &Theme) -> Option<Cow<'static, str>> {
         self.argb_with_theme(theme)
     }
 
@@ -317,8 +300,9 @@ impl Color {
     }
 
     pub fn set_argb_str<S: AsRef<str>>(&mut self, value: S) -> &mut Self {
+        let argb = Self::hex_to_argb8(value.as_ref()).unwrap();
         self.indexed = None;
-        self.argb = Some(Self::hex_to_argb8(value.as_ref()).unwrap());
+        self.argb = Some(argb);
         self.theme_index = None;
         self.automatic = None;
         self
@@ -355,8 +339,8 @@ impl Color {
         self.indexed()
     }
 
-    /// Whether the color is an entry of the indexed palette. `indexed()` reads 0
-    /// for a color that is not.
+    /// Whether the color is an entry of the indexed palette. `indexed()` reads
+    /// 0 for a color that is not.
     #[inline]
     #[must_use]
     pub fn has_indexed(&self) -> bool {
@@ -588,6 +572,98 @@ mod tests {
     }
 
     #[test]
+    fn hex_conversion_rejects_malformed_input_without_panicking() {
+        for value in [
+            "#ab",
+            "a\u{e9}\u{e9}\u{e9}b",
+            "+F+F+F+F",
+            "##333",
+            "",
+            "#",
+            "GGGGGG",
+        ] {
+            assert_eq!(Color::hex_to_argb8(value), None, "{value}");
+        }
+        for (value, expected) in [
+            ("abc", "FFAABBCC"),
+            ("#abc", "FFAABBCC"),
+            ("abcdef", "FFABCDEF"),
+            ("#abcdef", "FFABCDEF"),
+            ("80abcdef", "80ABCDEF"),
+            ("#80abcdef", "80ABCDEF"),
+        ] {
+            assert_eq!(
+                Color::argb8_to_hex(Color::hex_to_argb8(value).unwrap()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_argb_setter_preserves_previous_selector() {
+        let mut color = Color::default();
+        color.set_indexed(4).set_tint(0.5);
+        let original = color.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            color.set_argb_str("invalid");
+        }));
+        assert!(result.is_err());
+        assert_eq!(color, original);
+    }
+
+    #[test]
+    fn theme_resolution_only_returns_concrete_colors() {
+        let mut theme = Theme::default_value();
+        let mut color = Color::default();
+        assert_eq!(color.argb_with_theme(&theme), None);
+        for index in [64, 65, u32::MAX] {
+            color.set_indexed(index);
+            assert_eq!(color.argb_with_theme(&theme), None);
+        }
+        color.set_automatic(true);
+        assert_eq!(color.argb_with_theme(&theme), None);
+        color.set_automatic(false);
+        assert_eq!(color.argb_with_theme(&theme), None);
+        color.set_indexed(4);
+        assert_eq!(color.argb_with_theme(&theme).as_deref(), Some("FF0000FF"));
+        color.set_argb_str("80123456");
+        assert_eq!(color.argb_with_theme(&theme).as_deref(), Some("80123456"));
+        color.set_theme_index(1);
+        assert_eq!(color.argb_with_theme(&theme).as_deref(), Some("000000"));
+        let mut dynamic = crate::structs::drawing::SystemColor::default();
+        dynamic.set_val(crate::structs::drawing::SystemColorValues::WindowText);
+        theme
+            .theme_elements_mut()
+            .color_scheme_mut()
+            .dk1_mut()
+            .set_system_color(dynamic);
+        assert_eq!(color.argb_with_theme(&theme), None);
+        color.set_theme_index(u32::MAX);
+        assert_eq!(color.argb_with_theme(&theme), None);
+        // The legacy nonoptional accessor retains its fallback contract.
+        assert_eq!(Color::default().argb_str(), "00000000");
+    }
+
+    #[test]
+    fn corrupt_stylesheet_rgb_does_not_invent_a_color() {
+        for value in ["#ab", "a\u{e9}\u{e9}\u{e9}b", "+F+F+F+F"] {
+            let xml = format!(r#"<color rgb="{value}"/>"#);
+            let mut reader = Reader::from_str(&xml);
+            let owner = match reader.read_event().unwrap() {
+                Event::Empty(value) => value.into_owned(),
+                _ => unreachable!(),
+            };
+            let mut color = Color::default();
+            color.set_attributes(&mut reader, &owner, true);
+            assert!(!color.has_value());
+            assert_eq!(color.argb_with_theme(&Theme::default_value()), None);
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            color.write_to_color(&mut writer);
+            assert!(writer.into_inner().into_inner().is_empty());
+        }
+    }
+
+    #[test]
     fn set_value() {
         let mut obj = Color::default();
         obj.set_argb_str("F34F8080");
@@ -601,7 +677,7 @@ mod tests {
         let mut obj = Color::default();
         let theme = Theme::default_value();
         obj.set_theme_index(1);
-        assert_eq!(obj.argb_with_theme(&theme), "000000");
+        assert_eq!(obj.argb_with_theme(&theme).as_deref(), Some("000000"));
     }
 
     #[test]

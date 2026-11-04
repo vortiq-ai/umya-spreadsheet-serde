@@ -574,3 +574,22 @@ impl AdjustmentCoordinate for Shape {
         );
     }
 }
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NativeDrawing {
+    pub(crate) root:          Option<Box<crate::drawing::charts::OpaqueElement>>,
+    pub(crate) elements:      Vec<NativeDrawingElement>,
+    pub(crate) relationships: Option<RawRelationships>,
+    /// Imported content type of each internal dependency part.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) content_types: Vec<(String, String)>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug)]
+pub(crate) enum NativeDrawingElement {
+    Xml(Box<crate::drawing::charts::OpaqueElement>),
+    Comment { column: u32, row: u32 },
+    Ole(u32),
+}

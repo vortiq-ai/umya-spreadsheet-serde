@@ -16,16 +16,9 @@ use super::{
     BevelTop,
     PresetMaterialTypeValues,
 };
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -118,33 +111,80 @@ impl Shape3DType {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, preset_material, "prstMaterial");
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
+    }
 
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                match e.name().into_inner() {
-                    b"a:bevelT" => {
-                        let mut obj = BevelTop::default();
-                        obj.set_attributes(reader, e);
-                        self.set_bevel_top(obj);
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"prstMaterial")? {
+            self.preset_material.set_value(
+                value
+                    .parse::<PresetMaterialTypeValues>()
+                    .map_err(|()| crate::xml::xml_error("invalid DrawingML enumeration"))?,
+            );
+        }
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
                     }
-                    b"a:bevelB" => {
-                        let mut obj = BevelBottom::default();
-                        obj.set_attributes(reader, e);
-                        self.set_bevel_bottom(obj);
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"bevelT" => {
+                            let mut value = BevelTop::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_bevel_top(value);
+                        }
+                        b"bevelB" => {
+                            let mut value = BevelBottom::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_bevel_bottom(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:sp3d" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:sp3d")
-        );
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

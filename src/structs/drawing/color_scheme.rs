@@ -15,11 +15,7 @@ use super::{
     Color2Type,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
+    XlsxError,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -426,7 +422,7 @@ impl ColorScheme {
 
     #[inline]
     #[must_use]
-    pub fn color_map(&self) -> Vec<String> {
+    pub fn color_map(&self) -> Vec<Option<String>> {
         vec![
             self.lt1.val(),
             self.dk1.val(),
@@ -446,70 +442,177 @@ impl ColorScheme {
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use color_map()")]
-    pub fn get_color_map(&self) -> Vec<String> {
+    pub fn get_color_map(&self) -> Vec<Option<String>> {
         self.color_map()
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, name, "name");
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:accent1" => {
-                        self.accent1.set_attributes(reader, e);
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(owner)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"name")? {
+            self.name.set_value(value);
+        }
+        if empty {
+            return Err(crate::xml::xml_error("Theme owner requires child content"));
+        }
+        let mut seen = 0u32;
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        return Err(crate::xml::xml_error("foreign Theme child"));
                     }
-                    b"a:accent2" => {
-                        self.accent2.set_attributes(reader, e);
+                    crate::reader::driver::validate_attributes(child)?;
+                    match crate::reader::driver::local_name(child.name().as_ref()) {
+                        b"dk1" => {
+                            if seen & 1 != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1;
+                            self.dk1
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"lt1" => {
+                            if seen & (1 << 1) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 1;
+                            self.lt1
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"dk2" => {
+                            if seen & (1 << 2) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 2;
+                            self.dk2
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"lt2" => {
+                            if seen & (1 << 3) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 3;
+                            self.lt2
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"accent1" => {
+                            if seen & (1 << 4) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 4;
+                            self.accent1
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"accent2" => {
+                            if seen & (1 << 5) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 5;
+                            self.accent2
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"accent3" => {
+                            if seen & (1 << 6) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 6;
+                            self.accent3
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"accent4" => {
+                            if seen & (1 << 7) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 7;
+                            self.accent4
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"accent5" => {
+                            if seen & (1 << 8) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 8;
+                            self.accent5
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"accent6" => {
+                            if seen & (1 << 9) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 9;
+                            self.accent6
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"hlink" => {
+                            if seen & (1 << 10) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 10;
+                            self.hlink
+                                .read_with_session(reader, child, child_empty, session)?;
+                        }
+                        b"folHlink" => {
+                            if seen & (1 << 11) != 0 {
+                                return Err(crate::xml::xml_error("duplicate Theme child"));
+                            }
+                            seen |= 1 << 11;
+                            self.fol_hlink.read_with_session(
+                                reader,
+                                child,
+                                child_empty,
+                                session,
+                            )?;
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    b"a:accent3" => {
-                        self.accent3.set_attributes(reader, e);
-                    }
-                    b"a:accent4" => {
-                        self.accent4.set_attributes(reader, e);
-                    }
-                    b"a:accent5" => {
-                        self.accent5.set_attributes(reader, e);
-                    }
-                    b"a:accent6" => {
-                        self.accent6.set_attributes(reader, e);
-                    }
-                    b"a:dk1" => {
-                        self.dk1.set_attributes(reader, e);
-                    }
-                    b"a:dk2" => {
-                        self.dk2.set_attributes(reader, e);
-                    }
-                    b"a:folHlink" => {
-                        self.fol_hlink.set_attributes(reader, e);
-                    }
-                    b"a:hlink" => {
-                        self.hlink.set_attributes(reader, e);
-                    }
-                    b"a:lt1" => {
-                        self.lt1.set_attributes(reader, e);
-                    }
-                    b"a:lt2" => {
-                        self.lt2.set_attributes(reader, e);
-                    }
-                    _ => (),
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:clrScheme" {
-                    return
+                Event::End(ref child) if child.name().as_ref() == end.as_slice() => {
+                    if seen & 4095 != 4095 {
+                        return Err(crate::xml::xml_error(
+                            "Theme owner is missing required children",
+                        ));
+                    }
+                    return Ok(());
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:clrScheme")
-        );
+                Event::Text(ref text)
+                    if !text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+                {
+                    return Err(crate::xml::xml_error("unexpected text in Theme container"));
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated Theme owner")),
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), XlsxError> {
         // a:clrScheme
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.name.has_value() {
@@ -518,41 +621,42 @@ impl ColorScheme {
         write_start_tag(writer, "a:clrScheme", attributes, false);
 
         // a:dk1
-        self.dk1.write_to_dk1(writer);
+        self.dk1.write_to_dk1(writer)?;
 
         // a:lt1
-        self.lt1.write_to_lt1(writer);
+        self.lt1.write_to_lt1(writer)?;
 
         // a:dk2
-        self.dk2.write_to_dk2(writer);
+        self.dk2.write_to_dk2(writer)?;
 
         // a:lt2
-        self.lt2.write_to_lt2(writer);
+        self.lt2.write_to_lt2(writer)?;
 
         // a:accent1
-        self.accent1.write_to_accent1(writer);
+        self.accent1.write_to_accent1(writer)?;
 
         // a:accent2
-        self.accent2.write_to_accent2(writer);
+        self.accent2.write_to_accent2(writer)?;
 
         // a:accent3
-        self.accent3.write_to_accent3(writer);
+        self.accent3.write_to_accent3(writer)?;
 
         // a:accent4
-        self.accent4.write_to_accent4(writer);
+        self.accent4.write_to_accent4(writer)?;
 
         // a:accent5
-        self.accent5.write_to_accent5(writer);
+        self.accent5.write_to_accent5(writer)?;
 
         // a:accent6
-        self.accent6.write_to_accent6(writer);
+        self.accent6.write_to_accent6(writer)?;
 
         // a:hlink
-        self.hlink.write_to_hlink(writer);
+        self.hlink.write_to_hlink(writer)?;
 
         // a:folHlink
-        self.fol_hlink.write_to_fol_hlink(writer);
+        self.fol_hlink.write_to_fol_hlink(writer)?;
 
         write_end_tag(writer, "a:clrScheme");
+        Ok(())
     }
 }

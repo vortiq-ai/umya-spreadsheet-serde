@@ -4,18 +4,17 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
-use super::StringPoint;
+use super::{
+    SeriesPartConflictReason,
+    StringPoint,
+    XmlUnsignedInt,
+    numeric_data::children,
+};
 use crate::{
-    reader::driver::{
-        local_name,
-        xml_read_loop,
-    },
+    reader::driver::local_name,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -26,9 +25,87 @@ use crate::{
 #[derive(Clone, Default, Debug)]
 pub struct StringLiteral {
     string_point_list: Vec<StringPoint>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:             Option<Box<StringLiteralParts>>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+struct StringLiteralParts {
+    point_count: Option<XmlUnsignedInt>,
+    invalid:     bool,
+    extensions:  Option<Box<super::ExtensionList>>,
+}
 impl StringLiteral {
+    pub(crate) fn restore_extensions(&mut self, previous: Option<&Self>) -> usize {
+        let previous = previous
+            .and_then(|value| value.parts.as_ref())
+            .and_then(|parts| parts.extensions.as_ref());
+        if self.parts.is_none() && previous.is_none() {
+            return 0;
+        }
+        let parts = self.parts.get_or_insert_with(Default::default);
+        super::chart_metadata_restoration::replace_hidden_parts(&mut parts.extensions, previous)
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        *self = Self::read_with_session(reader, e, false, session)?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts.as_deref().and_then(|p| p.extensions.as_deref())
+    }
+
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        if let Some(parts) = &mut self.parts {
+            parts.extensions = None;
+        }
+        None
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(|p| p.extensions.as_deref_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.parts.get_or_insert_with(Default::default).extensions = value.map(Box::new);
+        self
+    }
+
+    #[must_use]
+    pub fn point_count(&self) -> Option<&XmlUnsignedInt> {
+        self.parts.as_deref().and_then(|p| p.point_count.as_ref())
+    }
+
+    pub fn set_point_count(&mut self, value: Option<XmlUnsignedInt>) -> &mut Self {
+        self.parts.get_or_insert_with(Default::default).point_count = value;
+        self
+    }
+
+    #[must_use]
+    pub fn conflict(&self) -> Option<SeriesPartConflictReason> {
+        if self
+            .parts
+            .as_ref()
+            .is_some_and(|p| p.invalid || p.point_count.as_ref().is_some_and(|v| v.val().is_none()))
+        {
+            Some(SeriesPartConflictReason::InvalidValue)
+        } else {
+            self.string_point_list
+                .iter()
+                .find_map(StringPoint::conflict)
+        }
+    }
+
     #[must_use]
     pub fn string_point_list(&self) -> &[StringPoint] {
         &self.string_point_list
@@ -57,39 +134,122 @@ impl StringLiteral {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().0) == b"pt" {
-                    let mut obj = StringPoint::default();
-                    obj.set_attributes(reader, e);
-                    self.add_string_point_list(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"strLit" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:strLit")
-        );
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        *self = Self::read(reader, owner, false)?;
+        Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn read<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+    ) -> Result<Self, crate::XlsxError> {
+        Self::read_common(reader, e, empty, None)
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<Self, crate::XlsxError> {
+        Self::read_common(reader, e, empty, Some(session))
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<Self, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+
+        let mut result = Self::default();
+        let mut parts = StringLiteralParts::default();
+        let mut counts = 0;
+        parts.invalid = !children(
+            reader,
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    match if match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } {
+                        local_name(child.name().into_inner())
+                    } else {
+                        b""
+                    } {
+                        b"extLst" if session.is_some() => {
+                            parts.extensions = Some(Box::new(super::ExtensionList::read(
+                                reader,
+                                child,
+                                empty,
+                                session.ok_or_else(|| {
+                                    crate::xml::xml_error("missing chart session")
+                                })?,
+                            )?));
+                        }
+                        b"pt" => result.string_point_list.push(match session {
+                            Some(session) => {
+                                StringPoint::read_with_session(reader, child, empty, session)?
+                            }
+                            None => StringPoint::read(reader, child, empty)?,
+                        }),
+                        b"ptCount" => {
+                            counts += 1;
+                            parts.point_count = Some(XmlUnsignedInt::read(child));
+                            if !empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                        _ => return Ok(false),
+                    }
+                    true
+                })
+            },
+        )?;
+        parts.invalid |= counts > 1;
+        result.parts = Some(Box::new(parts));
+        Ok(result)
+    }
+
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        if self.conflict().is_some() {
+            return Ok(());
+        }
         // c:strLit
         write_start_tag(writer, "c:strLit", vec![], false);
 
         // c:ptCount
-        let count = self.string_point_list.len().to_string();
-        write_start_tag(writer, "c:ptCount", vec![("val", &count).into()], true);
+        if let Some(parts) = &self.parts {
+            if let Some(count) = &parts.point_count {
+                count.write_to_as(writer, "c:ptCount");
+            }
+        } else {
+            let count = self.string_point_list.len().to_string();
+            write_start_tag(writer, "c:ptCount", vec![("val", &count).into()], true);
+        }
 
         // c:pt
         for (index, obj) in self.string_point_list.iter().enumerate() {
             obj.write_to(writer, index.try_into().unwrap());
         }
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, None, "strLit", None)?;
+        }
         write_end_tag(writer, "c:strLit");
+
+        Ok(())
     }
 }

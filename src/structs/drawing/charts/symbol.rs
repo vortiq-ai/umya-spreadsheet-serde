@@ -11,10 +11,7 @@ use super::{
     super::super::EnumValue,
     MarkerStyleValues,
 };
-use crate::{
-    reader::driver::get_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -42,8 +39,20 @@ impl Symbol {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        self.val = EnumValue::default();
+        if let Some(value) =
+            crate::reader::driver::read_enum_attribute::<MarkerStyleValues>(e, b"val")?
+        {
+            self.val.set_value(value);
+        }
+        Ok(())
+    }
+
+    /// Whether the required symbol value was explicitly supplied.
+    #[must_use]
+    pub fn has_val(&self) -> bool {
+        self.val.has_value()
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -51,7 +60,11 @@ impl Symbol {
         write_start_tag(
             writer,
             "c:symbol",
-            vec![("val", self.val.value_string()).into()],
+            if self.val.has_value() {
+                vec![("val", self.val.value_string()).into()]
+            } else {
+                vec![]
+            },
             true,
         );
     }

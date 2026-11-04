@@ -10,23 +10,81 @@ use quick_xml::{
     },
 };
 
-use super::ManualLayout;
+use super::{
+    ExtensionList,
+    ManualLayout,
+};
 use crate::{
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct Layout {
     manual_layout: Option<ManualLayout>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:         Option<Box<LayoutParts>>,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct LayoutParts {
+    extensions: Option<ExtensionList>,
 }
 
 impl Layout {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.parts,
+            previous.parts.as_ref(),
+        )
+    }
+
+    // Structural field partition only: no allocation or presence changes.
+    pub(crate) fn reference_role_parts(&self) -> (Option<&ManualLayout>, Option<&ExtensionList>) {
+        (
+            self.manual_layout.as_ref(),
+            self.parts.as_deref().and_then(|p| p.extensions.as_ref()),
+        )
+    }
+
+    pub(crate) fn projection_parts_mut(
+        &mut self,
+    ) -> (Option<&mut ManualLayout>, Option<&mut ExtensionList>) {
+        self.parts = None;
+        self.reference_role_parts_mut()
+    }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (Option<&mut ManualLayout>, Option<&mut ExtensionList>) {
+        (
+            self.manual_layout.as_mut(),
+            self.parts
+                .as_deref_mut()
+                .and_then(|p| p.extensions.as_mut()),
+        )
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.parts.as_ref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.parts.as_mut().and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+    }
+
     #[must_use]
     pub fn manual_layout(&self) -> Option<&ManualLayout> {
         self.manual_layout.as_ref()
@@ -54,38 +112,57 @@ impl Layout {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.manual_layout.is_none()
+        self.manual_layout.is_none() && self.extensions().is_none()
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
-    ) {
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
         if empty_flag {
-            return;
+            return Ok(());
         }
 
-        xml_read_loop!(
+        let end = e.name().into_inner().to_vec();
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"manualLayout" {
-                    let mut obj = ManualLayout::default();
-                    obj.set_attributes(reader, e);
-                    self.set_manual_layout(obj);
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let child =
+                    if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
+                    local_name(e.name().into_inner())
+                } else {
+                    b""
+                };
+                if child == b"manualLayout" {
+                    let mut v = ManualLayout::default();
+                    if !empty {
+                        v.set_attributes(reader, e, session)?;
+                    }
+                    self.set_manual_layout(v);
+                } else if child == b"extLst" {
+                    self.set_extensions(Some(ExtensionList::read(reader,e,empty,session)?));
+                } else if !empty {
+                    crate::reader::driver::skip_element(reader, e)?;
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"layout" {
-                    return;
+                if e.name().into_inner() == end.as_slice() {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:layout"),
+            Event::Eof => return Err(crate::xml::xml_error("Could not find layout end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         if self.is_empty() {
             // c:layout
             write_start_tag(writer, "c:layout", vec![], true);
@@ -95,10 +172,15 @@ impl Layout {
 
             // c:manualLayout
             if let Some(v) = &self.manual_layout {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
 
+            if let Some(v) = self.extensions() {
+                v.write_for_owner(writer, None, "layout", None)?;
+            }
             write_end_tag(writer, "c:layout");
         }
+
+        Ok(())
     }
 }

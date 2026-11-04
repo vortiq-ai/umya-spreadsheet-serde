@@ -35,7 +35,7 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         .unwrap();
     write_new_line(&mut writer);
 
-    stylesheet.write_to(&mut writer);
+    stylesheet.write_to(&mut writer)?;
 
     writer_mng.add_writer(PKG_STYLES, writer)
 }

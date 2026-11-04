@@ -4,16 +4,10 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
-use crate::{
-    reader::driver::xml_read_loop,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -22,22 +16,13 @@ impl Round {
     #[inline]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
-    ) {
-        if empty_flag {
-            return;
+    ) -> Result<(), crate::XlsxError> {
+        if !empty_flag {
+            crate::structs::drawing::color_transform::consume_paint_leaf(reader, e, None)?;
         }
-
-        xml_read_loop!(
-            reader,
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:round" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:round")
-        );
+        Ok(())
     }
 
     #[inline]

@@ -2,7 +2,7 @@ use crate::{
     helper::{
         address::{
             join_address,
-            split_address,
+            split_reference_address,
             unescape_sheet_name,
         },
         coordinate::{
@@ -61,6 +61,9 @@ pub struct FormulaToken {
     value:          StringValue,
     token_type:     FormulaTokenTypes,
     token_sub_type: FormulaTokenSubTypes,
+    // Byte offsets in the original tokenizer input, when this token was
+    // emitted directly from an unchanged operand. Synthetic tokens have none.
+    source_span:    Option<std::ops::Range<usize>>,
 }
 impl Default for FormulaToken {
     #[inline]
@@ -69,10 +72,15 @@ impl Default for FormulaToken {
             value:          StringValue::default(),
             token_type:     FormulaTokenTypes::Unknown,
             token_sub_type: FormulaTokenSubTypes::Nothing,
+            source_span:    None,
         }
     }
 }
 impl FormulaToken {
+    pub(crate) fn source_span(&self) -> Option<std::ops::Range<usize>> {
+        self.source_span.clone()
+    }
+
     #[inline]
     #[must_use]
     pub fn get_value(&self) -> &str {
@@ -82,6 +90,7 @@ impl FormulaToken {
     #[inline]
     pub fn set_value<S: Into<String>>(&mut self, value: S) -> &mut Self {
         self.value.set_value(value);
+        self.source_span = None;
         self
     }
 
@@ -107,6 +116,53 @@ impl FormulaToken {
     pub fn set_token_sub_type(&mut self, value: FormulaTokenSubTypes) -> &mut Self {
         self.token_sub_type = value;
         self
+    }
+}
+
+struct ChartFormulaCandidate {
+    token: FormulaToken,
+    span:  std::ops::Range<usize>,
+}
+
+/// A genuine source-backed reference/name operand, never synthetic syntax.
+pub(crate) struct ChartFormulaOperand<'a> {
+    pub(crate) span: std::ops::Range<usize>,
+    pub(crate) text: &'a str,
+}
+
+fn annotate_operand_spans(
+    offsets: Option<&[usize]>,
+    end_index: usize,
+    tokens: &mut [FormulaToken],
+    candidates: &mut Vec<ChartFormulaCandidate>,
+    collect_operands: bool,
+) {
+    let Some(offsets) = offsets else {
+        return;
+    };
+    for token in tokens {
+        if token.token_type != FormulaTokenTypes::Operand
+            || token.token_sub_type == FormulaTokenSubTypes::Text
+        {
+            continue;
+        }
+        let value = token.get_value();
+        if value.is_empty() {
+            continue;
+        }
+        // Nontext operands still contain the exact raw bytes accumulated by
+        // the lexer. Delimiters flush BEFORE their own character; a completed
+        // error flushes AFTER its last character. The caller supplies that
+        // actual emission boundary, rather than guessing/failing a span.
+        let end = offsets[end_index];
+        let span = end - value.len()..end;
+        token.source_span = Some(span.clone());
+        if collect_operands {
+            candidates.push(ChartFormulaCandidate {
+                token: token.clone(),
+                span,
+            });
+        }
     }
 }
 
@@ -144,6 +200,10 @@ macro_rules! token {
 
 pub(crate) fn parse_to_tokens<S: Into<String>>(formula: S) -> Vec<FormulaToken> {
     let formula_str = formula.into();
+    parse_tokens_inner(&formula_str, false)
+}
+
+fn parse_tokens_inner(formula_str: &str, capture_spans: bool) -> Vec<FormulaToken> {
     let formula_length = formula_str.chars().count();
 
     // quick checks
@@ -151,14 +211,78 @@ pub(crate) fn parse_to_tokens<S: Into<String>>(formula: S) -> Vec<FormulaToken> 
         return Vec::new();
     }
 
-    let (_, tokens2) = parse_into_intermediate_tokens(&formula_str);
+    let (_, tokens2, _) = parse_into_intermediate_tokens(formula_str, capture_spans, false);
     finalize_tokens(&tokens2)
 }
 
-fn parse_into_intermediate_tokens(formula: &str) -> (Vec<FormulaToken>, Vec<FormulaToken>) {
+/// Tokenize chart formula text with the existing lexer. Chart XML commonly
+/// omits the leading `=`; returned operand spans always index the input, not
+/// the temporary prefix supplied to the lexer.
+pub(crate) fn parse_chart_formula_tokens(formula: &str) -> Vec<FormulaToken> {
+    if formula.starts_with('=') {
+        return parse_tokens_inner(formula, true);
+    }
+    let mut tokens = parse_tokens_inner(&format!("={formula}"), true);
+    for token in &mut tokens {
+        if let Some(span) = &mut token.source_span {
+            // Every raw operand begins after the synthetic leading '='.
+            span.start -= 1;
+            span.end -= 1;
+        }
+    }
+    tokens
+}
+
+/// Whether `text` can read a generated `_xlchart` name at all, so tokenizing
+/// it is worthwhile.
+pub(crate) fn mentions_generated_chart_name(text: &str) -> bool {
+    text.as_bytes()
+        .windows(b"_xlchart".len())
+        .any(|window| window.eq_ignore_ascii_case(b"_xlchart"))
+}
+
+/// Project mandatory raw spans emitted by the SAME lexer. Reference
+/// classification reuses its ordinary token finalization; no Option/Result
+/// conversion can discard an otherwise editable reference with a missing span.
+pub(crate) fn chart_formula_operands(input: &str) -> Vec<ChartFormulaOperand<'_>> {
+    let prefixed;
+    let (formula, prefix_bytes) = if input.starts_with('=') {
+        (input, 0)
+    } else {
+        prefixed = format!("={input}");
+        (prefixed.as_str(), 1)
+    };
+    let (_, _, candidates) = parse_into_intermediate_tokens(formula, true, true);
+    let mut operands = Vec::new();
+    for candidate in candidates {
+        for token in finalize_tokens(std::slice::from_ref(&candidate.token)) {
+            if token.get_token_type() == &FormulaTokenTypes::Operand
+                && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
+            {
+                let span = candidate.span.start - prefix_bytes..candidate.span.end - prefix_bytes;
+                operands.push(ChartFormulaOperand {
+                    text: &input[span.clone()],
+                    span,
+                });
+            }
+        }
+    }
+    operands
+}
+
+fn parse_into_intermediate_tokens(
+    formula: &str,
+    capture_spans: bool,
+    collect_operands: bool,
+) -> (
+    Vec<FormulaToken>,
+    Vec<FormulaToken>,
+    Vec<ChartFormulaCandidate>,
+) {
     let mut tokens1: Vec<FormulaToken> = Vec::new();
     let mut tokens2: Vec<FormulaToken> = Vec::new();
     let mut stack: Vec<FormulaToken> = Vec::new();
+    let mut candidates = Vec::new();
 
     // state flags
     let mut in_string = false;
@@ -169,8 +293,15 @@ fn parse_into_intermediate_tokens(formula: &str) -> (Vec<FormulaToken>, Vec<Form
     let mut index = 1;
     let mut value = String::new();
     let formula_length = formula.chars().count();
+    let offsets = capture_spans.then(|| {
+        let mut offsets: Vec<usize> = formula.char_indices().map(|(byte, _)| byte).collect();
+        offsets.push(formula.len());
+        offsets
+    });
 
     while index < formula_length {
+        let before = index;
+        let first = tokens1.len();
         // double-quoted strings
         if in_string {
             handle_in_string(
@@ -180,29 +311,64 @@ fn parse_into_intermediate_tokens(formula: &str) -> (Vec<FormulaToken>, Vec<Form
                 &mut tokens1,
                 &mut in_string,
             );
+            annotate_operand_spans(
+                offsets.as_deref(),
+                before,
+                &mut tokens1[first..],
+                &mut candidates,
+                collect_operands,
+            );
             continue;
         }
 
         // single-quoted strings (links)
         if in_path {
             handle_in_path(formula, &mut index, &mut value, &mut in_path);
+            annotate_operand_spans(
+                offsets.as_deref(),
+                before,
+                &mut tokens1[first..],
+                &mut candidates,
+                collect_operands,
+            );
             continue;
         }
 
         // bracketed strings (R1C1 range index or workbook name)
         if range_depth > 0 {
             handle_in_range(formula, &mut index, &mut value, &mut range_depth);
+            annotate_operand_spans(
+                offsets.as_deref(),
+                before,
+                &mut tokens1[first..],
+                &mut candidates,
+                collect_operands,
+            );
             continue;
         }
 
         // error values
         if in_error {
             handle_in_error(formula, &mut index, &mut value, &mut tokens1, &mut in_error);
+            annotate_operand_spans(
+                offsets.as_deref(),
+                index,
+                &mut tokens1[first..],
+                &mut candidates,
+                collect_operands,
+            );
             continue;
         }
 
         // scientific notation check
         if handle_scientific_notation(formula, &mut index, &mut value) {
+            annotate_operand_spans(
+                offsets.as_deref(),
+                before,
+                &mut tokens1[first..],
+                &mut candidates,
+                collect_operands,
+            );
             continue;
         }
 
@@ -218,26 +384,54 @@ fn parse_into_intermediate_tokens(formula: &str) -> (Vec<FormulaToken>, Vec<Form
             &mut in_path,
             &mut in_error,
         ) {
+            annotate_operand_spans(
+                offsets.as_deref(),
+                before,
+                &mut tokens1[first..],
+                &mut candidates,
+                collect_operands,
+            );
             continue;
         }
 
         // accumulate as normal char
         value.push(formula.chars().nth(index).unwrap());
         index += 1;
+        annotate_operand_spans(
+            offsets.as_deref(),
+            before,
+            &mut tokens1[first..],
+            &mut candidates,
+            collect_operands,
+        );
     }
 
     // dump remaining
     if !value.is_empty() {
         let mut obj = FormulaToken::default();
         obj.set_value(value.clone());
-        obj.set_token_type(FormulaTokenTypes::Operand);
+        obj.set_token_type(if in_string || in_path || range_depth > 0 || in_error {
+            // An unfinished lexical owner is preserved malformed syntax, not
+            // an editable reference merely because its trailing bytes look
+            // like a cell address.
+            FormulaTokenTypes::Unknown
+        } else {
+            FormulaTokenTypes::Operand
+        });
+        annotate_operand_spans(
+            offsets.as_deref(),
+            index,
+            std::slice::from_mut(&mut obj),
+            &mut candidates,
+            collect_operands,
+        );
         tokens1.push(obj);
     }
 
     // trim whitespace, handle intersection
     cleanup_tokens(&tokens1, &mut tokens2);
 
-    (tokens1, tokens2)
+    (tokens1, tokens2, candidates)
 }
 
 fn finalize_tokens(tokens_in: &[FormulaToken]) -> Vec<FormulaToken> {
@@ -398,12 +592,20 @@ fn handle_in_error(
 ) {
     value.push(formula.chars().nth(*index).unwrap());
     *index += 1;
-    if ERRORS.contains(&value.as_str()) {
+    // A sheet-qualified reference error is still a reference operand. Keep
+    // its qualifier attached so structural edits can rename/delete the sheet
+    // without treating a literal or bare error as a reference.
+    let qualified_reference_error = value.ends_with("!#REF!");
+    if ERRORS.contains(&value.as_str()) || qualified_reference_error {
         *in_error = false;
         let mut obj = FormulaToken::default();
         obj.set_value(value.clone());
         obj.set_token_type(FormulaTokenTypes::Operand);
-        obj.set_token_sub_type(FormulaTokenSubTypes::Error);
+        obj.set_token_sub_type(if qualified_reference_error {
+            FormulaTokenSubTypes::Range
+        } else {
+            FormulaTokenSubTypes::Error
+        });
         tokens.push(obj);
         *value = String::new();
     }
@@ -471,7 +673,9 @@ fn handle_special_characters(
 
     // handle error start
     if current_char == ERROR_START {
-        if !value.is_empty() {
+        let qualified_reference_error =
+            value.ends_with('!') && formula.chars().skip(*index).take(5).eq("#REF!".chars());
+        if !value.is_empty() && !qualified_reference_error {
             let mut obj = FormulaToken::default();
             obj.set_value(value.clone());
             obj.set_token_type(FormulaTokenTypes::Unknown);
@@ -575,12 +779,18 @@ fn handle_special_characters(
             value.clear();
         }
 
-        let Some(mut obj) = stack.pop() else {
-            return false;
+        let Some(obj) = stack.last() else {
+            tokens1.push(token!(
+                ",",
+                FormulaTokenTypes::OperatorInfix,
+                FormulaTokenSubTypes::Union
+            ));
+            *index += 1;
+            return true;
         };
-        obj.set_value("");
-        obj.set_token_sub_type(FormulaTokenSubTypes::Stop);
-        stack.push(obj.clone());
+        // Inspect the frame without rewriting it: ARRAYROW/ARRAY identity is
+        // needed to reject a later unmatched delimiter without consuming a
+        // surrounding function or subexpression.
 
         if obj.get_token_type() == &FormulaTokenTypes::Function {
             let mut op = FormulaToken::default();
@@ -600,8 +810,11 @@ fn handle_special_characters(
 
     // handle subexpression/function stop
     if current_char == PAREN_CLOSE {
-        if stack.is_empty() {
-            value.push(current_char);
+        if stack
+            .last()
+            .is_none_or(|frame| matches!(frame.get_value(), "ARRAY" | "ARRAYROW"))
+        {
+            retain_unmatched_delimiter(current_char, value, tokens1);
             *index += 1;
             return true;
         }
@@ -621,6 +834,22 @@ fn handle_special_characters(
     }
 
     false
+}
+
+fn retain_unmatched_delimiter(delimiter: char, value: &mut String, tokens: &mut Vec<FormulaToken>) {
+    if !value.is_empty() {
+        tokens.push(token!(
+            value.clone(),
+            FormulaTokenTypes::Operand,
+            FormulaTokenSubTypes::Nothing
+        ));
+        value.clear();
+    }
+    tokens.push(token!(
+        delimiter,
+        FormulaTokenTypes::Unknown,
+        FormulaTokenSubTypes::Nothing
+    ));
 }
 
 fn handle_array_chars(
@@ -654,6 +883,21 @@ fn handle_array_chars(
         tokens1.push(arr_row.clone());
         stack.push(arr_row);
         return true;
+    }
+
+    if matches!(current_char, SEMICOLON | BRACE_CLOSE) {
+        let row_frame = stack
+            .last()
+            .is_some_and(|frame| frame.get_value() == "ARRAYROW");
+        let array_frame = stack
+            .len()
+            .checked_sub(2)
+            .and_then(|index| stack.get(index))
+            .is_some_and(|frame| frame.get_value() == "ARRAY");
+        if !row_frame || !array_frame {
+            retain_unmatched_delimiter(current_char, value, tokens1);
+            return true;
+        }
     }
 
     // handle ;
@@ -880,7 +1124,7 @@ pub fn adjustment_formula_coordinate(
         if token.get_token_type() == &FormulaTokenTypes::Operand
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
-            let (sheet_name, range) = split_address(token.get_value());
+            let (sheet_name, range) = split_reference_address(token.get_value());
             let sheet_name = unescape_sheet_name(sheet_name);
             let mut coordinate_list_new: Vec<String> = Vec::new();
             let coordinate_list = get_split_range(range);
@@ -955,7 +1199,7 @@ pub fn adjustment_insert_formula_coordinate(
         if token.get_token_type() == &FormulaTokenTypes::Operand
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
-            let (sheet_name, range) = split_address(token.get_value());
+            let (sheet_name, range) = split_reference_address(token.get_value());
             let sheet_name = unescape_sheet_name(sheet_name);
             if ignore_worksheet
                 || (sheet_name.is_empty() && worksheet_name == self_worksheet_name)
@@ -1022,7 +1266,7 @@ pub fn adjustment_remove_formula_coordinate(
         if token.get_token_type() == &FormulaTokenTypes::Operand
             && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
         {
-            let (sheet_name, range) = split_address(token.get_value());
+            let (sheet_name, range) = split_reference_address(token.get_value());
             let sheet_name = unescape_sheet_name(sheet_name);
             if ignore_worksheet
                 || (sheet_name.is_empty() && worksheet_name == self_worksheet_name)
@@ -1067,6 +1311,317 @@ pub fn adjustment_remove_formula_coordinate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_level_union_operands_have_clean_exact_source_spans() {
+        for (input, expected) in [
+            (
+                "Data!$A$1,Data!$B$1",
+                vec![("Data!$A$1", 0..9), ("Data!$B$1", 10..19)],
+            ),
+            (
+                "=Data!$A$1,Data!$B$1",
+                vec![("Data!$A$1", 1..10), ("Data!$B$1", 11..20)],
+            ),
+            (
+                "(Data!$A$1,Data!$B$1)",
+                vec![("Data!$A$1", 1..10), ("Data!$B$1", 11..20)],
+            ),
+        ] {
+            let actual: Vec<_> = chart_formula_operands(input)
+                .into_iter()
+                .map(|operand| (operand.text, operand.span))
+                .collect();
+            assert_eq!(actual, expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn top_level_union_is_a_real_operator_and_cell_rendering_stays_lossless() {
+        let input = "=Data!$A$1,Data!$B$1";
+        let tokens = parse_chart_formula_tokens(input);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| {
+                    token.get_token_type() == &FormulaTokenTypes::OperatorInfix
+                        && token.get_token_sub_type() == &FormulaTokenSubTypes::Union
+                        && token.get_value() == ","
+                })
+                .count(),
+            1
+        );
+        for input in [
+            "=Data!$A$1,Data!$B$1",
+            "=(Data!$A$1,Data!$B$1)",
+            "=SUM(Data!$A$1,Data!$B$1)",
+            "=Data!$A$1,\"comma,inside\",'[Book.xlsx]Data'!$B$1",
+        ] {
+            assert_eq!(render(&parse_to_tokens(input)), &input[1..]);
+        }
+        // Existing array tokens render as pseudo-functions, not braces. Keep
+        // that legacy rendering contract separate from lossless union text.
+        assert_eq!(
+            render(&parse_to_tokens("={1,2;3,4}")),
+            "ARRAY(ARRAYROW(1,2),ARRAYROW(3,4))"
+        );
+    }
+
+    #[test]
+    fn typed_reference_projection_is_complete_ordered_and_source_backed() {
+        let alphabet = [
+            'A', '1', '!', '$', '(', ')', '{', '}', ',', ';', '[', ']', '\'', '"', '#', ' ', '+',
+            '\u{00e9}', '\u{6570}',
+        ];
+        let mut seed = 0x7a5b_31c9_u32;
+        for case in 0..2048 {
+            let mut input = String::from("=");
+            for _ in 0..(case % 48) {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let index = usize::try_from(seed).unwrap() % alphabet.len();
+                input.push(alphabet[index]);
+            }
+            let tokens = parse_chart_formula_tokens(&input);
+            let expected: Vec<_> = tokens
+                .iter()
+                .filter(|token| {
+                    token.get_token_type() == &FormulaTokenTypes::Operand
+                        && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
+                })
+                .map(|token| {
+                    (
+                        token
+                            .source_span()
+                            .expect("every genuine reference has its raw span"),
+                        token.get_value(),
+                    )
+                })
+                .collect();
+            let projected = chart_formula_operands(&input);
+            let mut end = 0;
+            for operand in &projected {
+                assert!(operand.span.start >= end, "overlapping spans: {input:?}");
+                assert_eq!(operand.text, &input[operand.span.clone()]);
+                end = operand.span.end;
+            }
+            let actual: Vec<_> = projected
+                .iter()
+                .map(|operand| (operand.span.clone(), operand.text))
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "projection must not drop a reference: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unfinished_lexical_owners_are_not_projected_as_editable_references() {
+        for input in [
+            "=Data!A1+\"Other!B2",
+            "=Data!A1+'Other!B2",
+            "=Data!A1+[Book Other!B2",
+            "=Data!A1+Other!#BOGUS",
+        ] {
+            let operands = chart_formula_operands(input);
+            assert_eq!(operands.len(), 1, "{input}");
+            assert_eq!(operands[0].text, "Data!A1");
+        }
+        for input in [
+            "Data!A1",
+            "=Data!A1",
+            "'\u{6570}\u{636e}'!A1",
+            "='\u{6570}\u{636e}'!A1",
+        ] {
+            let operands = chart_formula_operands(input);
+            assert_eq!(operands.len(), 1);
+            assert_eq!(operands[0].text, &input[operands[0].span.clone()]);
+        }
+    }
+
+    #[test]
+    fn malformed_array_delimiters_preserve_lexemes_and_valid_sibling_spans() {
+        for input in [
+            "=Data!A1}+Other!B2",
+            "=Data!A1;+Other!B2",
+            "=SUM(Data!A1;Other!B2)",
+            "={Data!A1)}+Other!B2",
+            "=Data!A1)+Other!B2",
+        ] {
+            let tokens = parse_chart_formula_tokens(input);
+            let references: Vec<_> = tokens
+                .iter()
+                .filter(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Range)
+                .map(|token| {
+                    assert_eq!(
+                        &input[token.source_span().expect("native operand span")],
+                        token.get_value()
+                    );
+                    token.get_value()
+                })
+                .collect();
+            assert_eq!(references, ["Data!A1", "Other!B2"], "{input}: {tokens:?}");
+            assert!(
+                tokens
+                    .iter()
+                    .any(|token| token.get_token_type() == &FormulaTokenTypes::Unknown),
+                "malformed punctuation must not be discarded"
+            );
+        }
+    }
+
+    #[test]
+    fn array_rows_with_commas_keep_balanced_synthetic_frames_and_operand_spans() {
+        let input = "={Data!A1,Other!B2;Data!C3,Other!D4}";
+        let tokens = parse_chart_formula_tokens(input);
+        let references: Vec<_> = tokens
+            .iter()
+            .filter(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Range)
+            .map(|token| {
+                assert_eq!(
+                    &input[token.source_span().expect("array operand span")],
+                    token.get_value()
+                );
+                token.get_value()
+            })
+            .collect();
+        assert_eq!(references, ["Data!A1", "Other!B2", "Data!C3", "Other!D4"]);
+        let starts = tokens
+            .iter()
+            .filter(|token| {
+                token.get_token_type() == &FormulaTokenTypes::Function
+                    && token.get_token_sub_type() == &FormulaTokenSubTypes::Start
+            })
+            .count();
+        let stops = tokens
+            .iter()
+            .filter(|token| {
+                token.get_token_type() == &FormulaTokenTypes::Function
+                    && token.get_token_sub_type() == &FormulaTokenSubTypes::Stop
+            })
+            .count();
+        assert_eq!(starts, 3);
+        assert_eq!(stops, starts);
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| token.get_token_type() == &FormulaTokenTypes::Unknown)
+        );
+    }
+
+    #[test]
+    fn qualified_reference_errors_are_one_lossless_reference_operand() {
+        for reference in [
+            "Data!#REF!",
+            "'Bob''s \u{6570}\u{636e}'!#REF!",
+            "First:Last!#REF!",
+            "'[Book.xlsx]Data'!#REF!",
+        ] {
+            let input = format!("=SUM({reference},#REF!,\"{reference}\",Data!$A$1)");
+            let tokens = parse_chart_formula_tokens(&input);
+            let ranges: Vec<_> = tokens
+                .iter()
+                .filter(|token| {
+                    token.get_token_type() == &FormulaTokenTypes::Operand
+                        && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
+                })
+                .collect();
+            assert_eq!(ranges.len(), 2, "{reference}: {tokens:?}");
+            assert_eq!(ranges[0].get_value(), reference);
+            assert_eq!(
+                &input[ranges[0].source_span().expect("qualified error span")],
+                reference
+            );
+            assert_eq!(ranges[1].get_value(), "Data!$A$1");
+            let errors: Vec<_> = tokens
+                .iter()
+                .filter(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Error)
+                .collect();
+            assert_eq!(errors.len(), 1, "bare error remains distinct");
+            assert_eq!(errors[0].get_value(), "#REF!");
+            assert!(
+                tokens
+                    .iter()
+                    .filter(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Text)
+                    .all(|token| token.source_span().is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn reference_operand_spans_keep_exact_utf8_quoting_and_ignore_string_literals() {
+        let input = "=SUM( 'Bob''s 数据'!$B$2:$B$5 ,\"Data!B2\",'Bob''s 数据'!$B$2:$B$5)";
+        let tokens = parse_chart_formula_tokens(input);
+        let references: Vec<_> = tokens
+            .iter()
+            .filter(|token| {
+                token.get_token_type() == &FormulaTokenTypes::Operand
+                    && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
+            })
+            .collect();
+        assert_eq!(references.len(), 2);
+        let spans: Vec<_> = references
+            .iter()
+            .map(|token| token.source_span().unwrap())
+            .collect();
+        assert_ne!(spans[0], spans[1]);
+        for span in spans {
+            assert_eq!(&input[span], "'Bob''s 数据'!$B$2:$B$5");
+        }
+        let literal = tokens
+            .iter()
+            .find(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Text)
+            .unwrap();
+        assert!(literal.source_span().is_none());
+        let mut changed = (*references[0]).clone();
+        changed.set_value("Data!C3");
+        assert!(
+            changed.source_span().is_none(),
+            "edited token must not retain a stale source span"
+        );
+    }
+
+    #[test]
+    fn operand_spans_preserve_names_external_books_and_whole_axes() {
+        let input = "=SUM('[Book.xlsx]Data'!$A$1,MyNamedRange,Sheet1!$C:$D,1:3)";
+        let tokens = parse_chart_formula_tokens(input);
+        let values: Vec<_> = tokens
+            .iter()
+            .filter(|token| {
+                token.get_token_type() == &FormulaTokenTypes::Operand
+                    && token.get_token_sub_type() == &FormulaTokenSubTypes::Range
+            })
+            .map(|token| {
+                let span = token.source_span().expect("raw operand span");
+                assert_eq!(&input[span], token.get_value());
+                token.get_value().to_owned()
+            })
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                "'[Book.xlsx]Data'!$A$1",
+                "MyNamedRange",
+                "Sheet1!$C:$D",
+                "1:3"
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_formula_adapter_spans_always_index_the_original_text() {
+        for input in ["'Bob''s 数据'!$B$2:$B$5", "='Bob''s 数据'!$B$2:$B$5"] {
+            let tokens = parse_chart_formula_tokens(input);
+            let token = tokens
+                .iter()
+                .find(|token| token.get_token_sub_type() == &FormulaTokenSubTypes::Range)
+                .unwrap();
+            assert_eq!(
+                &input[token.source_span().unwrap()],
+                "'Bob''s 数据'!$B$2:$B$5"
+            );
+        }
+    }
 
     fn adjusted_formula(formula: &str, offset_col_num: i32, offset_row_num: i32) -> String {
         let mut tokens = parse_to_tokens(formula);
@@ -1160,5 +1715,62 @@ mod shared_formula_quoted_sheet_tests {
             !out.contains("(1)!$E$38"),
             "sheet name lost its quotes: {out}"
         );
+    }
+}
+
+#[test]
+fn quoted_sheet_coordinate_helpers_preserve_literal_identity() {
+    for (name, qualifier) in [
+        ("\"Data\"", "'\"Data\"'"),
+        ("Data\"", "'Data\"'"),
+        ("\"D'x\"", "'\"D''x\"'"),
+        ("Bob's Data", "'Bob''s Data'"),
+        ("ÄSheet", "'ÄSheet'"),
+        ("[Book.xlsx]Data", "'[Book.xlsx]Data'"),
+    ] {
+        let input = format!("{qualifier}!B2+{qualifier}!$C$3");
+        let expected = format!("{qualifier}!B3+{qualifier}!$C$3");
+        let mut tokens = parse_to_tokens(format!("={input}"));
+        adjustment_formula_coordinate(&mut tokens, 0, 1);
+        assert_eq!(render(&tokens), expected);
+        for target in [name, "NotTarget"] {
+            let input = format!("{qualifier}!B2");
+            let mut inserted = parse_to_tokens(format!("={input}"));
+            assert_eq!(
+                adjustment_insert_formula_coordinate(
+                    &mut inserted,
+                    0,
+                    0,
+                    1,
+                    1,
+                    target,
+                    "Host",
+                    false
+                ),
+                if target == name {
+                    format!("{qualifier}!B3")
+                } else {
+                    input.clone()
+                }
+            );
+            let mut removed = parse_to_tokens(format!("={input}"));
+            assert_eq!(
+                adjustment_remove_formula_coordinate(
+                    &mut removed,
+                    0,
+                    0,
+                    1,
+                    1,
+                    target,
+                    "Host",
+                    false
+                ),
+                if target == name {
+                    format!("{qualifier}!B1")
+                } else {
+                    input.clone()
+                }
+            );
+        }
     }
 }

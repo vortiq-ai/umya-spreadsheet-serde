@@ -5,13 +5,11 @@ use std::{
 };
 
 use quick_xml::{
-    Reader,
     Writer,
     events::BytesStart,
 };
 
 use crate::{
-    reader::driver::get_attribute,
     structs::{
         StringValue,
         WriterManager,
@@ -122,31 +120,58 @@ impl RawRelationship {
         self
     }
 
-    pub(crate) fn set_attributes<R: io::BufRead, A: io::Read + io::Seek>(
+    pub(crate) fn set_attributes<A: io::Read + io::Seek>(
         &mut self,
-        _reader: &mut Reader<R>,
         e: &BytesStart,
         arv: &mut zip::read::ZipArchive<A>,
         base_path: &str,
         source_file: Option<&Path>,
-    ) {
-        let Some(id) = get_attribute(e, b"Id") else {
-            return;
+        defer_chart_data: bool,
+    ) -> Result<(), XlsxError> {
+        let mut attributes = std::collections::HashMap::new();
+        for attribute in e.attributes() {
+            let attribute =
+                attribute.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let value = attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if attributes
+                .insert(attribute.key.as_ref().to_vec(), value.into_owned())
+                .is_some()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate relationship attribute",
+                )
+                .into());
+            }
+        }
+        let required = |name: &[u8]| {
+            attributes.get(name).cloned().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing relationship attribute")
+            })
         };
-        let Some(type_val) = get_attribute(e, b"Type") else {
-            return;
-        };
-        let Some(target) = get_attribute(e, b"Target") else {
-            return;
-        };
+        let id = required(b"Id")?;
+        let type_val = required(b"Type")?;
+        let target = required(b"Target")?;
         self.set_id(id);
         self.set_type(type_val);
         self.set_target(target);
-        if let Some(v) = get_attribute(e, b"TargetMode") {
+        if let Some(v) = attributes.remove(b"TargetMode".as_slice()) {
             self.set_target_mode(v);
         }
         if self.target_mode() != "External" {
             let target = self.target().to_string();
+            if defer_chart_data
+                && matches!(
+                    self.get_type(),
+                    crate::helper::const_str::CHART_NS | crate::helper::const_str::CHART_EX_NS
+                )
+            {
+                self.raw_file_mut()
+                    .set_file_target(crate::reader::driver::join_paths(base_path, &target));
+                return Ok(());
+            }
             match source_file {
                 Some(source_file) => self.raw_file_mut().set_attributes_from_source(
                     arv,
@@ -157,6 +182,7 @@ impl RawRelationship {
                 None => self.raw_file_mut().set_attributes(arv, base_path, &target),
             }
         }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

@@ -18,7 +18,8 @@ use crate::{
     },
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -32,9 +33,73 @@ pub struct Marker {
     symbol:           Option<Symbol>,
     size:             Option<Size>,
     shape_properties: Option<ShapeProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:            Option<Box<MarkerParts>>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+struct MarkerParts {
+    extensions: Option<super::ExtensionList>,
+}
 impl Marker {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.parts,
+            previous.parts.as_ref(),
+        )
+    }
+
+    // Structural field partition only: no allocation or presence changes.
+    pub(crate) fn reference_role_parts(
+        &self,
+    ) -> (Option<&ShapeProperties>, Option<&super::ExtensionList>) {
+        (
+            self.shape_properties.as_ref(),
+            self.parts.as_deref().and_then(|p| p.extensions.as_ref()),
+        )
+    }
+
+    pub(crate) fn projection_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.parts = None;
+        self.reference_role_parts_mut()
+    }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> (
+        Option<&mut ShapeProperties>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            self.shape_properties.as_mut(),
+            self.parts
+                .as_deref_mut()
+                .and_then(|p| p.extensions.as_mut()),
+        )
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.parts.as_deref().and_then(|p| p.extensions.as_ref())
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.parts
+            .as_deref_mut()
+            .and_then(|p| p.extensions.as_mut())
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.parts.get_or_insert_with(Default::default).extensions = value;
+        self
+    }
+
     #[must_use]
     pub fn symbol(&self) -> Option<&Symbol> {
         self.symbol.as_ref()
@@ -113,47 +178,96 @@ impl Marker {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _: &BytesStart,
+        e: &BytesStart,
         empty_flag: bool,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty_flag, None)?;
+        Ok(())
+    }
+
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, Some(session))?;
+        Ok(())
+    }
+
+    fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty_flag: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let end = e.name().into_inner().to_vec();
         if empty_flag {
-            return;
+            return Ok(());
         }
 
-        xml_read_loop!(
-            reader,
-            Event::Empty(ref e) => {
-                if local_name(e.name().0) == b"symbol" {
-                    let mut obj = Symbol::default();
-                    obj.set_attributes(reader, e);
-                    self.set_symbol(obj);
+        try_xml_read_loop!(reader,
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                let mut consumed = false;
+                match if match session { Some(session) => session.accepts_child_namespace(e,super::extension_registry::NS_C)?, None => true } {local_name(e.name().into_inner())} else {b""} {
+                    b"symbol" => { let mut value=Symbol::default(); value.set_attributes(reader,e)?; self.symbol=Some(value); },
+                    b"size" => { let mut value=Size::default(); value.set_attributes(reader,e)?; self.size=Some(value); },
+                    b"spPr" => { let mut value=ShapeProperties::default(); if !empty { match session {Some(session)=>value.set_attributes_with_session(reader,e,session)?,None=>value.set_attributes(reader,e)?} } self.shape_properties=Some(value); consumed=true; },
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,empty,session.ok_or_else(|| crate::xml::xml_error("missing chart session"))?)?));consumed=true;},
+                    _ => (),
                 }
-                if local_name(e.name().0) == b"size" {
-                    let mut obj = Size::default();
-                    obj.set_attributes(reader, e);
-                    self.set_size(obj);
-                }
+                if !empty && !consumed { skip_element(reader,e)?; }
             },
-            Event::Start(ref e) => {
-                if local_name(e.name().0) == b"spPr" {
-                    let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
-                    self.set_shape_properties(obj);
-                }
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().0) == b"marker" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:marker")
+            Event::End(ref e) => { if e.name().into_inner() == end.as_slice() { return Ok(()); } },
+            Event::Eof => return Err(crate::xml::xml_error("Could not find marker end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    /// Invalid required symbol attributes and marker sizes are retained for
+    /// diagnostics.
+    pub(crate) fn is_valid(&self) -> bool {
+        self.structural_is_valid()
+            && self
+                .extensions()
+                .is_none_or(|ext| ext.conflict_for_owner("marker", None).is_none())
+    }
+
+    pub(crate) fn structural_is_valid(&self) -> bool {
+        self.symbol.as_ref().is_none_or(Symbol::has_val)
+            && self.size.as_ref().is_none_or(Size::is_valid)
+    }
+
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, "c:marker")?;
+
+        Ok(())
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
+        if !self.structural_is_valid() {
+            return Ok(());
+        }
         // c:marker
-        if self.symbol.is_some() {
-            write_start_tag(writer, "c:marker", vec![], false);
+        if self.symbol.is_some()
+            || self.size.is_some()
+            || self.shape_properties.is_some()
+            || self.extensions().is_some()
+        {
+            write_start_tag(writer, name, vec![], false);
 
             // a:symbol
             if let Some(v) = &self.symbol {
@@ -167,12 +281,72 @@ impl Marker {
 
             // c:spPr
             if let Some(v) = &self.shape_properties {
-                v.write_to(writer);
+                v.write_to(writer)?;
             }
 
-            write_end_tag(writer, "c:marker");
+            if let Some(ext) = self.extensions() {
+                ext.write_for_owner(writer, None, "marker", None)?;
+            }
+            write_end_tag(writer, name);
         } else {
-            write_start_tag(writer, "c:marker", vec![], true);
+            write_start_tag(writer, name, vec![], true);
         }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_marker(xml: &str) -> Marker {
+        let mut reader = Reader::from_str(xml);
+        let mut buf = Vec::new();
+        let start = match reader.read_event_into(&mut buf).unwrap() {
+            Event::Start(start) => start.into_owned(),
+            other => panic!("unexpected event: {other:?}"),
+        };
+        let mut marker = Marker::default();
+        marker.set_attributes(&mut reader, &start, false).unwrap();
+        marker
+    }
+
+    fn write_marker(marker: &Marker) -> String {
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        marker.write_to(&mut writer).unwrap();
+        String::from_utf8(writer.into_inner().into_inner()).unwrap()
+    }
+
+    #[test]
+    fn marker_without_symbol_keeps_size_and_shape() {
+        let marker = read_marker("<c:marker><c:size/><c:spPr/></c:marker>");
+        assert!(marker.symbol().is_none());
+        assert_eq!(marker.size().unwrap().val(), 5);
+        assert!(marker.shape_properties().is_some());
+        assert_eq!(
+            write_marker(&marker),
+            "<c:marker><c:size/><c:spPr></c:spPr></c:marker>"
+        );
+    }
+
+    #[test]
+    fn marker_size_distinguishes_omitted_and_explicit_default() {
+        let mut marker = read_marker("<c:marker><c:size/></c:marker>");
+        assert_eq!(marker.size().unwrap().val(), 5);
+        assert_eq!(write_marker(&marker), "<c:marker><c:size/></c:marker>");
+        marker.size_mut().unwrap().set_val(5);
+        assert_eq!(
+            write_marker(&marker),
+            "<c:marker><c:size val=\"5\"/></c:marker>"
+        );
+    }
+
+    #[test]
+    fn symbol_without_required_value_stays_diagnosable() {
+        let marker = read_marker("<c:marker><c:symbol/></c:marker>");
+        assert!(!marker.symbol().unwrap().has_val());
+        assert!(!marker.is_valid());
+        assert_eq!(write_marker(&marker), "");
     }
 }

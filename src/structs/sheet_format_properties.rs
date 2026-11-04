@@ -124,6 +124,10 @@ impl SheetFormatProperties {
             .then(|| self.default_row_height.value())
     }
 
+    pub(crate) fn effective_default_row_height(&self) -> f64 {
+        self.default_row_height_opt().unwrap_or(15.0)
+    }
+
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use default_row_height()")]
@@ -274,12 +278,8 @@ impl SheetFormatProperties {
         }
 
         // Always emit defaultRowHeight — Excel requires it.
-        // Use 14.25 (Excel default) if the template didn't supply one.
-        let str_default_row_height = if self.default_row_height.has_value() {
-            self.default_row_height.value_string()
-        } else {
-            "14.25".to_string()
-        };
+        // Excel uses 15pt when the optional sheetFormatPr was omitted.
+        let str_default_row_height = self.effective_default_row_height().to_string();
         attributes.push(("defaultRowHeight", &str_default_row_height).into());
 
         // Always emit x14ac:dyDescent — Excel requires it.

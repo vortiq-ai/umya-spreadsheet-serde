@@ -13,17 +13,23 @@ use quick_xml::{
 use super::{
     AreaChartSeries,
     AreaChartSeriesList,
+    ChartLines,
     DataLabels,
     GapWidth,
     OfPieType,
     SecondPieSize,
+    SeriesFamily,
     SeriesLines,
+    SplitType,
     VaryColors,
+    XmlDouble,
+    XmlUnsignedInt,
 };
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -42,9 +48,163 @@ pub struct OfPieChart {
     gap_width:              GapWidth,
     second_pie_size:        SecondPieSize,
     series_lines:           SeriesLines,
+    #[cfg_attr(feature = "serde", serde(default))]
+    split_type:             Option<SplitType>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    split_position:         Option<XmlDouble>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    custom_split:           Option<Vec<XmlUnsignedInt>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl OfPieChart {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        self.series_lines
+            .restore_export_parts(&previous.series_lines)
+            + super::chart_metadata_restoration::replace_hidden_parts(
+                &mut self.extensions,
+                previous.extensions.as_ref(),
+            )
+    }
+
+    /// How the points of the second plot are chosen (`c:splitType`); Excel
+    /// treats an absent element as automatic.
+    #[must_use]
+    pub fn split_type(&self) -> Option<&SplitType> {
+        self.split_type.as_ref()
+    }
+
+    pub fn split_type_mut(&mut self) -> Option<&mut SplitType> {
+        self.split_type.as_mut()
+    }
+
+    pub fn set_split_type(&mut self, value: SplitType) -> &mut Self {
+        self.split_type = Some(value);
+        self
+    }
+
+    pub fn remove_split_type(&mut self) -> &mut Self {
+        self.split_type = None;
+        self
+    }
+
+    /// The split threshold: a count of points, a value or a percentage,
+    /// depending on the split type (`c:splitPos`).
+    #[must_use]
+    pub fn split_position(&self) -> Option<&XmlDouble> {
+        self.split_position.as_ref()
+    }
+
+    pub fn set_split_position(&mut self, value: XmlDouble) -> &mut Self {
+        self.split_position = Some(value);
+        self
+    }
+
+    pub fn remove_split_position(&mut self) -> &mut Self {
+        self.split_position = None;
+        self
+    }
+
+    /// The zero-based points moved to the second plot by a custom split
+    /// (`c:custSplit`). `Some` of an empty list is an empty `c:custSplit`.
+    #[must_use]
+    pub fn custom_split(&self) -> Option<&[XmlUnsignedInt]> {
+        self.custom_split.as_deref()
+    }
+
+    pub fn custom_split_mut(&mut self) -> Option<&mut Vec<XmlUnsignedInt>> {
+        self.custom_split.as_mut()
+    }
+
+    pub fn set_custom_split(&mut self, value: Vec<XmlUnsignedInt>) -> &mut Self {
+        self.custom_split = Some(value);
+        self
+    }
+
+    pub fn remove_custom_split(&mut self) -> &mut Self {
+        self.custom_split = None;
+        self
+    }
+
+    /// Adds a `c:serLines`; the chart shows series lines again if they were
+    /// removed.
+    pub fn add_series_lines(&mut self, value: ChartLines) -> &mut Self {
+        self.series_lines.add_line(value);
+        self
+    }
+
+    /// Hides the series lines of the chart.
+    pub fn remove_series_lines(&mut self) -> &mut Self {
+        self.series_lines.mark_absent();
+        self
+    }
+
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn projection_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+        Option<&mut [ChartLines]>,
+    ) {
+        self.extensions = None;
+        self.series_lines.strip_export_parts();
+        self.reference_group_parts_mut()
+    }
+
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+        Option<&mut [ChartLines]>,
+    ) {
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+            Some(self.series_lines.lines_mut()),
+        )
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn of_pie_type(&self) -> &OfPieType {
         &self.of_pie_type
@@ -132,6 +292,7 @@ impl OfPieChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -142,6 +303,7 @@ impl OfPieChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut OfPieChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -223,54 +385,85 @@ impl OfPieChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        self.data_labels.mark_group_absent();
+        self.series_lines.mark_absent();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
                     b"serLines" => {
-                        SeriesLines::set_attributes(reader, e);
+                        self.series_lines
+                            .add_line(ChartLines::read(reader, e, false, session)?);
                     }
-                    _ => (),
+                    b"custSplit" => {
+                        self.custom_split = Some(read_custom_split(reader, e)?);
+                    }
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().0) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().0)}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                     b"ofPieType" => {
-                        self.of_pie_type.set_attributes(reader, e);
+                        self.of_pie_type.set_attributes(reader, e)?;
                     }
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
                     }
                     b"gapWidth" => {
-                        self.gap_width.set_attributes(reader, e);
+                        self.gap_width.set_attributes(reader, e)?;
                     }
                     b"secondPieSize" => {
-                        self.second_pie_size.set_attributes(reader, e);
+                        self.second_pie_size.set_attributes(reader, e)?;
+                    }
+                    b"splitType" => {
+                        let mut obj = SplitType::default();
+                        obj.set_attributes(reader, e)?;
+                        self.split_type = Some(obj);
+                    }
+                    b"splitPos" => {
+                        self.split_position = Some(XmlDouble::read(e));
+                    }
+                    b"custSplit" => {
+                        self.custom_split = Some(Vec::new());
+                    }
+                    b"serLines" => {
+                        self.series_lines
+                            .add_line(ChartLines::read(reader, e, true, session)?);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"ofPieChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:ofPieChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:ofPieChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:ofPieChart
         write_start_tag(writer, "c:ofPieChart", vec![], false);
 
@@ -282,21 +475,76 @@ impl OfPieChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Pie)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:gapWidth
         self.gap_width.write_to(writer);
+
+        // c:splitType
+        if let Some(v) = &self.split_type {
+            v.write_to(writer);
+        }
+
+        // c:splitPos
+        if let Some(v) = &self.split_position {
+            v.write_to(writer, "c:splitPos");
+        }
+
+        // c:custSplit
+        if let Some(points) = &self.custom_split {
+            write_start_tag(writer, "c:custSplit", vec![], points.is_empty());
+            if !points.is_empty() {
+                for point in points {
+                    point.write_to_as(writer, "c:secondPiePt");
+                }
+                write_end_tag(writer, "c:custSplit");
+            }
+        }
 
         // c:secondPieSize
         self.second_pie_size.write_to(writer);
 
         // c:serLines
-        SeriesLines::write_to(writer);
+        self.series_lines.write_to(writer)?;
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "ofPieChart", Some(SeriesFamily::Pie))?;
+        }
         write_end_tag(writer, "c:ofPieChart");
+
+        Ok(())
     }
+}
+
+/// Reads the `c:secondPiePt` children of a `c:custSplit` element.
+fn read_custom_split<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    owner: &BytesStart,
+) -> Result<Vec<XmlUnsignedInt>, crate::XlsxError> {
+    let owner_end = owner.name().as_ref().to_vec();
+    let mut points = Vec::new();
+    try_xml_read_loop!(
+        reader,
+        Event::Empty(ref e) => {
+            if local_name(e.name().into_inner()) == b"secondPiePt" {
+                points.push(XmlUnsignedInt::read(e));
+            }
+        },
+        Event::Start(ref e) => {
+            if local_name(e.name().into_inner()) == b"secondPiePt" {
+                points.push(XmlUnsignedInt::read(e));
+            }
+            skip_element(reader, e)?;
+        },
+        Event::End(ref e) => {
+            if e.name().as_ref() == owner_end {
+                return Ok(points);
+            }
+        },
+        Event::Eof => return Err(crate::xml::xml_error("Error: Could not find c:custSplit end element"))
+    );
 }

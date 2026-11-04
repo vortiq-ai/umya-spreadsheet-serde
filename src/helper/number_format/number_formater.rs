@@ -23,12 +23,9 @@ pub(crate) fn format_as_number(value: f64, format: &str) -> Cow<'_, str> {
 
     let mut scale: f64 = 1f64;
 
-    if scale_regex.is_match(&format).unwrap_or(false) {
-        let mut matches: Vec<&str> = Vec::new();
-        for ite in scale_regex.captures(&format).ok().flatten().unwrap().iter() {
-            matches.push(ite.unwrap().as_str());
-        }
-        scale = f64::from(1000i32.pow(num_traits::cast(matches[2].len()).unwrap()));
+    if let Some(captures) = scale_regex.captures(&format).ok().flatten() {
+        let exponent = captures.get(2).map_or(0, |commas| commas.as_str().len());
+        scale = 1000.0f64.powi(i32::try_from(exponent).unwrap_or(i32::MAX));
 
         format = trailing_comma_regex.replace_all(&format, "$1").into();
     }

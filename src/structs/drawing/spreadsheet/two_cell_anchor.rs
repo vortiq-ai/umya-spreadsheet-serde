@@ -25,19 +25,11 @@ use crate::{
         DRAWING_MAIN_NS,
         MC_NS,
     },
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::{
         BooleanValue,
         raw::RawRelationships,
     },
-    traits::{
-        AdjustmentCoordinate,
-        AdjustmentCoordinateWithSheet,
-    },
+    traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -56,9 +48,22 @@ pub struct TwoCellAnchor {
     connection_shape:     Option<Box<ConnectionShape>>,
     picture:              Option<Box<Picture>>,
     is_alternate_content: BooleanValue,
+    #[cfg_attr(feature = "serde", serde(default))]
+    client_data:          Option<Box<super::DrawingClientData>>,
 }
 
 impl TwoCellAnchor {
+    pub(crate) fn adjust_geometry(
+        &mut self,
+        edit: &super::drawing_anchor::DrawingEdit<'_>,
+    ) -> bool {
+        edit.two_cell(
+            &mut self.from_marker,
+            &mut self.to_marker,
+            self.edit_as.value(),
+        )
+    }
+
     #[inline]
     #[must_use]
     pub fn edit_as(&self) -> &EditAsValues {
@@ -328,62 +333,171 @@ impl TwoCellAnchor {
 
     #[inline]
     pub(crate) fn is_image(&self) -> bool {
-        self.picture.is_some() || self.group_shape.is_some()
+        let mut unembedded = false;
+        self.visit_picture_blips(&mut |blip| unembedded |= blip.image().image_name().is_empty());
+        if let Some(group) = self.group_shape() {
+            unembedded |= group
+                .content()
+                .iter()
+                .flat_map(|child| child.media_objects())
+                .any(|image| image.image_name().is_empty());
+        }
+        (self.picture.is_some() || self.group_shape.is_some()) && !unembedded
+    }
+
+    #[must_use]
+    pub fn client_data(&self) -> Option<&super::DrawingClientData> {
+        self.client_data.as_deref()
+    }
+
+    pub fn client_data_mut(&mut self) -> Option<&mut super::DrawingClientData> {
+        self.client_data.as_deref_mut()
+    }
+
+    pub fn set_client_data(&mut self, value: super::DrawingClientData) -> &mut Self {
+        self.client_data = Some(Box::new(value));
+        self
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        set_string_from_xml!(self, e, edit_as, "editAs");
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_enum_attribute(owner, b"editAs")? {
+            self.edit_as.set_value(value);
+        }
 
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                b"xdr:from" | b"from" => {
-                    self.from_marker.set_attributes(reader, e);
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut objects = 0_usize;
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::SHEET_DRAWING_NS
+                        || !seen.insert(name.local_name.clone())
+                    {
+                        return Err(crate::xml::xml_error(
+                            "foreign or duplicate drawing anchor child",
+                        ));
+                    }
+                    if matches!(
+                        name.local_name.as_str(),
+                        "sp" | "pic" | "grpSp" | "cxnSp" | "graphicFrame"
+                    ) {
+                        objects += 1;
+                        if objects > 1 {
+                            return Err(crate::xml::xml_error(
+                                "drawing anchor has multiple objects",
+                            ));
+                        }
+                    }
+                    match name.local_name.as_str() {
+                        "from" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing marker"));
+                            }
+                            self.from_marker.set_attributes(reader, child)?;
+                        }
+                        "grpSp" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing group"));
+                            }
+                            let mut value = GroupShape::default();
+                            value.set_attributes(
+                                reader,
+                                child,
+                                drawing_relationships,
+                                session,
+                                provider,
+                            )?;
+                            self.set_group_shape(value);
+                        }
+                        "graphicFrame" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty graphic frame"));
+                            }
+                            let mut value = GraphicFrame::default();
+                            value.set_attributes(
+                                reader,
+                                child,
+                                drawing_relationships,
+                                session,
+                                provider,
+                            )?;
+                            self.set_graphic_frame(value);
+                        }
+                        "sp" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing shape"));
+                            }
+                            let mut value = Shape::default();
+                            value.set_attributes(reader, child, drawing_relationships, session)?;
+                            self.set_shape(value);
+                        }
+                        "pic" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing picture"));
+                            }
+                            let mut value = Picture::default();
+                            value.set_attributes(reader, child, drawing_relationships, session)?;
+                            self.set_picture(value);
+                        }
+                        "clientData" => {
+                            let element = crate::drawing::charts::OpaqueElement::read(
+                                reader, child, empty, &scope,
+                            )
+                            .map_err(crate::xml::xml_error)?;
+                            self.client_data =
+                                Some(Box::new(super::DrawingClientData::read(&element)?));
+                        }
+                        "to" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing marker"));
+                            }
+                            self.to_marker.set_attributes(reader, child)?;
+                        }
+                        "cxnSp" => {
+                            if empty {
+                                return Err(crate::xml::xml_error("empty drawing connector"));
+                            }
+                            let mut value = ConnectionShape::default();
+                            value.set_attributes(reader, child, drawing_relationships, session)?;
+                            self.set_connection_shape(value);
+                        }
+                        _ => return Err(crate::xml::xml_error("unsupported drawing anchor child")),
+                    }
                 }
-                b"xdr:to" | b"to" => {
-                    self.to_marker.set_attributes(reader, e);
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if objects != 1
+                        || !(seen.contains("from")
+                            && seen.contains("to")
+                            && seen.contains("clientData"))
+                    {
+                        return Err(crate::xml::xml_error(
+                            "missing required drawing anchor child",
+                        ));
+                    }
+                    return Ok(());
                 }
-                b"xdr:grpSp" | b"grpSp" => {
-                    let mut obj = GroupShape::default();
-                    obj.set_attributes(reader, e, drawing_relationships);
-                    self.set_group_shape(obj);
-                }
-                b"xdr:graphicFrame" | b"graphicFrame" => {
-                    let mut obj = GraphicFrame::default();
-                    obj.set_attributes(reader, e, drawing_relationships);
-                    self.set_graphic_frame(obj);
-                }
-                b"xdr:sp" | b"sp" => {
-                    let mut obj = Shape::default();
-                    obj.set_attributes(reader, e, drawing_relationships);
-                    self.set_shape(obj);
-                }
-                b"xdr:cxnSp" | b"cxnSp" => {
-                    let mut obj = ConnectionShape::default();
-                    obj.set_attributes(reader, e, drawing_relationships);
-                    self.set_connection_shape(obj);
-                }
-                b"xdr:pic" | b"pic" => {
-                    let mut obj = Picture::default();
-                    obj.set_attributes(reader, e, drawing_relationships);
-                    self.set_picture(obj);
-                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated drawing anchor")),
                 _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if matches!(e.name().into_inner(), b"xdr:twoCellAnchor" | b"twoCellAnchor") {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "twoCellAnchor")
-        );
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
@@ -391,7 +505,7 @@ impl TwoCellAnchor {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
         ole_id: usize,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if self.is_alternate_content() {
             // mc:AlternateContent
             write_start_tag(
@@ -428,31 +542,35 @@ impl TwoCellAnchor {
 
         // xdr:grpSp
         if let Some(v) = &self.group_shape {
-            v.write_to(writer, rel_list);
+            v.write_to(writer, rel_list, ole_id)?;
         }
 
         // xdr:graphicFrame
         if let Some(v) = &self.graphic_frame {
-            v.write_to(writer, rel_list);
+            v.write_to(writer, rel_list, ole_id)?;
         }
 
         // xdr:sp
         if let Some(v) = &self.shape {
-            v.write_to(writer, rel_list, ole_id);
+            v.write_to(writer, rel_list, ole_id)?;
         }
 
         // xdr:cxnSp
         if let Some(v) = &self.connection_shape {
-            v.write_to(writer, rel_list);
+            v.write_to(writer, rel_list, ole_id)?;
         }
 
         // xdr:pic
         if let Some(v) = &self.picture {
-            v.write_to(writer, rel_list);
+            v.write_to(writer, rel_list, ole_id)?;
         }
 
         // xdr:clientData
-        write_start_tag(writer, "xdr:clientData", vec![], true);
+        if let Some(value) = &self.client_data {
+            value.write_to(writer);
+        } else {
+            write_start_tag(writer, "xdr:clientData", vec![], true);
+        }
 
         write_end_tag(writer, "xdr:twoCellAnchor");
 
@@ -464,72 +582,7 @@ impl TwoCellAnchor {
 
             write_end_tag(writer, "mc:AlternateContent");
         }
-    }
-}
-impl AdjustmentCoordinate for TwoCellAnchor {
-    #[inline]
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.from_marker.adjustment_insert_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
-        self.to_marker.adjustment_insert_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
-    }
-
-    #[inline]
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.from_marker.adjustment_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
-        self.to_marker.adjustment_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        );
-    }
-
-    #[inline]
-    fn is_remove_coordinate(
-        &self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) -> bool {
-        self.from_marker.is_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        ) || self.to_marker.is_remove_coordinate(
-            root_col_num,
-            offset_col_num,
-            root_row_num,
-            offset_row_num,
-        )
+        Ok(())
     }
 }
 impl AdjustmentCoordinateWithSheet for TwoCellAnchor {
@@ -570,6 +623,165 @@ impl AdjustmentCoordinateWithSheet for TwoCellAnchor {
                 root_row_num,
                 offset_row_num,
             );
+        }
+    }
+}
+
+impl TwoCellAnchor {
+    pub(crate) fn visit_picture_blips(&self, visit: &mut dyn FnMut(&crate::drawing::Blip)) {
+        if let Some(picture) = self.picture() {
+            visit(picture.blip_fill().blip());
+        }
+        if let Some(group) = self.group_shape() {
+            for child in group.content() {
+                child.visit_picture_blips(visit);
+            }
+        }
+    }
+
+    pub(crate) fn visit_picture_blips_mut(
+        &mut self,
+        visit: &mut dyn FnMut(&mut crate::drawing::Blip),
+    ) {
+        if let Some(picture) = self.picture_mut() {
+            visit(picture.blip_fill_mut().blip_mut());
+        }
+        if let Some(group) = self.group_shape_mut() {
+            for child in group.content_mut() {
+                child.visit_picture_blips_mut(visit);
+            }
+        }
+    }
+}
+
+impl TwoCellAnchor {
+    pub fn visit_standard_frames(
+        &self,
+        visit: &mut dyn FnMut(super::DrawingFrameKey, &GraphicFrame),
+    ) {
+        if let Some(frame) = self.graphic_frame() {
+            let id = frame
+                .non_visual_graphic_frame_properties()
+                .non_visual_drawing_properties()
+                .id();
+            visit(super::DrawingFrameKey::primary(id), frame);
+        }
+        if let Some(group) = self.group_shape() {
+            for child in group.content() {
+                child.visit_standard_frames(&super::DrawingFrameKey::primary(child.id()), visit);
+            }
+        }
+    }
+
+    pub fn visit_extended_frames(
+        &self,
+        visit: &mut dyn FnMut(super::DrawingFrameKey, &super::ExtendedChartFrame),
+    ) {
+        if let Some(group) = self.group_shape() {
+            for child in group.content() {
+                child.visit_extended_frames(&super::DrawingFrameKey::primary(child.id()), visit);
+            }
+        }
+    }
+
+    pub fn visit_standard_frames_mut(
+        &mut self,
+        visit: &mut dyn FnMut(super::DrawingFrameKey, &mut GraphicFrame),
+    ) {
+        if let Some(frame) = self.graphic_frame_mut() {
+            let id = frame
+                .non_visual_graphic_frame_properties()
+                .non_visual_drawing_properties()
+                .id();
+            visit(super::DrawingFrameKey::primary(id), frame);
+        }
+        if let Some(group) = self.group_shape_mut() {
+            for child in group.content_mut() {
+                child
+                    .visit_standard_frames_mut(&super::DrawingFrameKey::primary(child.id()), visit);
+            }
+        }
+    }
+
+    pub fn visit_extended_frames_mut(
+        &mut self,
+        visit: &mut dyn FnMut(super::DrawingFrameKey, &mut super::ExtendedChartFrame),
+    ) {
+        if let Some(group) = self.group_shape_mut() {
+            for child in group.content_mut() {
+                child
+                    .visit_extended_frames_mut(&super::DrawingFrameKey::primary(child.id()), visit);
+            }
+        }
+    }
+}
+
+impl TwoCellAnchor {
+    pub(crate) fn visit_non_visual_relationships(
+        &self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &str),
+    ) {
+        if let Some(value) = self.graphic_frame() {
+            value
+                .non_visual_graphic_frame_properties()
+                .visit_relationships(visit);
+        }
+        if let Some(value) = self.shape() {
+            value
+                .non_visual_shape_properties()
+                .visit_relationships(visit);
+        }
+        if let Some(value) = self.picture() {
+            value
+                .non_visual_picture_properties()
+                .visit_relationships(visit);
+        }
+        if let Some(value) = self.connection_shape() {
+            value
+                .non_visual_connection_shape_properties()
+                .visit_relationships(visit);
+        }
+        if let Some(value) = self.group_shape() {
+            value
+                .non_visual_group_shape_properties()
+                .visit_relationships(visit);
+            for child in value.content() {
+                child.visit_non_visual_relationships(visit);
+            }
+        }
+    }
+
+    pub(crate) fn visit_non_visual_relationships_mut(
+        &mut self,
+        visit: &mut dyn FnMut(super::DrawingRelationshipKind, &mut String),
+    ) {
+        if let Some(value) = self.graphic_frame_mut() {
+            value
+                .non_visual_graphic_frame_properties_mut()
+                .visit_relationships_mut(visit);
+        }
+        if let Some(value) = self.shape_mut() {
+            value
+                .non_visual_shape_properties_mut()
+                .visit_relationships_mut(visit);
+        }
+        if let Some(value) = self.picture_mut() {
+            value
+                .non_visual_picture_properties_mut()
+                .visit_relationships_mut(visit);
+        }
+        if let Some(value) = self.connection_shape_mut() {
+            value
+                .non_visual_connection_shape_properties_mut()
+                .visit_relationships_mut(visit);
+        }
+        if let Some(value) = self.group_shape_mut() {
+            value
+                .non_visual_group_shape_properties_mut()
+                .visit_relationships_mut(visit);
+            for child in value.content_mut() {
+                child.visit_non_visual_relationships_mut(visit);
+            }
         }
     }
 }

@@ -17,12 +17,14 @@ use crate::{
         NumericValue,
         StringReference,
     },
-    reader::driver::local_name,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     writer::driver::{
         write_end_tag,
         write_start_tag,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -34,6 +36,13 @@ pub struct ChartText {
 }
 
 impl ChartText {
+    pub(crate) fn projection_string_reference_mut(&mut self) -> Option<&mut StringReference> {
+        if let Some(text) = &mut self.rich_text {
+            text.strip_export_parts();
+        }
+        self.string_reference.as_mut()
+    }
+
     #[must_use]
     pub fn rich_text(&self) -> Option<&RichText> {
         self.rich_text.as_ref()
@@ -112,51 +121,79 @@ impl ChartText {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session.enter_child_scope(e)?;
+        let end = e.name().into_inner().to_vec();
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
-                match local_name(e.name().into_inner()) {
+            ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)? {local_name(e.name().into_inner())} else {b""} {
                     b"rich" => {
-                        let mut obj = RichText::default();
-                        obj.set_attributes(reader, e);
-                        self.set_rich_text(obj);
+                        let mut v = RichText::default();
+                        if !empty {
+                            v.read_with_session(reader, e, Some(session))?;
+                        }
+                        self.rich_text = Some(v);
                     }
                     b"strRef" => {
-                        let mut obj = StringReference::default();
-                        obj.set_attributes(reader, e);
-                        self.set_string_reference(obj);
+                        let mut v = StringReference::default();
+                        if !empty {
+                            v.set_attributes(reader, e, session)?;
+                        }
+                        self.string_reference = Some(v);
                     }
                     b"v" => {
-                        let mut obj = NumericValue::default();
-                        obj.set_attributes(reader, e);
-                        self.set_numeric_value(obj);
+                        let mut v = NumericValue::default();
+                        if !empty {
+                            v.set_attributes(reader, e)?;
+                        }
+                        self.numeric_value = Some(v);
                     }
-                    _ => (),
+                    _ => {
+                        if !empty {
+                            crate::reader::driver::skip_element(reader, e)?;
+                        }
+                    }
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"tx" {
-                    return;
+                if e.name().into_inner() == end.as_slice() {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:tx"),
+            Event::Eof => return Err(crate::xml::xml_error("Could not find chart text end element".to_string())),
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        // c:tx
-        write_start_tag(writer, "c:tx", vec![], false);
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_to_as(writer, wb, "c:tx")?;
+
+        Ok(())
+    }
+
+    pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+        name: &str,
+    ) -> Result<(), crate::XlsxError> {
+        write_start_tag(writer, name, vec![], false);
 
         // c:rich
         if let Some(v) = &self.rich_text {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:strRef
         if let Some(v) = &self.string_reference {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:v
@@ -164,6 +201,8 @@ impl ChartText {
             v.write_to(writer);
         }
 
-        write_end_tag(writer, "c:tx");
+        write_end_tag(writer, name);
+
+        Ok(())
     }
 }

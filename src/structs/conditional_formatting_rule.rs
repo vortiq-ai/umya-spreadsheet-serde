@@ -24,12 +24,18 @@ use super::{
     Style,
     TimePeriodValues,
     UInt32Value,
+    package_extension::PreservedExtension,
 };
 use crate::{
+    XlsxError,
+    drawing::charts::{
+        NamespaceScope,
+        OpaqueElement,
+    },
     reader::driver::{
         get_attribute,
         set_string_from_xml,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -40,23 +46,28 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ConditionalFormattingRule {
-    r#type:        EnumValue<ConditionalFormatValues>,
-    operator:      EnumValue<ConditionalFormattingOperatorValues>,
-    text:          StringValue,
-    priority:      Int32Value,
-    percent:       BooleanValue,
-    bottom:        BooleanValue,
-    rank:          UInt32Value,
-    stop_if_true:  BooleanValue,
-    std_dev:       Int32Value,
-    above_average: BooleanValue,
-    equal_average: BooleanValue,
-    time_period:   EnumValue<TimePeriodValues>,
-    style:         Option<Box<Style>>,
-    color_scale:   Option<ColorScale>,
-    data_bar:      Option<DataBar>,
-    icon_set:      Option<IconSet>,
-    formula:       Option<Box<Formula>>,
+    r#type:           EnumValue<ConditionalFormatValues>,
+    operator:         EnumValue<ConditionalFormattingOperatorValues>,
+    text:             StringValue,
+    priority:         Int32Value,
+    percent:          BooleanValue,
+    bottom:           BooleanValue,
+    rank:             UInt32Value,
+    stop_if_true:     BooleanValue,
+    std_dev:          Int32Value,
+    above_average:    BooleanValue,
+    equal_average:    BooleanValue,
+    time_period:      EnumValue<TimePeriodValues>,
+    style:            Option<Box<Style>>,
+    color_scale:      Option<ColorScale>,
+    data_bar:         Option<DataBar>,
+    icon_set:         Option<IconSet>,
+    formula:          Option<Box<Formula>>,
+    /// The formulas after the first one (`cellIs` rules such as `between`
+    /// carry two or three).
+    further_formulas: Vec<Formula>,
+    /// The `ext` entries of the rule `extLst`, kept as read.
+    extensions:       Vec<PreservedExtension>,
 }
 
 impl ConditionalFormattingRule {
@@ -406,15 +417,43 @@ impl ConditionalFormattingRule {
         self
     }
 
+    /// Formulas after the first one.
+    #[inline]
+    #[must_use]
+    pub fn further_formulas(&self) -> &[Formula] {
+        &self.further_formulas
+    }
+
+    #[inline]
+    pub fn further_formulas_mut(&mut self) -> &mut Vec<Formula> {
+        &mut self.further_formulas
+    }
+
+    /// The `ext` entries of the rule `extLst`, kept as read.
+    pub fn extensions(&self) -> impl Iterator<Item = &OpaqueElement> {
+        self.extensions.iter().map(|entry| &entry.element)
+    }
+
+    pub(crate) fn extension_entries(&self) -> impl Iterator<Item = &PreservedExtension> {
+        self.extensions.iter()
+    }
+
+    pub(crate) fn extension_entries_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut PreservedExtension> {
+        self.extensions.iter_mut()
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
         differential_formats: &DifferentialFormats,
         empty_flag: bool,
-    ) {
+    ) -> Result<(), XlsxError> {
         set_string_from_xml!(self, e, r#type, "type");
         set_string_from_xml!(self, e, operator, "operator");
+        set_string_from_xml!(self, e, text, "text");
 
         if let Some(v) = get_attribute(e, b"dxfId") {
             // A dxfId past the stylesheet's differential formats is ignored.
@@ -438,11 +477,19 @@ impl ConditionalFormattingRule {
         set_string_from_xml!(self, e, equal_average, "equalAverage");
 
         if empty_flag {
-            return;
+            return Ok(());
         }
 
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
+            ref n @ (Event::Start(ref e) | Event::Empty(ref e))
+                if crate::reader::spreadsheet_xml::is_native_start(e, b"ext") => {
+                let is_empty = matches!(n, Event::Empty(_));
+                self.extensions.push(PreservedExtension::new(
+                    OpaqueElement::read(reader, e, is_empty, &NamespaceScope::default())
+                        .map_err(crate::xml::xml_error)?,
+                ));
+            },
             Event::Start(ref e) => {
                 match e.name().into_inner() {
                     b"colorScale" => {
@@ -463,17 +510,21 @@ impl ConditionalFormattingRule {
                     b"formula" => {
                         let mut obj = Formula::default();
                         obj.set_attributes(reader, e);
-                        self.formula = Some(Box::new(obj));
+                        if self.formula.is_none() {
+                            self.formula = Some(Box::new(obj));
+                        } else {
+                            self.further_formulas.push(obj);
+                        }
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"cfRule" {
-                    return
+                    return Ok(())
                 }
             },
-            Event::Eof => return
+            Event::Eof => return Ok(())
         );
     }
 
@@ -481,11 +532,13 @@ impl ConditionalFormattingRule {
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         differential_formats: &mut DifferentialFormats,
-    ) {
+        relationship_ids: &mut dyn Iterator<Item = Vec<String>>,
+    ) -> Result<(), XlsxError> {
         let is_inner = self.color_scale.is_some()
             || self.data_bar.is_some()
             || self.icon_set.is_some()
-            || self.formula.is_some();
+            || self.formula.is_some()
+            || !self.extensions.is_empty();
 
         // cfRule
         let mut attributes: crate::structs::AttrCollection = Vec::new();
@@ -498,6 +551,10 @@ impl ConditionalFormattingRule {
         let operator = self.operator.value_string();
         if self.operator.has_value() {
             attributes.push(("operator", operator).into());
+        }
+
+        if self.text.has_value() {
+            attributes.push(("text", self.text.value_str()).into());
         }
 
         let dxf_id_str: String;
@@ -574,8 +631,21 @@ impl ConditionalFormattingRule {
             if let Some(v) = &self.formula {
                 v.write_to(writer);
             }
+            for v in &self.further_formulas {
+                v.write_to(writer);
+            }
+
+            // extLst
+            if !self.extensions.is_empty() {
+                write_start_tag(writer, "extLst", vec![], false);
+                for extension in &self.extensions {
+                    extension.write_rebound(writer, relationship_ids)?;
+                }
+                write_end_tag(writer, "extLst");
+            }
 
             write_end_tag(writer, "cfRule");
         }
+        Ok(())
     }
 }

@@ -1,4 +1,7 @@
-use std::io;
+use std::{
+    collections::HashSet,
+    io,
+};
 
 use quick_xml::{
     Writer,
@@ -20,8 +23,10 @@ use super::{
 use crate::{
     helper::const_str::SHEET_MAIN_NS,
     structs::{
+        Table,
         Worksheet,
         WriterManager,
+        XlsxErrorKind,
     },
 };
 
@@ -49,10 +54,10 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 
         // table start
         let table_no = writer_mng.next_table_no();
-        let table_no_str = table_no.to_string();
+        let table_id = writer_mng.table_id(table.id())?.to_string();
         let mut attributes: crate::structs::AttrCollection = vec![
             ("xmlns", SHEET_MAIN_NS).into(),
-            ("id", &table_no_str).into(),
+            ("id", &table_id).into(),
             ("name", table.name()).into(),
             ("displayName", table.display_name()).into(),
             ("ref", &area).into(),
@@ -69,7 +74,7 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 
         // autoFilter
         if !table.auto_filter().range().range().is_empty() {
-            table.auto_filter().write_to(&mut writer);
+            table.auto_filter().write_to(&mut writer)?;
         }
 
         // tableColumns
@@ -80,11 +85,8 @@ pub(crate) fn write<W: io::Seek + io::Write>(
             vec![("count", &cols.len().to_string()).into()],
             false,
         );
-        let mut col_id = 1;
-        // `col_id` starts from 1 and is an i32 not usize as provided by
-        // enumerate
-        #[allow(clippy::explicit_counter_loop)]
-        for col in cols {
+        let ids = column_ids(table)?;
+        for (col, col_id) in cols.iter().zip(ids) {
             let mut attributes: crate::structs::AttrCollection = Vec::new();
             let col_id_str = col_id.to_string();
             attributes.push(("id", &col_id_str).into());
@@ -103,8 +105,6 @@ pub(crate) fn write<W: io::Seek + io::Write>(
                     write_start_tag(&mut writer, "tableColumn", attributes, true);
                 }
             }
-
-            col_id += 1;
         }
         write_end_tag(&mut writer, "tableColumns");
 
@@ -147,4 +147,36 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         table_no_list.push(table_no.to_string());
     }
     Ok(table_no_list)
+}
+
+fn column_ids(table: &Table) -> Result<Vec<u32>, XlsxError> {
+    let mut reserved = HashSet::new();
+    for id in table.columns().iter().filter_map(crate::TableColumn::id) {
+        if !reserved.insert(id) {
+            return Err(XlsxError::with_message(
+                XlsxErrorKind::InvalidArgument,
+                format!("duplicate column identity {id} in table {}", table.name()),
+            ));
+        }
+    }
+    let mut candidate = 1u32;
+    table
+        .columns()
+        .iter()
+        .map(|column| {
+            if let Some(id) = column.id() {
+                return Ok(id);
+            }
+            while reserved.contains(&candidate) {
+                candidate = candidate.checked_add(1).ok_or_else(|| {
+                    XlsxError::with_message(
+                        XlsxErrorKind::InvalidArgument,
+                        "table column identities exhausted",
+                    )
+                })?;
+            }
+            reserved.insert(candidate);
+            Ok(candidate)
+        })
+        .collect()
 }

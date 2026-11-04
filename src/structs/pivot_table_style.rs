@@ -150,13 +150,17 @@ impl PivotTableStyle {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, name, "name");
+    ) -> Result<(), crate::XlsxError> {
+        if let Some(name) = get_attribute(e, b"name") {
+            self.name
+                .set_value(quick_xml::escape::unescape(&name)?.into_owned());
+        }
         set_string_from_xml!(self, e, show_row_headers, "showRowHeaders");
         set_string_from_xml!(self, e, show_column_headers, "showColHeaders");
         set_string_from_xml!(self, e, show_row_stripes, "showRowStripes");
         set_string_from_xml!(self, e, show_column_stripes, "showColStripes");
         set_string_from_xml!(self, e, show_last_column, "showLastColumn");
+        Ok(())
     }
 
     #[inline]

@@ -15,9 +15,12 @@ use super::{
     SupplementalFont,
     TextFontType,
 };
-use crate::writer::driver::{
-    write_end_tag,
-    write_start_tag,
+use crate::{
+    XlsxError,
+    writer::driver::{
+        write_end_tag,
+        write_start_tag,
+    },
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -184,62 +187,95 @@ impl FontCollectionType {
         self
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        let mut buf = Vec::new();
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        crate::reader::driver::validate_attributes(owner)?;
+
+        if empty {
+            return Err(crate::xml::xml_error("Theme owner requires child content"));
+        }
+        let mut seen = 0u32;
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
         loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(ref e)) => match e.name().into_inner() {
-                    b"a:latin" => {
-                        self.latin_font.set_attributes(reader, e, true);
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        return Err(crate::xml::xml_error("foreign Theme child"));
                     }
-                    b"a:ea" => {
-                        self.east_asian_font.set_attributes(reader, e, true);
+                    crate::reader::driver::validate_attributes(child)?;
+                    match crate::reader::driver::local_name(child.name().as_ref()) {
+                        b"latin" => {
+                            if seen & 1 != 0 {
+                                return Err(crate::xml::xml_error("duplicate primary Theme font"));
+                            }
+                            seen |= 1;
+                            self.latin_font.set_attributes(reader, child, child_empty)?;
+                        }
+                        b"ea" => {
+                            if seen & (1 << 1) != 0 {
+                                return Err(crate::xml::xml_error("duplicate primary Theme font"));
+                            }
+                            seen |= 1 << 1;
+                            self.east_asian_font
+                                .set_attributes(reader, child, child_empty)?;
+                        }
+                        b"cs" => {
+                            if seen & (1 << 2) != 0 {
+                                return Err(crate::xml::xml_error("duplicate primary Theme font"));
+                            }
+                            seen |= 1 << 2;
+                            self.complex_script_font
+                                .set_attributes(reader, child, child_empty)?;
+                        }
+                        b"font" => {
+                            let mut value = SupplementalFont::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.supplemental_font_list.push(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
-                    b"a:cs" => {
-                        self.complex_script_font.set_attributes(reader, e, true);
-                    }
-                    b"a:font" => {
-                        let mut obj = SupplementalFont::default();
-                        obj.set_attributes(reader, e, true);
-                        self.add_supplemental_font_list(obj);
-                    }
-                    _ => (),
-                },
-                Ok(Event::Start(ref e)) => match e.name().into_inner() {
-                    b"a:latin" => {
-                        self.latin_font.set_attributes(reader, e, false);
-                    }
-                    b"a:ea" => {
-                        self.east_asian_font.set_attributes(reader, e, false);
-                    }
-                    b"a:cs" => {
-                        self.complex_script_font.set_attributes(reader, e, false);
-                    }
-                    b"a:font" => {
-                        let mut obj = SupplementalFont::default();
-                        obj.set_attributes(reader, e, false);
-                        self.add_supplemental_font_list(obj);
-                    }
-                    _ => (),
-                },
-                Ok(Event::End(ref e)) => match e.name().into_inner() {
-                    b"a:majorFont" | b"a:minorFont" => return,
-                    _ => (),
-                },
-                Ok(Event::Eof) => {
-                    panic!(
-                        "Error: Could not find {} end element",
-                        "a:majorFont, a:minorFont"
-                    )
                 }
-                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                Event::End(ref child) if child.name().as_ref() == end.as_slice() => {
+                    if seen & 7 != 7 {
+                        return Err(crate::xml::xml_error(
+                            "Theme owner is missing required children",
+                        ));
+                    }
+                    return Ok(());
+                }
+                Event::Text(ref text)
+                    if !text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) =>
+                {
+                    return Err(crate::xml::xml_error("unexpected text in Theme container"));
+                }
+                Event::Eof => return Err(crate::xml::xml_error("unterminated Theme owner")),
                 _ => (),
             }
-            buf.clear();
+            buffer.clear();
         }
     }
 

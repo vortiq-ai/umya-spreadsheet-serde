@@ -12,9 +12,14 @@ use quick_xml::{
 
 use super::FormatCode;
 use crate::{
-    reader::driver::local_name,
+    CellErrorType,
+    reader::driver::{
+        local_name,
+        try_xml_read_loop,
+    },
     structs::{
         Address,
+        CellRawValue,
         Workbook,
     },
     writer::driver::{
@@ -22,7 +27,6 @@ use crate::{
         write_start_tag,
         write_text_node,
     },
-    xml_read_loop,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -60,21 +64,22 @@ impl NumberingCache {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        source_owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = source_owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
                 if local_name(e.name().0) == b"formatCode" {
-                    self.format_code.set_attributes(reader, e);
+                    self.format_code.set_attributes(reader, e)?;
                 }
             },
             Event::End(ref e) => {
-               if local_name(e.name().0) == b"numCache" {
-                   return;
+               if e.name().as_ref() == owner_end {
+                   return Ok(());
                }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:numCache"),
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:numCache"))),
         );
     }
 
@@ -106,7 +111,21 @@ impl NumberingCache {
 
             // c:v
             write_start_tag(writer, "c:v", vec![], false);
-            write_text_node(writer, cell_value.value());
+            match cell_value.raw_value() {
+                CellRawValue::Error(
+                    CellErrorType::Div0
+                    | CellErrorType::Name
+                    | CellErrorType::Null
+                    | CellErrorType::Num
+                    | CellErrorType::Ref
+                    | CellErrorType::Value,
+                ) => {
+                    // Excel saves these worksheet errors as zero in numeric
+                    // caches.
+                    write_text_node(writer, "0");
+                }
+                _ => write_text_node(writer, cell_value.value_for_xml()),
+            }
             write_end_tag(writer, "c:v");
 
             write_end_tag(writer, "c:pt");

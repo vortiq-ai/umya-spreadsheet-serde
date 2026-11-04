@@ -17,19 +17,13 @@ use super::{
     },
     GradientStopList,
     LinearGradientFill,
+    PathGradientFill,
     TileFlipValues,
     TileRectangle,
 };
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -40,6 +34,8 @@ pub struct GradientFill {
     gradient_stop_list:   GradientStopList,
     linear_gradient_fill: Option<Box<LinearGradientFill>>,
     tile_rectangle:       Option<Box<TileRectangle>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    path_gradient_fill:   Option<Box<PathGradientFill>>,
 }
 
 impl GradientFill {
@@ -137,7 +133,29 @@ impl GradientFill {
 
     #[inline]
     pub fn set_linear_gradient_fill(&mut self, value: LinearGradientFill) -> &mut GradientFill {
+        self.path_gradient_fill = None;
         self.linear_gradient_fill = Some(Box::new(value));
+        self
+    }
+
+    #[must_use]
+    pub fn path_gradient_fill(&self) -> Option<&PathGradientFill> {
+        self.path_gradient_fill.as_deref()
+    }
+
+    pub fn path_gradient_fill_mut(&mut self) -> Option<&mut PathGradientFill> {
+        self.path_gradient_fill.as_deref_mut()
+    }
+
+    pub fn set_path_gradient_fill(&mut self, value: PathGradientFill) -> &mut Self {
+        self.linear_gradient_fill = None;
+        self.path_gradient_fill = Some(Box::new(value));
+        self
+    }
+
+    pub fn clear_shading(&mut self) -> &mut Self {
+        self.linear_gradient_fill = None;
+        self.path_gradient_fill = None;
         self
     }
 
@@ -175,41 +193,150 @@ impl GradientFill {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, flip, "flip");
-        set_string_from_xml!(self, e, rotate_with_shape, "rotWithShape");
-
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                b"a:lin" => {
-                    let mut obj = LinearGradientFill::default();
-                    obj.set_attributes(reader, e, is_empty);
-                    self.set_linear_gradient_fill(obj);
-                }
-                b"a:tileRect" => {
-                    let obj = TileRectangle::default();
-                    TileRectangle::set_attributes(reader, e, is_empty);
-                    self.set_tile_rectangle(obj);
-                }
-                b"a:gsLst" => {
-                    self.gradient_stop_list.set_attributes(reader, e);
-                }
-                _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:gradFill" {
-                    return
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:gradFill")
-        );
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, None)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn read_attributes<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, None)
+    }
+
+    pub(crate) fn read_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty, Some(session))
+    }
+
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"flip")? {
+            self.flip.set_value(
+                value
+                    .parse::<TileFlipValues>()
+                    .map_err(|()| crate::xml::xml_error("invalid DrawingML enumeration"))?,
+            );
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"rotWithShape")? {
+            self.rotate_with_shape
+                .set_value(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut stops_seen = false;
+        let mut shading_seen = false;
+        let mut tile_seen = false;
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                        continue;
+                    }
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"lin" => {
+                            if shading_seen {
+                                return Err(crate::xml::xml_error(
+                                    "duplicate or conflicting gradient shading",
+                                ));
+                            }
+                            shading_seen = true;
+                            let mut value = LinearGradientFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_linear_gradient_fill(value);
+                        }
+                        b"path" => {
+                            if shading_seen {
+                                return Err(crate::xml::xml_error(
+                                    "duplicate or conflicting gradient shading",
+                                ));
+                            }
+                            shading_seen = true;
+                            let mut value = PathGradientFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_path_gradient_fill(value);
+                        }
+                        b"tileRect" => {
+                            if tile_seen {
+                                return Err(crate::xml::xml_error(
+                                    "duplicate gradient tile rectangle",
+                                ));
+                            }
+                            tile_seen = true;
+                            let mut value = TileRectangle::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_tile_rectangle(value);
+                        }
+                        b"gsLst" => {
+                            if stops_seen {
+                                return Err(crate::xml::xml_error("duplicate gradient stop list"));
+                            }
+                            stops_seen = true;
+                            self.gradient_stop_list.read_with_session(
+                                reader,
+                                child,
+                                child_empty,
+                                session,
+                            )?;
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
+                    }
+                }
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
+    }
+
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
+        if self.linear_gradient_fill.is_some() && self.path_gradient_fill.is_some() {
+            return Err(crate::xml::xml_error("conflicting gradient shading"));
+        }
         // a:gradFill
         let mut attributes: crate::structs::AttrCollection = Vec::new();
         if self.flip.has_value() {
@@ -221,7 +348,7 @@ impl GradientFill {
         write_start_tag(writer, "a:gradFill", attributes, false);
 
         // a:gsLst
-        self.gradient_stop_list.write_to(writer);
+        self.gradient_stop_list.write_to(writer)?;
 
         // a:lin
         if let Some(v) = &self.linear_gradient_fill {
@@ -229,10 +356,14 @@ impl GradientFill {
         }
 
         // a:tileRect
-        if self.tile_rectangle.is_some() {
-            TileRectangle::write_to(writer);
+        if let Some(path) = &self.path_gradient_fill {
+            path.write_to(writer)?;
+        }
+        if let Some(rectangle) = &self.tile_rectangle {
+            rectangle.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:gradFill");
+        Ok(())
     }
 }

@@ -10,6 +10,7 @@ use quick_xml::{
 };
 
 use super::{
+    BooleanValue,
     ConditionalFormatValueObjectValues,
     EnumValue,
     StringValue,
@@ -28,6 +29,7 @@ use crate::{
 pub struct ConditionalFormatValueObject {
     r#type: EnumValue<ConditionalFormatValueObjectValues>,
     val:    StringValue,
+    gte:    BooleanValue,
 }
 
 impl ConditionalFormatValueObject {
@@ -62,6 +64,25 @@ impl ConditionalFormatValueObject {
         self
     }
 
+    /// The `gte` attribute: whether the threshold comparison is "greater than
+    /// or equal".
+    #[inline]
+    #[must_use]
+    pub fn gte(&self) -> Option<bool> {
+        self.gte.has_value().then(|| self.gte.value())
+    }
+
+    #[inline]
+    pub fn set_gte(&mut self, value: Option<bool>) -> &mut Self {
+        match value {
+            Some(value) => {
+                self.gte.set_value(value);
+            }
+            None => self.gte = BooleanValue::default(),
+        }
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -70,6 +91,7 @@ impl ConditionalFormatValueObject {
     ) {
         set_string_from_xml!(self, e, r#type, "type");
         set_string_from_xml!(self, e, val, "val");
+        set_string_from_xml!(self, e, gte, "gte");
 
         if empty_flg {
             return;
@@ -96,6 +118,9 @@ impl ConditionalFormatValueObject {
         let val = self.val.value_str();
         if self.val.has_value() {
             attributes.push(("val", val).into());
+        }
+        if self.gte.has_value() {
+            attributes.push(("gte", self.gte.value_string()).into());
         }
 
         write_start_tag(writer, "cfvo", attributes, true);

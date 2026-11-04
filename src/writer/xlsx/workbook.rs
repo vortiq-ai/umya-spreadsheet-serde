@@ -30,6 +30,7 @@ use crate::{
         XR10_NS,
     },
     structs::{
+        SlicerListKind,
         Workbook,
         WriterManager,
     },
@@ -112,10 +113,10 @@ pub(crate) fn write<W: io::Seek + io::Write>(
     let mut index = 1;
     for worksheet in wb.sheet_collection_no_check() {
         let mut attributes: crate::structs::AttrCollection = Vec::new();
-        let id = index.to_string();
+        let id = worksheet.sheet_id();
         let r_id = format!("rId{index}");
         attributes.push(("name", worksheet.name()).into());
-        attributes.push(("sheetId", &id).into());
+        attributes.push(("sheetId", id).into());
         attributes.push(("r:id", &r_id).into());
         if worksheet.has_state() {
             attributes.push(("state", worksheet.state_str()).into());
@@ -144,23 +145,13 @@ pub(crate) fn write<W: io::Seek + io::Write>(
         write_end_tag(&mut writer, "definedNames");
     }
 
-    // calcPr
-    //
-    // `iterate` must be carried through. A workbook with a DELIBERATE circular
-    // reference (LBO: debt -> interest -> cash flow -> debt) sets it, and Excel
-    // converges the model. Writing a bare `calcId` dropped it, so Excel refused
-    // to converge a file it had computed fine before the round trip — we
-    // turned a gap into a broken workbook. Measured 2026-08-27 on a
-    // customer model: source `<calcPr calcId="191028" fullCalcOnLoad="1"
-    // iterate="1"/>`, our output `<calcPr calcId="122211"/>`.
+    // Preserve iterative calculation settings for intentional circular
+    // formulas.
     let iterate_count_str;
     let iterate_delta_str;
     let mut calc_attrs: crate::structs::AttrCollection = vec![("calcId", "122211").into()];
-    // Missing caches are invisible to non-recalculating readers, while present
-    // caches may be stale or produced by a different calculation engine. When
-    // requested, ask Excel to replace them on open. (Our `calcId` is
-    // deliberately low, but that alone is not a contract; `fullCalcOnLoad`
-    // is.)
+    // A low calcId alone does not guarantee recalculation. Set fullCalcOnLoad
+    // only when requested, so Excel replaces missing or stale formula caches.
     if wb.full_calc_on_load() {
         calc_attrs.push(("fullCalcOnLoad", "1").into());
     }
@@ -177,20 +168,53 @@ pub(crate) fn write<W: io::Seek + io::Write>(
 
     // pivotCaches
     let pivot_cache_definition_collection = wb.pivot_caches();
-    if !pivot_cache_definition_collection.is_empty() {
+    let retained_ids = super::workbook_rels::retained_pivot_cache_relationship_ids(wb);
+    let pivot_caches: Vec<_> = pivot_cache_definition_collection
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, id, _))| {
+            !retained_ids
+                .iter()
+                .any(|(_, known, _)| known.to_string() == *id)
+        })
+        .collect();
+    if wb.cell_metadata.is_some() {
+        index += 1;
+    }
+    if !pivot_caches.is_empty() {
         write_start_tag(&mut writer, "pivotCaches", vec![], false);
-        for (_, val2, _) in pivot_cache_definition_collection {
-            let r_id = format!("rId{index}");
+        for (offset, (_, val2, _)) in pivot_caches {
+            let r_id = format!("rId{}", index + offset);
             write_start_tag(
                 &mut writer,
                 "pivotCache",
-                vec![("cacheId", &val2).into(), ("r:id", &r_id).into()],
+                vec![("cacheId", val2).into(), ("r:id", &r_id).into()],
                 true,
             );
-            index += 1;
         }
         write_end_tag(&mut writer, "pivotCaches");
     }
+
+    // extLst: slicer cache lists and the other source extensions
+    let mut pivot_ids = Vec::new();
+    let mut table_ids = Vec::new();
+    for (kind, id) in super::workbook_rels::slicer_cache_relationship_ids(wb) {
+        match kind {
+            SlicerListKind::Pivot => pivot_ids.push(id),
+            SlicerListKind::Table => table_ids.push(id),
+            // Timeline caches are listed by their own relationship ids.
+            SlicerListKind::Timeline => {}
+        }
+    }
+    crate::structs::slicer::write_workbook_extensions(
+        &mut writer,
+        &wb.extensions,
+        &pivot_ids,
+        &table_ids,
+        &super::workbook_rels::timeline_cache_relationship_ids(wb),
+        &retained_ids,
+        &super::workbook_rels::carried_relationship_ids(wb),
+    )?;
 
     write_end_tag(&mut writer, "workbook");
 

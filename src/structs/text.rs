@@ -7,12 +7,10 @@ use quick_xml::{
     events::BytesStart,
 };
 
-use crate::{
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-        write_text_node,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
+    write_text_node,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -56,10 +54,9 @@ impl Text {
         e: &BytesStart,
     ) {
         let mut buf = Vec::new();
-        let text = reader
-                    .read_text_into(e.name(), &mut buf).unwrap();
+        let text = reader.read_text_into(e.name(), &mut buf).unwrap();
         let text = crate::helper::utils::unescape_xml_text(&text);
-        self.set_value(crate::helper::utils::unescape_xstring(&text));
+        self.set_value(crate::helper::utils::unescape_xstring_owned(text));
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

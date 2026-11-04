@@ -290,8 +290,9 @@ impl Row {
             }
         }
 
-        if let Some(v) = get_attribute(e, b"s") {
-            let style = stylesheet.style(v.parse::<usize>().unwrap());
+        // Excel ignores a row style it cannot read as an index.
+        if let Some(index) = get_attribute(e, b"s").and_then(|v| v.parse::<usize>().ok()) {
+            let style = stylesheet.style(index);
             self.set_style(style);
         }
 

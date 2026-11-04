@@ -5,11 +5,15 @@ use std::{
 };
 
 use quick_xml::{
-    Reader,
+    NsReader,
     Writer,
     events::{
         BytesDecl,
         Event,
+    },
+    name::{
+        Namespace,
+        ResolveResult,
     },
 };
 
@@ -32,6 +36,14 @@ use crate::{
         write_start_tag,
     },
 };
+
+/// Whether `element` is a `Relationship` of the package relationships
+/// namespace, by expanded name.
+fn is_relationship<R>(reader: &NsReader<R>, element: &quick_xml::events::BytesStart) -> bool {
+    let (namespace, local_name) = reader.resolver().resolve_element(element.name());
+    namespace == ResolveResult::Bound(Namespace(REL_NS.as_bytes()))
+        && local_name.as_ref() == b"Relationship"
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
@@ -152,6 +164,7 @@ impl RawRelationships {
         base_path: &str,
         target: &str,
         source_file: Option<&Path>,
+        defer_chart_data: bool,
     ) -> Result<bool, XlsxError> {
         let data = {
             let path_str = join_paths(base_path, target);
@@ -164,22 +177,67 @@ impl RawRelationships {
             r.read_to_end(&mut buf)?;
             io::Cursor::new(buf)
         };
-        let mut reader = Reader::from_reader(data);
+        let mut reader = NsReader::from_reader(data);
         reader.config_mut().trim_text(true);
 
+        // A relationship is any element with the relationships namespace and
+        // the local name `Relationship`, whatever its prefix and
+        // whether it is written as an empty or as a start/end pair.
+        let mut open_relationship_depth = 0usize;
         try_xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
-                if e.name().into_inner() == b"Relationship" {
+            Event::Start(ref e) => {
+                let is_relationship = open_relationship_depth == 0 && is_relationship(&reader, e);
+                if open_relationship_depth > 0 || is_relationship {
+                    open_relationship_depth += 1;
+                }
+                if is_relationship {
                     let mut obj = RawRelationship::default();
-                    obj.set_attributes(&mut reader, e, arv, base_path, source_file);
+                    obj.set_attributes(e, arv, base_path, source_file, defer_chart_data)?;
                     self.add_relationship_list(obj);
                 }
+            },
+            Event::Empty(ref e) => {
+                if open_relationship_depth == 0 && is_relationship(&reader, e) {
+                    let mut obj = RawRelationship::default();
+                    obj.set_attributes(e, arv, base_path, source_file, defer_chart_data)?;
+                    self.add_relationship_list(obj);
+                }
+            },
+            Event::End(_) => {
+                open_relationship_depth = open_relationship_depth.saturating_sub(1);
             },
             Event::Eof => break
         );
 
         Ok(true)
+    }
+
+    /// Writes these relationships as those of `new_owner`, a part at another
+    /// location than the original owner: the relationships part takes the new
+    /// owner's name and every internal target is made relative to it.
+    pub(crate) fn write_to_owner<W: io::Seek + io::Write>(
+        &self,
+        writer_mng: &mut WriterManager<W>,
+        new_owner: &str,
+    ) -> Result<(), XlsxError> {
+        let mut moved = self.clone();
+        for relationship in moved.relationship_list_mut() {
+            let part = relationship.raw_file().file_target().to_owned();
+            if relationship.target_mode() == "External" || part.is_empty() {
+                continue;
+            }
+            let mut target = crate::structs::drawing_parts::relative_target(new_owner, &part)?;
+            // A relative form ending in an empty, `.` or `..` segment names no
+            // part (Excel rejects it), so such a dependency, for example a
+            // folder name, is written as its absolute part name.
+            if matches!(target.rsplit('/').next(), Some("" | "." | "..")) {
+                target = format!("/{part}");
+            }
+            relationship.set_target(target);
+        }
+        let path = crate::structs::drawing_parts::relationships_path(new_owner)?;
+        moved.write_to(writer_mng, Some(&path))
     }
 
     pub(crate) fn write_to<W: io::Seek + io::Write>(
@@ -234,15 +292,7 @@ impl RawRelationships {
 mod tests {
     use super::*;
 
-    /// `try_relationship_by_rid` must return `None` for an absent id rather
-    /// than panicking like its strict sibling.
-    ///
-    /// Real workbooks ship dangling OPTIONAL relationships: a tool rewrites the
-    /// file, drops `printerSettings*.bin` and its `<Relationship>` entry, and
-    /// leaves `<pageSetup r:id="rId1"/>` pointing at nothing. Excel opens those
-    /// files. Panicking there discarded the entire workbook -- observed
-    /// 2026-09-07 on two customer files whose eight worksheets each referenced
-    /// an rId1 that no .rels defined and no printerSettings part backed.
+    /// Missing optional relationships return None rather than failing import.
     #[test]
     fn try_relationship_by_rid_returns_none_when_absent() {
         let mut rels = RawRelationships::default();

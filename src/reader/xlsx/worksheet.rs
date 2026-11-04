@@ -44,12 +44,31 @@ use crate::{
     },
 };
 
+/// Refuse a worksheet part whose text is not valid in its declared encoding;
+/// the readers below cannot report it from inside their element parsers.
+fn check_part_text(raw_data_of_worksheet: &RawWorksheet) -> Result<(), XlsxError> {
+    let file = raw_data_of_worksheet.worksheet_file();
+    if let Some(source_file) = file.source_file() {
+        if !file.has_file_data() {
+            let mut archive = zip::read::ZipArchive::new(File::open(source_file)?)?;
+            let source = zip_by_name(&mut archive, file.file_target())?;
+            return Ok(crate::reader::spreadsheet_xml::validate_part_text(
+                io::BufReader::new(source),
+            )?);
+        }
+    }
+    Ok(crate::reader::spreadsheet_xml::validate_part_text(
+        io::Cursor::new(file.file_data()),
+    )?)
+}
+
 pub(crate) fn read(
     worksheet: &mut Worksheet,
     raw_data_of_worksheet: &RawWorksheet,
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
 ) -> Result<(), XlsxError> {
+    check_part_text(raw_data_of_worksheet)?;
     if let Some(source_file) = raw_data_of_worksheet.worksheet_file().source_file() {
         if !raw_data_of_worksheet.worksheet_file().has_file_data() {
             let file = File::open(source_file)?;
@@ -86,7 +105,9 @@ fn read_from_reader<R: io::BufRead>(
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
 ) -> Result<(), XlsxError> {
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(data));
+    let mut reader = Reader::from_reader(
+        crate::reader::spreadsheet_xml::SpreadsheetXml::open_with_all_extensions(data)?,
+    );
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
     worksheet.cells_crate_mut().reserve(65536);
@@ -136,10 +157,44 @@ fn read_from_reader<R: io::BufRead>(
                 );
                 worksheet.set_row_dimension(obj);
             }
-            b"autoFilter" => {
+            _ if crate::reader::spreadsheet_xml::is_native_start(e, b"autoFilter") => {
                 let mut obj = AutoFilter::default();
-                obj.set_attributes(&mut reader, e, false);
+                obj.set_attributes(&mut reader, e, false).map_err(crate::xml::xml_error)?;
                 worksheet.set_auto_filter_obj(obj);
+            }
+            _ if crate::structs::is_preserved_sheet_element(e) => {
+                let node = crate::drawing::charts::OpaqueElement::read(
+                    &mut reader,
+                    e,
+                    false,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )
+                .map_err(crate::xml::xml_error)?;
+                worksheet.preserve_element(node);
+            }
+            _ if crate::reader::spreadsheet_xml::is_native_start(e, b"ext") => {
+                let node = crate::drawing::charts::OpaqueElement::read(
+                    &mut reader,
+                    e,
+                    false,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )
+                .map_err(crate::xml::xml_error)?;
+                crate::structs::slicer::read_worksheet_extension(
+                    &mut worksheet.extensions,
+                    &mut worksheet.slicer_part_references,
+                    node,
+                )
+                .map_err(crate::xml::xml_error)?;
+            }
+            b"ext"
+                if e.try_get_attribute(b"uri").ok().flatten().is_some_and(|uri| {
+                    crate::structs::slicer::is_data_validations_uri(uri.value.as_ref())
+                }) =>
+            {
+                worksheet
+                    .extensions
+                    .push(crate::structs::slicer::WorksheetExtension::DataValidations);
             }
             b"cols" => {
                 let mut obj = Columns::default();
@@ -153,7 +208,7 @@ fn read_from_reader<R: io::BufRead>(
             }
             b"conditionalFormatting" => {
                 let mut obj = ConditionalFormatting::default();
-                obj.set_attributes(&mut reader, e, stylesheet.differential_formats());
+                obj.set_attributes(&mut reader, e, stylesheet.differential_formats())?;
                 worksheet.add_conditional_formatting_collection(obj);
             }
             b"dataValidations" => {
@@ -166,15 +221,20 @@ fn read_from_reader<R: io::BufRead>(
                 obj.set_attributes(&mut reader, e);
                 worksheet.set_data_validations_2010(obj);
             }
-            b"oleObjects" => {
+            name if crate::reader::driver::local_name(name) == b"oleObjects" => {
                 let mut obj = OleObjects::default();
-                let relationships = raw_data_of_worksheet.worksheet_relationships().ok_or_else(|| {
+                let relationships = raw_data_of_worksheet.worksheet_relationships()?.ok_or_else(|| {
                     XlsxError::with_message(
                         XlsxErrorKind::NotFound,
                         "worksheet relationships for oleObjects",
                     )
                 })?;
-                obj.set_attributes(&mut reader, e, relationships);
+                obj.set_attributes(
+                    &mut reader,
+                    e,
+                    relationships,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )?;
                 worksheet.set_ole_objects(obj);
             }
             b"headerFooter" => {
@@ -243,10 +303,35 @@ fn read_from_reader<R: io::BufRead>(
                 );
                 worksheet.set_row_dimension(obj);
             }
-            b"autoFilter" => {
+            _ if crate::reader::spreadsheet_xml::is_native_start(e, b"autoFilter") => {
                 let mut obj = AutoFilter::default();
-                obj.set_attributes(&mut reader, e, true);
+                obj.set_attributes(&mut reader, e, true).map_err(crate::xml::xml_error)?;
                 worksheet.set_auto_filter_obj(obj);
+            }
+            _ if crate::structs::is_preserved_sheet_element(e) => {
+                let node = crate::drawing::charts::OpaqueElement::read(
+                    &mut reader,
+                    e,
+                    true,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )
+                .map_err(crate::xml::xml_error)?;
+                worksheet.preserve_element(node);
+            }
+            _ if crate::reader::spreadsheet_xml::is_native_start(e, b"ext") => {
+                let node = crate::drawing::charts::OpaqueElement::read(
+                    &mut reader,
+                    e,
+                    true,
+                    &crate::drawing::charts::NamespaceScope::default(),
+                )
+                .map_err(crate::xml::xml_error)?;
+                crate::structs::slicer::read_worksheet_extension(
+                    &mut worksheet.extensions,
+                    &mut worksheet.slicer_part_references,
+                    node,
+                )
+                .map_err(crate::xml::xml_error)?;
             }
             b"pageMargins" => {
                 worksheet
@@ -256,7 +341,7 @@ fn read_from_reader<R: io::BufRead>(
             b"hyperlink" => {
                 let (coor, hyperlink) = get_hyperlink(
                     e,
-                    raw_data_of_worksheet.worksheet_relationships()
+                    raw_data_of_worksheet.worksheet_relationships()?
                 )?;
                 worksheet.cell_mut(coor).set_hyperlink(hyperlink);
             }
@@ -269,7 +354,7 @@ fn read_from_reader<R: io::BufRead>(
                 worksheet.page_setup_mut().set_attributes(
                     &mut reader,
                     e,
-                    raw_data_of_worksheet.worksheet_relationships(),
+                    raw_data_of_worksheet.worksheet_relationships()?,
                 );
             }
             b"sheetProtection" => {
@@ -295,6 +380,7 @@ pub(crate) fn read_lite(
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
 ) -> Result<Cells, XlsxError> {
+    check_part_text(raw_data_of_worksheet)?;
     if let Some(source_file) = raw_data_of_worksheet.worksheet_file().source_file() {
         if !raw_data_of_worksheet.worksheet_file().has_file_data() {
             let file = File::open(source_file)?;
@@ -317,7 +403,8 @@ fn read_lite_from_reader<R: io::BufRead>(
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
 ) -> Result<Cells, XlsxError> {
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(data));
+    let mut reader =
+        Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(data)?);
     reader.config_mut().trim_text(true);
 
     let mut cells = Cells::default();
@@ -369,6 +456,7 @@ pub(crate) fn read_cells_stream<F>(
 where
     F: FnMut(&Cell),
 {
+    check_part_text(raw_data_of_worksheet)?;
     if let Some(source_file) = raw_data_of_worksheet.worksheet_file().source_file() {
         if !raw_data_of_worksheet.worksheet_file().has_file_data() {
             let file = File::open(source_file)?;
@@ -401,7 +489,8 @@ where
     R: io::BufRead,
     F: FnMut(&Cell),
 {
-    let mut reader = Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::new(data));
+    let mut reader =
+        Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(data)?);
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
 
@@ -499,7 +588,7 @@ fn get_hyperlink(
         if let Some(relationship) =
             raw_relationships.and_then(|rels| rels.find_relationship_by_rid(&v))
         {
-            hyperlink.set_url(escape::unescape(relationship.target())?.to_string());
+            hyperlink.set_url(relationship.target());
         }
     }
     Ok((coordition, hyperlink))

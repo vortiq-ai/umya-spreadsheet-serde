@@ -1,29 +1,15 @@
 use std::io::Cursor;
 
-use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
-};
+use quick_xml::Writer;
 
 use super::{
     BooleanValue,
     FromMarker,
     ToMarker,
 };
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -138,33 +124,70 @@ impl ObjectAnchor {
         self.to_marker.adjustment_remove_column(num_cols);
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        e: &BytesStart,
-    ) {
-        set_string_from_xml!(self, e, move_with_cells, "moveWithCells");
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"from" | b"xdr:from" => {
-                        self.from_marker.set_attributes(reader, e);
-                    }
-                    b"to" | b"xdr:to" => {
-                        self.to_marker.set_attributes(reader, e);
-                    }
-                    _ => (),
-                }
+    pub(crate) fn from_element(
+        element: &crate::drawing::charts::OpaqueElement,
+    ) -> Result<Self, String> {
+        use crate::{
+            drawing::charts::OpaqueToken,
+            helper::const_str::{
+                SHEET_DRAWING_NS,
+                SHEET_MAIN_NS,
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"anchor" {
-                    return
-                }
+            xml::{
+                attribute,
+                direct_children,
+                required_child,
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "anchor")
-        );
+        };
+        crate::xml::expect(element, SHEET_MAIN_NS, "anchor")?;
+        let mut value = Self::default();
+        if let Some(text) = attribute(element, "", "moveWithCells")? {
+            value.set_move_with_cells(crate::xml::parse_bool(text)?);
+        }
+        let children = direct_children(element)?;
+        let read_marker =
+            |element: &crate::drawing::charts::OpaqueElement| -> Result<[usize; 4], String> {
+                let children = direct_children(element)?;
+                let mut values = [0; 4];
+                if children.len() != 4 {
+                    return Err("invalid OLE object marker".into());
+                }
+                for (index, name) in ["col", "colOff", "row", "rowOff"].into_iter().enumerate() {
+                    let child = required_child(&children, SHEET_DRAWING_NS, name)?;
+                    let mut text = String::new();
+                    for token in &child.children {
+                        match token {
+                            OpaqueToken::Text(value) | OpaqueToken::CData(value) => {
+                                text.push_str(value);
+                            }
+                            OpaqueToken::Comment(_) | OpaqueToken::ProcessingInstruction(_) => (),
+                            _ => return Err("nested OLE marker scalar".into()),
+                        }
+                    }
+                    values[index] = crate::xml::trim_xml_whitespace(&text)
+                        .parse()
+                        .map_err(|_| format!("invalid OLE object marker {name}"))?;
+                }
+                Ok(values)
+            };
+        let from = read_marker(required_child(&children, SHEET_MAIN_NS, "from")?)?;
+        let to = read_marker(required_child(&children, SHEET_MAIN_NS, "to")?)?;
+        if children.len() != 2 {
+            return Err("unsupported OLE object anchor child".into());
+        }
+        value
+            .from_marker_mut()
+            .set_col(from[0])
+            .set_col_off(from[1])
+            .set_row(from[2])
+            .set_row_off(from[3]);
+        value
+            .to_marker_mut()
+            .set_col(to[0])
+            .set_col_off(to[1])
+            .set_row(to[2])
+            .set_row_off(to[3]);
+        Ok(value)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {

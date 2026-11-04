@@ -132,6 +132,34 @@ impl RawFile {
         self
     }
 
+    pub(crate) fn take_file_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.file_data)
+    }
+
+    pub(crate) fn source_file_owned(&self) -> Option<PathBuf> {
+        self.source_file.clone()
+    }
+
+    pub(crate) fn read_from_source_or_empty(target: &str, source_file: Option<&Path>) -> Vec<u8> {
+        let Some(source_file) = source_file else {
+            return Vec::new();
+        };
+        let Ok(file) = File::open(source_file) else {
+            return Vec::new();
+        };
+        let Ok(mut archive) = zip::read::ZipArchive::new(file) else {
+            return Vec::new();
+        };
+        let Ok(mut source) = zip_by_name(&mut archive, target) else {
+            return Vec::new();
+        };
+        let mut data = Vec::new();
+        if source.read_to_end(&mut data).is_err() {
+            data.clear();
+        }
+        data
+    }
+
     pub(crate) fn set_attributes<R: Read + io::Seek>(
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,
@@ -170,17 +198,23 @@ impl RawFile {
         if !self.file_data.is_empty() || self.file_target().is_empty() {
             return Ok(());
         }
-        let Some(source_file) = self.source_file.as_ref() else {
-            return Ok(());
-        };
+        self.file_data = self.read_data()?;
+        Ok(())
+    }
 
-        let file = File::open(source_file)?;
-        let mut archive = zip::read::ZipArchive::new(file)?;
+    /// The part's bytes, from memory or read from the source file.
+    pub(crate) fn read_data(&self) -> Result<Vec<u8>, XlsxError> {
+        if !self.file_data.is_empty() {
+            return Ok(self.file_data.clone());
+        }
+        let Some(source_file) = self.source_file.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let mut archive = zip::read::ZipArchive::new(File::open(source_file)?)?;
         let mut source = zip_by_name(&mut archive, self.file_target())?;
         let mut buf = Vec::new();
         source.read_to_end(&mut buf)?;
-        self.file_data = buf;
-        Ok(())
+        Ok(buf)
     }
 
     pub(crate) fn write_to_target<W: io::Seek + io::Write>(

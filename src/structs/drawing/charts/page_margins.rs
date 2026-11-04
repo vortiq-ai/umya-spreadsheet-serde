@@ -8,10 +8,7 @@ use quick_xml::{
 };
 
 use super::super::super::DoubleValue;
-use crate::{
-    reader::driver::get_attribute,
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
@@ -124,16 +121,32 @@ impl PageMargins {
         &mut self,
         _reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
-        self.bottom
-            .set_value_string(get_attribute(e, b"b").unwrap());
-        self.left.set_value_string(get_attribute(e, b"l").unwrap());
-        self.right.set_value_string(get_attribute(e, b"r").unwrap());
-        self.top.set_value_string(get_attribute(e, b"t").unwrap());
-        self.header
-            .set_value_string(get_attribute(e, b"header").unwrap());
-        self.footer
-            .set_value_string(get_attribute(e, b"footer").unwrap());
+    ) -> Result<(), crate::XlsxError> {
+        self.bottom.set_value(
+            crate::xml::parse_double(&crate::reader::driver::require_attribute(e, b"b")?)
+                .map_err(crate::xml::xml_error)?,
+        );
+        self.left.set_value(
+            crate::xml::parse_double(&crate::reader::driver::require_attribute(e, b"l")?)
+                .map_err(crate::xml::xml_error)?,
+        );
+        self.right.set_value(
+            crate::xml::parse_double(&crate::reader::driver::require_attribute(e, b"r")?)
+                .map_err(crate::xml::xml_error)?,
+        );
+        self.top.set_value(
+            crate::xml::parse_double(&crate::reader::driver::require_attribute(e, b"t")?)
+                .map_err(crate::xml::xml_error)?,
+        );
+        self.header.set_value(
+            crate::xml::parse_double(&crate::reader::driver::require_attribute(e, b"header")?)
+                .map_err(crate::xml::xml_error)?,
+        );
+        self.footer.set_value(
+            crate::xml::parse_double(&crate::reader::driver::require_attribute(e, b"footer")?)
+                .map_err(crate::xml::xml_error)?,
+        );
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -142,12 +155,12 @@ impl PageMargins {
             writer,
             "c:pageMargins",
             vec![
-                ("b", self.bottom.value_string()).into(),
-                ("l", self.left.value_string()).into(),
-                ("r", self.right.value_string()).into(),
-                ("t", self.top.value_string()).into(),
-                ("header", self.header.value_string()).into(),
-                ("footer", self.footer.value_string()).into(),
+                ("b", crate::xml::double_lexical(self.bottom.value())).into(),
+                ("l", crate::xml::double_lexical(self.left.value())).into(),
+                ("r", crate::xml::double_lexical(self.right.value())).into(),
+                ("t", crate::xml::double_lexical(self.top.value())).into(),
+                ("header", crate::xml::double_lexical(self.header.value())).into(),
+                ("footer", crate::xml::double_lexical(self.footer.value())).into(),
             ],
             true,
         );

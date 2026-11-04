@@ -3,21 +3,11 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::super::Int32Value;
-use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
-    writer::driver::write_start_tag,
-};
+use crate::writer::driver::write_start_tag;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -26,6 +16,10 @@ pub struct PositiveFixedPercentageType {
 }
 
 impl PositiveFixedPercentageType {
+    pub(crate) fn into_value(self) -> i32 {
+        self.val.value()
+    }
+
     #[inline]
     #[must_use]
     pub fn val(&self) -> i32 {
@@ -51,28 +45,31 @@ impl PositiveFixedPercentageType {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
-        set_string_from_xml!(self, e, val, "val");
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, empty_flag, None)
+    }
 
-        if empty_flag {
-            return;
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart<'_>,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        let value = crate::reader::driver::require_attribute(owner, b"val")?;
+        let value = crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?;
+        if !(0..=100_000).contains(&value) {
+            return Err(crate::xml::xml_error("percentage outside 0..100000"));
         }
-
-        xml_read_loop!(
-            reader,
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:shade" {
-                    return;
-                }
-                if e.name().into_inner() == b"a:alpha" {
-                    return;
-                }
-                if e.name().into_inner() == b"a:tint" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:shade,a:alpha,a:tint")
-        );
+        self.val.set_value(value);
+        if !empty {
+            crate::structs::drawing::color_transform::consume_paint_leaf(reader, owner, session)?;
+        }
+        Ok(())
     }
 
     #[inline]

@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
+    fmt::Write as _,
     io::Cursor,
     sync::RwLock,
 };
@@ -23,7 +24,11 @@ use crate::{
             parse_to_tokens,
             render,
         },
-        number_format::to_formatted_string,
+        number_format::{
+            PreparedFormats,
+            to_formatted_chart_string,
+            to_formatted_string,
+        },
     },
     reader::driver::{
         get_attribute,
@@ -65,6 +70,29 @@ pub struct Cell {
     hyperlink:             Option<Box<Hyperlink>>,
     cell_meta_index:       UInt32Value,
 }
+
+/// A display borrowed from the cell, or held in the caller's reusable buffer.
+pub(crate) enum CacheDisplay<'a> {
+    Borrowed(&'a str),
+    Scratch,
+}
+
+impl CacheDisplay<'_> {
+    pub(crate) fn text<'a>(&'a self, scratch: &'a str) -> &'a str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Scratch => scratch,
+        }
+    }
+
+    pub(crate) fn into_owned(self, scratch: &str) -> String {
+        match self {
+            Self::Borrowed(text) => text.to_owned(),
+            Self::Scratch => scratch.to_owned(),
+        }
+    }
+}
+
 impl Cell {
     #[inline]
     #[must_use]
@@ -209,6 +237,10 @@ impl Cell {
     pub fn set_hyperlink(&mut self, value: Hyperlink) -> &mut Self {
         self.hyperlink = Some(Box::new(value));
         self
+    }
+
+    pub(crate) fn remove_hyperlink(&mut self) {
+        self.hyperlink = None;
     }
 
     #[inline]
@@ -548,6 +580,66 @@ impl Cell {
         result
     }
 
+    pub(crate) fn formatted_chart_value(&self) -> String {
+        let value = self.value();
+        if matches!(
+            self.raw_value(),
+            CellRawValue::String(_) | CellRawValue::RichText(_)
+        ) {
+            return value.into_owned();
+        }
+        let code = self
+            .style()
+            .number_format()
+            .map_or(NumberingFormat::FORMAT_GENERAL, |format| {
+                format.format_code()
+            });
+        to_formatted_chart_string(&value, code)
+    }
+
+    pub(crate) fn cache_display(&self, scratch: &mut String) -> CacheDisplay<'_> {
+        match self.raw_value() {
+            CellRawValue::String(text) => CacheDisplay::Borrowed(text),
+            CellRawValue::Bool(value) => {
+                CacheDisplay::Borrowed(if *value { "TRUE" } else { "FALSE" })
+            }
+            CellRawValue::Numeric(value)
+                if self
+                    .style()
+                    .number_format()
+                    .is_none_or(|format| matches!(format.format_code(), "General" | "@")) =>
+            {
+                scratch.clear();
+                write!(scratch, "{value}").unwrap();
+                CacheDisplay::Scratch
+            }
+            _ => {
+                *scratch = self.formatted_chart_value();
+                CacheDisplay::Scratch
+            }
+        }
+    }
+
+    pub(crate) fn cache_display_prepared(
+        &self,
+        scratch: &mut String,
+        formats: &mut PreparedFormats,
+    ) -> CacheDisplay<'_> {
+        if matches!(self.raw_value(), CellRawValue::Numeric(_)) {
+            let code = self
+                .style()
+                .number_format()
+                .map_or(NumberingFormat::FORMAT_GENERAL, |format| {
+                    format.format_code()
+                });
+            if !matches!(code, "General" | "@") {
+                *scratch = formats.format_chart(self.value().as_ref(), code);
+                return CacheDisplay::Scratch;
+            }
+        }
+        self.cache_display(scratch)
+    }
+
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use formatted_value()")]
     pub fn get_formatted_value(&self) -> String {
@@ -625,7 +717,9 @@ impl Cell {
                         let text = crate::helper::utils::unescape_xml_text(
                             &reader.read_text_into(e.name(), &mut buf).unwrap(),
                         );
-                        self.set_value_string_crate(text);
+                        self.set_value_string_crate(crate::helper::utils::unescape_xstring_owned(
+                            text,
+                        ));
                         reader.config_mut().trim_text(true);
                     }
                     b"v" => {
@@ -636,7 +730,9 @@ impl Cell {
                         match type_value.as_str() {
                             "d" => crate::reader::xlsx::iso_date::read(self, text),
                             "str" => {
-                                self.set_value_string_crate(text);
+                                self.set_value_string_crate(
+                                    crate::helper::utils::unescape_xstring_owned(text),
+                                );
                             }
                             "s" => {
                                 if let Ok(index) = text.parse::<usize>() {
@@ -764,7 +860,10 @@ impl Cell {
                     write_text_node(writer, val_index.to_string());
                 }
                 "str" => {
-                    write_text_node_conversion(writer, self.value());
+                    write_text_node_conversion(
+                        writer,
+                        crate::helper::utils::escape_xstring(&self.value()),
+                    );
                 }
                 "b" => {
                     let upper_value = self.value().to_uppercase();
@@ -774,6 +873,7 @@ impl Cell {
                 "e" => {
                     write_text_node(writer, self.value());
                 }
+                "n" => write_text_node(writer, self.cell_value().value_for_xml()),
                 _ => write_text_node_conversion(writer, self.value()),
             }
             write_end_tag(writer, "v");
@@ -860,6 +960,184 @@ impl AdjustmentCoordinateWith2Sheet for Cell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Storing a short display must not retain the scratch's high-water
+    // capacity.
+    #[test]
+    fn stored_scratch_displays_keep_only_their_text_capacity() {
+        let mut scratch = String::with_capacity(512);
+        scratch.push_str("42");
+        let capacity = scratch.capacity();
+        let (stored, seen) =
+            crate::test_alloc::observe(|| CacheDisplay::Scratch.into_owned(&scratch));
+        assert_eq!(stored, "42");
+        assert_eq!(stored.capacity(), 2);
+        // Owning two ASCII bytes requests one two-byte allocation, no growth.
+        assert_eq!(seen.total(), 1);
+        assert_eq!(seen.total_bytes(), 2);
+        assert_eq!(seen.live_bytes, 2);
+        assert_eq!(scratch, "42");
+        assert_eq!(scratch.capacity(), capacity);
+    }
+
+    // Literal decimal outputs pin Display's spelling, especially negative
+    // zero and magnitudes where scientific notation would change the bytes.
+    #[test]
+    fn cache_numeric_display_keeps_literal_decimal_spellings() {
+        let mut cell = Cell::default();
+        let mut scratch = String::new();
+        for (value, expected) in [
+            (0.1 + 0.2, "0.30000000000000004"),
+            (-0.0, "-0"),
+            (1e21, "1000000000000000000000"),
+            (1e-7, "0.0000001"),
+            (9007199254740992.0, "9007199254740992"),
+        ] {
+            cell.cell_value.raw_value = CellRawValue::Numeric(value);
+            for code in [
+                None,
+                Some("General"),
+                Some("@"),
+                Some("general"),
+                Some("GENERAL"),
+            ] {
+                cell.style = Box::new(Style::default());
+                if let Some(code) = code {
+                    cell.style_mut().number_format_mut().set_format_code(code);
+                }
+                let display = cell.cache_display(&mut scratch);
+                if matches!(code, None | Some("General" | "@")) {
+                    assert_eq!(display.text(&scratch), expected, "{value:?} {code:?}");
+                }
+                assert_eq!(display.text(&scratch), cell.formatted_chart_value());
+                if matches!(code, Some("general" | "GENERAL")) {
+                    assert!(matches!(display, CacheDisplay::Scratch));
+                }
+            }
+        }
+    }
+
+    // A fixed xorshift64 sequence covers arbitrary f64 bit patterns, including
+    // nonfinite values, without rounding the test inputs through decimal text.
+    #[test]
+    fn cache_numeric_display_matches_formatter_for_seeded_bits_and_edges() {
+        let mut cell = Cell::default();
+        let mut scratch = String::new();
+        let mut seed = 0x4d59_5df4_d0f3_3173u64;
+        let edges = [
+            0.0,
+            -0.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MIN,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            9007199254740991.0,
+            9007199254740992.0,
+            -9007199254740992.0,
+        ];
+        let random = (0..10_000).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            f64::from_bits(seed)
+        });
+        for value in edges.into_iter().chain(random) {
+            cell.cell_value.raw_value = CellRawValue::Numeric(value);
+            for code in [
+                None,
+                Some("General"),
+                Some("@"),
+                Some("general"),
+                Some("GENERAL"),
+            ] {
+                cell.style = Box::new(Style::default());
+                if let Some(code) = code {
+                    cell.style_mut().number_format_mut().set_format_code(code);
+                }
+                assert_eq!(
+                    cell.cache_display(&mut scratch).text(&scratch),
+                    cell.formatted_chart_value(),
+                    "bits={:016x} format={code:?}",
+                    value.to_bits(),
+                );
+            }
+        }
+    }
+
+    // Raw strings bypass number formats; Lazy/RichText/Error/Empty and custom
+    // numeric formats must preserve the existing formatter's exact behavior.
+    #[test]
+    fn cache_display_borrows_text_and_booleans_and_preserves_other_values() {
+        let mut rich = RichText::default();
+        rich.set_text("rich & text");
+        let mut cell = Cell::default();
+        let mut scratch = String::new();
+        for raw in [
+            CellRawValue::String("007 & text".into()),
+            CellRawValue::Bool(true),
+            CellRawValue::Bool(false),
+            CellRawValue::Lazy("007".into()),
+            CellRawValue::RichText(rich),
+            CellRawValue::Error(crate::CellErrorType::Value),
+            CellRawValue::Empty,
+            CellRawValue::Numeric(1234.5),
+        ] {
+            cell.cell_value.raw_value = raw;
+            for code in [
+                None,
+                Some("General"),
+                Some("@"),
+                Some("general"),
+                Some("GENERAL"),
+                Some("0.00"),
+            ] {
+                cell.style = Box::new(Style::default());
+                if let Some(code) = code {
+                    cell.style_mut().number_format_mut().set_format_code(code);
+                }
+                let display = cell.cache_display(&mut scratch);
+                assert_eq!(display.text(&scratch), cell.formatted_chart_value());
+                if matches!(
+                    cell.raw_value(),
+                    CellRawValue::String(_) | CellRawValue::Bool(_)
+                ) {
+                    assert!(matches!(display, CacheDisplay::Borrowed(_)));
+                } else if !matches!(cell.raw_value(), CellRawValue::Numeric(_)) {
+                    assert!(matches!(display, CacheDisplay::Scratch));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn date_overflow_uses_chart_text_in_both_cache_display_paths() {
+        let mut cell = Cell::default();
+        cell.style_mut()
+            .number_format_mut()
+            .set_format_code("yyyy-mm-dd");
+        let mut formats = PreparedFormats::default();
+        let mut scratch = String::new();
+        for value in [1e20, -1.0, 2_958_466.0, f64::MAX] {
+            cell.set_value_number(value);
+            assert_eq!(
+                cell.formatted_value(),
+                "############################################"
+            );
+            assert_eq!(cell.formatted_chart_value(), "#######");
+            assert_eq!(cell.cache_display(&mut scratch).text(&scratch), "#######");
+            assert_eq!(
+                cell.cache_display_prepared(&mut scratch, &mut formats)
+                    .text(&scratch),
+                "#######"
+            );
+        }
+        cell.set_value_string("1e20");
+        assert_eq!(cell.formatted_value(), "1e20");
+        assert_eq!(cell.formatted_chart_value(), "1e20");
+    }
 
     #[test]
     fn inline_string_that_looks_numeric_stays_string() {

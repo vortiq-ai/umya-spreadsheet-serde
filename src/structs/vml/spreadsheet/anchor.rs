@@ -6,18 +6,10 @@ use quick_xml::{
     events::BytesStart,
 };
 
-use crate::{
-    helper::coordinate::{
-        adjustment_insert_coordinate,
-        adjustment_remove_coordinate,
-        is_remove_coordinate,
-    },
-    traits::AdjustmentCoordinate,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-        write_text_node,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
+    write_text_node,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -34,6 +26,20 @@ pub struct Anchor {
 }
 
 impl Anchor {
+    /// Move the box by whole rows and columns, keeping its size and stopping
+    /// at the first row and column of the sheet.
+    pub(crate) fn shift(&mut self, columns: i64, rows: i64) {
+        let moved = |first: u32, last: u32, by: i64| {
+            let first_after = u32::try_from((i64::from(first) + by).max(0)).unwrap_or(u32::MAX);
+            (
+                first_after,
+                first_after.saturating_add(last.saturating_sub(first)),
+            )
+        };
+        (self.left_column, self.right_column) = moved(self.left_column, self.right_column, columns);
+        (self.top_row, self.bottom_row) = moved(self.top_row, self.bottom_row, rows);
+    }
+
     #[inline]
     #[must_use]
     pub fn left_column(&self) -> u32 {
@@ -282,58 +288,5 @@ impl Anchor {
         write_start_tag(writer, "x:Anchor", vec![], false);
         write_text_node(writer, &anchor);
         write_end_tag(writer, "x:Anchor");
-    }
-}
-impl AdjustmentCoordinate for Anchor {
-    #[inline]
-    fn adjustment_insert_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.left_column =
-            adjustment_insert_coordinate(self.left_column + 1, root_col_num, offset_col_num) - 1;
-        self.right_column =
-            adjustment_insert_coordinate(self.right_column + 1, root_col_num, offset_col_num) - 1;
-
-        self.top_row =
-            adjustment_insert_coordinate(self.top_row + 1, root_row_num, offset_row_num) - 1;
-        self.bottom_row =
-            adjustment_insert_coordinate(self.bottom_row + 1, root_row_num, offset_row_num) - 1;
-    }
-
-    #[inline]
-    fn adjustment_remove_coordinate(
-        &mut self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) {
-        self.left_column =
-            adjustment_remove_coordinate(self.left_column + 1, root_col_num, offset_col_num) - 1;
-        self.right_column =
-            adjustment_remove_coordinate(self.right_column + 1, root_col_num, offset_col_num) - 1;
-
-        self.top_row =
-            adjustment_remove_coordinate(self.top_row + 1, root_row_num, offset_row_num) - 1;
-        self.bottom_row =
-            adjustment_remove_coordinate(self.bottom_row + 1, root_row_num, offset_row_num) - 1;
-    }
-
-    #[inline]
-    fn is_remove_coordinate(
-        &self,
-        root_col_num: u32,
-        offset_col_num: u32,
-        root_row_num: u32,
-        offset_row_num: u32,
-    ) -> bool {
-        is_remove_coordinate(self.left_column + 1, root_col_num, offset_col_num)
-            || is_remove_coordinate(self.right_column + 1, root_col_num, offset_col_num)
-            || is_remove_coordinate(self.top_row + 1, root_row_num, offset_row_num)
-            || is_remove_coordinate(self.bottom_row + 1, root_row_num, offset_row_num)
     }
 }

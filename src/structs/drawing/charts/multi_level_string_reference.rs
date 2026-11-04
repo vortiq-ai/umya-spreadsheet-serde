@@ -3,19 +3,12 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::Formula;
 use crate::{
-    reader::driver::{
-        get_attribute,
-        local_name,
-        xml_read_loop,
-    },
+    reader::driver::local_name,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -27,11 +20,48 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct MultiLevelStringReference {
-    formula: Formula,
-    cache:   Option<MultiLevelStringCache>,
+    formula:    Formula,
+    cache:      Option<MultiLevelStringCache>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions: Option<Box<super::ExtensionList>>,
 }
 
 impl MultiLevelStringReference {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        let previous = if self.formula.address_str() == previous.formula.address_str() {
+            previous.extensions.as_ref()
+        } else {
+            None
+        };
+        super::chart_metadata_restoration::replace_hidden_parts(&mut self.extensions, previous)
+    }
+
+    // A retaining Formula projection must consume these disjoint fields once.
+    pub(crate) fn split_formula_extensions_mut(
+        &mut self,
+    ) -> (&mut Formula, Option<&mut super::ExtensionList>) {
+        (&mut self.formula, self.extensions.as_deref_mut())
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions = None;
+        None
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn formula(&self) -> &Formula {
         &self.formula
@@ -59,40 +89,102 @@ impl MultiLevelStringReference {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
-                b"f" => self.formula.set_attributes(reader, e),
-                b"multiLvlStrCache" => {
-                    let mut cache = MultiLevelStringCache::default();
-                    cache.set_attributes(reader);
-                    self.cache = Some(cache);
-                }
-                _ => (),
-            },
-            Event::Empty(ref e) => {
-                if local_name(e.name().into_inner()) == b"multiLvlStrCache" {
-                    self.cache = Some(MultiLevelStringCache::default());
-                }
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"multiLvlStrRef" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find c:multiLvlStrRef end element")
-        );
+        owner: &BytesStart,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_common(reader, owner, None)?;
+        Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_common(reader, e, Some(session))?;
+        Ok(())
+    }
+
+    fn read_common<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
+            reader,
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    match if match session {
+                        Some(session) => session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => true,
+                    } {
+                        local_name(child.name().into_inner())
+                    } else {
+                        b""
+                    } {
+                        b"f" => {
+                            if empty {
+                                self.formula.set_address_str("");
+                            } else {
+                                self.formula.set_attributes(reader, child)?;
+                            }
+                            true
+                        }
+                        b"multiLvlStrCache" => {
+                            let mut cache = MultiLevelStringCache::default();
+                            if !empty {
+                                cache.set_attributes(reader, child, session)?;
+                            }
+                            self.cache = Some(cache);
+                            true
+                        }
+                        b"extLst" if session.is_some() => {
+                            self.set_extensions(Some(super::ExtensionList::read(
+                                reader,
+                                child,
+                                empty,
+                                session.ok_or_else(|| {
+                                    crate::xml::xml_error("missing chart session")
+                                })?,
+                            )?));
+                            true
+                        }
+                        _ => false,
+                    }
+                })
+            },
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level string reference",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(writer, "c:multiLvlStrRef", vec![], false);
         self.formula.write_to(writer);
         if let Some(cache) = &self.cache {
             cache.write_to(writer);
         }
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, None, "multiLvlStrRef", None)?;
+        }
         write_end_tag(writer, "c:multiLvlStrRef");
+
+        Ok(())
     }
 }
 
@@ -124,53 +216,110 @@ impl MultiLevelStringCache {
         &mut self.levels
     }
 
-    fn set_attributes<R: std::io::BufRead>(&mut self, reader: &mut Reader<R>) {
-        xml_read_loop!(
+    fn set_attributes<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
             reader,
-            Event::Start(ref e) => match local_name(e.name().into_inner()) {
-                b"ptCount" => {
-                    self.point_count = get_attribute(e, b"val").map(|value| value.parse().unwrap());
-                }
-                b"lvl" => self.levels.push(Self::read_level(reader)),
-                _ => (),
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if match session {
+                        Some(session) => !session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => false,
+                    } {
+                        return Ok(false);
+                    }
+                    match local_name(child.name().into_inner()) {
+                        b"ptCount" => {
+                            self.point_count =
+                                crate::reader::driver::read_attribute(child, b"val")?
+                                    .map(|value| {
+                                        super::xml_scalar::parse_xml_unsigned(&value).ok_or_else(
+                                            || {
+                                                crate::xml::xml_error(
+                                                    "invalid multi-level cache count",
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .transpose()?;
+                            false
+                        }
+                        b"lvl" => {
+                            self.levels
+                                .push(Self::read_level(reader, child, empty, session)?);
+                            true
+                        }
+                        _ => false,
+                    }
+                })
             },
-            Event::Empty(ref e) => match local_name(e.name().into_inner()) {
-                b"ptCount" => {
-                    self.point_count = get_attribute(e, b"val").map(|value| value.parse().unwrap());
-                }
-                b"lvl" => self.levels.push(Vec::new()),
-                _ => (),
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"multiLvlStrCache" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find c:multiLvlStrCache end element")
-        );
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level string cache",
+            ));
+        }
+        Ok(())
     }
 
-    fn read_level<R: std::io::BufRead>(reader: &mut Reader<R>) -> Vec<MultiLevelStringPoint> {
+    fn read_level<R: std::io::BufRead>(
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<Vec<MultiLevelStringPoint>, crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
         let mut points = Vec::new();
-        xml_read_loop!(
+        let complete = super::numeric_data::children(
             reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"pt" {
+            e,
+            empty,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if match session {
+                        Some(session) => !session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => false,
+                    } {
+                        return Ok(false);
+                    }
+                    if local_name(child.name().into_inner()) != b"pt" || empty {
+                        return Ok(false);
+                    }
                     let mut point = MultiLevelStringPoint {
-                        index: get_attribute(e, b"idx").unwrap().parse().unwrap(),
-                        ..MultiLevelStringPoint::default()
+                        index: crate::reader::driver::read_attribute(child, b"idx")?
+                            .and_then(|value| super::xml_scalar::parse_xml_unsigned(&value))
+                            .ok_or_else(|| {
+                                crate::xml::xml_error("invalid multi-level cache point index")
+                            })?,
+                        ..Default::default()
                     };
-                    point.read_value(reader);
+                    point.read_value(reader, child, session)?;
                     points.push(point);
-                }
+                    true
+                })
             },
-            Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"lvl" {
-                    return points;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find c:lvl end element")
-        );
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level cache level",
+            ));
+        }
+        Ok(points)
     }
 
     fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -231,30 +380,58 @@ impl MultiLevelStringPoint {
         self
     }
 
-    fn read_value<R: std::io::BufRead>(&mut self, reader: &mut Reader<R>) {
-        xml_read_loop!(
+    fn read_value<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
+            .transpose()?
+            .flatten();
+        let complete = super::numeric_data::children(
             reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"v" {
-                    let mut buf = Vec::new();
-                    let text = reader.read_text_into(e.name(), &mut buf).unwrap();
-                    self.value = crate::helper::utils::unescape_xml_text(&text);
-                }
+            e,
+            false,
+            |reader, child, empty| -> Result<bool, crate::XlsxError> {
+                Ok({
+                    if match session {
+                        Some(session) => !session
+                            .accepts_child_namespace(child, super::extension_registry::NS_C)?,
+                        None => false,
+                    } {
+                        return Ok(false);
+                    }
+                    if local_name(child.name().into_inner()) != b"v" {
+                        return Ok(false);
+                    }
+                    self.value =
+                        super::numeric_data::read_text(reader, child, empty)?.ok_or_else(|| {
+                            crate::xml::xml_error("invalid multi-level cache string value")
+                        })?;
+                    true
+                })
             },
-            Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"pt" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find c:pt end element")
-        );
+        )?;
+        if !(complete) {
+            return Err(crate::xml::xml_error(
+                "Could not read multi-level cache point",
+            ));
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use quick_xml::events::Event;
+
     use super::*;
-    use crate::drawing::charts::CategoryAxisData;
+    use crate::{
+        drawing::charts::CategoryAxisData,
+        reader::xlsx::SourceCacheSession,
+    };
 
     const CATEGORIES: &str = r#"<c:cat><c:multiLvlStrRef><c:f>'Income &amp; Sales'!$A$2:$B$5</c:f><c:multiLvlStrCache><c:ptCount val="4"/><c:lvl><c:pt idx="0"><c:v>Jan &amp; Feb</c:v></c:pt><c:pt idx="3"><c:v>&lt;Apr&gt;</c:v></c:pt></c:lvl><c:lvl><c:pt idx="0"><c:v>2026</c:v></c:pt><c:pt idx="2"><c:v>2027</c:v></c:pt></c:lvl><c:lvl/></c:multiLvlStrCache></c:multiLvlStrRef></c:cat>"#;
 
@@ -265,7 +442,10 @@ mod tests {
             panic!("missing category root");
         };
         let mut categories = CategoryAxisData::default();
-        categories.set_attributes(&mut reader, &e);
+        let session = SourceCacheSession::immediate();
+        categories
+            .set_attributes(&mut reader, &e, &session)
+            .unwrap();
         categories
     }
 
@@ -291,7 +471,9 @@ mod tests {
             assert!(cache.levels()[2].is_empty());
 
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            categories.write_to(&mut writer, &crate::new_file());
+            categories
+                .write_to(&mut writer, &crate::new_file())
+                .unwrap();
             let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
             assert!(output.contains("<c:multiLvlStrRef>"));
             assert!(!output.contains("<c:strRef>"));
@@ -314,7 +496,9 @@ mod tests {
         assert_eq!(reference.formula().address_str(), "Sheet1!$A$1:$B$2");
         assert!(reference.cache().is_none());
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        categories.write_to(&mut writer, &crate::new_file());
+        categories
+            .write_to(&mut writer, &crate::new_file())
+            .unwrap();
         let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(!output.contains("multiLvlStrCache"));
     }
@@ -335,7 +519,9 @@ mod tests {
         assert_eq!(cache.levels()[0][0].value(), "");
 
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        categories.write_to(&mut writer, &crate::new_file());
+        categories
+            .write_to(&mut writer, &crate::new_file())
+            .unwrap();
         let output = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(!output.contains("ptCount"));
         let readback = parse(&output);

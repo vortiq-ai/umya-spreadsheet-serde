@@ -16,15 +16,18 @@ use super::{
     AxisId,
     BarDirection,
     DataLabels,
+    GapDepth,
     GapWidth,
     Grouping,
+    SeriesFamily,
     Shape,
     VaryColors,
 };
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     structs::Workbook,
     writer::driver::{
@@ -44,9 +47,81 @@ pub struct Bar3DChart {
     gap_width:              GapWidth,
     shape:                  Shape,
     axis_id:                Vec<AxisId>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    gap_depth:              Option<GapDepth>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:             Option<Box<super::ExtensionList>>,
 }
 
 impl Bar3DChart {
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        )
+    }
+
+    pub(crate) fn reference_group_parts(
+        &self,
+    ) -> (
+        &AreaChartSeriesList,
+        Option<&DataLabels>,
+        Option<&super::ExtensionList>,
+    ) {
+        (
+            &self.area_chart_series_list,
+            Some(&self.data_labels),
+            self.extensions.as_deref(),
+        )
+    }
+
+    pub(crate) fn projection_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        self.extensions = None;
+        self.reference_group_parts_mut()
+    }
+
+    pub(crate) fn reference_group_parts_mut(
+        &mut self,
+    ) -> (
+        &mut AreaChartSeriesList,
+        Option<&mut DataLabels>,
+        Option<&mut super::ExtensionList>,
+    ) {
+        (
+            &mut self.area_chart_series_list,
+            Some(&mut self.data_labels),
+            self.extensions.as_deref_mut(),
+        )
+    }
+
+    pub(crate) fn labels_for_roles(&self) -> impl Iterator<Item = &DataLabels> {
+        std::iter::once(&self.data_labels)
+    }
+
+    pub(crate) fn labels_for_roles_mut(&mut self) -> impl Iterator<Item = &mut DataLabels> {
+        std::iter::once(&mut self.data_labels)
+    }
+
+    #[must_use]
+    pub fn extensions(&self) -> Option<&super::ExtensionList> {
+        self.extensions.as_deref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
+        self.extensions.as_deref_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<super::ExtensionList>) -> &mut Self {
+        self.extensions = value.map(Box::new);
+        self
+    }
+
     #[must_use]
     pub fn bar_direction(&self) -> &BarDirection {
         &self.bar_direction
@@ -159,6 +234,7 @@ impl Bar3DChart {
     }
 
     pub fn data_labels_mut(&mut self) -> &mut DataLabels {
+        self.data_labels.mark_owner_present();
         &mut self.data_labels
     }
 
@@ -169,6 +245,7 @@ impl Bar3DChart {
 
     pub fn set_data_labels(&mut self, value: DataLabels) -> &mut Bar3DChart {
         self.data_labels = value;
+        self.data_labels.mark_owner_present();
         self
     }
 
@@ -222,6 +299,26 @@ impl Bar3DChart {
         self
     }
 
+    /// The gap between series along the depth of a 3-D chart.
+    #[must_use]
+    pub fn gap_depth(&self) -> Option<&GapDepth> {
+        self.gap_depth.as_ref()
+    }
+
+    pub fn gap_depth_mut(&mut self) -> Option<&mut GapDepth> {
+        self.gap_depth.as_mut()
+    }
+
+    pub fn set_gap_depth(&mut self, value: GapDepth) -> &mut Self {
+        self.gap_depth = Some(value);
+        self
+    }
+
+    pub fn remove_gap_depth(&mut self) -> &mut Self {
+        self.gap_depth = None;
+        self
+    }
+
     #[must_use]
     pub fn axis_id(&self) -> &[AxisId] {
         &self.axis_id
@@ -255,59 +352,75 @@ impl Bar3DChart {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        self.data_labels.mark_group_absent();
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,false,session)?));},
                     b"ser" => {
                         let mut obj = AreaChartSeries::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e, session)?;
                         self.area_chart_series_list_mut()
                             .add_area_chart_series(obj);
                         }
                     b"dLbls" => {
-                        self.data_labels.set_attributes(reader, e);
+                        self.data_labels.set_attributes(reader, e, session)?;
                     }
-                    _ => (),
+                    _ => skip_element(reader, e)?,
                 }
             },
             Event::Empty(ref e) => {
-                match local_name(e.name().into_inner()) {
+                match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
+                    b"extLst"=>{self.set_extensions(Some(super::ExtensionList::read(reader,e,true,session)?));},
+                    b"dLbls" => self.data_labels.mark_empty_import(),
                     b"barDir" => {
-                        self.bar_direction.set_attributes(reader, e);
+                        self.bar_direction.set_attributes(reader, e)?;
                     }
                     b"grouping" => {
-                        self.grouping.set_attributes(reader, e);
+                        self.grouping.set_bar_attributes(reader, e)?;
                     }
                     b"varyColors" => {
-                        self.vary_colors.set_attributes(reader, e);
+                        self.vary_colors.set_attributes(reader, e)?;
                     }
                     b"gapWidth" => {
-                        self.gap_width.set_attributes(reader, e);
+                        self.gap_width.set_attributes(reader, e)?;
+                    }
+                    b"gapDepth" => {
+                        let mut obj = GapDepth::default();
+                        obj.set_attributes(reader, e)?;
+                        self.set_gap_depth(obj);
                     }
                     b"shape" => {
-                        self.shape.set_attributes(reader, e);
+                        self.shape.set_attributes(reader, e)?;
                     }
                     b"axId" => {
                         let mut obj = AxisId::default();
-                        obj.set_attributes(reader, e);
+                        obj.set_attributes(reader, e)?;
                         self.add_axis_id(obj);
                     }
                     _ => (),
                 }
             },
             Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"bar3DChart" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:bar3DChart")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:bar3DChart")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:bar3DChart
         write_start_tag(writer, "c:bar3DChart", vec![], false);
 
@@ -322,14 +435,19 @@ impl Bar3DChart {
 
         // c:ser
         for v in self.area_chart_series_list.area_chart_series() {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb, SeriesFamily::Bar)?;
         }
 
         // c:dLbls
-        self.data_labels.write_to(writer);
+        self.data_labels.write_to(writer, wb)?;
 
         // c:gapWidth
         self.gap_width.write_to(writer);
+
+        // c:gapDepth
+        if let Some(v) = &self.gap_depth {
+            v.write_to(writer);
+        }
 
         // c:shape
         self.shape.write_to(writer);
@@ -339,6 +457,11 @@ impl Bar3DChart {
             v.write_to(writer);
         }
 
+        if let Some(ext) = self.extensions() {
+            ext.write_for_owner(writer, Some(wb), "bar3DChart", Some(SeriesFamily::Bar))?;
+        }
         write_end_tag(writer, "c:bar3DChart");
+
+        Ok(())
     }
 }

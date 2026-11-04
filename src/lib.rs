@@ -146,22 +146,22 @@
 //! let mut book = new_file();
 //!
 //! // Insert rows
-//! book.insert_new_row("Sheet1", 2, 3).unwrap();
+//! book.insert_new_row("Sheet1", 2, 3);
 //!
 //! // Insert columns by column name
-//! book.insert_new_column("Sheet1", "B", 3).unwrap();
+//! book.insert_new_column("Sheet1", "B", 3);
 //!
 //! // Insert columns by index
-//! book.insert_new_column_by_index("Sheet1", 2, 3).unwrap();
+//! book.insert_new_column_by_index("Sheet1", 2, 3);
 //!
 //! // Remove rows
-//! book.remove_row("Sheet1", 6, 2).unwrap();
+//! book.remove_row("Sheet1", 6, 2);
 //!
 //! // Remove columns by column name
-//! book.remove_column("Sheet1", "F", 2).unwrap();
+//! book.remove_column("Sheet1", "F", 2);
 //!
 //! // Remove columns by index
-//! book.remove_column_by_index("Sheet1", 6, 2).unwrap();
+//! book.remove_column_by_index("Sheet1", 6, 2);
 //! ```
 //!
 //! ### Writer
@@ -237,9 +237,12 @@ extern crate sha2;
 pub mod helper;
 pub mod reader;
 pub mod structs;
+#[cfg(test)]
+mod test_alloc;
 pub mod traits;
 mod version;
 pub mod writer;
+pub(crate) mod xml;
 
 #[allow(unused_imports)]
 pub use version::*;

@@ -17,8 +17,11 @@ use super::{
     Crosses,
     CrossingAxis,
     Delete,
+    DisplayUnits,
+    ExtensionList,
     MajorGridlines,
     MajorTickMark,
+    MinorGridlines,
     MinorTickMark,
     NumberingFormat,
     Scaling,
@@ -26,12 +29,21 @@ use super::{
     TextProperties,
     TickLabelPosition,
     Title,
+    ValueAxisParts,
+    axis_scalar::{
+        read_axis_unit,
+        read_double,
+        write_axis_unit,
+        write_double,
+    },
+    extension_registry::NS_C,
 };
 use crate::{
     Workbook,
     reader::driver::{
         local_name,
-        xml_read_loop,
+        skip_element,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -57,9 +69,261 @@ pub struct ValueAxis {
     cross_between:       CrossBetween,
     shape_properties:    Option<ShapeProperties>,
     text_properties:     Option<TextProperties>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    parts:               Option<Box<ValueAxisParts>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    minor_gridlines:     Option<MinorGridlines>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    crosses_at:          Option<f64>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    major_unit:          Option<f64>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    minor_unit:          Option<f64>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:          Option<ExtensionList>,
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serialization_tests {
+    use super::*;
+    use crate::drawing::charts::DisplayUnit;
+
+    #[test]
+    fn axis_original_field_prefix_and_optional_tail_cost_are_exact() {
+        let mut axis = ValueAxis::default();
+        axis.axis_id_mut().set_val(42);
+        axis.tick_crossing_axis_mut().set_val(7);
+        let prefix = bincode::serialize(&(
+            &axis.axis_id,
+            &axis.scaling,
+            &axis.delete,
+            &axis.axis_position,
+            &axis.major_gridlines,
+            &axis.title,
+            &axis.numbering_format,
+            &axis.major_tick_mark,
+            &axis.minor_tick_mark,
+            &axis.tick_label_position,
+            &axis.crossing_axis,
+            &axis.crosses,
+            &axis.cross_between,
+            &axis.shape_properties,
+            &axis.text_properties,
+        ))
+        .unwrap();
+        // The axis options added after the display-unit tail (minor gridlines,
+        // crossing value, major unit, minor unit, extension list) cost one
+        // option byte each while absent.
+        let options_tail = 5;
+        let absent = bincode::serialize(&axis).unwrap();
+        assert_eq!(&absent[..prefix.len()], prefix.as_slice());
+        assert_eq!(absent.len(), prefix.len() + 1 + options_tail);
+        assert_eq!(absent[prefix.len()], 0);
+        assert_eq!(absent[prefix.len() + 1..], [0; 5]);
+        let mut units = DisplayUnits::default();
+        units.set_unit(DisplayUnit::BuiltIn(Default::default()));
+        axis.set_display_units(units);
+        let present = bincode::serialize(&axis).unwrap();
+        assert_eq!(&present[..prefix.len()], prefix.as_slice());
+        // Parent option (1), unit option (1), enum discriminant (4), scalar
+        // option (1), label/ext options (2), four empty vectors (32), body
+        // validity bool (1), and axis duplicate vector (8) = 50 bytes.
+        assert_eq!(present.len(), prefix.len() + 50 + options_tail);
+        assert_eq!(present[prefix.len()], 1);
+        let restored: ValueAxis = bincode::deserialize(&present).unwrap();
+        assert_eq!(restored.axis_id().val(), 42);
+        assert!(restored.display_units().is_some());
+        // Deliberately no claim that a bincode stream without the new tail
+        // decodes.
+    }
 }
 
 impl ValueAxis {
+    // Display-unit owners are hidden; axis text/number-format presence is not.
+    pub(crate) fn discard_untrusted_display_units(&mut self, report: &mut super::RestoreReport) {
+        if let Some(parts) = self.parts.take() {
+            let id = self.axis_id.val();
+            let count =
+                usize::from(parts.display_units().is_some()) + parts.extra_display_units().len();
+            report.removed_incompatible_parts += count;
+            for occurrence in 0..count {
+                report.diagnostics.push(format!(
+                    "removed incoming display units occurrence:{occurrence} from value axis \
+                     id:{id} without an authoritative owner"
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn restore_export_parts(
+        &mut self,
+        previous: &Self,
+        report: &mut super::RestoreReport,
+    ) -> Result<usize, crate::XlsxError> {
+        let mut restored = 0;
+        self.numbering_format.discard_incoming_export_parts();
+        restored += self.scaling.restore_export_parts(&previous.scaling, report);
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "valAx",
+            report,
+        );
+        restored += super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.extensions.as_ref(),
+        );
+        let units_absent = previous.parts.as_ref().is_none_or(|parts| {
+            parts.display_units().is_none() && parts.extra_display_units().is_empty()
+        });
+        if units_absent {
+            // Empty allocated parts convey no hidden-unit authority, but keep
+            // their native representation and actual owner-recreation count.
+            let missing_before = self.parts.is_none();
+            self.discard_untrusted_display_units(report);
+            self.parts.clone_from(&previous.parts);
+            restored += usize::from(missing_before && previous.parts.is_some());
+        } else {
+            match (&mut self.parts, &previous.parts) {
+                (Some(current), Some(previous)) => {
+                    restored += current.restore_export_parts(previous, report)?;
+                }
+                (None, Some(previous)) => {
+                    self.parts = Some(previous.clone());
+                    restored += 1;
+                }
+                _ => {}
+            }
+        }
+        restored += self
+            .numbering_format
+            .restore_export_parts(&previous.numbering_format);
+        restored += super::chart_metadata_restoration::restore_axis_text(
+            &mut self.text_properties,
+            previous.text_properties.as_ref(),
+            "value",
+            report,
+        )?;
+        Ok(restored)
+    }
+
+    /// An axis without an old counterpart keeps no incoming text export parts.
+    pub(crate) fn discard_untrusted_export_parts(&mut self, _report: &mut super::RestoreReport) {
+        self.numbering_format.discard_incoming_export_parts();
+        if let Some(text) = &mut self.text_properties {
+            text.discard_incoming_export_parts();
+        }
+    }
+
+    pub(crate) fn discard_extensions(&mut self, report: &mut super::RestoreReport) {
+        self.scaling.discard_extensions(report);
+        super::chart_metadata_restoration::record_supplied_extension(
+            self.extensions.is_some(),
+            "valAx",
+            report,
+        );
+        self.extensions = None;
+    }
+
+    pub(crate) fn reference_role_parts(&self) -> super::chart_reference_roles::AxisParts<'_> {
+        super::chart_reference_roles::AxisParts {
+            id:              self.axis_id.explicit_value(),
+            title:           self.title.as_ref(),
+            shape:           self.shape_properties.as_ref(),
+            gridlines:       self.major_gridlines.as_ref(),
+            minor_gridlines: self.minor_gridlines.as_ref(),
+            extensions:      [self.scaling.extensions(), self.extensions()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            display_parts:   self.parts.as_deref(),
+        }
+    }
+
+    pub(crate) fn projection_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        self.extensions = None;
+        self.scaling.strip_export_parts();
+        self.parts = None;
+        self.numbering_format.strip_export_parts();
+        if let Some(text) = &mut self.text_properties {
+            text.discard_fields();
+        }
+        self.reference_role_parts_mut()
+    }
+
+    pub(crate) fn reference_role_parts_mut(
+        &mut self,
+    ) -> super::chart_reference_roles::AxisPartsMut<'_> {
+        super::chart_reference_roles::AxisPartsMut {
+            id:              self.axis_id.explicit_value(),
+            title:           self.title.as_mut(),
+            shape:           self.shape_properties.as_mut(),
+            gridlines:       self.major_gridlines.as_mut(),
+            minor_gridlines: self.minor_gridlines.as_mut(),
+            extensions:      self
+                .scaling
+                .extensions_mut()
+                .into_iter()
+                .chain(self.extensions.iter_mut())
+                .collect(),
+            display_parts:   self.parts.as_deref_mut(),
+        }
+    }
+
+    pub(crate) fn extra_display_units_for_roles_mut(&mut self) -> &mut [DisplayUnits] {
+        self.extra_display_units_mut().unwrap_or_default()
+    }
+
+    pub fn display_units_has_conflict(&self) -> bool {
+        self.parts
+            .as_deref()
+            .is_some_and(ValueAxisParts::has_conflict)
+    }
+
+    pub fn extra_display_units(&self) -> &[DisplayUnits] {
+        self.parts
+            .as_deref()
+            .map(ValueAxisParts::extra_display_units)
+            .unwrap_or_default()
+    }
+
+    pub fn extra_display_units_mut(&mut self) -> Option<&mut [DisplayUnits]> {
+        self.parts
+            .as_deref_mut()
+            .map(ValueAxisParts::extra_display_units_mut)
+    }
+
+    pub fn display_units(&self) -> Option<&DisplayUnits> {
+        self.parts
+            .as_deref()
+            .and_then(ValueAxisParts::display_units)
+    }
+
+    pub fn display_units_mut(&mut self) -> Option<&mut DisplayUnits> {
+        self.parts
+            .as_deref_mut()
+            .and_then(ValueAxisParts::display_units_mut)
+    }
+
+    pub fn set_display_units(&mut self, v: DisplayUnits) -> &mut Self {
+        self.parts
+            .get_or_insert_with(|| Box::new(ValueAxisParts::default()))
+            .set_display_units(v);
+        self
+    }
+
+    /// Removes the axis' display units (`c:dispUnits`) with their label
+    /// (`c:dispUnitsLbl`), extension lists and every duplicate owner, as
+    /// Excel does when the display unit is set to none. Nothing else on the
+    /// axis changes. Display units are hidden from client projections, so a
+    /// restoration only keeps this removal when it is applied to the
+    /// authoritative axis the restoration starts from.
+    pub fn remove_display_units(&mut self) -> &mut Self {
+        self.parts = None;
+        self
+    }
+
     #[must_use]
     pub fn axis_id(&self) -> &AxisId {
         &self.axis_id
@@ -182,6 +446,80 @@ impl ValueAxis {
 
     pub fn set_major_gridlines(&mut self, value: MajorGridlines) -> &mut Self {
         self.major_gridlines = Some(value);
+        self
+    }
+
+    pub fn remove_major_gridlines(&mut self) -> &mut Self {
+        self.major_gridlines = None;
+        self
+    }
+
+    #[must_use]
+    pub fn minor_gridlines(&self) -> Option<&MinorGridlines> {
+        self.minor_gridlines.as_ref()
+    }
+
+    pub fn minor_gridlines_mut(&mut self) -> Option<&mut MinorGridlines> {
+        self.minor_gridlines.as_mut()
+    }
+
+    pub fn set_minor_gridlines(&mut self, value: MinorGridlines) -> &mut Self {
+        self.minor_gridlines = Some(value);
+        self
+    }
+
+    pub fn remove_minor_gridlines(&mut self) -> &mut Self {
+        self.minor_gridlines = None;
+        self
+    }
+
+    /// Value on the crossing axis where this axis crosses it (`c:crossesAt`).
+    /// When present it is written instead of `c:crosses`.
+    #[must_use]
+    pub fn crosses_at(&self) -> Option<f64> {
+        self.crosses_at
+    }
+
+    pub fn set_crosses_at(&mut self, value: f64) -> &mut Self {
+        self.crosses_at = Some(value);
+        self
+    }
+
+    /// Back to the `c:crosses` position.
+    pub fn remove_crosses_at(&mut self) -> &mut Self {
+        self.crosses_at = None;
+        self
+    }
+
+    /// Fixed major unit (`c:majorUnit`, greater than 0); `None` is automatic.
+    #[must_use]
+    pub fn major_unit(&self) -> Option<f64> {
+        self.major_unit
+    }
+
+    pub fn set_major_unit(&mut self, value: f64) -> &mut Self {
+        self.major_unit = Some(value);
+        self
+    }
+
+    pub fn remove_major_unit(&mut self) -> &mut Self {
+        self.major_unit = None;
+        self
+    }
+
+    /// Fixed minor unit (`c:minorUnit`, greater than 0); `None` is automatic.
+    #[must_use]
+    pub fn minor_unit(&self) -> Option<f64> {
+        self.minor_unit
+    }
+
+    pub fn set_minor_unit(&mut self, value: f64) -> &mut Self {
+        self.minor_unit = Some(value);
+        self
+    }
+
+    pub fn remove_minor_unit(&mut self) -> &mut Self {
+        self.minor_unit = None;
         self
     }
 
@@ -347,6 +685,7 @@ impl ValueAxis {
     }
 
     pub fn crosses_mut(&mut self) -> &mut Crosses {
+        self.crosses_at = None;
         &mut self.crosses
     }
 
@@ -355,8 +694,11 @@ impl ValueAxis {
         self.crosses_mut()
     }
 
+    /// `c:crosses` and `c:crossesAt` are alternatives: this drops any
+    /// `crosses_at` value.
     pub fn set_crosses(&mut self, value: Crosses) -> &mut Self {
         self.crosses = value;
+        self.crosses_at = None;
         self
     }
 
@@ -435,87 +777,171 @@ impl ValueAxis {
         self
     }
 
+    /// The hidden `c:extLst` of this element (extensions Excel or other
+    /// producers stored); not part of the client projection.
+    #[must_use]
+    pub fn extensions(&self) -> Option<&ExtensionList> {
+        self.extensions.as_ref()
+    }
+
+    pub fn extensions_mut(&mut self) -> Option<&mut ExtensionList> {
+        self.extensions.as_mut()
+    }
+
+    pub fn set_extensions(&mut self, value: Option<ExtensionList>) -> &mut Self {
+        self.extensions = value;
+        self
+    }
+
+    /// Reads the scalar leaves the axis models, whether the source wrote
+    /// them as `<c:x val=".."/>` or as `<c:x val=".."></c:x>`.
+    fn read_leaf<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        crosses_seen: &mut bool,
+        native: bool,
+    ) -> Result<(), crate::XlsxError> {
+        match if native { local_name(e.name().0) } else { b"" } {
+            b"numFmt" => {
+                self.numbering_format.set_attributes(reader, e)?;
+            }
+            b"crosses" => {
+                *crosses_seen = true;
+                self.crosses.set_attributes(reader, e)?;
+            }
+            b"crossesAt" => {
+                self.crosses_at = Some(read_double(e, "c:crossesAt")?);
+            }
+            b"majorUnit" => {
+                self.major_unit = Some(read_axis_unit(e, "c:majorUnit")?);
+            }
+            b"minorUnit" => {
+                self.minor_unit = Some(read_axis_unit(e, "c:minorUnit")?);
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
+        owner: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        let owner_end = owner.name().as_ref().to_vec();
+        let _scope_guard = session.enter_child_scope(owner)?;
+        let mut crosses_seen = false;
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => match local_name(e.name().0) {
+            Event::Start(ref e) => match if session.accepts_child_namespace(e,NS_C)?{local_name(e.name().0)}else{b""} {
                 b"scaling" => {
-                    self.scaling.set_attributes(reader, e);
+                    self.scaling.set_attributes(reader, e, session)?;
                 }
                 b"title" => {
                     let mut obj = Title::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes(reader, e, session)?;
                     self.set_title(obj);
+                }
+                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => {
+                    let mut v=DisplayUnits::default();
+                    v.set_attributes(reader,e,false,session)?;
+                    self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default()))
+                        .add_imported_display_units(v);
                 }
                 b"spPr" => {
                     let mut obj = ShapeProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.set_attributes_with_session(reader, e, session)?;
                     self.set_shape_properties(obj);
                 }
                 b"txPr" => {
                     let mut obj = TextProperties::default();
-                    obj.set_attributes(reader, e);
+                    obj.read_with_session(reader, e, Some(session))?;
                     self.set_text_properties(obj);
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes(reader, e, false);
+                    obj.set_attributes_with_session(reader, e, false, session)?;
                     self.set_major_gridlines(obj);
                 }
-                _ => (),
+                b"minorGridlines" => {
+                    let mut obj = MinorGridlines::default();
+                    obj.set_attributes_with_session(reader, e, false, session)?;
+                    self.set_minor_gridlines(obj);
+                }
+                b"extLst" => {
+                    self.extensions = Some(ExtensionList::read(reader, e, false, session)?);
+                }
+                _ => {
+                    let native = session.accepts_child_namespace(e, NS_C)?;
+                    self.read_leaf(reader, e, &mut crosses_seen, native)?;
+                    skip_element(reader, e)?;
+                }
             },
-            Event::Empty(ref e) => match local_name(e.name().0) {
+            Event::Empty(ref e) => match if session.accepts_child_namespace(e,NS_C)?{local_name(e.name().0)}else{b""} {
+                b"dispUnits" if session.accepts_child_namespace(e, "http://schemas.openxmlformats.org/drawingml/2006/chart")? => { self.parts.get_or_insert_with(|| Box::new(ValueAxisParts::default())).add_imported_display_units(DisplayUnits::default()); },
                 b"axId" => {
-                    self.axis_id.set_attributes(reader, e);
+                    self.axis_id.set_attributes(reader, e)?;
                 }
                 b"delete" => {
-                    self.delete.set_attributes(reader, e);
+                    self.delete.set_attributes(reader, e)?;
                 }
                 b"axPos" => {
-                    self.axis_position.set_attributes(reader, e);
+                    self.axis_position.set_attributes(reader, e)?;
                 }
                 b"majorGridlines" => {
                     let mut obj = MajorGridlines::default();
-                    obj.set_attributes(reader, e, true);
+                    obj.set_attributes_with_session(reader, e, true, session)?;
                     self.set_major_gridlines(obj);
                 }
-                b"numFmt" => {
-                    self.numbering_format.set_attributes(reader, e);
+                b"minorGridlines" => {
+                    let mut obj = MinorGridlines::default();
+                    obj.set_attributes_with_session(reader, e, true, session)?;
+                    self.set_minor_gridlines(obj);
                 }
                 b"majorTickMark" => {
-                    self.major_tick_mark.set_attributes(reader, e);
+                    self.major_tick_mark.set_attributes(reader, e)?;
                 }
                 b"minorTickMark" => {
-                    self.minor_tick_mark.set_attributes(reader, e);
+                    self.minor_tick_mark.set_attributes(reader, e)?;
                 }
                 b"tickLblPos" => {
-                    self.tick_label_position.set_attributes(reader, e);
+                    self.tick_label_position.set_attributes(reader, e)?;
                 }
                 b"crossAx" => {
-                    self.crossing_axis.set_attributes(reader, e);
-                }
-                b"crosses" => {
-                    self.crosses.set_attributes(reader, e);
+                    self.crossing_axis.set_attributes(reader, e)?;
                 }
                 b"crossBetween" => {
-                    self.cross_between.set_attributes(reader, e);
+                    self.cross_between.set_attributes(reader, e)?;
                 }
-                _ => (),
+                b"extLst" => {
+                    self.extensions = Some(ExtensionList::read(reader, e, true, session)?);
+                }
+                _ => {
+                    let native = session.accepts_child_namespace(e, NS_C)?;
+                    self.read_leaf(reader, e, &mut crosses_seen, native)?;
+                }
             },
             Event::End(ref e) => {
-                if local_name(e.name().0) == b"valAx" {
-                    return;
+                if e.name().as_ref() == owner_end {
+                    if crosses_seen && self.crosses_at.is_some() {
+                        return Err(crate::xml::xml_error(
+                            "c:valAx holds both c:crosses and c:crossesAt",
+                        ));
+                    }
+                    return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:valAx")
+            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:valAx")))
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        wb: &Workbook,
+    ) -> Result<(), crate::XlsxError> {
         // c:valAx
         write_start_tag(writer, "c:valAx", vec![], false);
 
@@ -523,7 +949,7 @@ impl ValueAxis {
         self.axis_id.write_to(writer);
 
         // c:scaling
-        self.scaling.write_to(writer);
+        self.scaling.write_to(writer, wb)?;
 
         // c:delete
         self.delete.write_to(writer);
@@ -533,12 +959,17 @@ impl ValueAxis {
 
         // c:majorGridlines
         if let Some(v) = &self.major_gridlines {
-            v.write_to(writer);
+            v.write_to(writer)?;
+        }
+
+        // c:minorGridlines
+        if let Some(v) = &self.minor_gridlines {
+            v.write_to(writer)?;
         }
 
         // c:title
         if let Some(v) = &self.title {
-            v.write_to(writer, wb);
+            v.write_to(writer, wb)?;
         }
 
         // c:numFmt
@@ -555,23 +986,48 @@ impl ValueAxis {
 
         // c:spPr
         if let Some(v) = &self.shape_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:txPr
         if let Some(v) = &self.text_properties {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // c:crossAx
         self.crossing_axis.write_to(writer);
 
-        // c:crosses
-        self.crosses.write_to(writer);
+        // c:crosses | c:crossesAt
+        match self.crosses_at {
+            Some(v) => write_double(writer, "c:crossesAt", v)?,
+            None => self.crosses.write_to(writer),
+        }
 
         // c:crossBetween
         self.cross_between.write_to(writer);
 
+        // c:majorUnit
+        if let Some(v) = self.major_unit {
+            write_axis_unit(writer, "c:majorUnit", v)?;
+        }
+
+        // c:minorUnit
+        if let Some(v) = self.minor_unit {
+            write_axis_unit(writer, "c:minorUnit", v)?;
+        }
+
+        // c:dispUnits
+        if let Some(v) = self.display_units() {
+            v.write_to(writer, wb)?;
+        }
+
+        // c:extLst
+        if let Some(v) = &self.extensions {
+            v.write_for_owner(writer, Some(wb), "valAx", None)?;
+        }
+
         write_end_tag(writer, "c:valAx");
+
+        Ok(())
     }
 }

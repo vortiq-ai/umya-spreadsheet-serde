@@ -55,8 +55,16 @@ impl Italic {
     #[inline]
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
         // i
-        if self.val.value() {
-            write_start_tag(writer, "i", vec![], true);
+        if !self.val.has_value() {
+            return;
         }
+
+        // An explicit off is kept: in a differential format it overrides the
+        // base format.
+        let mut attributes: crate::structs::AttrCollection = Vec::new();
+        if !self.val.value() {
+            attributes.push(("val", self.val.value_string()).into());
+        }
+        write_start_tag(writer, "i", attributes, true);
     }
 }

@@ -17,10 +17,9 @@ use crate::{
         MC_NS,
     },
     reader::driver::{
-        get_attribute,
-        xml_read_loop,
+        local_name,
+        try_xml_read_loop,
     },
-    set_string_from_xml,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -79,27 +78,47 @@ impl Style {
         reader: &mut Reader<R>,
         e: &BytesStart,
         include_alternate_content: bool,
-    ) {
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
         self.include_alternate_content = include_alternate_content;
 
         if include_alternate_content {
-            xml_read_loop!(
+            let owner = e.name().into_inner().to_vec();
+            let _owner_scope = session.enter_child_scope(e)?;
+            let mut scopes = Vec::new();
+            let mut fallback_depth = None;
+            try_xml_read_loop!(
                 reader,
+                Event::Start(ref e) => {
+                    if scopes.is_empty() && local_name(e.name().into_inner()) == b"Fallback"
+                        && session.accepts_child_namespace(e, MC_NS)? {
+                        fallback_depth = Some(1);
+                    }
+                    scopes.push(session.enter_child_scope(e)?);
+                },
                 Event::Empty(ref e) => {
-                    if e.name().into_inner() == b"c:style" {
-                        self.val.set_value_string(get_attribute(e, b"val").unwrap());
+                    if fallback_depth == Some(scopes.len())
+                        && local_name(e.name().into_inner()) == b"style"
+                        && session.accepts_child_namespace(e,
+                            crate::helper::const_str::DRAWINGML_CHART_NS)? {
+                        if let Some(value) = crate::reader::driver::read_attribute(e, b"val")? { self.val.set_value(value); }
                     }
                 },
                 Event::End(ref e) => {
-                    if e.name().into_inner() == b"mc:AlternateContent" {
-                        return
+                    if scopes.is_empty() {
+                        if e.name().into_inner() == owner.as_slice() { return Ok(()); }
+                    } else {
+                        if fallback_depth == Some(scopes.len()) { fallback_depth = None; }
+                        scopes.pop();
                     }
                 },
-                Event::Eof => panic!("Error: Could not find {} end element", "mc:AlternateContent")
+                Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "mc:AlternateContent")))
             );
-        } else {
-            set_string_from_xml!(self, e, val, "val");
+        } else if let Some(value) = crate::reader::driver::read_attribute(e, b"val")? {
+            self.val.set_value(value);
         }
+
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -124,7 +143,25 @@ impl Style {
             );
 
             // c14:style
-            write_start_tag(writer, "c14:style", vec![("val", "102").into()], true);
+            // MS-ODRAWXML CT_Style requires the modern value to be the
+            // corresponding legacy value plus 100. Keep invalid legacy input
+            // on its existing diagnostic/validation path, never invent a
+            // different valid fallback value for it.
+            let modern = self
+                .val
+                .value_str()
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|value| (1..=48).contains(value))
+                .map_or(102, |value| value + 100)
+                .to_string();
+            write_start_tag(
+                writer,
+                "c14:style",
+                vec![("val", modern.as_str()).into()],
+                true,
+            );
 
             write_end_tag(writer, "mc:Choice");
 

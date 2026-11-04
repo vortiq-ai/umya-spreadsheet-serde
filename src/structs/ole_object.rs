@@ -1,13 +1,6 @@
 use std::io::Cursor;
 
-use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
-};
+use quick_xml::Writer;
 
 use super::{
     EmbeddedObjectProperties,
@@ -15,11 +8,6 @@ use super::{
 };
 use crate::{
     helper::const_str::MC_NS,
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::{
         drawing::spreadsheet::TwoCellAnchor,
         raw::RawRelationships,
@@ -41,9 +29,29 @@ pub struct OleObject {
     embedded_object_properties: EmbeddedObjectProperties,
     two_cell_anchor:            TwoCellAnchor,
     shape:                      Shape,
+    #[cfg_attr(feature = "serde", serde(default))]
+    shape_id:                   Option<u32>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    data_or_view_aspect:        Option<Box<str>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    link:                       Option<Box<str>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    ole_update:                 Option<Box<str>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    auto_load:                  Option<bool>,
 }
 
 impl OleObject {
+    #[must_use]
+    pub fn shape_id(&self) -> Option<u32> {
+        self.shape_id
+    }
+
+    pub fn set_shape_id(&mut self, value: u32) -> &mut Self {
+        self.shape_id = Some(value);
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn requires(&self) -> &str {
@@ -134,6 +142,18 @@ impl OleObject {
     #[must_use]
     pub fn embedded_object_properties(&self) -> &EmbeddedObjectProperties {
         &self.embedded_object_properties
+    }
+
+    /// Whether the object has a preview image. `objectPr` and the image
+    /// relationship are optional, and written only when there is one.
+    #[inline]
+    #[must_use]
+    pub(crate) fn has_preview_image(&self) -> bool {
+        !self
+            .embedded_object_properties
+            .image()
+            .image_name()
+            .is_empty()
     }
 
     #[inline]
@@ -230,52 +250,148 @@ impl OleObject {
         &*self.object_extension == "xlsx"
     }
 
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        _e: &BytesStart,
+    pub(crate) fn from_element(
+        element: &crate::drawing::charts::OpaqueElement,
         relationships: &RawRelationships,
-    ) {
-        let mut alternate_content: &str = "";
-
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"mc:Choice" => {
-                        alternate_content = "Choice";
-                        set_string_from_xml!(self, e, requires, "Requires");
-                    }
-                    b"mc:Fallback" => {
-                        alternate_content = "Fallback";
-                    }
-                    b"oleObject" => {
-                        if alternate_content == "Choice" {
-                            self.prog_id
-                                .set_value_string(get_attribute(e, b"progId").unwrap());
-
-                            let r_id = get_attribute(e, b"r:id").unwrap();
-                            let attached_file =
-                                relationships.relationship_by_rid(&r_id).raw_file();
-                            self.set_object_extension(attached_file.extension());
-                            self.set_object_data(attached_file.file_data());
-                        }
-                    }
-                    b"objectPr" => {
-                        let mut obj = EmbeddedObjectProperties::default();
-                        obj.set_attributes(reader, e, relationships);
-                        self.set_embedded_object_properties(obj);
-                    }
-                    _ => (),
-                }
+    ) -> Result<Self, String> {
+        use crate::{
+            helper::const_str::{
+                REL_OFC_NS,
+                SHEET_MAIN_NS,
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"mc:AlternateContent" {
-                    return
-                }
+            xml::{
+                attribute,
+                direct_children,
+                required_attribute,
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "mc:AlternateContent")
-        );
+        };
+        crate::xml::expect(element, SHEET_MAIN_NS, "oleObject")?;
+        let mut value = Self::default();
+        value.set_shape_id(crate::xml::parse_u32(required_attribute(
+            element, "", "shapeId",
+        )?)?);
+        if let Some(prog_id) = attribute(element, "", "progId")? {
+            value.set_prog_id(prog_id);
+        }
+        value.data_or_view_aspect = attribute(element, "", "dvAspect")?
+            .map(|text| match text {
+                "DVASPECT_CONTENT" | "DVASPECT_ICON" => Ok(text.into()),
+                _ => Err("invalid OLE object data or view aspect".to_owned()),
+            })
+            .transpose()?;
+        value.ole_update = attribute(element, "", "oleUpdate")?
+            .map(|text| match text {
+                "OLEUPDATE_ALWAYS" | "OLEUPDATE_ONCALL" => Ok(text.into()),
+                _ => Err("invalid OLE object update mode".to_owned()),
+            })
+            .transpose()?;
+        value.link = attribute(element, "", "link")?.map(Into::into);
+        value.auto_load = attribute(element, "", "autoLoad")?
+            .map(crate::xml::parse_bool)
+            .transpose()?;
+        let id = required_attribute(element, REL_OFC_NS, "id")?;
+        let mut matches = relationships
+            .relationship_list()
+            .iter()
+            .filter(|item| item.id() == id);
+        let relationship = matches
+            .next()
+            .ok_or_else(|| format!("missing OLE object relationship {id}"))?;
+        if matches.next().is_some() {
+            return Err(format!("ambiguous OLE object relationship {id}"));
+        }
+        let attached_file = relationship.raw_file();
+        value.set_object_extension(attached_file.extension());
+        value.set_object_data(attached_file.file_data());
+        let children = direct_children(element)?;
+        if let Some(properties) = crate::xml::child(&children, SHEET_MAIN_NS, "objectPr")? {
+            value.set_embedded_object_properties(EmbeddedObjectProperties::from_element(
+                properties,
+                relationships,
+            )?);
+        }
+        if children
+            .iter()
+            .any(|child| !child.name.is(SHEET_MAIN_NS, "objectPr"))
+        {
+            return Err("unsupported OLE object child".into());
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn drawing_properties(
+        &self,
+    ) -> Option<&crate::drawing::spreadsheet::NonVisualDrawingProperties> {
+        Self::anchor_properties(self.two_cell_anchor())
+    }
+
+    pub(crate) fn anchor_properties(
+        anchor: &TwoCellAnchor,
+    ) -> Option<&crate::drawing::spreadsheet::NonVisualDrawingProperties> {
+        if let Some(value) = anchor.shape() {
+            Some(
+                value
+                    .non_visual_shape_properties()
+                    .non_visual_drawing_properties(),
+            )
+        } else if let Some(value) = anchor.graphic_frame() {
+            Some(
+                value
+                    .non_visual_graphic_frame_properties()
+                    .non_visual_drawing_properties(),
+            )
+        } else if let Some(value) = anchor.picture() {
+            Some(
+                value
+                    .non_visual_picture_properties()
+                    .non_visual_drawing_properties(),
+            )
+        } else if let Some(value) = anchor.group_shape() {
+            Some(
+                value
+                    .non_visual_group_shape_properties()
+                    .non_visual_drawing_properties(),
+            )
+        } else {
+            anchor.connection_shape().map(|value| {
+                value
+                    .non_visual_connection_shape_properties()
+                    .non_visual_drawing_properties()
+            })
+        }
+    }
+
+    pub(crate) fn drawing_media_objects(&self) -> Vec<&crate::structs::MediaObject> {
+        let anchor = self.two_cell_anchor();
+        let mut values = Vec::new();
+        if let Some(picture) = anchor.picture() {
+            values.push(picture.blip_fill().blip().image());
+        }
+        for properties in anchor
+            .shape()
+            .map(crate::drawing::spreadsheet::Shape::shape_properties)
+            .into_iter()
+            .chain(
+                anchor
+                    .picture()
+                    .map(crate::drawing::spreadsheet::Picture::shape_properties),
+            )
+            .chain(
+                anchor
+                    .connection_shape()
+                    .map(crate::drawing::spreadsheet::ConnectionShape::shape_properties),
+            )
+        {
+            if let Some(fill) = properties.blip_fill() {
+                values.push(fill.blip().image());
+            }
+        }
+        if let Some(group) = anchor.group_shape() {
+            for child in group.content() {
+                values.extend(child.media_objects());
+            }
+        }
+        values
     }
 
     pub(crate) fn write_to(
@@ -296,22 +412,39 @@ impl OleObject {
         write_start_tag(
             writer,
             "mc:Choice",
-            vec![("Requires", self.requires.value_str()).into()],
+            vec![
+                ("xmlns:x14", crate::helper::const_str::SHEET_MS_MAIN_NS).into(),
+                ("Requires", "x14").into(),
+            ],
             false,
         );
 
         // oleObject
         let r_id_str = format!("rId{r_id}");
         let shape_id_str = format!("{ole_id}");
-        let attributes = vec![
+        let mut attributes: crate::structs::AttrCollection = vec![
             ("progId", self.prog_id.value_str()).into(),
             ("shapeId", &shape_id_str).into(),
             ("r:id", &r_id_str).into(),
         ];
+        if let Some(value) = &self.data_or_view_aspect {
+            attributes.push(("dvAspect", value.as_ref()).into());
+        }
+        if let Some(value) = &self.link {
+            attributes.push(("link", value.as_ref()).into());
+        }
+        if let Some(value) = &self.ole_update {
+            attributes.push(("oleUpdate", value.as_ref()).into());
+        }
+        if let Some(value) = self.auto_load {
+            attributes.push(("autoLoad", if value { "1" } else { "0" }).into());
+        }
         write_start_tag(writer, "oleObject", attributes, false);
 
         // objectPr
-        self.embedded_object_properties.write_to(writer, r_id + 1);
+        if self.has_preview_image() {
+            self.embedded_object_properties.write_to(writer, r_id + 1);
+        }
 
         write_end_tag(writer, "oleObject");
 
@@ -322,11 +455,23 @@ impl OleObject {
 
         // oleObject
         let r_id_str = format!("rId{r_id}");
-        let attributes = vec![
+        let mut attributes: crate::structs::AttrCollection = vec![
             ("progId", self.prog_id.value_str()).into(),
             ("shapeId", &shape_id_str).into(),
             ("r:id", &r_id_str).into(),
         ];
+        if let Some(value) = &self.data_or_view_aspect {
+            attributes.push(("dvAspect", value.as_ref()).into());
+        }
+        if let Some(value) = &self.link {
+            attributes.push(("link", value.as_ref()).into());
+        }
+        if let Some(value) = &self.ole_update {
+            attributes.push(("oleUpdate", value.as_ref()).into());
+        }
+        if let Some(value) = self.auto_load {
+            attributes.push(("autoLoad", if value { "1" } else { "0" }).into());
+        }
         write_start_tag(writer, "oleObject", attributes, true);
 
         write_end_tag(writer, "mc:Fallback");

@@ -12,7 +12,6 @@ use quick_xml::{
 
 use super::GraphicData;
 use crate::{
-    reader::driver::xml_read_loop,
     structs::raw::RawRelationships,
     traits::AdjustmentCoordinateWithSheet,
     writer::driver::{
@@ -61,24 +60,70 @@ impl Graphic {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if e.name().into_inner() == b"a:graphicData" {
-                    self.graphic_data
-                        .set_attributes(reader, e, drawing_relationships);
+        session: &crate::reader::xlsx::SourceCacheSession,
+        provider: &mut dyn crate::reader::xlsx::ChartPartProvider,
+    ) -> Result<Vec<String>, crate::XlsxError> {
+        let parent = session.current_namespace_scope().unwrap_or_default();
+        let scope = parent
+            .child(owner)
+            .map_err(super::spreadsheet::drawing_error)?;
+        let _guard = session.enter_child_scope(owner)?;
+        let end = owner.name().as_ref().to_vec();
+        let mut source_parts = Vec::new();
+        let mut seen = false;
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_scope = scope
+                        .child(child)
+                        .map_err(super::spreadsheet::drawing_error)?;
+                    let name = child_scope
+                        .resolve(child.name().as_ref(), false)
+                        .map_err(super::spreadsheet::drawing_error)?;
+                    if !name.is(crate::helper::const_str::DRAWINGML_MAIN_NS, "graphicData") || seen
+                    {
+                        return Err(super::spreadsheet::drawing_error(
+                            "foreign or duplicate graphic payload",
+                        ));
+                    }
+                    seen = true;
+                    if matches!(event, Event::Empty(_)) {
+                        return Err(super::spreadsheet::drawing_error("empty graphic payload"));
+                    }
+                    source_parts.extend(self.graphic_data.set_attributes(
+                        reader,
+                        child,
+                        drawing_relationships,
+                        session,
+                        provider,
+                    )?);
                 }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:graphic" {
-                    return
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if !seen {
+                        return Err(super::spreadsheet::drawing_error("missing graphic payload"));
+                    }
+                    return Ok(source_parts);
                 }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:graphic")
-        );
+                Event::Eof => {
+                    return Err(super::spreadsheet::drawing_error("unterminated graphic"));
+                }
+                ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_)) => {
+                    if !crate::reader::driver::decode_xml_character_event(event)?
+                        .is_some_and(|text| crate::xml::trim_xml_whitespace(&text).is_empty())
+                    {
+                        return Err(super::spreadsheet::drawing_error(
+                            "non-whitespace graphic content",
+                        ));
+                    }
+                }
+                Event::Comment(_) | Event::PI(_) => (),
+                _ => return Err(super::spreadsheet::drawing_error("invalid graphic event")),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
