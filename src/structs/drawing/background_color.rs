@@ -12,7 +12,7 @@ use quick_xml::{
 
 use super::SchemeColor;
 use crate::{
-    reader::driver::xml_read_loop,
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -59,22 +59,56 @@ impl BackgroundColor {
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        _e: &BytesStart,
+        e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        xml_read_loop!(
+        self.read_with_session(reader, e, false, None)
+    }
+
+    /// Reads this element the way master does: by local name within the `DrawingML` namespace, so
+    /// any prefix bound to it is accepted and a foreign lookalike is not, and ending on the name
+    /// the caller actually opened rather than a literal `a:` one. The fields stay this fork's.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                if e.name().into_inner() == b"a:schemeClr" {
-                    self.scheme_color.set_attributes(reader, e, is_empty)?;
+            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(
+                        child,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )?,
+                    None => true,
+                };
+                match (native, crate::reader::driver::local_name(child.name().into_inner())) {
+                    (true, b"schemeClr") => {
+                        self.scheme_color
+                            .read_with_session(reader, child, child_empty, session)?;
+                    }
+                    _ => {
+                        // Never look inside what this element does not model: a native-looking
+                        // grandchild of a foreign wrapper is not a child of this element.
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                    }
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:bgClr" {
-                    return Ok(());
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:bgClr")
+            Event::End(ref end) if end.name().as_ref() == end_name => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
         );
     }
 

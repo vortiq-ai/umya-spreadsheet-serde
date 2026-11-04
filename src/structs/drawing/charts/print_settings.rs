@@ -18,7 +18,7 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
-        xml_read_loop,
+        try_xml_read_loop,
     },
     writer::driver::{
         write_end_tag,
@@ -117,7 +117,7 @@ impl PrintSettings {
         _e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) -> Result<(), crate::XlsxError> {
-        xml_read_loop!(
+        try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
                 match local_name(e.name().0) {
@@ -140,7 +140,7 @@ impl PrintSettings {
                     return Ok(());
                 }
             },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:printSettings")
+            Event::Eof => return Err(crate::xml::xml_error("unterminated chart print settings")),
         );
     }
 

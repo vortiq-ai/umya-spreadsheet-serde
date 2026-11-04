@@ -15,7 +15,7 @@ use super::{
     SchemeColor,
 };
 use crate::{
-    reader::driver::xml_read_loop,
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -115,34 +115,63 @@ impl GradientStop {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        if let Some(value) = crate::reader::driver::read_attribute(e, b"pos")? {
+        self.read_with_session(reader, e, false, None)
+    }
+
+    /// Reads this element the way master does: by local name within the `DrawingML` namespace, so
+    /// any prefix bound to it is accepted and a foreign lookalike is not, and ending on the name
+    /// the caller actually opened rather than a literal `a:` one. The fields stay this fork's.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"pos")? {
             self.set_position(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?);
         }
-
-        xml_read_loop!(
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:schemeClr" => {
-                        let mut obj = SchemeColor::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.set_scheme_color(obj);
+            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(
+                        child,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )?,
+                    None => true,
+                };
+                match (native, crate::reader::driver::local_name(child.name().into_inner())) {
+                    (true, b"schemeClr") => {
+                        let mut value = SchemeColor::default();
+                        value.read_with_session(reader, child, child_empty, session)?;
+                        self.set_scheme_color(value);
                     }
-                    b"a:srgbClr" => {
-                        let mut obj = RgbColorModelHex::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.set_rgb_color_model_hex(obj);
+                    (true, b"srgbClr") => {
+                        let mut value = RgbColorModelHex::default();
+                        value.read_with_session(reader, child, child_empty, session)?;
+                        self.set_rgb_color_model_hex(value);
                     }
-                    _ => (),
+                    _ => {
+                        // Never look inside what this element does not model: a native-looking
+                        // grandchild of a foreign wrapper is not a child of this element.
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                    }
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:gs" {
-                    return Ok(());
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:gs")
+            Event::End(ref end) if end.name().as_ref() == end_name => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
         );
     }
 
@@ -171,23 +200,4 @@ impl GradientStop {
 
     }
 
-    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
-    pub(crate) fn read_with_session<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        owner: &BytesStart,
-        empty: bool,
-        session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Result<(), crate::XlsxError> {
-        let _guard = session
-            .map(|value| value.enter_child_scope(owner))
-            .transpose()?
-            .flatten();
-        if empty {
-            // A self-closing element has no children to read; looping would consume the parent's.
-            return Ok(());
-        }
-        self.set_attributes(reader, owner)?;
-        Ok(())
-    }
 }

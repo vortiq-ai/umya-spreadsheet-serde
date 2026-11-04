@@ -4,15 +4,11 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::alpha::Alpha;
 use crate::{
-    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -79,25 +75,33 @@ impl PresetColor {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        self.set_val(crate::reader::driver::require_attribute(e, b"val")?);
+        self.read_with_session(reader, e, false, None)
+    }
 
-        xml_read_loop!(
-            reader,
-            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                if e.name().into_inner() == b"a:alpha" {
-                    let mut alpha = Alpha::default();
-                    // `set_attributes` is a legacy shim that assumes a non-empty element.
-                    alpha.read_with_session(reader, e, matches!(event, Event::Empty(_)), None)?;
-                    self.set_alpha(alpha);
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:prstClr" {
-                    return Ok(());
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:prstClr")
-        );
+    /// Reads this element the way master does, through the shared transform loop: any prefix
+    /// bound to the `DrawingML` namespace is accepted, a foreign lookalike is not, and the loop
+    /// ends on the name the caller opened. Of that list this fork keeps only the alpha, as before.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        self.set_val(crate::reader::driver::require_attribute(owner, b"val")?);
+        if empty {
+            return Ok(());
+        }
+        for transform in super::color_transform::read_transforms(reader, owner, session)? {
+            if let super::ColorTransform::Alpha(alpha) = transform {
+                self.set_alpha(alpha);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
@@ -113,26 +117,6 @@ impl PresetColor {
     
         Ok(())
 
-    }
-
-    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
-    pub(crate) fn read_with_session<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        owner: &BytesStart,
-        empty: bool,
-        session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Result<(), crate::XlsxError> {
-        let _guard = session
-            .map(|value| value.enter_child_scope(owner))
-            .transpose()?
-            .flatten();
-        if empty {
-            // A self-closing element has no children to read; looping would consume the parent's.
-            return Ok(());
-        }
-        self.set_attributes(reader, owner)?;
-        Ok(())
     }
 
     /// This fork's single modifier as master's ordered transform list; see `SchemeColor::transforms`.

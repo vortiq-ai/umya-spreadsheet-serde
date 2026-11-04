@@ -91,7 +91,6 @@ fn solid_fill_ignores_foreign_color_choices_in_every_chart_shape_carrier() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn rgb_transforms_ignore_foreign_lookalikes() {
     let native = "<a:solidFill><a:srgbClr val=\"00FF00\"><a:lumMod \
                   val=\"50000\"/></a:srgbClr></a:solidFill>";
@@ -223,7 +222,6 @@ fn preset_color_ignores_foreign_alpha_transform() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn pattern_colors_skip_foreign_wrappers_without_promoting_native_grandchildren() {
     let native = "<a:pattFill prst=\"pct5\"><a:fgClr><a:schemeClr \
                   val=\"accent1\"/></a:fgClr><a:bgClr><a:schemeClr \
@@ -245,7 +243,6 @@ fn pattern_colors_skip_foreign_wrappers_without_promoting_native_grandchildren()
 }
 
 #[test]
-#[ignore = "namespace-aliased DrawingML reading is held at the fleet pin"]
 fn native_pattern_color_aliases_and_default_namespaces_remain_equivalent() {
     let native = "<a:pattFill prst=\"pct5\"><a:fgClr><a:schemeClr \
                   val=\"accent1\"/></a:fgClr><a:bgClr><a:schemeClr \
@@ -259,7 +256,6 @@ fn native_pattern_color_aliases_and_default_namespaces_remain_equivalent() {
 }
 
 #[test]
-#[ignore = "namespace-aliased DrawingML reading is held at the fleet pin"]
 fn native_drawing_color_aliases_and_default_namespace_remain_equivalent() {
     let native = "<a:solidFill><a:srgbClr val=\"00FF00\"><a:lumMod \
                   val=\"50000\"/></a:srgbClr></a:solidFill><a:ln><a:prstDash val=\"dash\"/></a:ln>";
@@ -272,7 +268,6 @@ fn native_drawing_color_aliases_and_default_namespace_remain_equivalent() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn rebound_drawing_prefix_cannot_recolor_or_retransform_native_colors() {
     let native = "<a:solidFill><a:srgbClr val=\"00FF00\"><a:lumMod \
                   val=\"50000\"/></a:srgbClr></a:solidFill>";

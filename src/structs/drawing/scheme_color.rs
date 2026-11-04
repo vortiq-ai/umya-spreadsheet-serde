@@ -4,10 +4,7 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
 use super::{
@@ -17,7 +14,6 @@ use super::{
     SchemeColorValues,
 };
 use crate::{
-    reader::driver::xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -308,68 +304,7 @@ impl SchemeColor {
         e: &BytesStart,
         empty_flag: bool,
     ) -> Result<(), crate::XlsxError> {
-        self.val
-            .set_value_string(crate::reader::driver::require_attribute(e, b"val")?);
-
-        if empty_flag {
-            return Ok(());
-        }
-
-        xml_read_loop!(
-            reader,
-            ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
-                let is_empty = matches!(n, Event::Empty(_));
-                match e.name().into_inner() {
-                    b"a:lum" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.luminance = Some(obj);
-                    }
-                    b"a:lumMod" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.luminance_modulation = Some(obj);
-                    }
-                    b"a:lumOff" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.luminance_offset = Some(obj);
-                    }
-                    b"a:sat" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.saturation = Some(obj);
-                    }
-                    b"a:satMod" => {
-                        let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.saturation_modulation = Some(obj);
-                    }
-                    b"a:shade" => {
-                        let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.shade = Some(obj);
-                    }
-                    b"a:alpha" => {
-                        let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.alpha = Some(obj);
-                    }
-                    b"a:tint" => {
-                        let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty)?;
-                        self.tint = Some(obj);
-                    }
-                    _ => (),
-                }
-            },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:schemeClr" {
-                    return Ok(());
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:schemeClr")
-        );
+        self.read_with_session(reader, e, empty_flag, None)
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
@@ -436,7 +371,9 @@ impl SchemeColor {
 
     }
 
-    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    /// Reads this element the way master does, through the shared transform loop: any prefix
+    /// bound to the `DrawingML` namespace is accepted, a foreign lookalike is not, and the loop
+    /// ends on the name the caller opened. The eight modifier fields stay this fork's.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -448,7 +385,56 @@ impl SchemeColor {
             .map(|value| value.enter_child_scope(owner))
             .transpose()?
             .flatten();
-        self.set_attributes(reader, owner, empty)?;
+        self.val
+            .set_value_string(crate::reader::driver::require_attribute(owner, b"val")?);
+        if empty {
+            return Ok(());
+        }
+        let transforms = super::color_transform::read_transforms(reader, owner, session)?;
+        self.apply_transforms(&transforms)
+    }
+
+    /// Records master's ordered transform list in this fork's one-field-per-modifier model.
+    ///
+    /// The modifiers are read by master's own loop, so an aliased prefix, a default namespace and
+    /// a foreign lookalike are judged here exactly as they are for the colour types that keep the
+    /// list itself. What this fork has no room for it drops, as it always has: the authored order,
+    /// every occurrence of a repeated modifier but the last, and the transforms outside these
+    /// eight. Restoring those is the deferred colour model, not this.
+    fn apply_transforms(
+        &mut self,
+        transforms: &[super::ColorTransform],
+    ) -> Result<(), crate::XlsxError> {
+        use super::ColorTransform;
+        for transform in transforms {
+            match transform {
+                ColorTransform::Luminance(value) => {
+                    self.luminance = Some(percentage(percentage_thousandths(value)?));
+                }
+                ColorTransform::LuminanceModulation(value) => {
+                    self.luminance_modulation = Some(percentage(percentage_thousandths(value)?));
+                }
+                ColorTransform::LuminanceOffset(value) => {
+                    self.luminance_offset = Some(percentage(percentage_thousandths(value)?));
+                }
+                ColorTransform::Saturation(value) => {
+                    self.saturation = Some(percentage(percentage_thousandths(value)?));
+                }
+                ColorTransform::SaturationModulation(value) => {
+                    self.saturation_modulation = Some(percentage(percentage_thousandths(value)?));
+                }
+                ColorTransform::Shade(value) => {
+                    self.shade = Some(positive_fixed(percentage_thousandths(value)?));
+                }
+                ColorTransform::Alpha(value) => {
+                    self.alpha = Some(positive_fixed(percentage_thousandths(value.val())?));
+                }
+                ColorTransform::Tint(value) => {
+                    self.tint = Some(positive_fixed(percentage_thousandths(value)?));
+                }
+                _ => (),
+            }
+        }
         Ok(())
     }
 
@@ -487,4 +473,40 @@ impl SchemeColor {
         }
         transforms
     }
+}
+
+fn percentage(value: i32) -> PercentageType {
+    let mut modifier = PercentageType::default();
+    modifier.set_val(value);
+    modifier
+}
+
+fn positive_fixed(value: i32) -> PositiveFixedPercentageType {
+    let mut modifier = PositiveFixedPercentageType::default();
+    modifier.set_val(value);
+    modifier
+}
+
+/// A `DrawingML` percentage as the thousandths of a percent this fork stores.
+///
+/// `ST_Percentage` has two lexical forms: the integer `50000` and, from the second edition of the
+/// standard, `50%`. This fork keeps the integer, so the percent form is converted rather than
+/// refused - it names the same quantity, and the thousandth it rounds to is far below a colour
+/// difference any display can show. Export then writes the integer form.
+pub(super) fn percentage_thousandths(value: &str) -> Result<i32, crate::XlsxError> {
+    let Some(percent) = value.strip_suffix('%') else {
+        return crate::xml::parse_i32(value).map_err(crate::xml::xml_error);
+    };
+    let thousandths = percent
+        .parse::<f64>()
+        .map_err(|_| crate::xml::xml_error("invalid color percentage"))?
+        * 1000.0;
+    if !thousandths.is_finite() || thousandths.abs() > f64::from(i32::MAX) {
+        return Err(crate::xml::xml_error("color percentage out of range"));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the magnitude is checked against i32::MAX on the line above"
+    )]
+    Ok(thousandths.round() as i32)
 }

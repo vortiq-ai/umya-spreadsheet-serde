@@ -15,7 +15,7 @@ use super::{
     ForegroundColor,
 };
 use crate::{
-    reader::driver::xml_read_loop,
+    reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
         write_start_tag,
@@ -126,29 +126,61 @@ impl PatternFill {
         reader: &mut Reader<R>,
         e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        if let Some(v) = crate::reader::driver::read_attribute(e, b"prst")? {
-            self.set_preset(v);
-        }
+        self.read_with_session(reader, e, false, None)
+    }
 
-        xml_read_loop!(
+    /// Reads this element the way master does: by local name within the `DrawingML` namespace, so
+    /// any prefix bound to it is accepted and a foreign lookalike is not, and ending on the name
+    /// the caller actually opened rather than a literal `a:` one. The fields stay this fork's.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"prst")? {
+            self.set_preset(value);
+        }
+        if empty {
+            return Ok(());
+        }
+        let end_name = owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
             reader,
-            Event::Start(ref e) => {
-                match e.name().into_inner() {
-                    b"a:fgClr" => {
-                        self.foreground_color.set_attributes(reader, e)?;
-                    },
-                    b"a:bgClr" => {
-                        self.background_color.set_attributes(reader, e)?;
-                    },
-                    _ => (),
+            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(
+                        child,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )?,
+                    None => true,
+                };
+                match (native, crate::reader::driver::local_name(child.name().into_inner())) {
+                    (true, b"fgClr") => {
+                        self.foreground_color
+                            .read_with_session(reader, child, child_empty, session)?;
+                    }
+                    (true, b"bgClr") => {
+                        self.background_color
+                            .read_with_session(reader, child, child_empty, session)?;
+                    }
+                    _ => {
+                        // Never look inside what this element does not model: a native-looking
+                        // grandchild of a foreign wrapper is not a child of this element.
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                    }
                 }
             },
-            Event::End(ref e) => {
-                if e.name().into_inner() == b"a:pattFill" {
-                    return Ok(());
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "a:pattFill")
+            Event::End(ref end) if end.name().as_ref() == end_name => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
         );
     }
 
@@ -173,23 +205,4 @@ impl PatternFill {
 
     }
 
-    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
-    pub(crate) fn read_with_session<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        owner: &BytesStart,
-        empty: bool,
-        session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Result<(), crate::XlsxError> {
-        let _guard = session
-            .map(|value| value.enter_child_scope(owner))
-            .transpose()?
-            .flatten();
-        if empty {
-            // A self-closing element has no children to read; looping would consume the parent's.
-            return Ok(());
-        }
-        self.set_attributes(reader, owner)?;
-        Ok(())
-    }
 }

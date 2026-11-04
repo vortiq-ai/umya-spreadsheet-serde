@@ -574,7 +574,6 @@ fn unmodeled_point_extensions_cannot_overwrite_typed_point_or_parent_fields() {
 }
 
 #[test]
-#[ignore = "namespace-aliased DrawingML reading is held at the fleet pin"]
 fn alternate_drawing_prefix_keeps_point_fill_line_and_color_transforms() {
     let point = POINT
         .replace(
@@ -980,7 +979,6 @@ fn pie_explosion_missing_or_malformed_values_are_reported_and_omitted_without_st
 }
 
 #[test]
-#[ignore = "namespace-aliased DrawingML reading is held at the fleet pin"]
 fn expanded_alternate_drawing_leaves_match_empty_leaves_and_bound_unknown_children() {
     let empty = concat!(
         "<c:dPt><c:idx val=\"9\"/><c:marker><c:symbol \
@@ -1316,7 +1314,6 @@ fn expanded_drawing_input(xml: &str, contain_unknown: bool) -> String {
 }
 
 #[test]
-#[ignore = "namespace-aliased DrawingML reading is held at the fleet pin"]
 fn every_modeled_outline_and_effect_delegate_preserves_fields_across_expanded_aliases() {
     let cases: Vec<serde_json::Value> =
         serde_json::from_str(include_str!("fixtures/point_drawing_delegates.json")).unwrap();
