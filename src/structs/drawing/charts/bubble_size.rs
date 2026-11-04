@@ -1,88 +1,11 @@
 // c:bubbleSize
-use std::io::Cursor;
+use super::numeric_data::numeric_source;
 
-use quick_xml::{
-    Reader,
-    Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
-};
-
-use super::NumberReference;
-use crate::{
-    reader::driver::{
-        local_name,
-        xml_read_loop,
-    },
-    structs::Workbook,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
-};
-
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Default, Debug)]
-pub struct BubbleSize {
-    number_reference: NumberReference,
-}
-
-impl BubbleSize {
-    #[must_use]
-    pub fn number_reference(&self) -> &NumberReference {
-        &self.number_reference
-    }
-
-    #[must_use]
-    #[deprecated(since = "3.0.0", note = "Use number_reference()")]
-    pub fn get_number_reference(&self) -> &NumberReference {
-        self.number_reference()
-    }
-
-    pub fn number_reference_mut(&mut self) -> &mut NumberReference {
-        &mut self.number_reference
-    }
-
-    #[deprecated(since = "3.0.0", note = "Use number_reference_mut()")]
-    pub fn get_number_reference_mut(&mut self) -> &mut NumberReference {
-        self.number_reference_mut()
-    }
-
-    pub fn set_number_reference(&mut self, value: NumberReference) -> &mut BubbleSize {
-        self.number_reference = value;
-        self
-    }
-
-    pub(crate) fn set_attributes<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        _e: &BytesStart,
-    ) {
-        xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().into_inner()) == b"numRef" {
-                    self.number_reference.set_attributes(reader, e);
-                }
-            },
-            Event::End(ref e) => {
-                if local_name(e.name().into_inner()) == b"bubbleSize" {
-                    return;
-                }
-            },
-            Event::Eof => panic!("Error: Could not find {} end element", "c:bubbleSize")
-        );
-    }
-
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>, wb: &Workbook) {
-        // c:bubbleSize
-        write_start_tag(writer, "c:bubbleSize", vec![], false);
-
-        // c:numRef
-        self.number_reference.write_to(writer, wb);
-
-        write_end_tag(writer, "c:bubbleSize");
-    }
-}
+numeric_source!(
+    /// `c:bubbleSize`, a numeric data source holding either a reference or, for
+    /// a series typed as an array constant such as `={1,2,3}`, a literal.
+    /// The literal is the source while it is present.
+    BubbleSize,
+    "bubbleSize",
+    "bubble sizes"
+);
