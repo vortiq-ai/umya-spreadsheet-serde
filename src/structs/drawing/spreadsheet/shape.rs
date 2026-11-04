@@ -203,7 +203,8 @@ impl Shape {
         reader: &mut Reader<R>,
         e: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
-    ) {
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
         set_string_from_xml!(self, e, r#macro, "macro");
 
         xml_read_loop!(
@@ -211,19 +212,26 @@ impl Shape {
                 Event::Start(ref e) => {
                     match e.name().into_inner() {
                         b"xdr:nvSpPr" => {
-                            self.non_visual_shape_properties.set_attributes(reader, e);
+                            self.non_visual_shape_properties
+                                .set_attributes(reader, e, session)?;
                         }
                         b"xdr:spPr" => {
-                            self.shape_properties.set_attributes(reader, e, drawing_relationships);
+                            self.shape_properties.read_with_session(
+                                reader,
+                                e,
+                                false,
+                                drawing_relationships,
+                                session,
+                            )?;
                         }
                         b"xdr:style" => {
                             let mut obj = ShapeStyle::default();
-                            obj.set_attributes(reader, e);
+                            obj.read_with_session(reader, e, false, session)?;
                             self.set_shape_style(obj);
                         }
                         b"xdr:txBody" => {
                             let mut obj = TextBody::default();
-                            obj.set_attributes(reader, e);
+                            obj.read_with_session(reader, e, false, session)?;
                             self.set_text_body(obj);
                         }
                         _ => (),
@@ -231,7 +239,7 @@ impl Shape {
                 },
                 Event::End(ref e) => {
                     if e.name().into_inner() == b"xdr:sp" {
-                        return;
+                        return Ok(());
                     }
                 },
                 Event::Eof => panic!("Error: Could not find {} end element", "xdr:sp")
@@ -243,7 +251,7 @@ impl Shape {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         rel_list: &mut Vec<(String, String)>,
         ole_id: usize,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         // xdr:sp
         write_start_tag(
             writer,
@@ -256,21 +264,36 @@ impl Shape {
         );
 
         // xdr:nvSpPr
-        self.non_visual_shape_properties.write_to(writer, ole_id);
+        self.non_visual_shape_properties
+            .write_to(writer, ole_id, rel_list)?;
 
         // xdr:spPr
-        self.shape_properties.write_to(writer, rel_list);
+        self.shape_properties.write_to(writer, rel_list)?;
 
         // xdr:style
         if let Some(v) = &self.shape_style {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // xdr:txBody
         if let Some(v) = &self.text_body {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "xdr:sp");
+        Ok(())
+    }
+
+    /// This fork models no `xdr:txLink`: it neither reads nor writes one, so a shape never holds a
+    /// cell link and reference editing has nothing to rewrite. Taking the field is part of the
+    /// deferred in-chart drawing work, not of extended charts.
+    #[must_use]
+    pub fn text_link(&self) -> Option<&crate::drawing::charts::Formula> {
+        None
+    }
+
+    /// Always `None`; see [`Shape::text_link`].
+    pub fn text_link_mut(&mut self) -> Option<&mut crate::drawing::charts::Formula> {
+        None
     }
 }

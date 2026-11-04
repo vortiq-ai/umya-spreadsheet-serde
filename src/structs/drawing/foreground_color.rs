@@ -60,31 +60,34 @@ impl ForegroundColor {
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         xml_read_loop!(
             reader,
             ref n @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 let is_empty = matches!(n, Event::Empty(_));
                 if e.name().into_inner() == b"a:schemeClr" {
-                    self.scheme_color.set_attributes(reader, e, is_empty);
+                    self.scheme_color.set_attributes(reader, e, is_empty)?;
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"a:fgClr" {
-                    return
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "a:fgClr")
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
         // a:fgClr
         write_start_tag(writer, "a:fgClr", vec![], false);
 
         // a:schemeClr
-        self.scheme_color.write_to(writer);
+        self.scheme_color.write_to(writer)?;
 
         write_end_tag(writer, "a:fgClr");
+    
+        Ok(())
+
     }
 }

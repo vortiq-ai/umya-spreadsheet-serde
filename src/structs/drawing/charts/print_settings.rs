@@ -110,32 +110,34 @@ impl PrintSettings {
         self
     }
 
+    /// The fork keeps no source caches here, so the session is accepted and ignored.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         _e: &BytesStart,
-    ) {
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
         xml_read_loop!(
             reader,
             Event::Start(ref e) => {
                 match local_name(e.name().0) {
                 b"headerFooter" => {
-                    HeaderFooter::set_attributes(reader, e);
+                    self.header_footer.set_attributes(reader, e, false, session)?;
                 }
                 b"pageSetup" => {
-                    PageSetup::set_attributes(reader, e);
+                    self.page_setup.set_attributes(e)?;
                 }
                 _ => (),
                 }
             },
             Event::Empty(ref e) => {
                 if local_name(e.name().0) == b"pageMargins" {
-                    self.page_margins.set_attributes(reader, e);
+                    self.page_margins.set_attributes(reader, e)?;
                 }
             },
             Event::End(ref e) => {
                 if local_name(e.name().0) == b"printSettings" {
-                    return;
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "c:printSettings")
@@ -147,14 +149,21 @@ impl PrintSettings {
         write_start_tag(writer, "c:printSettings", vec![], false);
 
         // c:headerFooter
-        HeaderFooter::write_to(writer);
+        self.header_footer.write_to(writer);
 
         // c:pageMargins
         self.page_margins.write_to(writer);
 
         // c:pageSetup
-        PageSetup::write_to(writer);
+        self.page_setup.write_to(writer);
 
         write_end_tag(writer, "c:printSettings");
+    }
+
+    /// Always `None`: this fork neither reads nor writes `c:legacyDrawingHF`, so a chart never
+    /// carries a legacy header/footer drawing and no relationship is emitted for one.
+    #[must_use]
+    pub fn legacy_drawing_header_footer(&self) -> Option<&str> {
+        None
     }
 }

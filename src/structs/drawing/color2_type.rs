@@ -180,7 +180,7 @@ impl Color2Type {
             return None;
         }
         if let Some(value) = &self.rgb_color_model_hex {
-            return super::color_transform::resolve_rgb(value.val(), value.transforms());
+            return super::color_transform::resolve_rgb(value.val(), &value.transforms());
         }
         self.system_color.as_ref().and_then(|value| {
             super::color_transform::resolve_rgb(value.last_color(), value.transforms())

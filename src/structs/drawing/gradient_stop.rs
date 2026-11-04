@@ -117,7 +117,7 @@ impl GradientStop {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if let Some(v) = get_attribute(e, b"pos") {
             self.set_position(v.parse::<i32>().unwrap());
         }
@@ -129,12 +129,12 @@ impl GradientStop {
                 match e.name().into_inner() {
                     b"a:schemeClr" => {
                         let mut obj = SchemeColor::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.set_scheme_color(obj);
                     }
                     b"a:srgbClr" => {
                         let mut obj = RgbColorModelHex::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.set_rgb_color_model_hex(obj);
                     }
                     _ => (),
@@ -142,14 +142,14 @@ impl GradientStop {
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"a:gs" {
-                    return
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "a:gs")
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
         // a:gs
         write_start_tag(
             writer,
@@ -160,14 +160,33 @@ impl GradientStop {
 
         // a:schemeClr
         if let Some(v) = &self.scheme_color {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         // a:srgbClr
         if let Some(v) = &self.rgb_color_model_hex {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:gs");
+    
+        Ok(())
+
+    }
+
+    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        _empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        self.set_attributes(reader, owner)?;
+        Ok(())
     }
 }

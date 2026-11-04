@@ -308,11 +308,11 @@ impl RgbColorModelHex {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         self.val.set_value_string(get_attribute(e, b"val").unwrap());
 
         if empty_flag {
-            return;
+            return Ok(());
         }
 
         xml_read_loop!(
@@ -322,42 +322,42 @@ impl RgbColorModelHex {
                 match e.name().into_inner() {
                     b"a:lum" => {
                         let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.luminance = Some(obj);
                     }
                     b"a:lumMod" => {
                         let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.luminance_modulation = Some(obj);
                     }
                     b"a:lumOff" => {
                         let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.luminance_offset = Some(obj);
                     }
                     b"a:sat" => {
                         let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.saturation = Some(obj);
                     }
                     b"a:satMod" => {
                         let mut obj = PercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.saturation_modulation = Some(obj);
                     }
                     b"a:shade" => {
                         let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.shade = Some(obj);
                     }
                     b"a:alpha" => {
                         let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.alpha = Some(obj);
                     }
                     b"a:tint" => {
                         let mut obj = PositiveFixedPercentageType::default();
-                        obj.set_attributes(reader, e, is_empty);
+                        obj.set_attributes(reader, e, is_empty)?;
                         self.tint = Some(obj);
                     }
                     _ => (),
@@ -365,14 +365,14 @@ impl RgbColorModelHex {
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"a:srgbClr" {
-                    return;
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "a:srgbClr")
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
         // a:srgbClr
         if self.with_inner_params() {
             write_start_tag(
@@ -431,5 +431,60 @@ impl RgbColorModelHex {
                 true,
             );
         }
+    
+        Ok(())
+
+    }
+
+    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        self.set_attributes(reader, owner, empty)?;
+        Ok(())
+    }
+
+    /// This fork's modifiers as master's ordered transform list. The fork keeps one optional field
+    /// per modifier, so it can record neither the authored order nor a repeated modifier; the list
+    /// is built in the schema order Excel emits, which is the order the fork has always assumed.
+    #[must_use]
+    pub fn transforms(&self) -> Vec<super::ColorTransform> {
+        use super::ColorTransform;
+        let mut transforms = Vec::new();
+        if let Some(value) = &self.luminance {
+            transforms.push(ColorTransform::Luminance(value.val().to_string()));
+        }
+        if let Some(value) = &self.luminance_modulation {
+            transforms.push(ColorTransform::LuminanceModulation(value.val().to_string()));
+        }
+        if let Some(value) = &self.luminance_offset {
+            transforms.push(ColorTransform::LuminanceOffset(value.val().to_string()));
+        }
+        if let Some(value) = &self.saturation {
+            transforms.push(ColorTransform::Saturation(value.val().to_string()));
+        }
+        if let Some(value) = &self.saturation_modulation {
+            transforms.push(ColorTransform::SaturationModulation(value.val().to_string()));
+        }
+        if let Some(value) = &self.shade {
+            transforms.push(ColorTransform::Shade(value.val().to_string()));
+        }
+        if let Some(value) = &self.alpha {
+            let mut alpha = super::Alpha::default();
+            alpha.set_val(value.val().to_string());
+            transforms.push(ColorTransform::Alpha(alpha));
+        }
+        if let Some(value) = &self.tint {
+            transforms.push(ColorTransform::Tint(value.val().to_string()));
+        }
+        transforms
     }
 }

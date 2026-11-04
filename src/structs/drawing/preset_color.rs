@@ -81,7 +81,7 @@ impl PresetColor {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         self.set_val(get_attribute(e, b"val").unwrap());
 
         xml_read_loop!(
@@ -89,20 +89,20 @@ impl PresetColor {
             Event::Empty(ref e) => {
                 if e.name().into_inner() == b"a:alpha" {
                     let mut alpha = Alpha::default();
-                    alpha.set_attributes(reader, e);
+                    alpha.set_attributes(reader, e)?;
                     self.set_alpha(alpha);
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"a:prstClr" {
-                    return
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "a:prstClr")
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
         // a:prstClr
         write_start_tag(writer, "a:prstClr", vec![("val", &self.val).into()], false);
 
@@ -112,5 +112,24 @@ impl PresetColor {
         }
 
         write_end_tag(writer, "a:prstClr");
+    
+        Ok(())
+
+    }
+
+    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        _empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        self.set_attributes(reader, owner)?;
+        Ok(())
     }
 }

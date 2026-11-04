@@ -276,7 +276,7 @@ impl BodyProperties {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         for attr in e.attributes().with_checks(false).flatten() {
             let key = attr.key.into_inner();
             let value = get_attribute_value(&attr).unwrap();
@@ -319,7 +319,7 @@ impl BodyProperties {
         }
 
         if empty_flag {
-            return;
+            return Ok(());
         }
 
         xml_read_loop!(
@@ -327,20 +327,20 @@ impl BodyProperties {
             Event::Empty(ref e) => {
                 if e.name().into_inner() == b"a:spAutoFit" {
                     let obj = ShapeAutoFit::default();
-                    ShapeAutoFit::set_attributes(reader, e);
+                    ShapeAutoFit::set_attributes(reader, e, false)?;
                     self.set_shape_auto_fit(obj);
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"a:bodyPr" {
-                     return
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "a:bodyPr")
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
         let empty_flag = &self.shape_auto_fit.is_none();
 
         // a:bodyPr
@@ -399,5 +399,38 @@ impl BodyProperties {
 
             write_end_tag(writer, "a:bodyPr");
         }
+    
+        Ok(())
+
+    }
+
+    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        self.set_attributes(reader, owner, empty)?;
+        Ok(())
+    }
+
+    /// No-op: this fork's BodyProperties keeps no preserved XML to strip before export.
+    pub(crate) fn strip_export_parts(&mut self) {}
+
+    /// Nothing was stripped, so nothing is restored and the restored count is zero.
+    pub(crate) fn restore_export_parts(&mut self, _previous: &Self) -> usize {
+        0
+    }
+
+    /// This fork models every attribute it reads, so none can be left unvalidated.
+    #[must_use]
+    pub fn supplemental_attributes_valid(&self) -> bool {
+        true
     }
 }

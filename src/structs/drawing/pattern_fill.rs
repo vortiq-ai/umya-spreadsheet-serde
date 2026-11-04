@@ -128,7 +128,7 @@ impl PatternFill {
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
-    ) {
+    ) -> Result<(), crate::XlsxError> {
         if let Some(v) = get_attribute(e, b"prst") {
             self.set_preset(v);
         }
@@ -138,24 +138,24 @@ impl PatternFill {
             Event::Start(ref e) => {
                 match e.name().into_inner() {
                     b"a:fgClr" => {
-                        self.foreground_color.set_attributes(reader, e);
+                        self.foreground_color.set_attributes(reader, e)?;
                     },
                     b"a:bgClr" => {
-                        self.background_color.set_attributes(reader, e);
+                        self.background_color.set_attributes(reader, e)?;
                     },
                     _ => (),
                 }
             },
             Event::End(ref e) => {
                 if e.name().into_inner() == b"a:pattFill" {
-                    return
+                    return Ok(());
                 }
             },
             Event::Eof => panic!("Error: Could not find {} end element", "a:pattFill")
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
         // a:pattFill
         write_start_tag(
             writer,
@@ -165,11 +165,30 @@ impl PatternFill {
         );
 
         // a:fgClr
-        self.foreground_color.write_to(writer);
+        self.foreground_color.write_to(writer)?;
 
         // a:bgClr
-        self.background_color.write_to(writer);
+        self.background_color.write_to(writer)?;
 
         write_end_tag(writer, "a:pattFill");
+    
+        Ok(())
+
+    }
+
+    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    pub(crate) fn read_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        owner: &BytesStart,
+        _empty: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    ) -> Result<(), crate::XlsxError> {
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        self.set_attributes(reader, owner)?;
+        Ok(())
     }
 }
