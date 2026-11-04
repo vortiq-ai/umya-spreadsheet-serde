@@ -1,0 +1,31 @@
+{
+  "missing_value": {
+    "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:tx><c:strRef><c:f>Missing!$A$1:$A$3</c:f><c:strCache><c:ptCount val=\"9\"/><c:pt idx=\"2\"><c:v>First</c:v></c:pt><c:pt idx=\"2\"/><c:pt idx=\"7\"><c:v></c:v></c:pt></c:strCache></c:strRef></c:tx></c:trendlineLbl></c:trendline>",
+    "schema_expected": false,
+    "expected_indices": [
+      2,
+      2,
+      7
+    ],
+    "expected_values": [
+      "First",
+      null,
+      ""
+    ],
+    "expected_required_child": "v"
+  },
+  "present_empty_value": {
+    "xml": "<c:trendline><c:trendlineType/><c:trendlineLbl><c:tx><c:strRef><c:f>Missing!$A$1:$A$3</c:f><c:strCache><c:ptCount val=\"9\"/><c:pt idx=\"2\"><c:v>First</c:v></c:pt><c:pt idx=\"2\"><c:v></c:v></c:pt><c:pt idx=\"7\"><c:v></c:v></c:pt></c:strCache></c:strRef></c:tx></c:trendlineLbl></c:trendline>",
+    "schema_expected": true,
+    "expected_indices": [
+      2,
+      2,
+      7
+    ],
+    "expected_values": [
+      "First",
+      "",
+      ""
+    ]
+  }
+}

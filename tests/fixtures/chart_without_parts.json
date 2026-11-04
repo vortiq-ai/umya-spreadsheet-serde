@@ -1,0 +1,3339 @@
+{
+  "auto_title_deleted": {
+    "val": {
+      "value": false
+    }
+  },
+  "back_wall": null,
+  "display_blanks_as": {
+    "val": {
+      "value": "Gap",
+      "value_default": "Span"
+    }
+  },
+  "floor": null,
+  "legend": {
+    "layout": null,
+    "legend_position": {
+      "val": {
+        "value": "Bottom",
+        "value_default": "Bottom"
+      }
+    },
+    "overlay": {
+      "val": {
+        "value": false
+      }
+    },
+    "shape_properties": {
+      "effect_list": null,
+      "no_fill": {},
+      "outline": {
+        "alignment": {
+          "value": null,
+          "value_default": "Center"
+        },
+        "bevel": null,
+        "cap_type": {
+          "value": null
+        },
+        "compound_line_type": {
+          "value": null
+        },
+        "gradient_fill": null,
+        "miter": null,
+        "no_fill": {},
+        "preset_dash": null,
+        "round": null,
+        "solid_fill": null,
+        "system_color": null,
+        "tail_end": null,
+        "width": {
+          "value": 0
+        }
+      },
+      "pattern_fill": null,
+      "preset_geometry": null,
+      "scene_3d_type": null,
+      "shape_3d_type": null,
+      "solid_fill": null,
+      "transform2d": null
+    },
+    "text_properties": {
+      "body_properties": {
+        "anchor": {
+          "value": null
+        },
+        "bottom_inset": {
+          "value": null
+        },
+        "horz_overflow": {
+          "value": null
+        },
+        "left_inset": {
+          "value": null
+        },
+        "right_inset": {
+          "value": null
+        },
+        "rotation": {
+          "value": null
+        },
+        "rtl_col": {
+          "value": null
+        },
+        "shape_auto_fit": null,
+        "top_inset": {
+          "value": null
+        },
+        "use_paragraph_spacing": {
+          "value": null
+        },
+        "vert_overflow": {
+          "value": null
+        },
+        "wrap": {
+          "value": null,
+          "value_default": "None"
+        }
+      },
+      "list_style": {
+        "effect_list": null,
+        "text_paragraph_properties_type": {}
+      },
+      "paragraph": [
+        {
+          "end_para_run_properties": null,
+          "paragraph_properties": {
+            "alignment": {
+              "value": null,
+              "value_default": "Left"
+            },
+            "default_run_properties": {
+              "alternative_language": {
+                "value": null
+              },
+              "bold": {
+                "value": "0"
+              },
+              "capital": {
+                "value": null,
+                "value_default": "None"
+              },
+              "complex_script_font": null,
+              "east_asian_font": {
+                "charset": {
+                  "value": null
+                },
+                "panose": {
+                  "value": null
+                },
+                "pitch_family": {
+                  "value": null
+                },
+                "typeface": {
+                  "value": "Arial"
+                }
+              },
+              "effect_list": null,
+              "gradient_fill": null,
+              "italic": {
+                "value": null
+              },
+              "kumimoji": {
+                "value": null
+              },
+              "language": {
+                "value": null
+              },
+              "latin_font": {
+                "charset": {
+                  "value": null
+                },
+                "panose": {
+                  "value": null
+                },
+                "pitch_family": {
+                  "value": null
+                },
+                "typeface": {
+                  "value": "Arial"
+                }
+              },
+              "no_fill": null,
+              "outline": null,
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "595959"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "spacing": {
+                "value": -1
+              },
+              "strike": {
+                "value": "noStrike"
+              },
+              "sz": {
+                "value": "900"
+              },
+              "text": ""
+            },
+            "line_spacing": null,
+            "right_to_left": {
+              "value": null
+            }
+          },
+          "run": []
+        }
+      ]
+    }
+  },
+  "legend_present": true,
+  "plot_area": {
+    "area_3d_chart": null,
+    "area_chart": null,
+    "bar_3d_chart": null,
+    "bar_chart": {
+      "area_chart_series_list": {
+        "area_chart_series": [
+          {
+            "bubble_3d": null,
+            "bubble_size": null,
+            "category_axis_data": {
+              "multi_level_string_reference": null,
+              "number_reference": null,
+              "string_literal": null,
+              "string_reference": {
+                "cached_value": "Q 1",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 19
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 19
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "chart_text": {
+              "numeric_value": null,
+              "rich_text": null,
+              "string_reference": {
+                "cached_value": "Acquisition Costs",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": null,
+                      "end_row": null,
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 2
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 21
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "data_labels": {
+              "show_bubble_size": {
+                "val": {
+                  "value": null
+                }
+              },
+              "show_category_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_leader_lines": {
+                "val": {
+                  "value": true
+                }
+              },
+              "show_legend_key": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_percent": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_series_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_value": {
+                "val": {
+                  "value": false
+                }
+              },
+              "text_properties": {
+                "body_properties": {
+                  "anchor": {
+                    "value": null
+                  },
+                  "bottom_inset": {
+                    "value": null
+                  },
+                  "horz_overflow": {
+                    "value": null
+                  },
+                  "left_inset": {
+                    "value": null
+                  },
+                  "right_inset": {
+                    "value": null
+                  },
+                  "rotation": {
+                    "value": null
+                  },
+                  "rtl_col": {
+                    "value": null
+                  },
+                  "shape_auto_fit": null,
+                  "top_inset": {
+                    "value": null
+                  },
+                  "use_paragraph_spacing": {
+                    "value": null
+                  },
+                  "vert_overflow": {
+                    "value": null
+                  },
+                  "wrap": {
+                    "value": "None",
+                    "value_default": "None"
+                  }
+                },
+                "list_style": {
+                  "effect_list": null,
+                  "text_paragraph_properties_type": {}
+                },
+                "paragraph": [
+                  {
+                    "end_para_run_properties": null,
+                    "paragraph_properties": {
+                      "alignment": {
+                        "value": null,
+                        "value_default": "Left"
+                      },
+                      "default_run_properties": {
+                        "alternative_language": {
+                          "value": null
+                        },
+                        "bold": {
+                          "value": "0"
+                        },
+                        "capital": {
+                          "value": null,
+                          "value_default": "None"
+                        },
+                        "complex_script_font": null,
+                        "east_asian_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "effect_list": null,
+                        "gradient_fill": null,
+                        "italic": {
+                          "value": null
+                        },
+                        "kumimoji": {
+                          "value": null
+                        },
+                        "language": {
+                          "value": null
+                        },
+                        "latin_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "no_fill": null,
+                        "outline": null,
+                        "solid_fill": {
+                          "rgb_color_model_hex": {
+                            "alpha": null,
+                            "luminance": null,
+                            "luminance_modulation": null,
+                            "luminance_offset": null,
+                            "saturation": null,
+                            "saturation_modulation": null,
+                            "shade": null,
+                            "tint": null,
+                            "val": {
+                              "value": "000000"
+                            }
+                          },
+                          "scheme_color": null,
+                          "system_color": null
+                        },
+                        "spacing": {
+                          "value": -1
+                        },
+                        "strike": {
+                          "value": "noStrike"
+                        },
+                        "sz": {
+                          "value": "1000"
+                        },
+                        "text": ""
+                      },
+                      "line_spacing": null,
+                      "right_to_left": {
+                        "value": null
+                      }
+                    },
+                    "run": []
+                  }
+                ]
+              }
+            },
+            "explosion": null,
+            "index": {
+              "val": {
+                "value": 0
+              }
+            },
+            "invert_if_negative": {
+              "val": {
+                "value": 0.0
+              }
+            },
+            "marker": null,
+            "order": {
+              "val": {
+                "value": 0
+              }
+            },
+            "shape_properties": {
+              "effect_list": null,
+              "no_fill": null,
+              "outline": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Center"
+                },
+                "bevel": null,
+                "cap_type": {
+                  "value": null
+                },
+                "compound_line_type": {
+                  "value": null
+                },
+                "gradient_fill": null,
+                "miter": null,
+                "no_fill": null,
+                "preset_dash": null,
+                "round": null,
+                "solid_fill": {
+                  "rgb_color_model_hex": {
+                    "alpha": null,
+                    "luminance": null,
+                    "luminance_modulation": null,
+                    "luminance_offset": null,
+                    "saturation": null,
+                    "saturation_modulation": null,
+                    "shade": null,
+                    "tint": null,
+                    "val": {
+                      "value": "000000"
+                    }
+                  },
+                  "scheme_color": null,
+                  "system_color": null
+                },
+                "system_color": null,
+                "tail_end": null,
+                "width": {
+                  "value": 0
+                }
+              },
+              "pattern_fill": null,
+              "preset_geometry": null,
+              "scene_3d_type": null,
+              "shape_3d_type": null,
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "4285f4"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "transform2d": null
+            },
+            "smooth": null,
+            "values": {
+              "number_reference": {
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 21
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 21
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "numbering_cache": {
+                  "format_code": {
+                    "text": "General"
+                  }
+                }
+              }
+            },
+            "x_values": null,
+            "y_values": null
+          },
+          {
+            "bubble_3d": null,
+            "bubble_size": null,
+            "category_axis_data": {
+              "multi_level_string_reference": null,
+              "number_reference": null,
+              "string_literal": null,
+              "string_reference": {
+                "cached_value": "Q 1",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 19
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 19
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "chart_text": {
+              "numeric_value": null,
+              "rich_text": null,
+              "string_reference": {
+                "cached_value": "Hard Costs",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": null,
+                      "end_row": null,
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 2
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 23
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "data_labels": {
+              "show_bubble_size": {
+                "val": {
+                  "value": null
+                }
+              },
+              "show_category_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_leader_lines": {
+                "val": {
+                  "value": true
+                }
+              },
+              "show_legend_key": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_percent": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_series_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_value": {
+                "val": {
+                  "value": false
+                }
+              },
+              "text_properties": {
+                "body_properties": {
+                  "anchor": {
+                    "value": null
+                  },
+                  "bottom_inset": {
+                    "value": null
+                  },
+                  "horz_overflow": {
+                    "value": null
+                  },
+                  "left_inset": {
+                    "value": null
+                  },
+                  "right_inset": {
+                    "value": null
+                  },
+                  "rotation": {
+                    "value": null
+                  },
+                  "rtl_col": {
+                    "value": null
+                  },
+                  "shape_auto_fit": null,
+                  "top_inset": {
+                    "value": null
+                  },
+                  "use_paragraph_spacing": {
+                    "value": null
+                  },
+                  "vert_overflow": {
+                    "value": null
+                  },
+                  "wrap": {
+                    "value": "None",
+                    "value_default": "None"
+                  }
+                },
+                "list_style": {
+                  "effect_list": null,
+                  "text_paragraph_properties_type": {}
+                },
+                "paragraph": [
+                  {
+                    "end_para_run_properties": null,
+                    "paragraph_properties": {
+                      "alignment": {
+                        "value": null,
+                        "value_default": "Left"
+                      },
+                      "default_run_properties": {
+                        "alternative_language": {
+                          "value": null
+                        },
+                        "bold": {
+                          "value": "0"
+                        },
+                        "capital": {
+                          "value": null,
+                          "value_default": "None"
+                        },
+                        "complex_script_font": null,
+                        "east_asian_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "effect_list": null,
+                        "gradient_fill": null,
+                        "italic": {
+                          "value": null
+                        },
+                        "kumimoji": {
+                          "value": null
+                        },
+                        "language": {
+                          "value": null
+                        },
+                        "latin_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "no_fill": null,
+                        "outline": null,
+                        "solid_fill": {
+                          "rgb_color_model_hex": {
+                            "alpha": null,
+                            "luminance": null,
+                            "luminance_modulation": null,
+                            "luminance_offset": null,
+                            "saturation": null,
+                            "saturation_modulation": null,
+                            "shade": null,
+                            "tint": null,
+                            "val": {
+                              "value": "000000"
+                            }
+                          },
+                          "scheme_color": null,
+                          "system_color": null
+                        },
+                        "spacing": {
+                          "value": -1
+                        },
+                        "strike": {
+                          "value": "noStrike"
+                        },
+                        "sz": {
+                          "value": "1000"
+                        },
+                        "text": ""
+                      },
+                      "line_spacing": null,
+                      "right_to_left": {
+                        "value": null
+                      }
+                    },
+                    "run": []
+                  }
+                ]
+              }
+            },
+            "explosion": null,
+            "index": {
+              "val": {
+                "value": 1
+              }
+            },
+            "invert_if_negative": {
+              "val": {
+                "value": 0.0
+              }
+            },
+            "marker": null,
+            "order": {
+              "val": {
+                "value": 1
+              }
+            },
+            "shape_properties": {
+              "effect_list": null,
+              "no_fill": null,
+              "outline": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Center"
+                },
+                "bevel": null,
+                "cap_type": {
+                  "value": null
+                },
+                "compound_line_type": {
+                  "value": null
+                },
+                "gradient_fill": null,
+                "miter": null,
+                "no_fill": null,
+                "preset_dash": null,
+                "round": null,
+                "solid_fill": {
+                  "rgb_color_model_hex": {
+                    "alpha": null,
+                    "luminance": null,
+                    "luminance_modulation": null,
+                    "luminance_offset": null,
+                    "saturation": null,
+                    "saturation_modulation": null,
+                    "shade": null,
+                    "tint": null,
+                    "val": {
+                      "value": "000000"
+                    }
+                  },
+                  "scheme_color": null,
+                  "system_color": null
+                },
+                "system_color": null,
+                "tail_end": null,
+                "width": {
+                  "value": 0
+                }
+              },
+              "pattern_fill": null,
+              "preset_geometry": null,
+              "scene_3d_type": null,
+              "shape_3d_type": null,
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "ea4335"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "transform2d": null
+            },
+            "smooth": null,
+            "values": {
+              "number_reference": {
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 23
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 23
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "numbering_cache": {
+                  "format_code": {
+                    "text": "General"
+                  }
+                }
+              }
+            },
+            "x_values": null,
+            "y_values": null
+          },
+          {
+            "bubble_3d": null,
+            "bubble_size": null,
+            "category_axis_data": {
+              "multi_level_string_reference": null,
+              "number_reference": null,
+              "string_literal": null,
+              "string_reference": {
+                "cached_value": "Q 1",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 19
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 19
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "chart_text": {
+              "numeric_value": null,
+              "rich_text": null,
+              "string_reference": {
+                "cached_value": "Soft Costs",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": null,
+                      "end_row": null,
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 2
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 24
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "data_labels": {
+              "show_bubble_size": {
+                "val": {
+                  "value": null
+                }
+              },
+              "show_category_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_leader_lines": {
+                "val": {
+                  "value": true
+                }
+              },
+              "show_legend_key": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_percent": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_series_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_value": {
+                "val": {
+                  "value": false
+                }
+              },
+              "text_properties": {
+                "body_properties": {
+                  "anchor": {
+                    "value": null
+                  },
+                  "bottom_inset": {
+                    "value": null
+                  },
+                  "horz_overflow": {
+                    "value": null
+                  },
+                  "left_inset": {
+                    "value": null
+                  },
+                  "right_inset": {
+                    "value": null
+                  },
+                  "rotation": {
+                    "value": null
+                  },
+                  "rtl_col": {
+                    "value": null
+                  },
+                  "shape_auto_fit": null,
+                  "top_inset": {
+                    "value": null
+                  },
+                  "use_paragraph_spacing": {
+                    "value": null
+                  },
+                  "vert_overflow": {
+                    "value": null
+                  },
+                  "wrap": {
+                    "value": "None",
+                    "value_default": "None"
+                  }
+                },
+                "list_style": {
+                  "effect_list": null,
+                  "text_paragraph_properties_type": {}
+                },
+                "paragraph": [
+                  {
+                    "end_para_run_properties": null,
+                    "paragraph_properties": {
+                      "alignment": {
+                        "value": null,
+                        "value_default": "Left"
+                      },
+                      "default_run_properties": {
+                        "alternative_language": {
+                          "value": null
+                        },
+                        "bold": {
+                          "value": "0"
+                        },
+                        "capital": {
+                          "value": null,
+                          "value_default": "None"
+                        },
+                        "complex_script_font": null,
+                        "east_asian_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "effect_list": null,
+                        "gradient_fill": null,
+                        "italic": {
+                          "value": null
+                        },
+                        "kumimoji": {
+                          "value": null
+                        },
+                        "language": {
+                          "value": null
+                        },
+                        "latin_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "no_fill": null,
+                        "outline": null,
+                        "solid_fill": {
+                          "rgb_color_model_hex": {
+                            "alpha": null,
+                            "luminance": null,
+                            "luminance_modulation": null,
+                            "luminance_offset": null,
+                            "saturation": null,
+                            "saturation_modulation": null,
+                            "shade": null,
+                            "tint": null,
+                            "val": {
+                              "value": "000000"
+                            }
+                          },
+                          "scheme_color": null,
+                          "system_color": null
+                        },
+                        "spacing": {
+                          "value": -1
+                        },
+                        "strike": {
+                          "value": "noStrike"
+                        },
+                        "sz": {
+                          "value": "1000"
+                        },
+                        "text": ""
+                      },
+                      "line_spacing": null,
+                      "right_to_left": {
+                        "value": null
+                      }
+                    },
+                    "run": []
+                  }
+                ]
+              }
+            },
+            "explosion": null,
+            "index": {
+              "val": {
+                "value": 2
+              }
+            },
+            "invert_if_negative": {
+              "val": {
+                "value": 0.0
+              }
+            },
+            "marker": null,
+            "order": {
+              "val": {
+                "value": 2
+              }
+            },
+            "shape_properties": {
+              "effect_list": null,
+              "no_fill": null,
+              "outline": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Center"
+                },
+                "bevel": null,
+                "cap_type": {
+                  "value": null
+                },
+                "compound_line_type": {
+                  "value": null
+                },
+                "gradient_fill": null,
+                "miter": null,
+                "no_fill": null,
+                "preset_dash": null,
+                "round": null,
+                "solid_fill": {
+                  "rgb_color_model_hex": {
+                    "alpha": null,
+                    "luminance": null,
+                    "luminance_modulation": null,
+                    "luminance_offset": null,
+                    "saturation": null,
+                    "saturation_modulation": null,
+                    "shade": null,
+                    "tint": null,
+                    "val": {
+                      "value": "000000"
+                    }
+                  },
+                  "scheme_color": null,
+                  "system_color": null
+                },
+                "system_color": null,
+                "tail_end": null,
+                "width": {
+                  "value": 0
+                }
+              },
+              "pattern_fill": null,
+              "preset_geometry": null,
+              "scene_3d_type": null,
+              "shape_3d_type": null,
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "fbbc04"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "transform2d": null
+            },
+            "smooth": null,
+            "values": {
+              "number_reference": {
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 24
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 24
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "numbering_cache": {
+                  "format_code": {
+                    "text": "General"
+                  }
+                }
+              }
+            },
+            "x_values": null,
+            "y_values": null
+          },
+          {
+            "bubble_3d": null,
+            "bubble_size": null,
+            "category_axis_data": {
+              "multi_level_string_reference": null,
+              "number_reference": null,
+              "string_literal": null,
+              "string_reference": {
+                "cached_value": "Q 1",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 19
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 19
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "chart_text": {
+              "numeric_value": null,
+              "rich_text": null,
+              "string_reference": {
+                "cached_value": "Approval Costs",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": null,
+                      "end_row": null,
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 2
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 22
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "data_labels": {
+              "show_bubble_size": {
+                "val": {
+                  "value": null
+                }
+              },
+              "show_category_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_leader_lines": {
+                "val": {
+                  "value": true
+                }
+              },
+              "show_legend_key": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_percent": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_series_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_value": {
+                "val": {
+                  "value": false
+                }
+              },
+              "text_properties": {
+                "body_properties": {
+                  "anchor": {
+                    "value": null
+                  },
+                  "bottom_inset": {
+                    "value": null
+                  },
+                  "horz_overflow": {
+                    "value": null
+                  },
+                  "left_inset": {
+                    "value": null
+                  },
+                  "right_inset": {
+                    "value": null
+                  },
+                  "rotation": {
+                    "value": null
+                  },
+                  "rtl_col": {
+                    "value": null
+                  },
+                  "shape_auto_fit": null,
+                  "top_inset": {
+                    "value": null
+                  },
+                  "use_paragraph_spacing": {
+                    "value": null
+                  },
+                  "vert_overflow": {
+                    "value": null
+                  },
+                  "wrap": {
+                    "value": "None",
+                    "value_default": "None"
+                  }
+                },
+                "list_style": {
+                  "effect_list": null,
+                  "text_paragraph_properties_type": {}
+                },
+                "paragraph": [
+                  {
+                    "end_para_run_properties": null,
+                    "paragraph_properties": {
+                      "alignment": {
+                        "value": null,
+                        "value_default": "Left"
+                      },
+                      "default_run_properties": {
+                        "alternative_language": {
+                          "value": null
+                        },
+                        "bold": {
+                          "value": "0"
+                        },
+                        "capital": {
+                          "value": null,
+                          "value_default": "None"
+                        },
+                        "complex_script_font": null,
+                        "east_asian_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "effect_list": null,
+                        "gradient_fill": null,
+                        "italic": {
+                          "value": null
+                        },
+                        "kumimoji": {
+                          "value": null
+                        },
+                        "language": {
+                          "value": null
+                        },
+                        "latin_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "no_fill": null,
+                        "outline": null,
+                        "solid_fill": {
+                          "rgb_color_model_hex": {
+                            "alpha": null,
+                            "luminance": null,
+                            "luminance_modulation": null,
+                            "luminance_offset": null,
+                            "saturation": null,
+                            "saturation_modulation": null,
+                            "shade": null,
+                            "tint": null,
+                            "val": {
+                              "value": "000000"
+                            }
+                          },
+                          "scheme_color": null,
+                          "system_color": null
+                        },
+                        "spacing": {
+                          "value": -1
+                        },
+                        "strike": {
+                          "value": "noStrike"
+                        },
+                        "sz": {
+                          "value": "1000"
+                        },
+                        "text": ""
+                      },
+                      "line_spacing": null,
+                      "right_to_left": {
+                        "value": null
+                      }
+                    },
+                    "run": []
+                  }
+                ]
+              }
+            },
+            "explosion": null,
+            "index": {
+              "val": {
+                "value": 3
+              }
+            },
+            "invert_if_negative": {
+              "val": {
+                "value": 0.0
+              }
+            },
+            "marker": null,
+            "order": {
+              "val": {
+                "value": 3
+              }
+            },
+            "shape_properties": {
+              "effect_list": null,
+              "no_fill": null,
+              "outline": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Center"
+                },
+                "bevel": null,
+                "cap_type": {
+                  "value": null
+                },
+                "compound_line_type": {
+                  "value": null
+                },
+                "gradient_fill": null,
+                "miter": null,
+                "no_fill": null,
+                "preset_dash": null,
+                "round": null,
+                "solid_fill": {
+                  "rgb_color_model_hex": {
+                    "alpha": null,
+                    "luminance": null,
+                    "luminance_modulation": null,
+                    "luminance_offset": null,
+                    "saturation": null,
+                    "saturation_modulation": null,
+                    "shade": null,
+                    "tint": null,
+                    "val": {
+                      "value": "000000"
+                    }
+                  },
+                  "scheme_color": null,
+                  "system_color": null
+                },
+                "system_color": null,
+                "tail_end": null,
+                "width": {
+                  "value": 0
+                }
+              },
+              "pattern_fill": null,
+              "preset_geometry": null,
+              "scene_3d_type": null,
+              "shape_3d_type": null,
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "ff6d01"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "transform2d": null
+            },
+            "smooth": null,
+            "values": {
+              "number_reference": {
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 22
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 22
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "numbering_cache": {
+                  "format_code": {
+                    "text": "General"
+                  }
+                }
+              }
+            },
+            "x_values": null,
+            "y_values": null
+          },
+          {
+            "bubble_3d": null,
+            "bubble_size": null,
+            "category_axis_data": {
+              "multi_level_string_reference": null,
+              "number_reference": null,
+              "string_literal": null,
+              "string_reference": {
+                "cached_value": "Q 1",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 19
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 19
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "chart_text": {
+              "numeric_value": null,
+              "rich_text": null,
+              "string_reference": {
+                "cached_value": "LO Rev. Sharing",
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": null,
+                      "end_row": null,
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 2
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 25
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "string_cache": {}
+              }
+            },
+            "data_labels": {
+              "show_bubble_size": {
+                "val": {
+                  "value": null
+                }
+              },
+              "show_category_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_leader_lines": {
+                "val": {
+                  "value": true
+                }
+              },
+              "show_legend_key": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_percent": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_series_name": {
+                "val": {
+                  "value": false
+                }
+              },
+              "show_value": {
+                "val": {
+                  "value": false
+                }
+              },
+              "text_properties": {
+                "body_properties": {
+                  "anchor": {
+                    "value": null
+                  },
+                  "bottom_inset": {
+                    "value": null
+                  },
+                  "horz_overflow": {
+                    "value": null
+                  },
+                  "left_inset": {
+                    "value": null
+                  },
+                  "right_inset": {
+                    "value": null
+                  },
+                  "rotation": {
+                    "value": null
+                  },
+                  "rtl_col": {
+                    "value": null
+                  },
+                  "shape_auto_fit": null,
+                  "top_inset": {
+                    "value": null
+                  },
+                  "use_paragraph_spacing": {
+                    "value": null
+                  },
+                  "vert_overflow": {
+                    "value": null
+                  },
+                  "wrap": {
+                    "value": "None",
+                    "value_default": "None"
+                  }
+                },
+                "list_style": {
+                  "effect_list": null,
+                  "text_paragraph_properties_type": {}
+                },
+                "paragraph": [
+                  {
+                    "end_para_run_properties": null,
+                    "paragraph_properties": {
+                      "alignment": {
+                        "value": null,
+                        "value_default": "Left"
+                      },
+                      "default_run_properties": {
+                        "alternative_language": {
+                          "value": null
+                        },
+                        "bold": {
+                          "value": "0"
+                        },
+                        "capital": {
+                          "value": null,
+                          "value_default": "None"
+                        },
+                        "complex_script_font": null,
+                        "east_asian_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "effect_list": null,
+                        "gradient_fill": null,
+                        "italic": {
+                          "value": null
+                        },
+                        "kumimoji": {
+                          "value": null
+                        },
+                        "language": {
+                          "value": null
+                        },
+                        "latin_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "no_fill": null,
+                        "outline": null,
+                        "solid_fill": {
+                          "rgb_color_model_hex": {
+                            "alpha": null,
+                            "luminance": null,
+                            "luminance_modulation": null,
+                            "luminance_offset": null,
+                            "saturation": null,
+                            "saturation_modulation": null,
+                            "shade": null,
+                            "tint": null,
+                            "val": {
+                              "value": "000000"
+                            }
+                          },
+                          "scheme_color": null,
+                          "system_color": null
+                        },
+                        "spacing": {
+                          "value": -1
+                        },
+                        "strike": {
+                          "value": "noStrike"
+                        },
+                        "sz": {
+                          "value": "1000"
+                        },
+                        "text": ""
+                      },
+                      "line_spacing": null,
+                      "right_to_left": {
+                        "value": null
+                      }
+                    },
+                    "run": []
+                  }
+                ]
+              }
+            },
+            "explosion": null,
+            "index": {
+              "val": {
+                "value": 4
+              }
+            },
+            "invert_if_negative": {
+              "val": {
+                "value": 0.0
+              }
+            },
+            "marker": null,
+            "order": {
+              "val": {
+                "value": 4
+              }
+            },
+            "shape_properties": {
+              "effect_list": null,
+              "no_fill": null,
+              "outline": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Center"
+                },
+                "bevel": null,
+                "cap_type": {
+                  "value": null
+                },
+                "compound_line_type": {
+                  "value": null
+                },
+                "gradient_fill": null,
+                "miter": null,
+                "no_fill": null,
+                "preset_dash": null,
+                "round": null,
+                "solid_fill": {
+                  "rgb_color_model_hex": {
+                    "alpha": null,
+                    "luminance": null,
+                    "luminance_modulation": null,
+                    "luminance_offset": null,
+                    "saturation": null,
+                    "saturation_modulation": null,
+                    "shade": null,
+                    "tint": null,
+                    "val": {
+                      "value": "000000"
+                    }
+                  },
+                  "scheme_color": null,
+                  "system_color": null
+                },
+                "system_color": null,
+                "tail_end": null,
+                "width": {
+                  "value": 0
+                }
+              },
+              "pattern_fill": null,
+              "preset_geometry": null,
+              "scene_3d_type": null,
+              "shape_3d_type": null,
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "c4d9fc"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "transform2d": null
+            },
+            "smooth": null,
+            "values": {
+              "number_reference": {
+                "formula": {
+                  "address": {
+                    "range": {
+                      "end_col": {
+                        "is_lock": true,
+                        "num": 17
+                      },
+                      "end_row": {
+                        "is_lock": true,
+                        "num": 25
+                      },
+                      "start_col": {
+                        "is_lock": true,
+                        "num": 6
+                      },
+                      "start_row": {
+                        "is_lock": true,
+                        "num": 25
+                      }
+                    },
+                    "sheet_name": "Executive Summary"
+                  },
+                  "string_value": {
+                    "value": null
+                  }
+                },
+                "numbering_cache": {
+                  "format_code": {
+                    "text": "General"
+                  }
+                }
+              }
+            },
+            "x_values": null,
+            "y_values": null
+          }
+        ]
+      },
+      "axis_id": [
+        {
+          "val": {
+            "value": 58840340
+          }
+        },
+        {
+          "val": {
+            "value": 35359254
+          }
+        }
+      ],
+      "bar_direction": {
+        "val": {
+          "value": "Column",
+          "value_default": "Bar"
+        }
+      },
+      "data_labels": {
+        "show_bubble_size": {
+          "val": {
+            "value": null
+          }
+        },
+        "show_category_name": {
+          "val": {
+            "value": null
+          }
+        },
+        "show_leader_lines": null,
+        "show_legend_key": {
+          "val": {
+            "value": null
+          }
+        },
+        "show_percent": {
+          "val": {
+            "value": null
+          }
+        },
+        "show_series_name": {
+          "val": {
+            "value": null
+          }
+        },
+        "show_value": {
+          "val": {
+            "value": null
+          }
+        },
+        "text_properties": null
+      },
+      "gap_width": {
+        "val": {
+          "value": 150
+        }
+      },
+      "grouping": {
+        "val": {
+          "value": "Stacked",
+          "value_default": "PercentStacked"
+        }
+      },
+      "overlap": {
+        "val": {
+          "value": 100
+        }
+      },
+      "vary_colors": {
+        "val": {
+          "value": false
+        }
+      }
+    },
+    "bubble_chart": null,
+    "category_axis": [
+      {
+        "auto_labeled": {
+          "val": {
+            "value": true
+          }
+        },
+        "axis_id": {
+          "val": {
+            "value": 58840340
+          }
+        },
+        "axis_position": {
+          "val": {
+            "value": "Bottom",
+            "value_default": "Bottom"
+          }
+        },
+        "crosses": {
+          "val": {
+            "value": "AutoZero",
+            "value_default": "AutoZero"
+          }
+        },
+        "crossing_axis": {
+          "val": {
+            "value": 35359254
+          }
+        },
+        "delete": {
+          "val": {
+            "value": false
+          }
+        },
+        "label_alignment": {
+          "val": {
+            "value": "Center",
+            "value_default": "Center"
+          }
+        },
+        "label_offset": {
+          "val": {
+            "value": 100
+          }
+        },
+        "major_gridlines": null,
+        "major_tick_mark": {
+          "val": {
+            "value": "Outside",
+            "value_default": "Cross"
+          }
+        },
+        "minor_tick_mark": {
+          "val": {
+            "value": "None",
+            "value_default": "Cross"
+          }
+        },
+        "no_multi_level_labels": {
+          "val": {
+            "value": false
+          }
+        },
+        "scaling": {
+          "orientation": {
+            "val": {
+              "value": "MinMax",
+              "value_default": "MaxMin"
+            }
+          }
+        },
+        "shape_properties": {
+          "effect_list": null,
+          "no_fill": null,
+          "outline": {
+            "alignment": {
+              "value": null,
+              "value_default": "Center"
+            },
+            "bevel": null,
+            "cap_type": {
+              "value": null
+            },
+            "compound_line_type": {
+              "value": null
+            },
+            "gradient_fill": null,
+            "miter": null,
+            "no_fill": null,
+            "preset_dash": null,
+            "round": {},
+            "solid_fill": {
+              "rgb_color_model_hex": {
+                "alpha": null,
+                "luminance": null,
+                "luminance_modulation": null,
+                "luminance_offset": null,
+                "saturation": null,
+                "saturation_modulation": null,
+                "shade": null,
+                "tint": null,
+                "val": {
+                  "value": "000000"
+                }
+              },
+              "scheme_color": null,
+              "system_color": null
+            },
+            "system_color": null,
+            "tail_end": null,
+            "width": {
+              "value": 9360
+            }
+          },
+          "pattern_fill": null,
+          "preset_geometry": null,
+          "scene_3d_type": null,
+          "shape_3d_type": null,
+          "solid_fill": null,
+          "transform2d": null
+        },
+        "text_properties": {
+          "body_properties": {
+            "anchor": {
+              "value": null
+            },
+            "bottom_inset": {
+              "value": null
+            },
+            "horz_overflow": {
+              "value": null
+            },
+            "left_inset": {
+              "value": null
+            },
+            "right_inset": {
+              "value": null
+            },
+            "rotation": {
+              "value": null
+            },
+            "rtl_col": {
+              "value": null
+            },
+            "shape_auto_fit": null,
+            "top_inset": {
+              "value": null
+            },
+            "use_paragraph_spacing": {
+              "value": null
+            },
+            "vert_overflow": {
+              "value": null
+            },
+            "wrap": {
+              "value": null,
+              "value_default": "None"
+            }
+          },
+          "list_style": {
+            "effect_list": null,
+            "text_paragraph_properties_type": {}
+          },
+          "paragraph": [
+            {
+              "end_para_run_properties": null,
+              "paragraph_properties": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Left"
+                },
+                "default_run_properties": {
+                  "alternative_language": {
+                    "value": null
+                  },
+                  "bold": {
+                    "value": "0"
+                  },
+                  "capital": {
+                    "value": null,
+                    "value_default": "None"
+                  },
+                  "complex_script_font": null,
+                  "east_asian_font": {
+                    "charset": {
+                      "value": null
+                    },
+                    "panose": {
+                      "value": null
+                    },
+                    "pitch_family": {
+                      "value": null
+                    },
+                    "typeface": {
+                      "value": "Arial"
+                    }
+                  },
+                  "effect_list": null,
+                  "gradient_fill": null,
+                  "italic": {
+                    "value": null
+                  },
+                  "kumimoji": {
+                    "value": null
+                  },
+                  "language": {
+                    "value": null
+                  },
+                  "latin_font": {
+                    "charset": {
+                      "value": null
+                    },
+                    "panose": {
+                      "value": null
+                    },
+                    "pitch_family": {
+                      "value": null
+                    },
+                    "typeface": {
+                      "value": "Arial"
+                    }
+                  },
+                  "no_fill": null,
+                  "outline": null,
+                  "solid_fill": {
+                    "rgb_color_model_hex": {
+                      "alpha": null,
+                      "luminance": null,
+                      "luminance_modulation": null,
+                      "luminance_offset": null,
+                      "saturation": null,
+                      "saturation_modulation": null,
+                      "shade": null,
+                      "tint": null,
+                      "val": {
+                        "value": "595959"
+                      }
+                    },
+                    "scheme_color": null,
+                    "system_color": null
+                  },
+                  "spacing": {
+                    "value": -1
+                  },
+                  "strike": {
+                    "value": "noStrike"
+                  },
+                  "sz": {
+                    "value": "900"
+                  },
+                  "text": ""
+                },
+                "line_spacing": null,
+                "right_to_left": {
+                  "value": null
+                }
+              },
+              "run": []
+            }
+          ]
+        },
+        "tick_label_position": {
+          "val": {
+            "value": "NextTo",
+            "value_default": "High"
+          }
+        },
+        "title": {
+          "chart_text": {
+            "numeric_value": null,
+            "rich_text": {
+              "body_properties": {
+                "anchor": {
+                  "value": null
+                },
+                "bottom_inset": {
+                  "value": null
+                },
+                "horz_overflow": {
+                  "value": null
+                },
+                "left_inset": {
+                  "value": null
+                },
+                "right_inset": {
+                  "value": null
+                },
+                "rotation": {
+                  "value": 0
+                },
+                "rtl_col": {
+                  "value": null
+                },
+                "shape_auto_fit": null,
+                "top_inset": {
+                  "value": null
+                },
+                "use_paragraph_spacing": {
+                  "value": null
+                },
+                "vert_overflow": {
+                  "value": null
+                },
+                "wrap": {
+                  "value": null,
+                  "value_default": "None"
+                }
+              },
+              "list_style": {
+                "effect_list": null,
+                "text_paragraph_properties_type": {}
+              },
+              "paragraph": [
+                {
+                  "end_para_run_properties": null,
+                  "paragraph_properties": {
+                    "alignment": {
+                      "value": null,
+                      "value_default": "Left"
+                    },
+                    "default_run_properties": {
+                      "alternative_language": {
+                        "value": null
+                      },
+                      "bold": {
+                        "value": "0"
+                      },
+                      "capital": {
+                        "value": null,
+                        "value_default": "None"
+                      },
+                      "complex_script_font": null,
+                      "east_asian_font": {
+                        "charset": {
+                          "value": null
+                        },
+                        "panose": {
+                          "value": null
+                        },
+                        "pitch_family": {
+                          "value": null
+                        },
+                        "typeface": {
+                          "value": "Arial"
+                        }
+                      },
+                      "effect_list": null,
+                      "gradient_fill": null,
+                      "italic": {
+                        "value": null
+                      },
+                      "kumimoji": {
+                        "value": null
+                      },
+                      "language": {
+                        "value": "en-US"
+                      },
+                      "latin_font": {
+                        "charset": {
+                          "value": null
+                        },
+                        "panose": {
+                          "value": null
+                        },
+                        "pitch_family": {
+                          "value": null
+                        },
+                        "typeface": {
+                          "value": "Arial"
+                        }
+                      },
+                      "no_fill": null,
+                      "outline": null,
+                      "solid_fill": {
+                        "rgb_color_model_hex": {
+                          "alpha": null,
+                          "luminance": null,
+                          "luminance_modulation": null,
+                          "luminance_offset": null,
+                          "saturation": null,
+                          "saturation_modulation": null,
+                          "shade": null,
+                          "tint": null,
+                          "val": {
+                            "value": "595959"
+                          }
+                        },
+                        "scheme_color": null,
+                        "system_color": null
+                      },
+                      "spacing": {
+                        "value": -1
+                      },
+                      "strike": {
+                        "value": "noStrike"
+                      },
+                      "sz": {
+                        "value": "900"
+                      },
+                      "text": ""
+                    },
+                    "line_spacing": null,
+                    "right_to_left": {
+                      "value": null
+                    }
+                  },
+                  "run": [
+                    {
+                      "run_properties": {
+                        "alternative_language": {
+                          "value": null
+                        },
+                        "bold": {
+                          "value": "0"
+                        },
+                        "capital": {
+                          "value": null,
+                          "value_default": "None"
+                        },
+                        "complex_script_font": null,
+                        "east_asian_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "effect_list": null,
+                        "gradient_fill": null,
+                        "italic": {
+                          "value": null
+                        },
+                        "kumimoji": {
+                          "value": null
+                        },
+                        "language": {
+                          "value": "en-US"
+                        },
+                        "latin_font": {
+                          "charset": {
+                            "value": null
+                          },
+                          "panose": {
+                            "value": null
+                          },
+                          "pitch_family": {
+                            "value": null
+                          },
+                          "typeface": {
+                            "value": "Arial"
+                          }
+                        },
+                        "no_fill": null,
+                        "outline": null,
+                        "solid_fill": {
+                          "rgb_color_model_hex": {
+                            "alpha": null,
+                            "luminance": null,
+                            "luminance_modulation": null,
+                            "luminance_offset": null,
+                            "saturation": null,
+                            "saturation_modulation": null,
+                            "shade": null,
+                            "tint": null,
+                            "val": {
+                              "value": "595959"
+                            }
+                          },
+                          "scheme_color": null,
+                          "system_color": null
+                        },
+                        "spacing": {
+                          "value": -1
+                        },
+                        "strike": {
+                          "value": "noStrike"
+                        },
+                        "sz": {
+                          "value": "900"
+                        },
+                        "text": ""
+                      },
+                      "text": "Quarters"
+                    }
+                  ]
+                }
+              ]
+            },
+            "string_reference": null
+          },
+          "layout": null,
+          "overlay": {
+            "val": {
+              "value": false
+            }
+          },
+          "shape_properties": {
+            "effect_list": null,
+            "no_fill": {},
+            "outline": {
+              "alignment": {
+                "value": null,
+                "value_default": "Center"
+              },
+              "bevel": null,
+              "cap_type": {
+                "value": null
+              },
+              "compound_line_type": {
+                "value": null
+              },
+              "gradient_fill": null,
+              "miter": null,
+              "no_fill": {},
+              "preset_dash": null,
+              "round": null,
+              "solid_fill": null,
+              "system_color": null,
+              "tail_end": null,
+              "width": {
+                "value": 0
+              }
+            },
+            "pattern_fill": null,
+            "preset_geometry": null,
+            "scene_3d_type": null,
+            "shape_3d_type": null,
+            "solid_fill": null,
+            "transform2d": null
+          }
+        }
+      }
+    ],
+    "date_axis": [],
+    "doughnut_chart": null,
+    "layout": {
+      "manual_layout": {
+        "height": {
+          "val": {
+            "value": 0.612814847547503
+          }
+        },
+        "height_mode": null,
+        "layout_target": {
+          "val": {
+            "value": "Inner",
+            "value_default": "Inner"
+          }
+        },
+        "left": {
+          "val": {
+            "value": 0.115401769122129
+          }
+        },
+        "left_mode": {
+          "val": {
+            "value": "Edge",
+            "value_default": "Edge"
+          }
+        },
+        "top": {
+          "val": {
+            "value": 0.168272205037561
+          }
+        },
+        "top_mode": {
+          "val": {
+            "value": "Edge",
+            "value_default": "Edge"
+          }
+        },
+        "width": {
+          "val": {
+            "value": 0.871069649892217
+          }
+        },
+        "width_mode": null
+      }
+    },
+    "line_3d_chart": null,
+    "line_chart": null,
+    "of_pie_chart": null,
+    "pie_3d_chart": null,
+    "pie_chart": null,
+    "radar_chart": null,
+    "scatter_chart": null,
+    "series_axis": [],
+    "shape_properties": {
+      "effect_list": null,
+      "no_fill": {},
+      "outline": {
+        "alignment": {
+          "value": null,
+          "value_default": "Center"
+        },
+        "bevel": null,
+        "cap_type": {
+          "value": null
+        },
+        "compound_line_type": {
+          "value": null
+        },
+        "gradient_fill": null,
+        "miter": null,
+        "no_fill": {},
+        "preset_dash": null,
+        "round": null,
+        "solid_fill": null,
+        "system_color": null,
+        "tail_end": null,
+        "width": {
+          "value": 0
+        }
+      },
+      "pattern_fill": null,
+      "preset_geometry": null,
+      "scene_3d_type": null,
+      "shape_3d_type": null,
+      "solid_fill": null,
+      "transform2d": null
+    },
+    "value_axis": [
+      {
+        "axis_id": {
+          "val": {
+            "value": 35359254
+          }
+        },
+        "axis_position": {
+          "val": {
+            "value": "Left",
+            "value_default": "Bottom"
+          }
+        },
+        "cross_between": {
+          "val": {
+            "value": "Between",
+            "value_default": "Between"
+          }
+        },
+        "crosses": {
+          "val": {
+            "value": "AutoZero",
+            "value_default": "AutoZero"
+          }
+        },
+        "crossing_axis": {
+          "val": {
+            "value": 58840340
+          }
+        },
+        "delete": {
+          "val": {
+            "value": false
+          }
+        },
+        "major_gridlines": {
+          "shape_properties": {
+            "effect_list": null,
+            "no_fill": null,
+            "outline": {
+              "alignment": {
+                "value": null,
+                "value_default": "Center"
+              },
+              "bevel": null,
+              "cap_type": {
+                "value": null
+              },
+              "compound_line_type": {
+                "value": null
+              },
+              "gradient_fill": null,
+              "miter": null,
+              "no_fill": null,
+              "preset_dash": null,
+              "round": {},
+              "solid_fill": {
+                "rgb_color_model_hex": {
+                  "alpha": null,
+                  "luminance": null,
+                  "luminance_modulation": null,
+                  "luminance_offset": null,
+                  "saturation": null,
+                  "saturation_modulation": null,
+                  "shade": null,
+                  "tint": null,
+                  "val": {
+                    "value": "d9d9d9"
+                  }
+                },
+                "scheme_color": null,
+                "system_color": null
+              },
+              "system_color": null,
+              "tail_end": null,
+              "width": {
+                "value": 9360
+              }
+            },
+            "pattern_fill": null,
+            "preset_geometry": null,
+            "scene_3d_type": null,
+            "shape_3d_type": null,
+            "solid_fill": null,
+            "transform2d": null
+          }
+        },
+        "major_tick_mark": {
+          "val": {
+            "value": "Outside",
+            "value_default": "Cross"
+          }
+        },
+        "minor_tick_mark": {
+          "val": {
+            "value": "None",
+            "value_default": "Cross"
+          }
+        },
+        "numbering_format": {
+          "format_code": {
+            "value": "#"
+          },
+          "source_linked": {
+            "value": false
+          }
+        },
+        "scaling": {
+          "orientation": {
+            "val": {
+              "value": "MinMax",
+              "value_default": "MaxMin"
+            }
+          }
+        },
+        "shape_properties": {
+          "effect_list": null,
+          "no_fill": null,
+          "outline": {
+            "alignment": {
+              "value": null,
+              "value_default": "Center"
+            },
+            "bevel": null,
+            "cap_type": {
+              "value": null
+            },
+            "compound_line_type": {
+              "value": null
+            },
+            "gradient_fill": null,
+            "miter": null,
+            "no_fill": null,
+            "preset_dash": null,
+            "round": {},
+            "solid_fill": {
+              "rgb_color_model_hex": {
+                "alpha": null,
+                "luminance": null,
+                "luminance_modulation": null,
+                "luminance_offset": null,
+                "saturation": null,
+                "saturation_modulation": null,
+                "shade": null,
+                "tint": null,
+                "val": {
+                  "value": "000000"
+                }
+              },
+              "scheme_color": null,
+              "system_color": null
+            },
+            "system_color": null,
+            "tail_end": null,
+            "width": {
+              "value": 6480
+            }
+          },
+          "pattern_fill": null,
+          "preset_geometry": null,
+          "scene_3d_type": null,
+          "shape_3d_type": null,
+          "solid_fill": null,
+          "transform2d": null
+        },
+        "text_properties": {
+          "body_properties": {
+            "anchor": {
+              "value": null
+            },
+            "bottom_inset": {
+              "value": null
+            },
+            "horz_overflow": {
+              "value": null
+            },
+            "left_inset": {
+              "value": null
+            },
+            "right_inset": {
+              "value": null
+            },
+            "rotation": {
+              "value": null
+            },
+            "rtl_col": {
+              "value": null
+            },
+            "shape_auto_fit": null,
+            "top_inset": {
+              "value": null
+            },
+            "use_paragraph_spacing": {
+              "value": null
+            },
+            "vert_overflow": {
+              "value": null
+            },
+            "wrap": {
+              "value": null,
+              "value_default": "None"
+            }
+          },
+          "list_style": {
+            "effect_list": null,
+            "text_paragraph_properties_type": {}
+          },
+          "paragraph": [
+            {
+              "end_para_run_properties": null,
+              "paragraph_properties": {
+                "alignment": {
+                  "value": null,
+                  "value_default": "Left"
+                },
+                "default_run_properties": {
+                  "alternative_language": {
+                    "value": null
+                  },
+                  "bold": {
+                    "value": "0"
+                  },
+                  "capital": {
+                    "value": null,
+                    "value_default": "None"
+                  },
+                  "complex_script_font": null,
+                  "east_asian_font": {
+                    "charset": {
+                      "value": null
+                    },
+                    "panose": {
+                      "value": null
+                    },
+                    "pitch_family": {
+                      "value": null
+                    },
+                    "typeface": {
+                      "value": "Arial"
+                    }
+                  },
+                  "effect_list": null,
+                  "gradient_fill": null,
+                  "italic": {
+                    "value": null
+                  },
+                  "kumimoji": {
+                    "value": null
+                  },
+                  "language": {
+                    "value": null
+                  },
+                  "latin_font": {
+                    "charset": {
+                      "value": null
+                    },
+                    "panose": {
+                      "value": null
+                    },
+                    "pitch_family": {
+                      "value": null
+                    },
+                    "typeface": {
+                      "value": "Arial"
+                    }
+                  },
+                  "no_fill": null,
+                  "outline": null,
+                  "solid_fill": {
+                    "rgb_color_model_hex": {
+                      "alpha": null,
+                      "luminance": null,
+                      "luminance_modulation": null,
+                      "luminance_offset": null,
+                      "saturation": null,
+                      "saturation_modulation": null,
+                      "shade": null,
+                      "tint": null,
+                      "val": {
+                        "value": "595959"
+                      }
+                    },
+                    "scheme_color": null,
+                    "system_color": null
+                  },
+                  "spacing": {
+                    "value": -1
+                  },
+                  "strike": {
+                    "value": "noStrike"
+                  },
+                  "sz": {
+                    "value": "900"
+                  },
+                  "text": ""
+                },
+                "line_spacing": null,
+                "right_to_left": {
+                  "value": null
+                }
+              },
+              "run": []
+            }
+          ]
+        },
+        "tick_label_position": {
+          "val": {
+            "value": "NextTo",
+            "value_default": "High"
+          }
+        },
+        "title": null
+      }
+    ]
+  },
+  "plot_visible_only": {
+    "val": {
+      "value": true
+    }
+  },
+  "show_data_labels_over_maximum": {
+    "val": {
+      "value": null
+    }
+  },
+  "side_wall": null,
+  "title": {
+    "chart_text": {
+      "numeric_value": null,
+      "rich_text": {
+        "body_properties": {
+          "anchor": {
+            "value": null
+          },
+          "bottom_inset": {
+            "value": null
+          },
+          "horz_overflow": {
+            "value": null
+          },
+          "left_inset": {
+            "value": null
+          },
+          "right_inset": {
+            "value": null
+          },
+          "rotation": {
+            "value": 0
+          },
+          "rtl_col": {
+            "value": null
+          },
+          "shape_auto_fit": null,
+          "top_inset": {
+            "value": null
+          },
+          "use_paragraph_spacing": {
+            "value": null
+          },
+          "vert_overflow": {
+            "value": null
+          },
+          "wrap": {
+            "value": null,
+            "value_default": "None"
+          }
+        },
+        "list_style": {
+          "effect_list": null,
+          "text_paragraph_properties_type": {}
+        },
+        "paragraph": [
+          {
+            "end_para_run_properties": null,
+            "paragraph_properties": {
+              "alignment": {
+                "value": null,
+                "value_default": "Left"
+              },
+              "default_run_properties": {
+                "alternative_language": {
+                  "value": null
+                },
+                "bold": {
+                  "value": "1"
+                },
+                "capital": {
+                  "value": null,
+                  "value_default": "None"
+                },
+                "complex_script_font": null,
+                "east_asian_font": {
+                  "charset": {
+                    "value": null
+                  },
+                  "panose": {
+                    "value": null
+                  },
+                  "pitch_family": {
+                    "value": null
+                  },
+                  "typeface": {
+                    "value": "Arial"
+                  }
+                },
+                "effect_list": null,
+                "gradient_fill": null,
+                "italic": {
+                  "value": null
+                },
+                "kumimoji": {
+                  "value": null
+                },
+                "language": {
+                  "value": "en-US"
+                },
+                "latin_font": {
+                  "charset": {
+                    "value": null
+                  },
+                  "panose": {
+                    "value": null
+                  },
+                  "pitch_family": {
+                    "value": null
+                  },
+                  "typeface": {
+                    "value": "Arial"
+                  }
+                },
+                "no_fill": null,
+                "outline": null,
+                "solid_fill": {
+                  "rgb_color_model_hex": {
+                    "alpha": null,
+                    "luminance": null,
+                    "luminance_modulation": null,
+                    "luminance_offset": null,
+                    "saturation": null,
+                    "saturation_modulation": null,
+                    "shade": null,
+                    "tint": null,
+                    "val": {
+                      "value": "595959"
+                    }
+                  },
+                  "scheme_color": null,
+                  "system_color": null
+                },
+                "spacing": {
+                  "value": -1
+                },
+                "strike": {
+                  "value": "noStrike"
+                },
+                "sz": {
+                  "value": "1400"
+                },
+                "text": ""
+              },
+              "line_spacing": null,
+              "right_to_left": {
+                "value": null
+              }
+            },
+            "run": [
+              {
+                "run_properties": {
+                  "alternative_language": {
+                    "value": null
+                  },
+                  "bold": {
+                    "value": "1"
+                  },
+                  "capital": {
+                    "value": null,
+                    "value_default": "None"
+                  },
+                  "complex_script_font": null,
+                  "east_asian_font": {
+                    "charset": {
+                      "value": null
+                    },
+                    "panose": {
+                      "value": null
+                    },
+                    "pitch_family": {
+                      "value": null
+                    },
+                    "typeface": {
+                      "value": "Arial"
+                    }
+                  },
+                  "effect_list": null,
+                  "gradient_fill": null,
+                  "italic": {
+                    "value": null
+                  },
+                  "kumimoji": {
+                    "value": null
+                  },
+                  "language": {
+                    "value": "en-US"
+                  },
+                  "latin_font": {
+                    "charset": {
+                      "value": null
+                    },
+                    "panose": {
+                      "value": null
+                    },
+                    "pitch_family": {
+                      "value": null
+                    },
+                    "typeface": {
+                      "value": "Arial"
+                    }
+                  },
+                  "no_fill": null,
+                  "outline": null,
+                  "solid_fill": {
+                    "rgb_color_model_hex": {
+                      "alpha": null,
+                      "luminance": null,
+                      "luminance_modulation": null,
+                      "luminance_offset": null,
+                      "saturation": null,
+                      "saturation_modulation": null,
+                      "shade": null,
+                      "tint": null,
+                      "val": {
+                        "value": "595959"
+                      }
+                    },
+                    "scheme_color": null,
+                    "system_color": null
+                  },
+                  "spacing": {
+                    "value": -1
+                  },
+                  "strike": {
+                    "value": "noStrike"
+                  },
+                  "sz": {
+                    "value": "1400"
+                  },
+                  "text": ""
+                },
+                "text": "Forecasted Project Cashflows"
+              }
+            ]
+          }
+        ]
+      },
+      "string_reference": null
+    },
+    "layout": null,
+    "overlay": {
+      "val": {
+        "value": false
+      }
+    },
+    "shape_properties": {
+      "effect_list": null,
+      "no_fill": {},
+      "outline": {
+        "alignment": {
+          "value": null,
+          "value_default": "Center"
+        },
+        "bevel": null,
+        "cap_type": {
+          "value": null
+        },
+        "compound_line_type": {
+          "value": null
+        },
+        "gradient_fill": null,
+        "miter": null,
+        "no_fill": {},
+        "preset_dash": null,
+        "round": null,
+        "solid_fill": null,
+        "system_color": null,
+        "tail_end": null,
+        "width": {
+          "value": 0
+        }
+      },
+      "pattern_fill": null,
+      "preset_geometry": null,
+      "scene_3d_type": null,
+      "shape_3d_type": null,
+      "solid_fill": null,
+      "transform2d": null
+    }
+  },
+  "view_3d": null
+}

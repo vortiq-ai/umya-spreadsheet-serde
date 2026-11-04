@@ -18,11 +18,6 @@ use super::{
     TextBody,
 };
 use crate::{
-    reader::driver::{
-        get_attribute,
-        set_string_from_xml,
-        xml_read_loop,
-    },
     structs::{
         StringValue,
         raw::RawRelationships,
@@ -42,7 +37,14 @@ pub struct Shape {
     shape_style:                 Option<Box<ShapeStyle>>,
     text_body:                   Option<Box<TextBody>>,
     r#macro:                     StringValue,
+    #[cfg_attr(feature = "serde", serde(default))]
+    text_link:                   Option<Box<crate::drawing::charts::Formula>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    locks_text:                  Option<bool>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    published:                   Option<bool>,
 }
+
 
 impl Shape {
     #[inline]
@@ -198,52 +200,137 @@ impl Shape {
         self
     }
 
+    /// Cell reference supplying the shape's text, as stored in `textlink`.
+    #[must_use]
+    pub fn text_link(&self) -> Option<&crate::drawing::charts::Formula> {
+        self.text_link.as_deref()
+    }
+
+    pub fn text_link_mut(&mut self) -> Option<&mut crate::drawing::charts::Formula> {
+        self.text_link.as_deref_mut()
+    }
+
+    /// `None` removes the cell link, leaving the shape's stored text.
+    pub fn set_text_link(&mut self, value: Option<crate::drawing::charts::Formula>) -> &mut Self {
+        self.text_link = value.map(Box::new);
+        self
+    }
+
+    #[must_use]
+    pub fn locks_text(&self) -> bool {
+        self.locks_text.unwrap_or(true)
+    }
+
+    pub fn set_locks_text(&mut self, value: bool) -> &mut Self {
+        self.locks_text = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn published(&self) -> bool {
+        self.published.unwrap_or(false)
+    }
+
+    pub fn set_published(&mut self, value: bool) -> &mut Self {
+        self.published = Some(value);
+        self
+    }
+
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        e: &BytesStart,
+        owner: &BytesStart,
         drawing_relationships: Option<&RawRelationships>,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) -> Result<(), crate::XlsxError> {
-        set_string_from_xml!(self, e, r#macro, "macro");
-
-        xml_read_loop!(
-            reader,
-                Event::Start(ref e) => {
-                    match e.name().into_inner() {
-                        b"xdr:nvSpPr" => {
+        let _guard = session.enter_child_scope(owner)?;
+        let scope = crate::drawing::charts::NamespaceScope::default()
+            .child(owner)
+            .map_err(crate::xml::xml_error)?;
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"macro")? {
+            self.set_macro(value);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"textlink")? {
+            let mut formula = crate::drawing::charts::Formula::default();
+            formula.set_string_value(value);
+            self.set_text_link(Some(formula));
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"fLocksText")? {
+            self.set_locks_text(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"fPublished")? {
+            self.set_published(crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?);
+        }
+        let end = owner.name().as_ref().to_vec();
+        let mut buffer = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = scope
+                        .child(child)
+                        .and_then(|scope| scope.resolve(child.name().as_ref(), false))
+                        .map_err(crate::xml::xml_error)?;
+                    if name.namespace_uri != crate::helper::const_str::SHEET_DRAWING_NS {
+                        return Err(crate::xml::xml_error("foreign spreadsheet drawing child"));
+                    }
+                    if !seen.insert(name.local_name.clone()) {
+                        return Err(crate::xml::xml_error("duplicate spreadsheet drawing child"));
+                    }
+                    match name.local_name.as_str() {
+                        "nvSpPr" => {
+                            if empty {
+                                return Err(crate::xml::xml_error(
+                                    "empty nonvisual shape properties",
+                                ));
+                            }
                             self.non_visual_shape_properties
-                                .set_attributes(reader, e, session)?;
+                                .set_attributes(reader, child, session)?;
                         }
-                        b"xdr:spPr" => {
+                        "spPr" => {
                             self.shape_properties.read_with_session(
                                 reader,
-                                e,
-                                false,
+                                child,
+                                empty,
                                 drawing_relationships,
                                 session,
                             )?;
                         }
-                        b"xdr:style" => {
-                            let mut obj = ShapeStyle::default();
-                            obj.read_with_session(reader, e, false, session)?;
-                            self.set_shape_style(obj);
+                        "style" => {
+                            let mut value = ShapeStyle::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_shape_style(value);
                         }
-                        b"xdr:txBody" => {
-                            let mut obj = TextBody::default();
-                            obj.read_with_session(reader, e, false, session)?;
-                            self.set_text_body(obj);
+                        "txBody" => {
+                            let mut value = TextBody::default();
+                            value.read_with_session(reader, child, empty, session)?;
+                            self.set_text_body(value);
                         }
-                        _ => (),
+                        _ => {
+                            return Err(crate::xml::xml_error(
+                                "unsupported spreadsheet drawing child",
+                            ));
+                        }
                     }
-                },
-                Event::End(ref e) => {
-                    if e.name().into_inner() == b"xdr:sp" {
-                        return Ok(());
+                }
+                Event::End(child) if child.name().as_ref() == end.as_slice() => {
+                    if !(seen.contains("nvSpPr") && seen.contains("spPr")) {
+                        return Err(crate::xml::xml_error(
+                            "missing required spreadsheet drawing child",
+                        ));
                     }
-                },
-                Event::Eof => panic!("Error: Could not find {} end element", "xdr:sp")
-        );
+                    return Ok(());
+                }
+                Event::Eof => {
+                    return Err(crate::xml::xml_error(
+                        "unterminated spreadsheet drawing object",
+                    ));
+                }
+                _ => (),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
@@ -253,15 +340,20 @@ impl Shape {
         ole_id: usize,
     ) -> Result<(), crate::XlsxError> {
         // xdr:sp
-        write_start_tag(
-            writer,
-            "xdr:sp",
-            vec![
-                ("macro", self.r#macro.value_str()).into(),
-                ("textlink", "").into(),
-            ],
-            false,
-        );
+        let mut attributes = vec![("macro", self.r#macro.value_str()).into()];
+        let text_link = self
+            .text_link()
+            .map(crate::drawing::charts::Formula::address_str);
+        if let Some(value) = &text_link {
+            attributes.push(("textlink", value.as_str()).into());
+        }
+        if let Some(value) = self.locks_text {
+            attributes.push(("fLocksText", if value { "1" } else { "0" }).into());
+        }
+        if let Some(value) = self.published {
+            attributes.push(("fPublished", if value { "1" } else { "0" }).into());
+        }
+        write_start_tag(writer, "xdr:sp", attributes, false);
 
         // xdr:nvSpPr
         self.non_visual_shape_properties
@@ -282,18 +374,5 @@ impl Shape {
 
         write_end_tag(writer, "xdr:sp");
         Ok(())
-    }
-
-    /// This fork models no `xdr:txLink`: it neither reads nor writes one, so a shape never holds a
-    /// cell link and reference editing has nothing to rewrite. Taking the field is part of the
-    /// deferred in-chart drawing work, not of extended charts.
-    #[must_use]
-    pub fn text_link(&self) -> Option<&crate::drawing::charts::Formula> {
-        None
-    }
-
-    /// Always `None`; see [`Shape::text_link`].
-    pub fn text_link_mut(&mut self) -> Option<&mut crate::drawing::charts::Formula> {
-        None
     }
 }

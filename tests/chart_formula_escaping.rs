@@ -30,8 +30,8 @@ fn chart_reference_is_escaped_exactly_once() {
     let mut book = umya_spreadsheet::new_file();
     book.new_sheet("A & B").unwrap();
     let sheet = book.sheet_by_name_mut("A & B").unwrap();
-    sheet.get_cell_mut("A1").set_value_number(7);
-    sheet.get_cell_mut("A2").set_value_number(13);
+    sheet.cell_mut("A1").set_value_number(7);
+    sheet.cell_mut("A2").set_value_number(13);
 
     let mut from_marker = drawing::spreadsheet::MarkerType::default();
     let mut to_marker = drawing::spreadsheet::MarkerType::default();

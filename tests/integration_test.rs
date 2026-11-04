@@ -15,9 +15,10 @@ use std::{
     time::Instant,
 };
 
-use umya_spreadsheet::*;
-
-use crate::helper::color;
+use umya_spreadsheet::{
+    helper::color,
+    *,
+};
 
 #[cfg(target_os = "linux")]
 fn current_process_memory_mb() -> Option<f64> {
@@ -276,7 +277,7 @@ fn profile_large_string_memory() {
 
     if env::var_os("UMYA_PROFILE_DESERIALIZE").is_some() {
         let sheet_name = env::var("UMYA_PROFILE_SHEET").unwrap_or_else(|_| "Sheet1".to_string());
-        book.read_sheet_by_name(&sheet_name).unwrap();
+        book.try_read_sheet_by_name(&sheet_name).unwrap();
         print_large_file_checkpoint("deserialize_sheet", total);
     }
 
@@ -870,12 +871,12 @@ fn insert_and_remove_cells() {
     let path = std::path::Path::new("./tests/test_files/aaa_insertCell.xlsx");
     let mut book = reader::xlsx::read(path).unwrap();
 
-    book.insert_new_row("Sheet1", 2, 3).unwrap();
-    book.insert_new_column("Sheet1", "B", 3).unwrap();
-    book.insert_new_column_by_index("Sheet1", 2, 3).unwrap();
+    book.insert_new_row("Sheet1", 2, 3);
+    book.insert_new_column("Sheet1", "B", 3);
+    book.insert_new_column_by_index("Sheet1", 2, 3);
 
-    book.remove_row("Sheet1", 6, 2).unwrap();
-    book.remove_column_by_index("Sheet1", 6, 2).unwrap();
+    book.remove_row("Sheet1", 6, 2);
+    book.remove_column_by_index("Sheet1", 6, 2);
 
     // writer
     let path = std::path::Path::new("./tests/result_files/bbb_insertCell.xlsx");
@@ -1336,7 +1337,7 @@ fn read_and_wite_theme() {
 fn openpyxl() {
     let path = std::path::Path::new("./tests/test_files/openpyxl.xlsx");
     let book = reader::xlsx::read(path).unwrap();
-    let sheet = book.active_sheet().unwrap();
+    let sheet = book.try_active_sheet().unwrap();
 
     assert_eq!(sheet.cell("A1").unwrap().value(), "TEST");
     assert_eq!(sheet.cell("A2").unwrap().value(), " TEST ");
@@ -1666,10 +1667,24 @@ fn issue_188_2() {
 #[test]
 fn issue_189() {
     let path = std::path::Path::new("./tests/test_files/issue_189.xlsx");
-    let mut book = reader::xlsx::read(path).unwrap();
+    let book = reader::xlsx::read(path).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    assert!(sheet.ole_objects().ole_object().is_empty());
+    let anchors = sheet.worksheet_drawing().two_cell_anchor_collection();
+    assert_eq!(anchors.len(), 1);
+    assert!(anchors[0].is_alternate_content());
+    assert_eq!(
+        anchors[0]
+            .shape()
+            .unwrap()
+            .non_visual_shape_properties()
+            .non_visual_drawing_properties()
+            .id(),
+        1025
+    );
 
     let path = std::path::Path::new("./tests/result_files/issue_189.xlsx");
-    let _unused = writer::xlsx::write(&book, path);
+    writer::xlsx::write(&book, path).unwrap();
 }
 
 #[test]
@@ -1785,7 +1800,8 @@ fn issue_184() {
         .font()
         .unwrap()
         .color()
-        .argb_with_theme(theme);
+        .argb_with_theme(theme)
+        .unwrap();
     assert_eq!(color, "A78570");
 }
 
@@ -1844,9 +1860,23 @@ fn issue_210() {
 #[test]
 fn issue_208() {
     let path = std::path::Path::new("./tests/test_files/issue_208.xlsx");
-    let mut book = reader::xlsx::read(path).unwrap();
+    let book = reader::xlsx::read(path).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    assert!(sheet.ole_objects().ole_object().is_empty());
+    let anchors = sheet.worksheet_drawing().two_cell_anchor_collection();
+    assert_eq!(anchors.len(), 1);
+    assert!(anchors[0].is_alternate_content());
+    assert_eq!(
+        anchors[0]
+            .shape()
+            .unwrap()
+            .non_visual_shape_properties()
+            .non_visual_drawing_properties()
+            .id(),
+        1025
+    );
     let path = std::path::Path::new("./tests/result_files/issue_208.xlsx");
-    let _unused = writer::xlsx::write(&book, path);
+    writer::xlsx::write(&book, path).unwrap();
 }
 
 #[test]
@@ -1894,7 +1924,8 @@ fn issue_184_2() {
             .style()
             .background_color()
             .unwrap()
-            .argb_with_theme(book.theme());
+            .argb_with_theme(book.theme())
+            .unwrap();
         assert_eq!(color, result);
     }
 }
@@ -2020,7 +2051,7 @@ fn issue_225() {
 fn issue_227() {
     let path = std::path::Path::new("./tests/test_files/aaa.xlsx");
     let mut book = reader::xlsx::lazy_read(path).unwrap();
-    book.read_sheet_by_name("Sheet2").unwrap();
+    book.try_read_sheet_by_name("Sheet2").unwrap();
     let sheet = book.sheet_by_name("Sheet2").unwrap();
     assert_eq!("3", sheet.cell("B6").unwrap().value());
 }
@@ -2997,8 +3028,11 @@ fn overflow_formula_eval_test_data() {
 
 #[test]
 fn missing_attr_64450() {
+    // The original package has an externalLinkPath Relationship with no Id
+    // or Target. Required relationship fields must not be synthesized.
     let path = std::path::Path::new("./tests/test_files/64450.xlsx");
-    let _book = umya_spreadsheet::reader::xlsx::read(path).unwrap();
+    let error = umya_spreadsheet::reader::xlsx::read(path).unwrap_err();
+    assert!(error.to_string().contains("missing relationship attribute"));
 }
 
 #[test]
@@ -3217,7 +3251,7 @@ fn set_legend_present_false_suppresses_legend() {
     std::fs::create_dir_all(out_dir).unwrap();
 
     let mut book = reader::xlsx::read(src).expect("read aaa.xlsx");
-    for sheet in book.sheet_collection_mut().unwrap().iter_mut() {
+    for sheet in book.try_sheet_collection_mut().unwrap().iter_mut() {
         for chart in sheet.chart_collection_mut().iter_mut() {
             chart
                 .chart_space_mut()

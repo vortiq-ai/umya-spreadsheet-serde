@@ -181,13 +181,17 @@ impl PatternFill {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-        _empty: bool,
+        empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) -> Result<(), crate::XlsxError> {
         let _guard = session
             .map(|value| value.enter_child_scope(owner))
             .transpose()?
             .flatten();
+        if empty {
+            // A self-closing element has no children to read; looping would consume the parent's.
+            return Ok(());
+        }
         self.set_attributes(reader, owner)?;
         Ok(())
     }

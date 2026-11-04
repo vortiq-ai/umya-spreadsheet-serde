@@ -1,0 +1,22 @@
+{
+  "waterfall.xml": {
+    "workbook_sha256": "4ab073a9d5fbde30972cb5e730418e382c9882aff27daaa2723953739f4063fe",
+    "part": "xl/charts/chartEx1.xml",
+    "part_sha256": "76c76f32e57aa5f4185e00cca3e3bf1e6f1d0a79eedbc5f44decb9eb991b376e"
+  },
+  "waterfall-drawing.xml": {
+    "workbook_sha256": "4ab073a9d5fbde30972cb5e730418e382c9882aff27daaa2723953739f4063fe",
+    "part": "xl/drawings/drawing2.xml",
+    "part_sha256": "5115d6f441ecf55a2ec0ef571c459ec3976027fae816a7ef3cf47a7c737595a3"
+  },
+  "sunburst.xml": {
+    "workbook_sha256": "71b3410baec6c884de7e1971547be4b3094203cc7418470374af00c260a8e094",
+    "part": "xl/charts/chartEx1.xml",
+    "part_sha256": "59540558ed27bc402e3958007443281ede2a9c2e4ea989f82e959ad706d043d8"
+  },
+  "sunburst-drawing.xml": {
+    "workbook_sha256": "71b3410baec6c884de7e1971547be4b3094203cc7418470374af00c260a8e094",
+    "part": "xl/drawings/drawing1.xml",
+    "part_sha256": "af2e6e4377cbea7f00952874b3e3791e56a4a9e70180e20a29975c81bd3f1051"
+  }
+}

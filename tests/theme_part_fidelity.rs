@@ -65,10 +65,15 @@ fn a_changed_theme_is_written_from_the_model() {
 fn a_theme_parsed_from_text_keeps_the_text_and_its_colors() {
     let source = std::fs::read(FIXTURE).unwrap();
     let xml = part(&source, THEME_PART);
-    let theme = Theme::from_xml(&xml);
+    let theme = Theme::from_xml(&xml).unwrap();
     assert_eq!(theme.source_xml(), Some(xml.as_str()));
     assert_eq!(
-        theme.theme_elements().color_scheme().accent6().val(),
+        theme
+            .theme_elements()
+            .color_scheme()
+            .accent6()
+            .val()
+            .unwrap(),
         "70AD47"
     );
 
@@ -105,7 +110,12 @@ fn a_theme_with_relationships_of_its_own_is_written_from_the_model() {
     let book = umya::reader::xlsx::read_reader(Cursor::new(bytes), true).unwrap();
     assert_eq!(book.theme().source_xml(), None);
     assert_eq!(
-        book.theme().theme_elements().color_scheme().accent6().val(),
+        book.theme()
+            .theme_elements()
+            .color_scheme()
+            .accent6()
+            .val()
+            .unwrap(),
         "70AD47"
     );
 }

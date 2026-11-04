@@ -372,8 +372,8 @@ fn shared_namespaces_survive_public_row_and_column_insertion() {
         formula = quick_xml::escape::escape(formula),
     ));
     let mut book = read(&bytes);
-    book.insert_new_row("Sheet1", 1, 1).unwrap();
-    book.insert_new_column("Sheet1", "A", 1).unwrap();
+    book.insert_new_row("Sheet1", 1, 1);
+    book.insert_new_column("Sheet1", "A", 1);
     let master = concat!(
         "_xludf.rri(B2,Sheet1!C3,'Input sheet'!C3)+_xlfn.RRI(2,3,4)",
         r#"+"_xludf.rri A1""#,
@@ -414,8 +414,8 @@ fn fixed_array_bounds_follow_public_row_and_column_insertion() {
         formula = quick_xml::escape::escape(formula),
     ));
     let mut book = read(&bytes);
-    book.insert_new_row("Sheet1", 1, 2).unwrap();
-    book.insert_new_column("Sheet1", "A", 1).unwrap();
+    book.insert_new_row("Sheet1", 1, 2);
+    book.insert_new_column("Sheet1", "A", 1);
     let moved_formula = "_xludf.rri(B4:B6,1,2)+_xlfn.RRI(B4:B6,3,4)";
 
     for _ in 0..2 {
@@ -502,8 +502,8 @@ fn round_trip_array(book: &Workbook, coordinate: &str, reference: &str, formula:
 #[test]
 fn fixed_array_moves_when_rows_and_columns_before_it_are_removed() {
     let mut book = read(&structural_array_fixture());
-    book.remove_row("Sheet1", 2, 1).unwrap();
-    book.remove_column("Sheet1", "B", 1).unwrap();
+    book.remove_row("Sheet1", 2, 1);
+    book.remove_column("Sheet1", "B", 1);
     let back = round_trip_array(&book, "B3", "B3:D6", STRUCTURAL_ARRAY_FORMULA);
 
     for book in [&book, &back] {
@@ -534,9 +534,9 @@ fn fixed_array_shrinks_for_interior_and_clipped_trailing_deletions() {
     for (rows, root, count, reference, survivor, value) in cases {
         let mut book = read(&structural_array_fixture());
         if rows {
-            book.remove_row("Sheet1", root, count).unwrap();
+            book.remove_row("Sheet1", root, count);
         } else {
-            book.remove_column_by_index("Sheet1", root, count).unwrap();
+            book.remove_column_by_index("Sheet1", root, count);
         }
         let back = round_trip_array(&book, "C4", reference, STRUCTURAL_ARRAY_FORMULA);
         for book in [&book, &back] {
@@ -555,8 +555,8 @@ fn fixed_array_shrinks_for_interior_and_clipped_trailing_deletions() {
 #[test]
 fn fixed_array_expands_for_interior_row_and_column_insertions() {
     let mut book = read(&structural_array_fixture());
-    book.insert_new_row("Sheet1", 5, 2).unwrap();
-    book.insert_new_column("Sheet1", "D", 1).unwrap();
+    book.insert_new_row("Sheet1", 5, 2);
+    book.insert_new_column("Sheet1", "D", 1);
     let back = round_trip_array(&book, "C4", "C4:F9", STRUCTURAL_ARRAY_FORMULA);
 
     for book in [&book, &back] {
@@ -576,10 +576,10 @@ fn fixed_array_expands_for_interior_row_and_column_insertions() {
 #[test]
 fn edits_after_a_fixed_array_leave_its_geometry_and_cached_cells_unchanged() {
     let mut book = read(&structural_array_fixture());
-    book.insert_new_row("Sheet1", 20, 2).unwrap();
-    book.insert_new_column("Sheet1", "J", 2).unwrap();
-    book.remove_row("Sheet1", 20, 3).unwrap();
-    book.remove_column("Sheet1", "J", 3).unwrap();
+    book.insert_new_row("Sheet1", 20, 2);
+    book.insert_new_column("Sheet1", "J", 2);
+    book.remove_row("Sheet1", 20, 3);
+    book.remove_column("Sheet1", "J", 3);
     let back = round_trip_array(&book, "C4", "C4:E7", STRUCTURAL_ARRAY_FORMULA);
 
     for book in [&book, &back] {
@@ -597,14 +597,14 @@ fn edits_after_a_fixed_array_leave_its_geometry_and_cached_cells_unchanged() {
 #[test]
 fn other_sheet_edits_update_formula_refs_without_moving_local_array_geometry() {
     let mut book = read(&structural_array_fixture());
-    book.insert_new_row("Input sheet", 1, 2).unwrap();
-    book.insert_new_column("Input sheet", "A", 1).unwrap();
+    book.insert_new_row("Input sheet", 1, 2);
+    book.insert_new_column("Input sheet", "A", 1);
     let inserted_formula = "_xludf.rri('Input sheet'!D5,1,2)+_xlfn.RRI(2,3,4)";
     book = round_trip_array(&book, "C4", "C4:E7", inserted_formula);
     assert_eq!(book.sheet_by_name("Input sheet").unwrap().value("D5"), "31");
 
-    book.remove_row("Input sheet", 1, 1).unwrap();
-    book.remove_column("Input sheet", "A", 1).unwrap();
+    book.remove_row("Input sheet", 1, 1);
+    book.remove_column("Input sheet", "A", 1);
     let removed_formula = "_xludf.rri('Input sheet'!C4,1,2)+_xlfn.RRI(2,3,4)";
     book = round_trip_array(&book, "C4", "C4:E7", removed_formula);
     assert_eq!(book.sheet_by_name("Input sheet").unwrap().value("C4"), "31");
@@ -622,9 +622,9 @@ fn deleting_a_fixed_array_anchor_does_not_invent_a_replacement_formula() {
     for rows in [true, false] {
         let mut book = read(&structural_array_fixture());
         if rows {
-            book.remove_row("Sheet1", 4, 1).unwrap();
+            book.remove_row("Sheet1", 4, 1);
         } else {
-            book.remove_column("Sheet1", "C", 1).unwrap();
+            book.remove_column("Sheet1", "C", 1);
         }
         let bytes = write(&book);
         assert!(xml_cell(&bytes, "C4").formula.is_none());
@@ -656,22 +656,22 @@ fn dynamic_array_metadata_survives_local_geometry_and_other_sheet_edits() {
     // an in-memory cm assignment that could conceal a metadata writer failure.
     book = read(&write(&book));
 
-    for stage in 0..4 {
-        let (coordinate, reference, formula, first_member, last_member, source) = match stage {
+    for edit in 0..4 {
+        let (coordinate, reference, formula, first_member, last_member, source) = match edit {
             0 => ("C4", "C4:E7", STRUCTURAL_ARRAY_FORMULA, "D4", "E7", "C3"),
             1 => {
-                book.insert_new_row("Sheet1", 2, 1).unwrap();
-                book.insert_new_column("Sheet1", "B", 1).unwrap();
+                book.insert_new_row("Sheet1", 2, 1);
+                book.insert_new_column("Sheet1", "B", 1);
                 ("D5", "D5:F8", STRUCTURAL_ARRAY_FORMULA, "E5", "F8", "C3")
             }
             2 => {
-                book.remove_row("Sheet1", 2, 1).unwrap();
-                book.remove_column("Sheet1", "B", 1).unwrap();
+                book.remove_row("Sheet1", 2, 1);
+                book.remove_column("Sheet1", "B", 1);
                 ("C4", "C4:E7", STRUCTURAL_ARRAY_FORMULA, "D4", "E7", "C3")
             }
             _ => {
-                book.insert_new_row("Input sheet", 1, 1).unwrap();
-                book.insert_new_column("Input sheet", "A", 1).unwrap();
+                book.insert_new_row("Input sheet", 1, 1);
+                book.insert_new_column("Input sheet", "A", 1);
                 (
                     "C4",
                     "C4:E7",
@@ -692,7 +692,7 @@ fn dynamic_array_metadata_survives_local_geometry_and_other_sheet_edits() {
         assert_eq!(
             xml_cell(&bytes, coordinate).metadata_index,
             Some(metadata_index.to_string()),
-            "raw dynamic anchor cm at stage {stage}",
+            "raw dynamic anchor cm after edit {edit}",
         );
         let back = read(&bytes);
         for book in [&book, &back] {

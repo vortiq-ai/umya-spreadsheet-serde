@@ -20,9 +20,9 @@ fn original_prefixed_logistics_imports_all_sheets_and_cells() {
             assert_eq!(cells.get("A99").unwrap().value(), "S98");
             assert_eq!(cells.get("D2").unwrap().value_number(), Some(50.0));
         }
-        book.read_sheet_collection().unwrap();
-        assert_eq!(book.sheet_collection().unwrap().len(), 3);
-        let sheets = book.sheet_collection().unwrap();
+        book.read_sheet_collection();
+        assert_eq!(book.sheet_collection().len(), 3);
+        let sheets = book.sheet_collection();
         for (sheet, (name, rows, cols)) in sheets.iter().zip([
             ("Shipments", 99, 5),
             ("Lane Rates", 4, 3),
@@ -116,7 +116,7 @@ fn equivalent_prefixes_preserve_shared_strings_styles_formulas_and_booleans() {
         for absolute_target in [false, true] {
             let bytes = namespace_workbook(prefix, absolute_target);
             let book = xlsx::read_reader(Cursor::new(bytes), true).unwrap();
-            assert_eq!(book.sheet_collection().unwrap().len(), 1, "prefix={prefix}");
+            assert_eq!(book.sheet_collection().len(), 1, "prefix={prefix}");
             let sheet = book.sheet(0).unwrap();
             assert_eq!(sheet.value("A1"), " x:literal & text ");
             assert_eq!(sheet.value("B1"), "TRUE");
@@ -143,7 +143,10 @@ fn rewrite_workbook(bytes: Vec<u8>, edit: impl FnOnce(String) -> String) -> Vec<
             data = edit.take().unwrap()(String::from_utf8(data).unwrap()).into_bytes();
         }
         output
-            .start_file(part.name().unwrap(), zip::write::SimpleFileOptions::default())
+            .start_file(
+                part.name().unwrap(),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         output.write_all(&data).unwrap();
     }

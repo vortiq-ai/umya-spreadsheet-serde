@@ -1,0 +1,18 @@
+{
+  "creation-box-whisker.xlsx": {
+    "source": "https://raw.githubusercontent.com/LibreOffice/core/master/chart2/qa/extras/data/xlsx/boxWhisker.xlsx",
+    "workbook_sha256": "7c725dda9da6f571ea58824f603bf6eff7bc6c49d122ac4322cc0d6129fa7f92",
+    "part": "xl/charts/chartEx1.xml",
+    "part_sha256": "7dbc3da9bf4dffb7c0aaada835a6ece26969b366f65c072e767e2c02871fd1f7",
+    "application": "Microsoft Excel",
+    "app_version": "16.0300"
+  },
+  "creation-pareto.xlsx": {
+    "source": "https://raw.githubusercontent.com/LibreOffice/core/master/chart2/qa/extras/data/xlsx/paretoLine.xlsx",
+    "workbook_sha256": "46f96c30f6de3a0bcd8a990d950854bc696aec5a7d2c1c4d051836b4f9c733ac",
+    "part": "xl/charts/chartEx1.xml",
+    "part_sha256": "432f3978424dd02eb61535993a82b5572a6c4991c1f77a2e9dd72aff3f7ddf52",
+    "application": "Microsoft Excel",
+    "app_version": "16.0300"
+  }
+}

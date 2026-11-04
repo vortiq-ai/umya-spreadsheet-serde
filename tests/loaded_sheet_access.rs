@@ -15,7 +15,10 @@ fn fixture_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "umya-loaded-sheet-access-{}-{}.xlsx",
         process::id(),
-        std::thread::current().name().unwrap_or("test")
+        std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace("::", "-")
     ))
 }
 
@@ -46,7 +49,7 @@ fn loaded_sheet_access_preserves_lazy_deserialization_and_errors() {
         XlsxErrorKind::NotDeserialized
     );
     assert_eq!(
-        book.sheet_collection().unwrap_err().kind(),
+        book.try_sheet_collection().unwrap_err().kind(),
         XlsxErrorKind::NotDeserialized
     );
     assert_eq!(
@@ -54,11 +57,11 @@ fn loaded_sheet_access_preserves_lazy_deserialization_and_errors() {
         XlsxErrorKind::NotFound
     );
     assert_eq!(
-        book.read_sheet(2).unwrap_err().kind(),
+        book.try_read_sheet(2).unwrap_err().kind(),
         XlsxErrorKind::NotFound
     );
     assert_eq!(
-        book.read_sheet_by_name("Missing").unwrap_err().kind(),
+        book.try_read_sheet_by_name("Missing").unwrap_err().kind(),
         XlsxErrorKind::NotFound
     );
 
@@ -69,10 +72,10 @@ fn loaded_sheet_access_preserves_lazy_deserialization_and_errors() {
         XlsxErrorKind::NotDeserialized
     );
 
-    book.read_sheet_by_name("Second").unwrap();
+    book.try_read_sheet_by_name("Second").unwrap();
     assert_eq!(book.sheet_by_name("Second").unwrap().value("A1"), "second");
 
-    book.sheet_collection_mut().unwrap();
-    assert_eq!(book.sheet_collection().unwrap().len(), 2);
+    book.try_sheet_collection_mut().unwrap();
+    assert_eq!(book.try_sheet_collection().unwrap().len(), 2);
     fs::remove_file(path).unwrap();
 }

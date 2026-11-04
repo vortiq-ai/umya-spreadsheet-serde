@@ -86,10 +86,11 @@ impl PresetColor {
 
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 if e.name().into_inner() == b"a:alpha" {
                     let mut alpha = Alpha::default();
-                    alpha.set_attributes(reader, e)?;
+                    // `set_attributes` is a legacy shim that assumes a non-empty element.
+                    alpha.read_with_session(reader, e, matches!(event, Event::Empty(_)), None)?;
                     self.set_alpha(alpha);
                 }
             },
@@ -122,14 +123,27 @@ impl PresetColor {
         &mut self,
         reader: &mut Reader<R>,
         owner: &BytesStart,
-        _empty: bool,
+        empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) -> Result<(), crate::XlsxError> {
         let _guard = session
             .map(|value| value.enter_child_scope(owner))
             .transpose()?
             .flatten();
+        if empty {
+            // A self-closing element has no children to read; looping would consume the parent's.
+            return Ok(());
+        }
         self.set_attributes(reader, owner)?;
         Ok(())
+    }
+
+    /// This fork's single modifier as master's ordered transform list; see `SchemeColor::transforms`.
+    #[must_use]
+    pub fn transforms(&self) -> Vec<super::ColorTransform> {
+        self.alpha
+            .iter()
+            .map(|value| super::ColorTransform::Alpha(value.clone()))
+            .collect()
     }
 }

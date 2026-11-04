@@ -324,10 +324,10 @@ impl BodyProperties {
 
         xml_read_loop!(
             reader,
-            Event::Empty(ref e) => {
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
                 if e.name().into_inner() == b"a:spAutoFit" {
                     let obj = ShapeAutoFit::default();
-                    ShapeAutoFit::set_attributes(reader, e, false)?;
+                    ShapeAutoFit::set_attributes(reader, e, matches!(event, Event::Empty(_)))?;
                     self.set_shape_auto_fit(obj);
                 }
             },

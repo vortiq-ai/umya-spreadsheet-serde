@@ -1,0 +1,73 @@
+{
+    "pivot-slicers":  {
+                          "workbook_sha256":  "49a21d0ac8b1de77596d51196eca74dd8e940586cb91b9271f27e8c85b96190a",
+                          "slicers":  [
+                                          {
+                                              "name":  "Slicer_Player",
+                                              "source":  "Player",
+                                              "slicers":  1,
+                                              "pivots":  [
+                                                             "PivotTable2"
+                                                         ],
+                                              "table":  null,
+                                              "selected":  [
+                                                               "A",
+                                                               "B",
+                                                               "C"
+                                                           ]
+                                          },
+                                          {
+                                              "name":  "Slicer_Team",
+                                              "source":  "Team",
+                                              "slicers":  1,
+                                              "pivots":  [
+                                                             "PivotTable1",
+                                                             "PivotTable2"
+                                                         ],
+                                              "table":  null,
+                                              "selected":  [
+                                                               "ETV"
+                                                           ]
+                                          }
+                                      ]
+                      },
+    "table-slicer":  {
+                         "workbook_sha256":  "8c72660f8f0b398f26a9419d4183d45f138703e58f7602e609ec96b334db873a",
+                         "slicers":  [
+                                         {
+                                             "name":  "Slicer_Team",
+                                             "source":  "Team",
+                                             "slicers":  1,
+                                             "pivots":  [
+
+                                                        ],
+                                             "table":  "Scores",
+                                             "selected":  [
+                                                              "ETV"
+                                                          ]
+                                         }
+                                     ]
+                     },
+    "timeline":  {
+                     "workbook_sha256":  "00110b4934b704703ecae6689ad02cdfaa8c4506b7b200ab324059b822e97e15",
+                     "slicers":  [
+                                     {
+                                         "name":  "NativeTimeline_Day",
+                                         "source":  "Day",
+                                         "slicers":  1,
+                                         "pivots":  [
+                                                        "PivotTable1"
+                                                    ],
+                                         "table":  null,
+                                         "selected":  [
+
+                                                      ],
+                                         "timeline":  "2024-01-01 2024-02-29"
+                                     }
+                                 ]
+                 },
+    "sheet-extensions":  {
+                             "workbook_sha256":  "f400aa44f167e36b1ed305256902e2024fa86147a48419ed41ff5bf71c434694"
+                         },
+    "excel":  "Excel 16.0 build 20527"
+}

@@ -69,6 +69,7 @@ fn with_excel_declaration(body: Vec<u8>) -> Vec<u8> {
 
 /// Write the parts the preserved extensions of one owner carry and return the
 /// relationships to emit for them.
+#[allow(single_use_lifetimes, reason = "named lifetime is required by impl Trait here")]
 fn write_carried<'a, W: io::Seek + io::Write>(
     parts: impl Iterator<Item = &'a ExtensionPart>,
     owner: &str,

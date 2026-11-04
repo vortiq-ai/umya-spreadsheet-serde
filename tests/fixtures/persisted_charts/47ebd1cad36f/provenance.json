@@ -1,0 +1,386 @@
+{
+  "pin": "336476e91b94ef97e0133fb4813b56ff620de75b",
+  "shape_class": "47ebd1cad36f",
+  "generator_source_sha256": "a679cdf144c430716e0876078ecff124d7809d1863d5f8ba5ed9b297feff7634",
+  "generator_manifest_sha256": "7e298569a33eafd62e2fc360faf9f84fc4e901be411c6f71b9d313f9d82802e9",
+  "generation_command": "python -I -B tools/legacy-chart-json/generate.py 336476e91b94ef97e0133fb4813b56ff620de75b 47ebd1cad36f",
+  "cases": [
+    {
+      "name": "fill_rectangle",
+      "input": "../inputs/fill_rectangle.xlsx",
+      "input_sha256": "36beadd7f56113a3773f3fa432f87d1a21d44fcea84b96e974c88e2dcfcba68b",
+      "json": "fill_rectangle.json",
+      "export": "fill_rectangle.xlsx",
+      "drawing_json": "fill_rectangle.drawing.json",
+      "output_sha256": {
+        "json": "680f53ce82c70091fc91d5f8be56d8c05805936b580ac8f1cd2fda95e90c42c3",
+        "export": "43c8c0656156ebebe0df93d184797f2c69eff7d9972ff5f6cbfd2b420f65a754",
+        "drawing_json": "82c643e1df5090ef669b2dc976bbabfe4281dee1c18d140951a5c70169b53a64"
+      }
+    },
+    {
+      "name": "gradient_stops",
+      "input": "../inputs/gradient_stops.xlsx",
+      "input_sha256": "f99a0f501fdc7c7d730f2572e4e2696c15fce5cb1ccc905b72aa1adc324b49f3",
+      "json": "gradient_stops.json",
+      "export": "gradient_stops.xlsx",
+      "drawing_json": "gradient_stops.drawing.json",
+      "output_sha256": {
+        "json": "680f53ce82c70091fc91d5f8be56d8c05805936b580ac8f1cd2fda95e90c42c3",
+        "export": "8dfbe785ee7a75c8c40b9095fec0b5adb92289a03a4b16c01a3c758bdd2a0d4a",
+        "drawing_json": "a7e8cc8cf0f7a72d348f1b0fe0777ca3a0e0a42869198b112c97755afc11b211"
+      }
+    },
+    {
+      "name": "grouped_drawing",
+      "input": "../inputs/grouped_drawing.xlsx",
+      "input_sha256": "697beb303f9afb0cdede346799b7d0aefff27c1c03872195f0821395f74bb36f",
+      "json": "grouped_drawing.json",
+      "export": "grouped_drawing.xlsx",
+      "drawing_json": "grouped_drawing.drawing.json",
+      "output_sha256": {
+        "json": "680f53ce82c70091fc91d5f8be56d8c05805936b580ac8f1cd2fda95e90c42c3",
+        "export": "b66fc35ebd971ef9ce727b3f5f847644a66279b60137ffab0e5ccf229fabd3fd",
+        "drawing_json": "490834c1bafbc69a4c71292eb841e056377d5e63776be211e666a03a41912d1d"
+      }
+    },
+    {
+      "name": "no_auto_fit",
+      "input": "../inputs/no_auto_fit.xlsx",
+      "input_sha256": "7ea1967a9e154d847b34829c4e18b6ea2f6ab7aee8c908f253f965a54d5b6f1c",
+      "json": "no_auto_fit.json",
+      "export": "no_auto_fit.xlsx",
+      "drawing_json": "no_auto_fit.drawing.json",
+      "output_sha256": {
+        "json": "2e9ad8fe10ed1cd6cd4b3091db5ad5b51d9f0a07a2f77d9ccec7796c2834b7ce",
+        "export": "7565387631bef4892241e3e98315a1176701fb8fc5c3b0881a0adeedd0a5bfa8",
+        "drawing_json": "086b66a19124543cf325b1e66ee0fc6e300d5f8fa7d26a33f838e83226f55b58"
+      }
+    },
+    {
+      "name": "normal_auto_fit",
+      "input": "../inputs/normal_auto_fit.xlsx",
+      "input_sha256": "c305f5cd5f38f4db332544363b0f717c3a719dc7d83e1bfc34cdbcc5d5d67b5d",
+      "json": "normal_auto_fit.json",
+      "export": "normal_auto_fit.xlsx",
+      "drawing_json": "normal_auto_fit.drawing.json",
+      "output_sha256": {
+        "json": "2e9ad8fe10ed1cd6cd4b3091db5ad5b51d9f0a07a2f77d9ccec7796c2834b7ce",
+        "export": "7565387631bef4892241e3e98315a1176701fb8fc5c3b0881a0adeedd0a5bfa8",
+        "drawing_json": "086b66a19124543cf325b1e66ee0fc6e300d5f8fa7d26a33f838e83226f55b58"
+      }
+    },
+    {
+      "name": "pattern_colours",
+      "input": "../inputs/pattern_colours.xlsx",
+      "input_sha256": "7df3273976a848f4966e3b58d622695c4a50e1f95809a2674a28df38d2925902",
+      "json": "pattern_colours.json",
+      "export": "pattern_colours.xlsx",
+      "drawing_json": "pattern_colours.drawing.json",
+      "output_sha256": {
+        "json": "0d56d10df8f8086e140d624cb8cb2674ac0521041cbbd180e56b54bf198a1ae6",
+        "export": "ce6c3087f828d227bfc8d6c575bbffbcb2c87095a7c4a145c33851e1af5e9845",
+        "drawing_json": "162ba30f5b3f18571ef71f821d7ab91722010f82ba901ae96bf9bb6e7f64b213"
+      }
+    },
+    {
+      "name": "preset_alpha",
+      "input": "../inputs/preset_alpha.xlsx",
+      "input_sha256": "258e7aa6b695a80839491aed054b99192264dbc770f82019c3bda17a81659e57",
+      "json": "preset_alpha.json",
+      "export": "preset_alpha.xlsx",
+      "drawing_json": "preset_alpha.drawing.json",
+      "output_sha256": {
+        "json": "e726932956372540067207e43afb85d5e92afabf94d3e4522c52bb1daf50890a",
+        "export": "cac1c6382b8f25a1bc396f18d9887aa7b2715b1e423b7c3cb75ce6fba331681b",
+        "drawing_json": "747181e76b0650e8400dae865c358c4a248fe01eb6a2116d846a1255eff3db12"
+      }
+    },
+    {
+      "name": "rgb_alpha",
+      "input": "../inputs/rgb_alpha.xlsx",
+      "input_sha256": "938a2614081371a548f98979e9271805d97a48bd1c41f731881e9bf20add64fe",
+      "json": "rgb_alpha.json",
+      "export": "rgb_alpha.xlsx",
+      "drawing_json": "rgb_alpha.drawing.json",
+      "output_sha256": {
+        "json": "eabec6cd027f7aaa79fc8c29c7a47ac2458ddb47307c06a75462316d360c7161",
+        "export": "d87e5d30c2c386c6ab6edb2c29864a8f1dde59179d12f4052ff15bc7c0c4fbf0",
+        "drawing_json": "345cba9e33abf82271305c1563ee4896183c09c2702a5b26c14c09a6cf44b2c3"
+      }
+    },
+    {
+      "name": "rgb_luminance",
+      "input": "../inputs/rgb_luminance.xlsx",
+      "input_sha256": "03647c4b8475e28eec6328c22a218e4e28deb7f26e212125326366f841a9ae06",
+      "json": "rgb_luminance.json",
+      "export": "rgb_luminance.xlsx",
+      "drawing_json": "rgb_luminance.drawing.json",
+      "output_sha256": {
+        "json": "45775277c24b36bb235dd7da88694b4861e55037a3a5e7606db61eb75b0c2f88",
+        "export": "baeb37526d246320e3861730e9241aca25c55e824a3d5bde4d59df1254691e0c",
+        "drawing_json": "58952124faf5a63f3ef706ce75c426d701f2e4eb16ea703b911d956f998734c6"
+      }
+    },
+    {
+      "name": "rgb_luminance_modulation",
+      "input": "../inputs/rgb_luminance_modulation.xlsx",
+      "input_sha256": "c744ad28c786016844548166dde14ee73ea436964285404f16aef921d4bdfdb2",
+      "json": "rgb_luminance_modulation.json",
+      "export": "rgb_luminance_modulation.xlsx",
+      "drawing_json": "rgb_luminance_modulation.drawing.json",
+      "output_sha256": {
+        "json": "a010f62f9476d9782fc593c84cb3835ecdfd3c369f043a460abe06f0fc019a53",
+        "export": "d173c5cd01e4991531d21947b281676ca2c994a8761b0725f939f4c4f262cfa8",
+        "drawing_json": "8f70e9210a89b12bc2e851209f6ad99fedfd8b9eff58d739564ceda024debaba"
+      }
+    },
+    {
+      "name": "rgb_luminance_offset",
+      "input": "../inputs/rgb_luminance_offset.xlsx",
+      "input_sha256": "4162cbaadbf9fb9f8ffe5854d7737157b88a8b8472f293e111dd42cdfb0667cf",
+      "json": "rgb_luminance_offset.json",
+      "export": "rgb_luminance_offset.xlsx",
+      "drawing_json": "rgb_luminance_offset.drawing.json",
+      "output_sha256": {
+        "json": "11a22762b070881b40b9b5d3bc66596997dca15ed899cbc4ba6b345e29ee1f99",
+        "export": "127cb6aeacf20ffacda6cabd96cab5a1d8925cf073cf4c1ec8f78d2566804a8d",
+        "drawing_json": "381c548e29bb53e3474e8de1422c3919dca2b2f5a1076614f8730a4fd72b37ab"
+      }
+    },
+    {
+      "name": "rgb_saturation",
+      "input": "../inputs/rgb_saturation.xlsx",
+      "input_sha256": "301162a22db779e19acd2702da2c7da842b820a43b2529a3fb706e4c26959feb",
+      "json": "rgb_saturation.json",
+      "export": "rgb_saturation.xlsx",
+      "drawing_json": "rgb_saturation.drawing.json",
+      "output_sha256": {
+        "json": "2a943308c9550dc891220ea4d2409a31b1643a0d9bcdfb15d734962881b38a20",
+        "export": "3773dccf42a546721f2736db2f3e659004714af656d24afb27c48db19b510a3d",
+        "drawing_json": "3c64d928d332f719a04d9744a2789f7cec0a9805c50b3b1a54fad0a2e207f5a1"
+      }
+    },
+    {
+      "name": "rgb_saturation_modulation",
+      "input": "../inputs/rgb_saturation_modulation.xlsx",
+      "input_sha256": "2213c434dbd394e87265e047410dc52b33e1b93ce3fa5a3413c2ab91201c4f60",
+      "json": "rgb_saturation_modulation.json",
+      "export": "rgb_saturation_modulation.xlsx",
+      "drawing_json": "rgb_saturation_modulation.drawing.json",
+      "output_sha256": {
+        "json": "caeea1757fe8879a16dea45e7e9a1321fe5d683134d169f0af7564a927036f57",
+        "export": "79344b79565356626cd17dccf1bb24caa10fd35cce63a218050f861554b704fa",
+        "drawing_json": "0f9d3348c090081e1d0c46f39674948138450633772eb7215921702f8741e117"
+      }
+    },
+    {
+      "name": "rgb_shade",
+      "input": "../inputs/rgb_shade.xlsx",
+      "input_sha256": "92d90697d62add903323721745265a0c36dc46dbdc8346d1c0e166e7f1ee3a01",
+      "json": "rgb_shade.json",
+      "export": "rgb_shade.xlsx",
+      "drawing_json": "rgb_shade.drawing.json",
+      "output_sha256": {
+        "json": "6e38afe71583a2566c5a013af2add52d49bd19fcca478821675fb4399ebc30a7",
+        "export": "ddb5795d188274b9f0909e99117d2bfd040d3a5054ee3634c3b9b41b1b7688f7",
+        "drawing_json": "939969006a557a94e4c58baf4a32d9219ba4afe9569402208bc0ea83d3f9a81f"
+      }
+    },
+    {
+      "name": "rgb_tint",
+      "input": "../inputs/rgb_tint.xlsx",
+      "input_sha256": "b510f008756d9e964c25c9c33d6ad845ef2237d6f9b1c140d09dc4fca053736d",
+      "json": "rgb_tint.json",
+      "export": "rgb_tint.xlsx",
+      "drawing_json": "rgb_tint.drawing.json",
+      "output_sha256": {
+        "json": "fa44071736bfd577d60678b1127a1f3560d2d09463eb3f5849d97ccf4988d437",
+        "export": "3ec40dc52ab364b99f1fc831b6271a236fe43f772791c6f1a97e9268b6ee30dd",
+        "drawing_json": "cbf5586232c10ca20eddaac193e44944ceb10416b644716706d99bdee0f07495"
+      }
+    },
+    {
+      "name": "rgb_transforms",
+      "input": "../inputs/rgb_transforms.xlsx",
+      "input_sha256": "eea8623433798b68057b25a2be8c247ce74bc3eb101d38d13c4ea27ae58782e5",
+      "json": "rgb_transforms.json",
+      "export": "rgb_transforms.xlsx",
+      "drawing_json": "rgb_transforms.drawing.json",
+      "output_sha256": {
+        "json": "4150ab7721dba030ab05278be1e69a5d15b02b6525759b57df5431a504d6c3a3",
+        "export": "783f7c5e0ce3d7541d027c597472010dbed813b66507391b2b939604e7611f4f",
+        "drawing_json": "725b9f48ed2472fe191bdf2f8a5a7e58a031f6ba30a3952f054e2e826c756821"
+      }
+    },
+    {
+      "name": "scheme_alpha",
+      "input": "../inputs/scheme_alpha.xlsx",
+      "input_sha256": "baee5f0a37b0d72084fe67b96de7d41d5f03f5b2e97858db645133a1d9254a8c",
+      "json": "scheme_alpha.json",
+      "export": "scheme_alpha.xlsx",
+      "drawing_json": "scheme_alpha.drawing.json",
+      "output_sha256": {
+        "json": "e3e9469f8c6115d91a20f3cfccb8a1118aceb2e3818a948ebe7e7a746cc8b2f3",
+        "export": "1aebfed70945fc7676b6fce449109fe9efe3ed6aba667c1b7719fc260467f898",
+        "drawing_json": "2573cbb068e8f09ee41490a1a5e39456aab43a34454b1d7d92dd5a17c9e03729"
+      }
+    },
+    {
+      "name": "scheme_gridline_transforms",
+      "input": "../inputs/scheme_gridline_transforms.xlsx",
+      "input_sha256": "45d24871476d12b3a72a220cd67f3bc525527d6ff663a7053b2a17f4e343e7cf",
+      "json": "scheme_gridline_transforms.json",
+      "export": "scheme_gridline_transforms.xlsx",
+      "drawing_json": "scheme_gridline_transforms.drawing.json",
+      "output_sha256": {
+        "json": "1f129bbec15f0c3183e9dfcb718964cc4600cd08ef184efeb9f2faf8bf9f92ca",
+        "export": "f91cca3765a4d05c4a76495c32786355de8d2100a27fd486ba30e448e000c28f",
+        "drawing_json": "66b5d3bbb06313d9ae6ad70642a2fae62008d9e38462c4503556098851cc0a5d"
+      }
+    },
+    {
+      "name": "scheme_luminance",
+      "input": "../inputs/scheme_luminance.xlsx",
+      "input_sha256": "f3706219ad92d63e262ffb2cd2a812fe81112aba7b2527dc5d0387c9108c4ef6",
+      "json": "scheme_luminance.json",
+      "export": "scheme_luminance.xlsx",
+      "drawing_json": "scheme_luminance.drawing.json",
+      "output_sha256": {
+        "json": "2f32e63a7987bb13dc0eb00a9d3b413b424c88ae7fd69c317b7360d2540af2aa",
+        "export": "a46466b2c36253755f307f29bd5fc6be04cd8c5fd59b30098f7df02065ad1202",
+        "drawing_json": "5c81f88a0cc213f36ffe53106408426cf081cf9d7508bf337384a286a5198f48"
+      }
+    },
+    {
+      "name": "scheme_luminance_modulation",
+      "input": "../inputs/scheme_luminance_modulation.xlsx",
+      "input_sha256": "5d6705efc6aff83531747e3af080a2f977fbdfd7cfc908ff908c7541e0ab49e2",
+      "json": "scheme_luminance_modulation.json",
+      "export": "scheme_luminance_modulation.xlsx",
+      "drawing_json": "scheme_luminance_modulation.drawing.json",
+      "output_sha256": {
+        "json": "e97450f04c3d7292a8ae283367107c3e82958d011cb08a164d2148f6c633b2ef",
+        "export": "cbcc40d8a44fbf5346ec863329a3b313be45d924891e8f0d2ae99c8e8fb21706",
+        "drawing_json": "bd55bd6656e70943593b3bafcc342aae136a9c5025f81131c31cc8458d2447a1"
+      }
+    },
+    {
+      "name": "scheme_luminance_offset",
+      "input": "../inputs/scheme_luminance_offset.xlsx",
+      "input_sha256": "960d818e88580c8d100b65bf3de49839ed894b507fd184a3c1ff7527a6893d43",
+      "json": "scheme_luminance_offset.json",
+      "export": "scheme_luminance_offset.xlsx",
+      "drawing_json": "scheme_luminance_offset.drawing.json",
+      "output_sha256": {
+        "json": "28a04ef1fab5b749fa50e4e3f4440fa0658797d9259677323780d578abf676c0",
+        "export": "1de12cefabedb5b67b10d3b8bac09e2ac14774a5bf2b593f671e7904aad9f4fe",
+        "drawing_json": "385ec6f771d5bdb482ea3a309cb06e98e7c491be6e605ec9a96614f788b40df2"
+      }
+    },
+    {
+      "name": "scheme_saturation",
+      "input": "../inputs/scheme_saturation.xlsx",
+      "input_sha256": "20afc4d9decb2d76b75724825a547226532756ac4a3873da150311c6e33528ce",
+      "json": "scheme_saturation.json",
+      "export": "scheme_saturation.xlsx",
+      "drawing_json": "scheme_saturation.drawing.json",
+      "output_sha256": {
+        "json": "7a79c11afbf7d1eec26ddb3be9cfc678ad4ec1629079af09fd4a5abdf20621d0",
+        "export": "6ee4103b4ca38c839176d712f39e7cbfe48ec8b85896547e9738cc78882ac7c8",
+        "drawing_json": "7babae75cb9947d8f4b8863c8469fd27e936e8036cc6440595732a3742086b1a"
+      }
+    },
+    {
+      "name": "scheme_saturation_modulation",
+      "input": "../inputs/scheme_saturation_modulation.xlsx",
+      "input_sha256": "0437b3884e19e220f4fe568ff54930267b4462a6d8417ad985300d3bbaf490c3",
+      "json": "scheme_saturation_modulation.json",
+      "export": "scheme_saturation_modulation.xlsx",
+      "drawing_json": "scheme_saturation_modulation.drawing.json",
+      "output_sha256": {
+        "json": "75facdbc3ed6d9a11a496cb46eefb238b1422bbeb628d8d000bcf7ea42bce5c1",
+        "export": "cf497054dd90b0e55da624268c89acff790bca81c7a55788370cae0e158710f4",
+        "drawing_json": "c338600c58a1a862905db8adc6eb5bcbe689ed97a66efc0dff4d21e9302d8154"
+      }
+    },
+    {
+      "name": "scheme_shade",
+      "input": "../inputs/scheme_shade.xlsx",
+      "input_sha256": "af2e0fdb6e65ef331c919c3252fafdb79898fc022d7a495dcd0b12e9bb55e0c0",
+      "json": "scheme_shade.json",
+      "export": "scheme_shade.xlsx",
+      "drawing_json": "scheme_shade.drawing.json",
+      "output_sha256": {
+        "json": "0d86add576a4b825e8ac7d4d1a82ae1ba462bf9a38dbce897bb0a69d5f35878c",
+        "export": "2f824aaeb2f111817887ea210834a49051118bd309d19fced590430dfdabd8f4",
+        "drawing_json": "c7a64e2f5eb44be365c22163183ab72c37fed4e2e67a095dd1241f34d0791b2a"
+      }
+    },
+    {
+      "name": "scheme_tint",
+      "input": "../inputs/scheme_tint.xlsx",
+      "input_sha256": "59d019a811582e1c399c01a1e6e9afd7c5fca8eb97751c983d3b3024beb6879b",
+      "json": "scheme_tint.json",
+      "export": "scheme_tint.xlsx",
+      "drawing_json": "scheme_tint.drawing.json",
+      "output_sha256": {
+        "json": "1f5761a21a2a4af744b568a1409c4631f590c95d83dadf8076d67058f76f4a82",
+        "export": "22c1a5b074d5ef69ce446a9db93e0947a734c26677de6d1aaf52aabedefbca27",
+        "drawing_json": "f5eb1444c508ef45044a1650bdabb989ec07a41e1158be7add6548076e867f14"
+      }
+    },
+    {
+      "name": "scheme_transforms",
+      "input": "../inputs/scheme_transforms.xlsx",
+      "input_sha256": "b13b84a1d3f42c4decaff77abcc827a1c919d7c06e673e1f2b57125fcccbfb5f",
+      "json": "scheme_transforms.json",
+      "export": "scheme_transforms.xlsx",
+      "drawing_json": "scheme_transforms.drawing.json",
+      "output_sha256": {
+        "json": "c7be3fe41d27bbf815fb775a9f9e05b99718d760f5b0fa1e9319600ea1be757d",
+        "export": "4f432367dfb9dd2ecacb4d851f66de6ef8589a3ee733ed2b3ea205089ca8fe07",
+        "drawing_json": "a2971106ab4bc1ee931621de3d62a8909d50a2e55de838eae231e19bfe1e9d68"
+      }
+    },
+    {
+      "name": "shape_auto_fit",
+      "input": "../inputs/shape_auto_fit.xlsx",
+      "input_sha256": "204d8b831ea4743d35ce49e43ec8a1d241a91895fa57c0cc78e76a067381edc5",
+      "json": "shape_auto_fit.json",
+      "export": "shape_auto_fit.xlsx",
+      "drawing_json": "shape_auto_fit.drawing.json",
+      "output_sha256": {
+        "json": "f6586aa8917153974fbe7f1f82760d98145bc745b7f38b0f700a34e14be945d2",
+        "export": "e1f571ddbb217dc853fe63fbc163a6f9b2c0f924011c1af84835fd306dfa8037",
+        "drawing_json": "c96a26d51e1413cf84ac6694b6b26867dd4f3b9e3eddd5b6c947d874bf76c8ee"
+      }
+    },
+    {
+      "name": "standard",
+      "input": "../inputs/standard.xlsx",
+      "input_sha256": "ae6b4e9089dc36eaf2443a1c62752f321c2eca237e5b7d80187dadce600f4803",
+      "json": "standard.json",
+      "export": "standard.xlsx",
+      "drawing_json": "standard.drawing.json",
+      "output_sha256": {
+        "json": "680f53ce82c70091fc91d5f8be56d8c05805936b580ac8f1cd2fda95e90c42c3",
+        "export": "1a6238bc7c9a3a9fc83c0909c3813ec17158e6123ba7385137fb1ffcfed38077",
+        "drawing_json": "955efef68efadadbeb7d5afd16856ab65d496bd2776fb0d0b660b600afc169ee"
+      }
+    },
+    {
+      "name": "tile_rectangle",
+      "input": "../inputs/tile_rectangle.xlsx",
+      "input_sha256": "32cf8eeb7082c15206602b66248a97f9d634369f92351e3cc7e17e51504517dc",
+      "json": "tile_rectangle.json",
+      "export": "tile_rectangle.xlsx",
+      "drawing_json": "tile_rectangle.drawing.json",
+      "output_sha256": {
+        "json": "680f53ce82c70091fc91d5f8be56d8c05805936b580ac8f1cd2fda95e90c42c3",
+        "export": "8dfbe785ee7a75c8c40b9095fec0b5adb92289a03a4b16c01a3c758bdd2a0d4a",
+        "drawing_json": "bfa1781fae52134600b2e6c55e47b1cbc9f3d15cef455fcf969d1b65b014563b"
+      }
+    }
+  ]
+}
