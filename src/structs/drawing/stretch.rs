@@ -124,9 +124,10 @@ impl Stretch {
 
 #[cfg(test)]
 mod tests {
-    // Tests for master's SourceRectangle fill model are absent: this fork stores the four
-    // insets directly and cannot express the percentage forms those tests assert. They
-    // return with the deferred fill-rectangle work.
+    // Tests for master's SourceRectangle fill model are absent: this fork
+    // stores the four insets directly and cannot express the percentage
+    // forms those tests assert. They return with the deferred
+    // fill-rectangle work.
     use super::*;
     use crate::drawing::charts::NamespaceScope;
     fn read(xml: &str) -> Result<Stretch, crate::XlsxError> {

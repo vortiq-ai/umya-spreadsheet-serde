@@ -293,9 +293,10 @@ impl TextProperties {
 
 #[cfg(test)]
 mod tests {
-    // Tests for master's `parts` preservation (BodyProperties vertical/anchorCtr and the
-    // supplement merge) are absent: this fork keeps no preserved XML, so they cannot pass
-    // here. They return with the deferred in-chart text fidelity work.
+    // Tests for master's `parts` preservation (BodyProperties
+    // vertical/anchorCtr and the supplement merge) are absent: this fork
+    // keeps no preserved XML, so they cannot pass here. They return with
+    // the deferred in-chart text fidelity work.
     use super::*;
     fn roundtrip(xml: &str) -> String {
         let mut reader = Reader::from_reader(xml.as_bytes());

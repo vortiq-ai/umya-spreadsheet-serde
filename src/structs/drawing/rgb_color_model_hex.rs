@@ -12,11 +12,9 @@ use super::{
     PercentageType,
     PositiveFixedPercentageType,
 };
-use crate::{
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -305,7 +303,15 @@ impl RgbColorModelHex {
         self.read_with_session(reader, e, empty_flag, None)
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "every drawing writer returns Result so callers can use `?` uniformly; this
+                  fork's simpler model has nothing here that can fail"
+    )]
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // a:srgbClr
         if self.with_inner_params() {
             write_start_tag(
@@ -364,14 +370,14 @@ impl RgbColorModelHex {
                 true,
             );
         }
-    
-        Ok(())
 
+        Ok(())
     }
 
-    /// Reads this element the way master does, through the shared transform loop: any prefix
-    /// bound to the `DrawingML` namespace is accepted, a foreign lookalike is not, and the loop
-    /// ends on the name the caller opened. The eight modifier fields stay this fork's.
+    /// Reads this element the way master does, through the shared transform
+    /// loop: any prefix bound to the `DrawingML` namespace is accepted, a
+    /// foreign lookalike is not, and the loop ends on the name the caller
+    /// opened. The eight modifier fields stay this fork's.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -392,18 +398,24 @@ impl RgbColorModelHex {
         self.apply_transforms(&transforms)
     }
 
-    /// Records master's ordered transform list in this fork's one-field-per-modifier model.
+    /// Records master's ordered transform list in this fork's
+    /// one-field-per-modifier model.
     ///
-    /// The modifiers are read by master's own loop, so an aliased prefix, a default namespace and
-    /// a foreign lookalike are judged here exactly as they are for the colour types that keep the
-    /// list itself. What this fork has no room for it drops, as it always has: the authored order,
-    /// every occurrence of a repeated modifier but the last, and the transforms outside these
-    /// eight. Restoring those is the deferred colour model, not this.
+    /// The modifiers are read by master's own loop, so an aliased prefix, a
+    /// default namespace and a foreign lookalike are judged here exactly as
+    /// they are for the colour types that keep the list itself. What this
+    /// fork has no room for it drops, as it always has: the authored order,
+    /// every occurrence of a repeated modifier but the last, and the transforms
+    /// outside these eight. Restoring those is the deferred colour model,
+    /// not this.
     fn apply_transforms(
         &mut self,
         transforms: &[super::ColorTransform],
     ) -> Result<(), crate::XlsxError> {
-        use super::{ColorTransform, scheme_color::percentage_thousandths};
+        use super::{
+            ColorTransform,
+            scheme_color::percentage_thousandths,
+        };
         for transform in transforms {
             match transform {
                 ColorTransform::Luminance(value) => {
@@ -436,9 +448,11 @@ impl RgbColorModelHex {
         Ok(())
     }
 
-    /// This fork's modifiers as master's ordered transform list. The fork keeps one optional field
-    /// per modifier, so it can record neither the authored order nor a repeated modifier; the list
-    /// is built in the schema order Excel emits, which is the order the fork has always assumed.
+    /// This fork's modifiers as master's ordered transform list. The fork keeps
+    /// one optional field per modifier, so it can record neither the
+    /// authored order nor a repeated modifier; the list is built in the
+    /// schema order Excel emits, which is the order the fork has always
+    /// assumed.
     #[must_use]
     pub fn transforms(&self) -> Vec<super::ColorTransform> {
         use super::ColorTransform;
@@ -456,7 +470,9 @@ impl RgbColorModelHex {
             transforms.push(ColorTransform::Saturation(value.val().to_string()));
         }
         if let Some(value) = &self.saturation_modulation {
-            transforms.push(ColorTransform::SaturationModulation(value.val().to_string()));
+            transforms.push(ColorTransform::SaturationModulation(
+                value.val().to_string(),
+            ));
         }
         if let Some(value) = &self.shade {
             transforms.push(ColorTransform::Shade(value.val().to_string()));

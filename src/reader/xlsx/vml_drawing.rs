@@ -132,9 +132,11 @@ pub(crate) fn read(
                                     && comment.coordinate().row_num() - 1 == row
                             });
                     let Some((index, _)) = owners.next() else {
-                        // Excel leaves the note VML behind when the comment itself is gone, so
-                        // real workbooks carry note shapes that own nothing. Keep the shape
-                        // verbatim, the way an unowned shape above is kept, instead of
+                        // Excel leaves the note VML behind when the comment
+                        // itself is gone, so
+                        // real workbooks carry note shapes that own nothing.
+                        // Keep the shape verbatim, the
+                        // way an unowned shape above is kept, instead of
                         // refusing the whole file.
                         drawing
                             .elements

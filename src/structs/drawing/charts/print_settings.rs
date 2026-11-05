@@ -110,7 +110,8 @@ impl PrintSettings {
         self
     }
 
-    /// The fork keeps no source caches here, so the session is accepted and ignored.
+    /// The fork keeps no source caches here, so the session is accepted and
+    /// ignored.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -160,8 +161,9 @@ impl PrintSettings {
         write_end_tag(writer, "c:printSettings");
     }
 
-    /// Always `None`: this fork neither reads nor writes `c:legacyDrawingHF`, so a chart never
-    /// carries a legacy header/footer drawing and no relationship is emitted for one.
+    /// Always `None`: this fork neither reads nor writes `c:legacyDrawingHF`,
+    /// so a chart never carries a legacy header/footer drawing and no
+    /// relationship is emitted for one.
     #[must_use]
     pub fn legacy_drawing_header_footer(&self) -> Option<&str> {
         None

@@ -94,6 +94,12 @@ impl FillRectangle {
     pub(crate) fn set_attributes<R: std::io::BufRead>(_reader: &mut Reader<R>, _e: &BytesStart) {}
 
     #[inline]
+    #[expect(
+        clippy::unnecessary_wraps,
+        clippy::unused_self,
+        reason = "every drawing writer is called as a method and returns Result so callers can
+                  use `?` uniformly; this element is an empty tag with no state to write"
+    )]
     pub(crate) fn write_to(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
@@ -103,7 +109,14 @@ impl FillRectangle {
         Ok(())
     }
 
-    /// Master's session-aware entry point over this fork's reader. This type carries no source caches, so the session only keeps nested extension scopes balanced.
+    /// Master's session-aware entry point over this fork's reader. This type
+    /// carries no source caches, so the session only keeps nested extension
+    /// scopes balanced.
+    #[expect(
+        clippy::unused_self,
+        reason = "called as a method on every drawing type; this element parses no attributes
+                  of its own, so only the extension scope is kept balanced"
+    )]
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,

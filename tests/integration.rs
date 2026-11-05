@@ -34,8 +34,8 @@ mod chart_drawing_preservation;
 #[path = "chart_drawing_property_choices.rs"]
 mod chart_drawing_property_choices;
 // #[path = "chart_drawing_shape_attributes.rs"]
-// EXCLUDED on this branch -- tests parts + Shape::text_link/locks_text, held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests parts + Shape::text_link/locks_text, held at
+// the fleet pin. Restore this module together with that model.
 // mod chart_drawing_shape_attributes;
 #[path = "chart_edit_removals.rs"]
 mod chart_edit_removals;
@@ -134,9 +134,9 @@ mod chart_root_extensions;
 #[path = "chart_series_cache_text.rs"]
 mod chart_series_cache_text;
 // #[path = "chart_series_family_output.rs"]
-// EXCLUDED on this branch -- tests Foreground/BackgroundColor as Option<SolidFill>, held at the fleet pin.
-// Restore this module together with that model.
-// mod chart_series_family_output;
+// EXCLUDED on this branch -- tests Foreground/BackgroundColor as
+// Option<SolidFill>, held at the fleet pin. Restore this module together with
+// that model. mod chart_series_family_output;
 #[path = "chart_series_line_picture_fill.rs"]
 mod chart_series_line_picture_fill;
 #[path = "chart_series_skips_unmodeled_parts.rs"]
@@ -148,8 +148,8 @@ mod chart_sheet_name_quoting;
 #[path = "chart_source_caches.rs"]
 mod chart_source_caches;
 // #[path = "chart_space_parts.rs"]
-// EXCLUDED on this branch -- tests parts (lossless XML preservation), held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests parts (lossless XML preservation), held at
+// the fleet pin. Restore this module together with that model.
 // mod chart_space_parts;
 #[path = "chart_stock_surface.rs"]
 mod chart_stock_surface;
@@ -198,12 +198,13 @@ mod drawing_import_links_controls;
 #[path = "drawing_native_colors.rs"]
 mod drawing_native_colors;
 // #[path = "drawing_paints.rs"]
-// EXCLUDED on this branch -- tests the colour model (SchemeColor/RgbColorModelHex transforms), held at the fleet pin.
+// EXCLUDED on this branch -- tests the colour model
+// (SchemeColor/RgbColorModelHex transforms), held at the fleet pin.
 // Restore this module together with that model.
 // mod drawing_paints;
 // #[path = "drawing_parts.rs"]
-// EXCLUDED on this branch -- tests parts (lossless XML preservation), held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests parts (lossless XML preservation), held at
+// the fleet pin. Restore this module together with that model.
 // mod drawing_parts;
 #[path = "drawing_preserve_blips.rs"]
 mod drawing_preserve_blips;
@@ -274,16 +275,16 @@ mod page_setup_fit_to_page;
 // Restore this module together with that model.
 // mod persisted_color_compatibility;
 // #[path = "persisted_gradient_compatibility.rs"]
-// EXCLUDED on this branch -- tests GradientStop (position retype + extra fills), held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests GradientStop (position retype + extra
+// fills), held at the fleet pin. Restore this module together with that model.
 // mod persisted_gradient_compatibility;
 #[path = "persisted_legend_compatibility.rs"]
 mod persisted_legend_compatibility;
 #[path = "persisted_shape_gradient_compatibility.rs"]
 mod persisted_shape_gradient_compatibility;
 // #[path = "persisted_structure_compatibility.rs"]
-// EXCLUDED on this branch -- tests BodyProperties auto_fit + the colour model, held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests BodyProperties auto_fit + the colour model,
+// held at the fleet pin. Restore this module together with that model.
 // mod persisted_structure_compatibility;
 #[path = "pivot_formatting.rs"]
 mod pivot_formatting;
@@ -350,16 +351,16 @@ mod table_identity;
 #[path = "table_style_info_roundtrip.rs"]
 mod table_style_info_roundtrip;
 // #[path = "text_autofit.rs"]
-// EXCLUDED on this branch -- tests BodyProperties TextAutoFit, held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests BodyProperties TextAutoFit, held at the
+// fleet pin. Restore this module together with that model.
 // mod text_autofit;
 #[path = "theme_color_transforms.rs"]
 mod theme_color_transforms;
 #[path = "theme_part_fidelity.rs"]
 mod theme_part_fidelity;
 // #[path = "themes.rs"]
-// EXCLUDED on this branch -- tests PresetColor transforms, held at the fleet pin.
-// Restore this module together with that model.
+// EXCLUDED on this branch -- tests PresetColor transforms, held at the fleet
+// pin. Restore this module together with that model.
 // mod themes;
 #[path = "timeline.rs"]
 mod timeline;

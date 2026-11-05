@@ -970,7 +970,10 @@ impl Workbook {
     /// their definitions and records.
     // The lifetime cannot be elided inside argument-position impl Trait; rustc 1.96 counts it
     // as single-use where the crate's declared 1.89.0 did not.
-    #[allow(single_use_lifetimes, reason = "named lifetime is required by impl Trait here")]
+    #[allow(
+        single_use_lifetimes,
+        reason = "named lifetime is required by impl Trait here"
+    )]
     pub(crate) fn retain_pivot_caches_of<'a>(
         &mut self,
         removed: impl IntoIterator<Item = &'a crate::structs::PivotTable>,

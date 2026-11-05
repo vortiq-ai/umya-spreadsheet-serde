@@ -45,7 +45,6 @@ pub struct Shape {
     published:                   Option<bool>,
 }
 
-
 impl Shape {
     #[inline]
     #[must_use]

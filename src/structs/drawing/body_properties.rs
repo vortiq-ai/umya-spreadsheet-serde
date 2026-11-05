@@ -287,7 +287,8 @@ impl BodyProperties {
         self
     }
 
-    /// Whether the text box is centred on its anchor, `anchorCtr` on `a:bodyPr`.
+    /// Whether the text box is centred on its anchor, `anchorCtr` on
+    /// `a:bodyPr`.
     #[inline]
     #[must_use]
     pub fn anchor_ctr(&self) -> bool {
@@ -309,9 +310,10 @@ impl BodyProperties {
         self.read_with_session(reader, e, empty_flag, None)
     }
 
-    /// Reads this element the way master does: by local name within the `DrawingML` namespace, so
-    /// any prefix bound to it is accepted and a foreign lookalike is not, and ending on the name
-    /// the caller actually opened rather than a literal `a:` one. The fields stay this fork's.
+    /// Reads this element the way master does: by local name within the
+    /// `DrawingML` namespace, so any prefix bound to it is accepted and a
+    /// foreign lookalike is not, and ending on the name the caller actually
+    /// opened rather than a literal `a:` one. The fields stay this fork's.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -407,7 +409,15 @@ impl BodyProperties {
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "every drawing writer returns Result so callers can use `?` uniformly; this
+                  fork's simpler model has nothing here that can fail"
+    )]
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         let empty_flag = &self.shape_auto_fit.is_none();
 
         // a:bodyPr
@@ -472,20 +482,30 @@ impl BodyProperties {
 
             write_end_tag(writer, "a:bodyPr");
         }
-    
-        Ok(())
 
+        Ok(())
     }
 
-    /// No-op: this fork's BodyProperties keeps no preserved XML to strip before export.
+    /// No-op: this fork's `BodyProperties` keeps no preserved XML to strip
+    /// before export.
+    #[expect(
+        clippy::unused_self,
+        reason = "called on every exported drawing type; this fork keeps no preserved XML"
+    )]
     pub(crate) fn strip_export_parts(&mut self) {}
 
-    /// Nothing was stripped, so nothing is restored and the restored count is zero.
+    /// Nothing was stripped, so nothing is restored and the restored count is
+    /// zero.
+    #[expect(
+        clippy::unused_self,
+        reason = "called on every exported drawing type; this fork keeps no preserved XML"
+    )]
     pub(crate) fn restore_export_parts(&mut self, _previous: &Self) -> usize {
         0
     }
 
-    /// This fork models every attribute it reads, so none can be left unvalidated.
+    /// This fork models every attribute it reads, so none can be left
+    /// unvalidated.
     #[must_use]
     pub fn supplemental_attributes_valid(&self) -> bool {
         true

@@ -118,9 +118,10 @@ impl GradientStop {
         self.read_with_session(reader, e, false, None)
     }
 
-    /// Reads this element the way master does: by local name within the `DrawingML` namespace, so
-    /// any prefix bound to it is accepted and a foreign lookalike is not, and ending on the name
-    /// the caller actually opened rather than a literal `a:` one. The fields stay this fork's.
+    /// Reads this element the way master does: by local name within the
+    /// `DrawingML` namespace, so any prefix bound to it is accepted and a
+    /// foreign lookalike is not, and ending on the name the caller actually
+    /// opened rather than a literal `a:` one. The fields stay this fork's.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -175,7 +176,10 @@ impl GradientStop {
         );
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // a:gs
         write_start_tag(
             writer,
@@ -195,9 +199,7 @@ impl GradientStop {
         }
 
         write_end_tag(writer, "a:gs");
-    
+
         Ok(())
-
     }
-
 }

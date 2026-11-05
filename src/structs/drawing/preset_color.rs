@@ -8,11 +8,9 @@ use quick_xml::{
 };
 
 use super::alpha::Alpha;
-use crate::{
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -78,9 +76,10 @@ impl PresetColor {
         self.read_with_session(reader, e, false, None)
     }
 
-    /// Reads this element the way master does, through the shared transform loop: any prefix
-    /// bound to the `DrawingML` namespace is accepted, a foreign lookalike is not, and the loop
-    /// ends on the name the caller opened. Of that list this fork keeps only the alpha, as before.
+    /// Reads this element the way master does, through the shared transform
+    /// loop: any prefix bound to the `DrawingML` namespace is accepted, a
+    /// foreign lookalike is not, and the loop ends on the name the caller
+    /// opened. Of that list this fork keeps only the alpha, as before.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -104,7 +103,15 @@ impl PresetColor {
         Ok(())
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "every drawing writer returns Result so callers can use `?` uniformly; this
+                  fork's simpler model has nothing here that can fail"
+    )]
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // a:prstClr
         write_start_tag(writer, "a:prstClr", vec![("val", &self.val).into()], false);
 
@@ -114,12 +121,12 @@ impl PresetColor {
         }
 
         write_end_tag(writer, "a:prstClr");
-    
-        Ok(())
 
+        Ok(())
     }
 
-    /// This fork's single modifier as master's ordered transform list; see `SchemeColor::transforms`.
+    /// This fork's single modifier as master's ordered transform list; see
+    /// `SchemeColor::transforms`.
     #[must_use]
     pub fn transforms(&self) -> Vec<super::ColorTransform> {
         self.alpha
