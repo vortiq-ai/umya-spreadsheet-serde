@@ -48,9 +48,9 @@ pub struct Area3DChart {
     vary_colors:            VaryColors,
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            Option<Box<DataLabels>>,
-    axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     drop_lines:             Option<ChartLines>,
+    axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     gap_depth:              Option<GapDepth>,
     #[cfg_attr(feature = "serde", serde(default))]

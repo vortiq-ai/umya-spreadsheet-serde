@@ -492,7 +492,6 @@ fn edited_first_run(book: &mut Workbook, method: Option<Mutation>) {
 }
 
 #[test]
-#[ignore = "lexical attribute preservation through parts is held at the fleet pin"]
 fn rich_label_run_presence_and_positioned_fields_follow_ordinary_chart_mutations() {
     let labels = concat!(
         "<c:dLbls><c:dLbl><c:idx val=\"9\"/><c:layout><c:manualLayout>",

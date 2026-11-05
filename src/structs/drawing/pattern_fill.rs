@@ -14,20 +14,17 @@ use super::{
     BackgroundColor,
     ForegroundColor,
 };
-use crate::{
-    reader::driver::try_xml_read_loop,
-    writer::driver::{
-        write_end_tag,
-        write_start_tag,
-    },
+use crate::writer::driver::{
+    write_end_tag,
+    write_start_tag,
 };
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct PatternFill {
     preset:           Box<str>,
-    foreground_color: ForegroundColor,
-    background_color: BackgroundColor,
+    foreground_color: Option<ForegroundColor>,
+    background_color: Option<BackgroundColor>,
 }
 
 impl Default for PatternFill {
@@ -35,8 +32,8 @@ impl Default for PatternFill {
     fn default() -> Self {
         Self {
             preset:           "pct5".into(),
-            foreground_color: ForegroundColor::default(),
-            background_color: BackgroundColor::default(),
+            foreground_color: None,
+            background_color: None,
         }
     }
 }
@@ -63,61 +60,61 @@ impl PatternFill {
 
     #[inline]
     #[must_use]
-    pub fn foreground_color(&self) -> &ForegroundColor {
-        &self.foreground_color
+    pub fn foreground_color(&self) -> Option<&ForegroundColor> {
+        self.foreground_color.as_ref()
     }
 
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use foreground_color()")]
-    pub fn get_foreground_color(&self) -> &ForegroundColor {
+    pub fn get_foreground_color(&self) -> Option<&ForegroundColor> {
         self.foreground_color()
     }
 
     #[inline]
-    pub fn foreground_color_mut(&mut self) -> &mut ForegroundColor {
-        &mut self.foreground_color
+    pub fn foreground_color_mut(&mut self) -> Option<&mut ForegroundColor> {
+        self.foreground_color.as_mut()
     }
 
     #[inline]
     #[deprecated(since = "3.0.0", note = "Use foreground_color_mut()")]
-    pub fn get_foreground_color_mut(&mut self) -> &mut ForegroundColor {
+    pub fn get_foreground_color_mut(&mut self) -> Option<&mut ForegroundColor> {
         self.foreground_color_mut()
     }
 
     #[inline]
     pub fn set_foreground_color(&mut self, value: ForegroundColor) -> &mut Self {
-        self.foreground_color = value;
+        self.foreground_color = Some(value);
         self
     }
 
     #[inline]
     #[must_use]
-    pub fn background_color(&self) -> &BackgroundColor {
-        &self.background_color
+    pub fn background_color(&self) -> Option<&BackgroundColor> {
+        self.background_color.as_ref()
     }
 
     #[inline]
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use background_color()")]
-    pub fn get_background_color(&self) -> &BackgroundColor {
+    pub fn get_background_color(&self) -> Option<&BackgroundColor> {
         self.background_color()
     }
 
     #[inline]
-    pub fn background_color_mut(&mut self) -> &mut BackgroundColor {
-        &mut self.background_color
+    pub fn background_color_mut(&mut self) -> Option<&mut BackgroundColor> {
+        self.background_color.as_mut()
     }
 
     #[inline]
     #[deprecated(since = "3.0.0", note = "Use background_color_mut()")]
-    pub fn get_background_color_mut(&mut self) -> &mut BackgroundColor {
+    pub fn get_background_color_mut(&mut self) -> Option<&mut BackgroundColor> {
         self.background_color_mut()
     }
 
     #[inline]
     pub fn set_background_color(&mut self, value: BackgroundColor) -> &mut Self {
-        self.background_color = value;
+        self.background_color = Some(value);
         self
     }
 
@@ -129,60 +126,89 @@ impl PatternFill {
         self.read_with_session(reader, e, false, None)
     }
 
-    /// Reads this element the way master does: by local name within the
-    /// `DrawingML` namespace, so any prefix bound to it is accepted and a
-    /// foreign lookalike is not, and ending on the name the caller actually
-    /// opened rather than a literal `a:` one. The fields stay this fork's.
+    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        e: &BytesStart,
+        session: &crate::reader::xlsx::SourceCacheSession,
+    ) -> Result<(), crate::XlsxError> {
+        self.read_with_session(reader, e, false, Some(session))
+    }
+
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        owner: &BytesStart,
+        owner: &BytesStart<'_>,
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) -> Result<(), crate::XlsxError> {
-        let _guard = session
-            .map(|value| value.enter_child_scope(owner))
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(owner))
             .transpose()?
             .flatten();
-        if let Some(value) = crate::reader::driver::read_attribute(owner, b"prst")? {
-            self.set_preset(value);
-        }
+        self.set_preset(crate::reader::driver::read_attribute(owner, b"prst")?.unwrap_or_default());
         if empty {
             return Ok(());
         }
         let end_name = owner.name().as_ref().to_vec();
-        try_xml_read_loop!(
-            reader,
-            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
-                let child_empty = matches!(event, Event::Empty(_));
-                let native = match session {
-                    Some(session) => session.accepts_child_namespace(
-                        child,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )?,
-                    None => true,
-                };
-                match (native, crate::reader::driver::local_name(child.name().into_inner())) {
-                    (true, b"fgClr") => {
-                        self.foreground_color
-                            .read_with_session(reader, child, child_empty, session)?;
-                    }
-                    (true, b"bgClr") => {
-                        self.background_color
-                            .read_with_session(reader, child, child_empty, session)?;
-                    }
-                    _ => {
-                        // Never look inside what this element does not model: a native-looking
-                        // grandchild of a foreign wrapper is not a child of this element.
+        let mut buffer = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buffer)?;
+            match event {
+                ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                    let child_empty = matches!(event, Event::Empty(_));
+                    let native = match session {
+                        Some(session) => session.accepts_child_namespace(
+                            child,
+                            crate::helper::const_str::DRAWINGML_MAIN_NS,
+                        )?,
+                        None => true,
+                    };
+                    if !native {
                         if !child_empty {
                             crate::reader::driver::skip_element(reader, child)?;
                         }
+                        continue;
+                    }
+                    match crate::reader::driver::local_name(child.name().into_inner()) {
+                        b"fgClr" => {
+                            if self.foreground_color.is_some() {
+                                return Err(crate::xml::xml_error(
+                                    "duplicate DrawingML pattern color",
+                                ));
+                            }
+                            let mut value = ForegroundColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_foreground_color(value);
+                        }
+                        b"bgClr" => {
+                            if self.background_color.is_some() {
+                                return Err(crate::xml::xml_error(
+                                    "duplicate DrawingML pattern color",
+                                ));
+                            }
+                            let mut value = BackgroundColor::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            self.set_background_color(value);
+                        }
+                        _ => {
+                            if !child_empty {
+                                crate::reader::driver::skip_element(reader, child)?;
+                            }
+                        }
                     }
                 }
-            },
-            Event::End(ref end) if end.name().as_ref() == end_name => return Ok(()),
-            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
-        );
+                Event::End(ref end) if end.name().as_ref() == end_name.as_slice() => return Ok(()),
+                Event::Text(ref text)
+                    if text
+                        .iter()
+                        .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) => {}
+                Event::Comment(_) | Event::PI(_) => (),
+                Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+                _ => return Err(crate::xml::xml_error("unexpected DrawingML content")),
+            }
+            buffer.clear();
+        }
     }
 
     pub(crate) fn write_to(
@@ -193,18 +219,25 @@ impl PatternFill {
         write_start_tag(
             writer,
             "a:pattFill",
-            vec![("prst", &self.preset).into()],
+            if self.preset.is_empty() {
+                vec![]
+            } else {
+                vec![("prst", &self.preset).into()]
+            },
             false,
         );
 
         // a:fgClr
-        self.foreground_color.write_to(writer)?;
+        if let Some(color) = &self.foreground_color {
+            color.write_to(writer)?;
+        }
 
         // a:bgClr
-        self.background_color.write_to(writer)?;
+        if let Some(color) = &self.background_color {
+            color.write_to(writer)?;
+        }
 
         write_end_tag(writer, "a:pattFill");
-
         Ok(())
     }
 }

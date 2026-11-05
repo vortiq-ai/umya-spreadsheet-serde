@@ -230,7 +230,6 @@ fn assert_written(book: &Workbook, expected: &[ResolvedToken], eager: bool, name
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn projected_fill_choices_replace_every_competing_fill() {
     for (from, source_fill, to, target_fill) in [
         ("pattern", PATTERN, "solid", SOLID),
@@ -390,7 +389,6 @@ fn empty_shape_and_connector_properties_keep_all_children_absent() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn legacy_hidden_pattern_restoration_respects_visible_fill_edits() {
     use umya_spreadsheet::drawing::charts::ChartDrawingObject;
     let group = format!(
@@ -491,7 +489,6 @@ fn projected_pattern_fill_removal_keeps_the_fill_absent() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn pattern_fill_without_a_preset_keeps_the_attribute_absent() {
     let source = package(&shape(&properties("<a:pattFill/>")));
     let expected = resolved_subtree(&drawing_xml(&source), "spPr");

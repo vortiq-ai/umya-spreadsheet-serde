@@ -134,7 +134,6 @@ fn roundtrip(source: Vec<u8>, expected: &[&str]) {
     }
 }
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn custom_geometry_pattern_fill_and_three_dimensional_effects_survive() {
     let properties = r#"<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/><a:pathLst><a:path w="100" h="100"><a:moveTo><a:pt x="0" y="0"/></a:moveTo><a:lnTo><a:pt x="100" y="100"/></a:lnTo></a:path></a:pathLst></a:custGeom><a:pattFill prst="pct5"><a:fgClr><a:srgbClr val="123456"/></a:fgClr><a:bgClr><a:srgbClr val="ABCDEF"/></a:bgClr></a:pattFill><a:effectDag name="effects"><a:cont name="nested"/></a:effectDag><a:scene3d><a:camera prst="orthographicFront"/><a:lightRig rig="threePt" dir="t"/></a:scene3d><a:sp3d z="12700"><a:bevelT w="25400" h="12700"/></a:sp3d>"#;
     roundtrip(
@@ -163,7 +162,6 @@ fn custom_geometry_pattern_fill_and_three_dimensional_effects_survive() {
     );
 }
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn style_references_preserve_all_color_choices_and_transform_order() {
     for color in [
         r#"<a:srgbClr val="123456"><a:alpha val="75000"/><a:shade val="50000"/></a:srgbClr>"#,

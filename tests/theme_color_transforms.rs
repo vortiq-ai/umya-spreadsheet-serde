@@ -37,7 +37,6 @@ fn workbook_with_accent(color: &str) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn theme_colors_apply_ordered_drawingml_transforms_before_and_after_round_trip() {
     for (color, expected) in [
         (

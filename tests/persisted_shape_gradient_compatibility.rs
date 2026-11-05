@@ -230,7 +230,6 @@ fn discarded_historical_gradients_keep_their_outer_map_or_null_type_boundary() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn deferred_current_gradients_replay_nested_color_transform_enums() {
     let mut value = shape_json(true);
     value["gradient_fill"]["gradient_stop_list"]["gradient_stop"][0]["rgb_color_model_hex"]
@@ -248,7 +247,6 @@ fn deferred_current_gradients_replay_nested_color_transform_enums() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn current_shape_maps_preserve_native_gradients_with_empty_or_populated_property_lists() {
     for preserved in [json!([]), shape_json(true)["preserved_properties"].clone()] {
         let mut expected = shape_json(true);
@@ -303,7 +301,6 @@ fn shape_compatibility_maps_reject_unknown_duplicate_and_invalid_marker_fields()
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn current_shape_binary_encoding_keeps_all_twelve_derived_fields() {
     let value = shape_json(true);
     let properties: ShapeProperties = serde_json::from_value(value.clone()).unwrap();

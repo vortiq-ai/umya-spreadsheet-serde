@@ -176,7 +176,6 @@ fn rejected_frame_owners_discard_all_incoming_hidden_parts() {
 }
 
 #[test]
-#[ignore = "the DrawingML colour model is held at the fleet pin"]
 fn restoration_errors_leave_receiver_and_authority_unchanged() {
     let previous = fixture::imported_chart(&document());
     let mut projection = previous.clone();

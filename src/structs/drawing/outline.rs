@@ -44,6 +44,7 @@ pub struct Outline {
     compound_line_type: StringValue,
     solid_fill:         Option<Box<SolidFill>>,
     gradient_fill:      Option<Box<GradientFill>>,
+    head_end:           Option<Box<LineEndProperties>>,
     tail_end:           Option<Box<TailEnd>>,
     no_fill:            Option<NoFill>,
     bevel:              Option<Box<Bevel>>,
@@ -52,7 +53,6 @@ pub struct Outline {
     round:              Option<Round>,
     alignment:          EnumValue<PenAlignmentValues>,
     system_color:       Option<Box<SystemColor>>,
-    head_end:           Option<Box<LineEndProperties>>,
     #[cfg_attr(feature = "serde", serde(default))]
     custom_dash:        Option<CustomDash>,
 }

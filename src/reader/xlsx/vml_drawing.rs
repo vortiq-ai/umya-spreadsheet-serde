@@ -122,31 +122,17 @@ pub(crate) fn read(
                         .comment_row_target()
                         .ok_or_else(|| crate::xml::xml_error("comment VML shape has no row"))?
                         .value();
-                    let mut owners =
-                        worksheet
-                            .comments()
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, comment)| {
-                                comment.coordinate().col_num() - 1 == column
-                                    && comment.coordinate().row_num() - 1 == row
-                            });
-                    let Some((index, _)) = owners.next() else {
-                        // Excel leaves the note VML behind when the comment
-                        // itself is gone, so
-                        // real workbooks carry note shapes that own nothing.
-                        // Keep the shape verbatim, the
-                        // way an unowned shape above is kept, instead of
-                        // refusing the whole file.
-                        drawing
-                            .elements
-                            .push(NativeDrawingElement::Xml(Box::new(node)));
-                        continue;
-                    };
-                    if owners.next().is_some() {
+                    let mut matches = worksheet.comments_mut().iter_mut().filter(|comment| {
+                        comment.coordinate().col_num() - 1 == column
+                            && comment.coordinate().row_num() - 1 == row
+                    });
+                    let comment = matches.next().ok_or_else(|| {
+                        crate::xml::xml_error("comment VML shape owner is missing")
+                    })?;
+                    if matches.next().is_some() {
                         return Err(crate::xml::xml_error("ambiguous comment VML shape owner"));
                     }
-                    worksheet.comments_mut()[index].set_shape(obj);
+                    comment.set_shape(obj);
                     drawing
                         .elements
                         .push(NativeDrawingElement::Comment { column, row });

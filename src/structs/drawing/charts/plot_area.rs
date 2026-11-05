@@ -78,23 +78,23 @@ pub struct PlotArea {
     area_chart:        Option<AreaChart>,
     area_3d_chart:     Option<Area3DChart>,
     of_pie_chart:      Option<OfPieChart>,
-    category_axis:     Vec<CategoryAxis>,
-    date_axis:         Vec<DateAxis>,
-    value_axis:        Vec<ValueAxis>,
-    series_axis:       Vec<SeriesAxis>,
-    shape_properties:  Option<ShapeProperties>,
-    #[cfg_attr(feature = "serde", serde(default))]
-    chart_group_order: Vec<ChartGroupEntry>,
     #[cfg_attr(feature = "serde", serde(default))]
     stock_chart:       Option<Box<StockChart>>,
     #[cfg_attr(feature = "serde", serde(default))]
     surface_chart:     Option<Box<SurfaceChart>>,
     #[cfg_attr(feature = "serde", serde(default))]
     surface_3d_chart:  Option<Box<Surface3DChart>>,
+    category_axis:     Vec<CategoryAxis>,
+    date_axis:         Vec<DateAxis>,
+    value_axis:        Vec<ValueAxis>,
+    series_axis:       Vec<SeriesAxis>,
     #[cfg_attr(feature = "serde", serde(default))]
     data_table:        Option<DataTable>,
+    shape_properties:  Option<ShapeProperties>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:        Option<ExtensionList>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    chart_group_order: Vec<ChartGroupEntry>,
 }
 
 // Resolve malformed markers identically for borrowed views and owned repair.

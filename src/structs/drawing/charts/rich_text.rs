@@ -339,7 +339,7 @@ impl RichText {
         write_start_tag(writer, "c:rich", vec![], false);
 
         // a:bodyPr
-        self.body_properties.write_to(writer)?;
+        self.body_properties.write_to(writer);
 
         // a:lstStyle
         if self

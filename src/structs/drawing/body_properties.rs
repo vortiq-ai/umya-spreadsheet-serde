@@ -17,10 +17,13 @@ use super::{
         Int32Value,
     },
     ShapeAutoFit,
+    TextAutoFit,
     TextWrappingValues,
 };
 use crate::{
     StringValue,
+    XlsxError,
+    helper::const_str::DRAWINGML_MAIN_NS as NS_A,
     reader::driver::try_xml_read_loop,
     writer::driver::{
         write_end_tag,
@@ -28,7 +31,7 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Default, Debug)]
 pub struct BodyProperties {
     vert_overflow:         StringValue,
@@ -42,16 +45,375 @@ pub struct BodyProperties {
     right_inset:           Int32Value,
     bottom_inset:          Int32Value,
     use_paragraph_spacing: BooleanValue,
-    shape_auto_fit:        Option<ShapeAutoFit>,
-    // Appended, so the serde layout only grows. Both default on a chart saved before this fork
-    // read them, which is the same as the file not carrying the attribute at all.
     #[cfg_attr(feature = "serde", serde(default))]
-    vert:                  StringValue,
+    auto_fit:              Option<TextAutoFit>,
     #[cfg_attr(feature = "serde", serde(default))]
-    anchor_ctr:            BooleanValue,
+    parts:                 Option<Box<BodyPropertiesParts>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextVertical {
+    Horizontal,
+    Vertical,
+    Vertical270,
+    WordArtVertical,
+    EastAsianVertical,
+    MongolianVertical,
+    WordArtVerticalRightToLeft,
+}
+impl TextVertical {
+    fn read(value: &str) -> Option<Self> {
+        Some(match value {
+            "horz" => Self::Horizontal,
+            "vert" => Self::Vertical,
+            "vert270" => Self::Vertical270,
+            "wordArtVert" => Self::WordArtVertical,
+            "eaVert" => Self::EastAsianVertical,
+            "mongolianVert" => Self::MongolianVertical,
+            "wordArtVertRtl" => Self::WordArtVerticalRightToLeft,
+            _ => return None,
+        })
+    }
+
+    fn xml(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horz",
+            Self::Vertical => "vert",
+            Self::Vertical270 => "vert270",
+            Self::WordArtVertical => "wordArtVert",
+            Self::EastAsianVertical => "eaVert",
+            Self::MongolianVertical => "mongolianVert",
+            Self::WordArtVerticalRightToLeft => "wordArtVertRtl",
+        }
+    }
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Default, Debug)]
+pub struct BodyPropertiesParts {
+    vertical:              Option<TextVertical>,
+    anchor_center:         Option<super::charts::BooleanLexeme>,
+    invalid_vertical:      bool,
+    invalid_anchor_center: bool,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for BodyProperties {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BodyProperties;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("BodyProperties")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                Ok(BodyProperties {
+                    vert_overflow:         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
+                    horz_overflow:         seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?,
+                    rtl_col:               seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?,
+                    anchor:                seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?,
+                    wrap:                  seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?,
+                    rotation:              seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?,
+                    left_inset:            seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?,
+                    top_inset:             seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(7, &self))?,
+                    right_inset:           seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(8, &self))?,
+                    bottom_inset:          seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(9, &self))?,
+                    use_paragraph_spacing: seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(10, &self))?,
+                    auto_fit:              seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(11, &self))?,
+                    parts:                 seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(12, &self))?,
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut vert_overflow = None;
+                let mut horz_overflow = None;
+                let mut rtl_col = None;
+                let mut anchor = None;
+                let mut wrap = None;
+                let mut rotation = None;
+                let mut left_inset = None;
+                let mut top_inset = None;
+                let mut right_inset = None;
+                let mut bottom_inset = None;
+                let mut use_paragraph_spacing = None;
+                let mut auto_fit = None;
+                let mut parts = None;
+                let mut shape_auto_fit = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "vert_overflow" => {
+                            if vert_overflow.is_some() {
+                                return Err(serde::de::Error::duplicate_field("vert_overflow"));
+                            }
+                            vert_overflow = Some(map.next_value()?);
+                        }
+                        "horz_overflow" => {
+                            if horz_overflow.is_some() {
+                                return Err(serde::de::Error::duplicate_field("horz_overflow"));
+                            }
+                            horz_overflow = Some(map.next_value()?);
+                        }
+                        "rtl_col" => {
+                            if rtl_col.is_some() {
+                                return Err(serde::de::Error::duplicate_field("rtl_col"));
+                            }
+                            rtl_col = Some(map.next_value()?);
+                        }
+                        "anchor" => {
+                            if anchor.is_some() {
+                                return Err(serde::de::Error::duplicate_field("anchor"));
+                            }
+                            anchor = Some(map.next_value()?);
+                        }
+                        "wrap" => {
+                            if wrap.is_some() {
+                                return Err(serde::de::Error::duplicate_field("wrap"));
+                            }
+                            wrap = Some(map.next_value()?);
+                        }
+                        "rotation" => {
+                            if rotation.is_some() {
+                                return Err(serde::de::Error::duplicate_field("rotation"));
+                            }
+                            rotation = Some(map.next_value()?);
+                        }
+                        "left_inset" => {
+                            if left_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("left_inset"));
+                            }
+                            left_inset = Some(map.next_value()?);
+                        }
+                        "top_inset" => {
+                            if top_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("top_inset"));
+                            }
+                            top_inset = Some(map.next_value()?);
+                        }
+                        "right_inset" => {
+                            if right_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("right_inset"));
+                            }
+                            right_inset = Some(map.next_value()?);
+                        }
+                        "bottom_inset" => {
+                            if bottom_inset.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bottom_inset"));
+                            }
+                            bottom_inset = Some(map.next_value()?);
+                        }
+                        "use_paragraph_spacing" => {
+                            if use_paragraph_spacing.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "use_paragraph_spacing",
+                                ));
+                            }
+                            use_paragraph_spacing = Some(map.next_value()?);
+                        }
+                        "auto_fit" => {
+                            if auto_fit.is_some() {
+                                return Err(serde::de::Error::duplicate_field("auto_fit"));
+                            }
+                            auto_fit = Some(map.next_value()?);
+                        }
+                        "parts" => {
+                            if parts.is_some() {
+                                return Err(serde::de::Error::duplicate_field("parts"));
+                            }
+                            parts = Some(map.next_value()?);
+                        }
+                        "shape_auto_fit" => {
+                            if shape_auto_fit.is_some() {
+                                return Err(serde::de::Error::duplicate_field("shape_auto_fit"));
+                            }
+                            shape_auto_fit = Some(map.next_value()?);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(
+                                &key,
+                                &[
+                                    "vert_overflow",
+                                    "horz_overflow",
+                                    "rtl_col",
+                                    "anchor",
+                                    "wrap",
+                                    "rotation",
+                                    "left_inset",
+                                    "top_inset",
+                                    "right_inset",
+                                    "bottom_inset",
+                                    "use_paragraph_spacing",
+                                    "auto_fit",
+                                    "parts",
+                                    "shape_auto_fit",
+                                ],
+                            ));
+                        }
+                    }
+                }
+                if auto_fit.is_some() && shape_auto_fit.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "auto_fit and shape_auto_fit are mutually exclusive",
+                    ));
+                }
+                let auto_fit = match (auto_fit, shape_auto_fit) {
+                    (Some(value), None) => value,
+                    (None, Some(value)) => {
+                        let legacy: Option<ShapeAutoFit> = value;
+                        legacy.map(TextAutoFit::Shape)
+                    }
+                    _ => None,
+                };
+                Ok(BodyProperties {
+                    vert_overflow: vert_overflow
+                        .ok_or_else(|| serde::de::Error::missing_field("vert_overflow"))?,
+                    horz_overflow: horz_overflow
+                        .ok_or_else(|| serde::de::Error::missing_field("horz_overflow"))?,
+                    rtl_col: rtl_col.ok_or_else(|| serde::de::Error::missing_field("rtl_col"))?,
+                    anchor: anchor.ok_or_else(|| serde::de::Error::missing_field("anchor"))?,
+                    wrap: wrap.ok_or_else(|| serde::de::Error::missing_field("wrap"))?,
+                    rotation: rotation
+                        .ok_or_else(|| serde::de::Error::missing_field("rotation"))?,
+                    left_inset: left_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("left_inset"))?,
+                    top_inset: top_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("top_inset"))?,
+                    right_inset: right_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("right_inset"))?,
+                    bottom_inset: bottom_inset
+                        .ok_or_else(|| serde::de::Error::missing_field("bottom_inset"))?,
+                    use_paragraph_spacing: use_paragraph_spacing
+                        .ok_or_else(|| serde::de::Error::missing_field("use_paragraph_spacing"))?,
+                    auto_fit,
+                    parts: parts.unwrap_or_default(),
+                })
+            }
+        }
+        deserializer.deserialize_struct(
+            "BodyProperties",
+            &[
+                "vert_overflow",
+                "horz_overflow",
+                "rtl_col",
+                "anchor",
+                "wrap",
+                "rotation",
+                "left_inset",
+                "top_inset",
+                "right_inset",
+                "bottom_inset",
+                "use_paragraph_spacing",
+                "auto_fit",
+                "parts",
+            ],
+            Visitor,
+        )
+    }
 }
 
 impl BodyProperties {
+    pub(crate) fn strip_export_parts(&mut self) {
+        self.parts = None;
+    }
+
+    pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
+        let Some(previous) = &previous.parts else {
+            return 0;
+        };
+        let Some(current) = &mut self.parts else {
+            self.parts = Some(previous.clone());
+            return 1;
+        };
+        let mut restored = false;
+        if current.vertical.is_none()
+            && !current.invalid_vertical
+            && (previous.vertical.is_some() || previous.invalid_vertical)
+        {
+            current.vertical = previous.vertical;
+            current.invalid_vertical = previous.invalid_vertical;
+            restored = true;
+        }
+        if current.anchor_center.is_none()
+            && !current.invalid_anchor_center
+            && (previous.anchor_center.is_some() || previous.invalid_anchor_center)
+        {
+            current.anchor_center = previous.anchor_center;
+            current.invalid_anchor_center = previous.invalid_anchor_center;
+            restored = true;
+        }
+        usize::from(restored)
+    }
+
+    #[must_use]
+    pub fn vertical(&self) -> Option<TextVertical> {
+        self.parts.as_ref().and_then(|p| p.vertical)
+    }
+
+    pub fn set_vertical(&mut self, value: Option<TextVertical>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.vertical = value;
+        p.invalid_vertical = false;
+    }
+
+    pub fn anchor_center(&self) -> Option<bool> {
+        self.parts
+            .as_ref()
+            .and_then(|p| p.anchor_center)
+            .map(super::charts::BooleanLexeme::value)
+    }
+
+    pub fn set_anchor_center(&mut self, value: Option<bool>) {
+        let p = self.parts.get_or_insert_with(Default::default);
+        p.anchor_center = value.map(|v| {
+            if v {
+                super::charts::BooleanLexeme::One
+            } else {
+                super::charts::BooleanLexeme::Zero
+            }
+        });
+        p.invalid_anchor_center = false;
+    }
+
+    #[must_use]
+    pub fn supplemental_attributes_valid(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_none_or(|p| !p.invalid_vertical && !p.invalid_anchor_center)
+    }
+
     #[inline]
     #[must_use]
     pub fn vert_overflow(&self) -> Option<&str> {
@@ -240,7 +602,10 @@ impl BodyProperties {
     #[inline]
     #[must_use]
     pub fn shape_auto_fit(&self) -> Option<&ShapeAutoFit> {
-        self.shape_auto_fit.as_ref()
+        match self.auto_fit.as_ref() {
+            Some(TextAutoFit::Shape(value)) => Some(value),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -270,34 +635,21 @@ impl BodyProperties {
 
     #[inline]
     pub fn set_shape_auto_fit(&mut self, value: ShapeAutoFit) -> &mut BodyProperties {
-        self.shape_auto_fit = Some(value);
+        self.auto_fit = Some(TextAutoFit::Shape(value));
         self
     }
 
-    /// The text flow direction, `vert` on `a:bodyPr`.
-    #[inline]
     #[must_use]
-    pub fn vert(&self) -> Option<&str> {
-        self.vert.value()
+    pub fn auto_fit(&self) -> Option<&TextAutoFit> {
+        self.auto_fit.as_ref()
     }
 
-    #[inline]
-    pub fn set_vert<S: Into<String>>(&mut self, value: S) -> &mut BodyProperties {
-        self.vert.set_value(value);
-        self
+    pub fn auto_fit_mut(&mut self) -> Option<&mut TextAutoFit> {
+        self.auto_fit.as_mut()
     }
 
-    /// Whether the text box is centred on its anchor, `anchorCtr` on
-    /// `a:bodyPr`.
-    #[inline]
-    #[must_use]
-    pub fn anchor_ctr(&self) -> bool {
-        self.anchor_ctr.value()
-    }
-
-    #[inline]
-    pub fn set_anchor_ctr(&mut self, value: bool) -> &mut BodyProperties {
-        self.anchor_ctr.set_value(value);
+    pub fn set_auto_fit(&mut self, value: Option<TextAutoFit>) -> &mut Self {
+        self.auto_fit = value;
         self
     }
 
@@ -306,119 +658,126 @@ impl BodyProperties {
         reader: &mut Reader<R>,
         e: &BytesStart,
         empty_flag: bool,
-    ) -> Result<(), crate::XlsxError> {
+    ) -> Result<(), XlsxError> {
         self.read_with_session(reader, e, empty_flag, None)
     }
 
-    /// Reads this element the way master does: by local name within the
-    /// `DrawingML` namespace, so any prefix bound to it is accepted and a
-    /// foreign lookalike is not, and ending on the name the caller actually
-    /// opened rather than a literal `a:` one. The fields stay this fork's.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        owner: &BytesStart,
-        empty: bool,
+        e: &BytesStart,
+        empty_flag: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Result<(), crate::XlsxError> {
-        let _guard = session
-            .map(|value| value.enter_child_scope(owner))
+    ) -> Result<(), XlsxError> {
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(e))
             .transpose()?
             .flatten();
-        for attr in owner.attributes().with_checks(false).flatten() {
-            let key = attr.key.into_inner();
-            let value = attr
+        for attribute in e.attributes() {
+            let attribute = attribute.map_err(|error| crate::xml::xml_error(error.to_string()))?;
+            let key = attribute.key.as_ref();
+            let value = attribute
                 .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
                 .into_owned();
             match key {
                 b"rot" => {
-                    self.rotation.set_value_string(value);
+                    self.set_rotation(
+                        crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?,
+                    );
                 }
                 b"vertOverflow" => {
+                    if !matches!(value.as_str(), "overflow" | "ellipsis" | "clip") {
+                        return Err(crate::xml::xml_error("invalid DrawingML vertical overflow"));
+                    }
                     self.set_vert_overflow(value);
                 }
                 b"horzOverflow" => {
+                    if !matches!(value.as_str(), "overflow" | "clip") {
+                        return Err(crate::xml::xml_error(
+                            "invalid DrawingML horizontal overflow",
+                        ));
+                    }
                     self.set_horz_overflow(value);
                 }
                 b"rtlCol" => {
+                    crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?;
                     self.set_rtl_col(value);
                 }
                 b"anchor" => {
+                    if !matches!(value.as_str(), "t" | "ctr" | "b" | "just" | "dist") {
+                        return Err(crate::xml::xml_error("invalid DrawingML body anchor"));
+                    }
                     self.set_anchor(value);
                 }
                 b"vert" => {
-                    self.vert.set_value_string(value);
+                    let parsed = TextVertical::read(&value);
+                    let parts = self.parts.get_or_insert_with(Default::default);
+                    parts.vertical = parsed;
+                    parts.invalid_vertical = parsed.is_none();
                 }
                 b"anchorCtr" => {
-                    self.anchor_ctr.set_value_string(value);
+                    let parsed = match crate::xml::trim_xml_whitespace(&value) {
+                        "0" => Some(super::charts::BooleanLexeme::Zero),
+                        "1" => Some(super::charts::BooleanLexeme::One),
+                        "false" => Some(super::charts::BooleanLexeme::False),
+                        "true" => Some(super::charts::BooleanLexeme::True),
+                        _ => None,
+                    };
+                    let parts = self.parts.get_or_insert_with(Default::default);
+                    parts.anchor_center = parsed;
+                    parts.invalid_anchor_center = parsed.is_none();
                 }
                 b"wrap" => {
-                    self.wrap.set_value_string(value);
+                    let parsed = value
+                        .parse()
+                        .map_err(|()| crate::xml::xml_error("invalid DrawingML text wrapping"))?;
+                    self.set_wrap(parsed);
                 }
-                b"lIns" => {
-                    self.left_inset.set_value_string(value);
-                }
-                b"tIns" => {
-                    self.top_inset.set_value_string(value);
-                }
-                b"rIns" => {
-                    self.right_inset.set_value_string(value);
-                }
-                b"bIns" => {
-                    self.bottom_inset.set_value_string(value);
-                }
-                b"spcFirstLastPara" => {
-                    self.use_paragraph_spacing.set_value_string(value);
-                }
-                _ => {}
+                b"lIns" => self
+                    .set_left_inset(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?),
+                b"tIns" => self
+                    .set_top_inset(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?),
+                b"rIns" => self
+                    .set_right_inset(crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?),
+                b"bIns" => self.set_bottom_inset(
+                    crate::xml::parse_i32(&value).map_err(crate::xml::xml_error)?,
+                ),
+                b"spcFirstLastPara" => self.set_use_paragraph_spacing(
+                    crate::xml::parse_bool(&value).map_err(crate::xml::xml_error)?,
+                ),
+                _ => (),
             }
         }
-
-        if empty {
+        if empty_flag {
             return Ok(());
         }
-        let end_name = owner.name().as_ref().to_vec();
-        try_xml_read_loop!(
-            reader,
-            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
-                let child_empty = matches!(event, Event::Empty(_));
+        let end = e.name().as_ref().to_vec();
+        try_xml_read_loop!(reader,
+            ref event @ (Event::Empty(ref e) | Event::Start(ref e)) => {
+                let empty = matches!(event, Event::Empty(_));
                 let native = match session {
-                    Some(session) => session.accepts_child_namespace(
-                        child,
-                        crate::helper::const_str::DRAWINGML_MAIN_NS,
-                    )?,
+                    Some(session) => session.accepts_child_namespace(e, NS_A)?,
                     None => true,
                 };
-                match (native, crate::reader::driver::local_name(child.name().into_inner())) {
-                    (true, b"spAutoFit") => {
-                        let value = ShapeAutoFit::default();
-                        ShapeAutoFit::set_attributes(reader, child, child_empty)?;
-                        self.set_shape_auto_fit(value);
+                if !native {
+                    if !empty { crate::reader::driver::skip_element(reader, e)?; }
+                    continue;
+                }
+                match crate::reader::driver::local_name(e.name().as_ref()) {
+                    b"noAutofit" | b"normAutofit" | b"spAutoFit" if self.auto_fit.is_none() => {
+                        self.auto_fit = Some(TextAutoFit::read(reader, e, empty)?);
                     }
-                    _ => {
-                        // Never look inside what this element does not model: a native-looking
-                        // grandchild of a foreign wrapper is not a child of this element.
-                        if !child_empty {
-                            crate::reader::driver::skip_element(reader, child)?;
-                        }
-                    }
+                    b"noAutofit" | b"normAutofit" | b"spAutoFit" => return Err(crate::xml::xml_error("duplicate DrawingML body properties autofit")),
+                    _ => if !empty { crate::reader::driver::skip_element(reader, e)?; },
                 }
             },
-            Event::End(ref end) if end.name().as_ref() == end_name => return Ok(()),
-            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+            Event::End(ref e) if e.name().as_ref() == end.as_slice() => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML body properties")),
         );
     }
 
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "every drawing writer returns Result so callers can use `?` uniformly; this
-                  fork's simpler model has nothing here that can fail"
-    )]
-    pub(crate) fn write_to(
-        &self,
-        writer: &mut Writer<Cursor<Vec<u8>>>,
-    ) -> Result<(), crate::XlsxError> {
-        let empty_flag = &self.shape_auto_fit.is_none();
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        let empty_flag = self.auto_fit.is_none();
 
         // a:bodyPr
         let mut attributes: crate::structs::AttrCollection = Vec::new();
@@ -434,11 +793,13 @@ impl BodyProperties {
         if let Some(v) = self.anchor.value() {
             attributes.push(("anchor", v).into());
         }
-        if let Some(v) = self.vert.value() {
-            attributes.push(("vert", v).into());
-        }
-        if self.anchor_ctr.has_value() {
-            attributes.push(("anchorCtr", self.anchor_ctr.value_string()).into());
+        if let Some(p) = &self.parts {
+            if let Some(v) = p.vertical {
+                attributes.push(("vert", v.xml()).into());
+            }
+            if let Some(v) = p.anchor_center {
+                attributes.push(("anchorCtr", v.lexical()).into());
+            }
         }
         if self.wrap.has_value() {
             attributes.push(("wrap", self.wrap.value_string()).into());
@@ -473,41 +834,48 @@ impl BodyProperties {
             );
         }
 
-        write_start_tag(writer, "a:bodyPr", attributes, *empty_flag);
+        write_start_tag(writer, "a:bodyPr", attributes, empty_flag);
 
-        if !*empty_flag {
-            if self.shape_auto_fit.is_some() {
-                ShapeAutoFit::write_to(writer);
+        if !empty_flag {
+            if let Some(value) = &self.auto_fit {
+                value.write_to(writer);
             }
 
             write_end_tag(writer, "a:bodyPr");
         }
-
-        Ok(())
     }
+}
 
-    /// No-op: this fork's `BodyProperties` keeps no preserved XML to strip
-    /// before export.
-    #[expect(
-        clippy::unused_self,
-        reason = "called on every exported drawing type; this fork keeps no preserved XML"
-    )]
-    pub(crate) fn strip_export_parts(&mut self) {}
-
-    /// Nothing was stripped, so nothing is restored and the restored count is
-    /// zero.
-    #[expect(
-        clippy::unused_self,
-        reason = "called on every exported drawing type; this fork keeps no preserved XML"
-    )]
-    pub(crate) fn restore_export_parts(&mut self, _previous: &Self) -> usize {
-        0
-    }
-
-    /// This fork models every attribute it reads, so none can be left
-    /// unvalidated.
-    #[must_use]
-    pub fn supplemental_attributes_valid(&self) -> bool {
-        true
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn vertical_and_anchor_center_preserve_spelling_then_mutate() {
+        let xml = "<a:bodyPr vert=\"vert270\" anchorCtr=\"true\"/>";
+        let mut reader = Reader::from_reader(xml.as_bytes());
+        let mut buffer = Vec::new();
+        let e = match reader.read_event_into(&mut buffer).unwrap() {
+            Event::Empty(e) => e.into_owned(),
+            _ => panic!("expected empty body"),
+        };
+        let mut body = BodyProperties::default();
+        body.set_attributes(&mut reader, &e, true).unwrap();
+        assert_eq!(body.vertical(), Some(TextVertical::Vertical270));
+        assert_eq!(body.anchor_center(), Some(true));
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        body.write_to(&mut writer);
+        assert!(
+            String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("anchorCtr=\"true\"")
+        );
+        body.set_anchor_center(Some(false));
+        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        body.write_to(&mut writer);
+        assert!(
+            String::from_utf8(writer.into_inner().into_inner())
+                .unwrap()
+                .contains("anchorCtr=\"0\"")
+        );
     }
 }

@@ -69,6 +69,8 @@ fn with_excel_declaration(body: Vec<u8>) -> Vec<u8> {
 
 /// Write the parts the preserved extensions of one owner carry and return the
 /// relationships to emit for them.
+// The lifetime cannot be elided inside argument-position impl Trait; rustc 1.96 counts it
+// as single-use where the crate's declared 1.89.0 did not.
 #[allow(
     single_use_lifetimes,
     reason = "named lifetime is required by impl Trait here"

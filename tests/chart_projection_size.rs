@@ -44,24 +44,14 @@ const RANGE_ROWS: u32 = 100_000;
 // "shape":null` (36 bytes) plus `,"number_literal":null` (22 bytes).
 // The two optional chart-drawing fields each add one bincode None tag. Their
 // JSON cost is exactly the field names, separators, and null literals below.
-// The accounting above is master's. This branch holds several drawing models at
-// the fleet pin, so its chart carries a different set of optional fields and
-// costs a little more. The two terms below are MEASURED on this branch, not
-// derived, and which held-back model each byte belongs to has not been
-// attributed. They come back out as those models land; what this test is really
-// for -- that the cost does not grow with the source cache -- is asserted above
-// and holds.
-const HELD_BACK_MODEL_BINCODE_BYTES: usize = 16;
-const HELD_BACK_MODEL_JSON_BYTES: usize = 369;
-const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3 + 2 + HELD_BACK_MODEL_BINCODE_BYTES;
+const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3 + 2;
 const CHART_JSON_BYTES: usize = 5718
     + 527
     + 265
     + 36
     + 22
     + r#","chart_drawing":null"#.len()
-    + r#","chart_drawing_parts":null"#.len()
-    + HELD_BACK_MODEL_JSON_BYTES;
+    + r#","chart_drawing_parts":null"#.len();
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

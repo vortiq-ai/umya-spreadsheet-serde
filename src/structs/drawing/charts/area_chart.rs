@@ -47,9 +47,9 @@ pub struct AreaChart {
     vary_colors:            VaryColors,
     area_chart_series_list: AreaChartSeriesList,
     data_labels:            DataLabels,
-    axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     drop_lines:             Option<ChartLines>,
+    axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }

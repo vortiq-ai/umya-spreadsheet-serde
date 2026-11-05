@@ -183,7 +183,7 @@ impl TextBody {
         write_start_tag(writer, "xdr:txBody", vec![], false);
 
         // a:bodyPr
-        self.body_properties.write_to(writer)?;
+        self.body_properties.write_to(writer);
 
         // a:lstStyle
         self.list_style.write_to(writer)?;

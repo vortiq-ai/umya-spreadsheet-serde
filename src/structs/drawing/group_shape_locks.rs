@@ -19,6 +19,8 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct GroupShapeLocks {
+    #[cfg_attr(feature = "serde", serde(default))]
+    extensions:       Option<Box<crate::drawing::ExtensionList>>,
     no_change_aspect: BooleanValue,
     no_grouping:      BooleanValue,
     no_move:          BooleanValue,
@@ -26,8 +28,6 @@ pub struct GroupShapeLocks {
     no_rotation:      BooleanValue,
     no_selection:     BooleanValue,
     no_ungrouping:    BooleanValue,
-    #[cfg_attr(feature = "serde", serde(default))]
-    extensions:       Option<Box<crate::drawing::ExtensionList>>,
 }
 
 impl GroupShapeLocks {

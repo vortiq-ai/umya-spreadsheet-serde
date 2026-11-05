@@ -37,12 +37,23 @@ pub struct Shape {
     shape_style:                 Option<Box<ShapeStyle>>,
     text_body:                   Option<Box<TextBody>>,
     r#macro:                     StringValue,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "legacy_text_link"))]
     text_link:                   Option<Box<crate::drawing::charts::Formula>>,
     #[cfg_attr(feature = "serde", serde(default))]
     locks_text:                  Option<bool>,
     #[cfg_attr(feature = "serde", serde(default))]
     published:                   Option<bool>,
+}
+
+#[cfg(feature = "serde")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Serde default hooks must return the complete optional field type"
+)]
+fn legacy_text_link() -> Option<Box<crate::drawing::charts::Formula>> {
+    // Historical Shape JSON predates this field; its writer emitted an empty
+    // textlink. An explicit null still removes the attribute in current JSON.
+    Some(Box::default())
 }
 
 impl Shape {
