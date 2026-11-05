@@ -1,236 +1,72 @@
-// a:fgClr: native DrawingML color choice.
+// a:fgClr
 use std::io::Cursor;
 
 use quick_xml::{
     Reader,
     Writer,
-    events::BytesStart,
+    events::{
+        BytesStart,
+        Event,
+    },
 };
 
-use super::{
-    HslColor,
-    PresetColor,
-    RgbColorModelHex,
-    RgbColorModelPercentage,
-    SchemeColor,
-    SolidFill,
-    SystemColor,
+use super::SchemeColor;
+use crate::{
+    reader::driver::try_xml_read_loop,
+    writer::driver::{
+        write_end_tag,
+        write_start_tag,
+    },
 };
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct ForegroundColor {
-    color: SolidFill,
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for ForegroundColor {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = ForegroundColor;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("ForegroundColor")
-            }
-
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Self::Value, A::Error> {
-                Ok(ForegroundColor {
-                    color: seq
-                        .next_element()?
-                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?,
-                })
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut color = None;
-                let mut scheme_color = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "color" => {
-                            if color.is_some() {
-                                return Err(serde::de::Error::duplicate_field("color"));
-                            }
-                            color = Some(map.next_value()?);
-                        }
-                        "scheme_color" => {
-                            if scheme_color.is_some() {
-                                return Err(serde::de::Error::duplicate_field("scheme_color"));
-                            }
-                            scheme_color = Some(map.next_value()?);
-                        }
-                        _ => {
-                            return Err(serde::de::Error::unknown_field(
-                                &key,
-                                &["color", "scheme_color"],
-                            ));
-                        }
-                    }
-                }
-                if color.is_some() && scheme_color.is_some() {
-                    return Err(serde::de::Error::custom(
-                        "color and scheme_color are mutually exclusive",
-                    ));
-                }
-                let color = match (color, scheme_color) {
-                    (Some(value), None) => value,
-                    (None, Some(value)) => {
-                        let mut fill = SolidFill::default();
-                        fill.set_scheme_color(value);
-                        fill
-                    }
-                    _ => return Err(serde::de::Error::missing_field("color")),
-                };
-                Ok(ForegroundColor { color })
-            }
-        }
-        deserializer.deserialize_struct("ForegroundColor", &["color"], Visitor)
-    }
+    scheme_color: SchemeColor,
 }
 
 impl ForegroundColor {
+    #[inline]
     #[must_use]
-    pub fn hsl_color(&self) -> Option<&HslColor> {
-        self.color.hsl_color()
+    pub fn scheme_color(&self) -> &SchemeColor {
+        &self.scheme_color
     }
 
-    pub fn hsl_color_mut(&mut self) -> Option<&mut HslColor> {
-        self.color.hsl_color_mut()
-    }
-
-    pub fn set_hsl_color(&mut self, value: HslColor) -> &mut Self {
-        self.color.set_hsl_color(value);
-        self
-    }
-
+    #[inline]
     #[must_use]
-    pub fn rgb_color_model_percentage(&self) -> Option<&RgbColorModelPercentage> {
-        self.color.rgb_color_model_percentage()
-    }
-
-    pub fn rgb_color_model_percentage_mut(&mut self) -> Option<&mut RgbColorModelPercentage> {
-        self.color.rgb_color_model_percentage_mut()
-    }
-
-    pub fn set_rgb_color_model_percentage(&mut self, value: RgbColorModelPercentage) -> &mut Self {
-        self.color.set_rgb_color_model_percentage(value);
-        self
-    }
-
-    #[must_use]
-    pub fn scheme_color(&self) -> Option<&SchemeColor> {
-        self.color.scheme_color()
-    }
-
-    #[must_use]
-    pub fn get_scheme_color(&self) -> Option<&SchemeColor> {
+    #[deprecated(since = "3.0.0", note = "Use scheme_color()")]
+    pub fn get_scheme_color(&self) -> &SchemeColor {
         self.scheme_color()
     }
 
-    pub fn scheme_color_mut(&mut self) -> Option<&mut SchemeColor> {
-        self.color.scheme_color_mut()
+    #[inline]
+    pub fn scheme_color_mut(&mut self) -> &mut SchemeColor {
+        &mut self.scheme_color
     }
 
-    pub fn get_scheme_color_mut(&mut self) -> Option<&mut SchemeColor> {
+    #[inline]
+    #[deprecated(since = "3.0.0", note = "Use scheme_color_mut()")]
+    pub fn get_scheme_color_mut(&mut self) -> &mut SchemeColor {
         self.scheme_color_mut()
     }
 
-    pub fn set_scheme_color(&mut self, value: SchemeColor) -> &mut Self {
-        self.color.set_scheme_color(value);
-        self
-    }
-
-    #[must_use]
-    pub fn rgb_color_model_hex(&self) -> Option<&RgbColorModelHex> {
-        self.color.rgb_color_model_hex()
-    }
-
-    #[must_use]
-    pub fn get_rgb_color_model_hex(&self) -> Option<&RgbColorModelHex> {
-        self.rgb_color_model_hex()
-    }
-
-    pub fn rgb_color_model_hex_mut(&mut self) -> Option<&mut RgbColorModelHex> {
-        self.color.rgb_color_model_hex_mut()
-    }
-
-    pub fn get_rgb_color_model_hex_mut(&mut self) -> Option<&mut RgbColorModelHex> {
-        self.rgb_color_model_hex_mut()
-    }
-
-    pub fn set_rgb_color_model_hex(&mut self, value: RgbColorModelHex) -> &mut Self {
-        self.color.set_rgb_color_model_hex(value);
-        self
-    }
-
-    #[must_use]
-    pub fn system_color(&self) -> Option<&SystemColor> {
-        self.color.system_color()
-    }
-
-    #[must_use]
-    pub fn get_system_color(&self) -> Option<&SystemColor> {
-        self.system_color()
-    }
-
-    pub fn system_color_mut(&mut self) -> Option<&mut SystemColor> {
-        self.color.system_color_mut()
-    }
-
-    pub fn get_system_color_mut(&mut self) -> Option<&mut SystemColor> {
-        self.system_color_mut()
-    }
-
-    pub fn set_system_color(&mut self, value: SystemColor) -> &mut Self {
-        self.color.set_system_color(value);
-        self
-    }
-
-    #[must_use]
-    pub fn preset_color(&self) -> Option<&PresetColor> {
-        self.color.preset_color()
-    }
-
-    #[must_use]
-    pub fn get_preset_color(&self) -> Option<&PresetColor> {
-        self.preset_color()
-    }
-
-    pub fn preset_color_mut(&mut self) -> Option<&mut PresetColor> {
-        self.color.preset_color_mut()
-    }
-
-    pub fn get_preset_color_mut(&mut self) -> Option<&mut PresetColor> {
-        self.preset_color_mut()
-    }
-
-    pub fn set_preset_color(&mut self, value: PresetColor) -> &mut Self {
-        self.color.set_preset_color(value);
+    #[inline]
+    pub fn set_scheme_color(&mut self, value: SchemeColor) -> &mut ForegroundColor {
+        self.scheme_color = value;
         self
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        owner: &BytesStart,
+        e: &BytesStart,
     ) -> Result<(), crate::XlsxError> {
-        self.read_with_session(reader, owner, false, None)
+        self.read_with_session(reader, e, false, None)
     }
 
-    pub(crate) fn set_attributes_with_session<R: std::io::BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        owner: &BytesStart,
-        session: &crate::reader::xlsx::SourceCacheSession,
-    ) -> Result<(), crate::XlsxError> {
-        self.read_with_session(reader, owner, false, Some(session))
-    }
-
+    /// Reads this element the way master does: by local name within the `DrawingML` namespace, so
+    /// any prefix bound to it is accepted and a foreign lookalike is not, and ending on the name
+    /// the caller actually opened rather than a literal `a:` one. The fields stay this fork's.
     pub(crate) fn read_with_session<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -238,25 +74,54 @@ impl ForegroundColor {
         empty: bool,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
     ) -> Result<(), crate::XlsxError> {
-        self.color
-            .read_with_session(reader, owner, empty, session)?;
-        if !self.color.has_color() {
-            return Err(crate::xml::xml_error(
-                "DrawingML color container requires exactly one color",
-            ));
+        let _guard = session
+            .map(|value| value.enter_child_scope(owner))
+            .transpose()?
+            .flatten();
+        if empty {
+            return Ok(());
         }
-        Ok(())
+        let end_name = owner.name().as_ref().to_vec();
+        try_xml_read_loop!(
+            reader,
+            ref event @ (Event::Start(ref child) | Event::Empty(ref child)) => {
+                let child_empty = matches!(event, Event::Empty(_));
+                let native = match session {
+                    Some(session) => session.accepts_child_namespace(
+                        child,
+                        crate::helper::const_str::DRAWINGML_MAIN_NS,
+                    )?,
+                    None => true,
+                };
+                match (native, crate::reader::driver::local_name(child.name().into_inner())) {
+                    (true, b"schemeClr") => {
+                        self.scheme_color
+                            .read_with_session(reader, child, child_empty, session)?;
+                    }
+                    _ => {
+                        // Never look inside what this element does not model: a native-looking
+                        // grandchild of a foreign wrapper is not a child of this element.
+                        if !child_empty {
+                            crate::reader::driver::skip_element(reader, child)?;
+                        }
+                    }
+                }
+            },
+            Event::End(ref end) if end.name().as_ref() == end_name => return Ok(()),
+            Event::Eof => return Err(crate::xml::xml_error("unterminated DrawingML element")),
+        );
     }
 
-    pub(crate) fn write_to(
-        &self,
-        writer: &mut Writer<Cursor<Vec<u8>>>,
-    ) -> Result<(), crate::XlsxError> {
-        if !self.color.has_color() {
-            return Err(crate::xml::xml_error(
-                "DrawingML color container requires exactly one color",
-            ));
-        }
-        self.color.write_to_as(writer, "a:fgClr")
+    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) -> Result<(), crate::XlsxError> {
+        // a:fgClr
+        write_start_tag(writer, "a:fgClr", vec![], false);
+
+        // a:schemeClr
+        self.scheme_color.write_to(writer)?;
+
+        write_end_tag(writer, "a:fgClr");
+    
+        Ok(())
+
     }
 }

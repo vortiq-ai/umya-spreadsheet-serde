@@ -27,14 +27,14 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct Color2Type {
+    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
+    system_color:               Option<Box<SystemColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
     preset_color:               Option<Box<PresetColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
     hsl_color:                  Option<Box<HslColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
     rgb_color_model_percentage: Option<Box<RgbColorModelPercentage>>,
-    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
-    system_color:               Option<Box<SystemColor>>,
 }
 
 impl Color2Type {
@@ -180,7 +180,7 @@ impl Color2Type {
             return None;
         }
         if let Some(value) = &self.rgb_color_model_hex {
-            return super::color_transform::resolve_rgb(value.val(), value.transforms());
+            return super::color_transform::resolve_rgb(value.val(), &value.transforms());
         }
         self.system_color.as_ref().and_then(|value| {
             super::color_transform::resolve_rgb(value.last_color(), value.transforms())

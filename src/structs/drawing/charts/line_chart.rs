@@ -52,13 +52,13 @@ pub struct LineChart {
     data_labels:            DataLabels,
     show_marker:            ShowMarker,
     smooth:                 Smooth,
+    axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     drop_lines:             Option<ChartLines>,
     #[cfg_attr(feature = "serde", serde(default))]
     hi_low_lines:           Option<ChartLines>,
     #[cfg_attr(feature = "serde", serde(default))]
     up_down_bars:           Option<UpDownBars>,
-    axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
 }

@@ -25,8 +25,9 @@ fancy-regex = "0.18"
 hmac = "0.13"
 html5gum = "0.8"
 imagesize = "0.14"
-# Avoid optional defmt metadata keeping bitflags 1 in Cargo.lock beside ZIP 9's bitflags 2.
-jiff = { version = ">=0.2, <0.2.29", default-features = false }
+# Upstream caps jiff below 0.2.29 to keep bitflags 1 out of ITS lock; in the fleet that cap
+# would force a jiff downgrade in every consumer lock, for nothing we use (defmt is off).
+jiff = { version = "0.2", default-features = false }
 md-5 = "0.11"
 num-traits = "0.2.19"
 phf = { version = "0.14", features = ["macros"] }

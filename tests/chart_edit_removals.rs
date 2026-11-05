@@ -430,7 +430,7 @@ fn explicit_series_label_removal_never_comes_back_through_restoration() {
     // Under group labels: the deleted owner wins even against a stale basis.
     let mut r = round(true);
     let mut edited = client(&r);
-    first_group(&mut edited).remove_series_data_labels(0);
+    assert!(first_group(&mut edited).remove_series_data_labels(0));
     let basis = r.previous.clone();
     let xml = restored_xml(&mut r, edited, &basis, "series-labels-deleted-restored");
     assert!(series(&xml, 0).contains("<c:dLbls><c:delete val=\"1\"/></c:dLbls>"));
@@ -457,7 +457,7 @@ fn explicit_series_label_removal_never_comes_back_through_restoration() {
 fn explicit_group_label_removal_never_comes_back_through_restoration() {
     let mut r = round(true);
     let mut edited = client(&r);
-    first_group(&mut edited).remove_data_labels();
+    assert!(first_group(&mut edited).remove_data_labels());
     let basis = r.previous.clone();
     let xml = restored_xml(&mut r, edited, &basis, "group-labels-removed-restored");
     assert!(xml.contains("</c:ser><c:gapWidth"), "{xml}");

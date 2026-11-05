@@ -28,15 +28,15 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct SolidFill {
+    scheme_color:               Option<Box<SchemeColor>>,
+    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
+    system_color:               Option<Box<SystemColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
     hsl_color:                  Option<Box<HslColor>>,
     #[cfg_attr(feature = "serde", serde(default))]
     rgb_color_model_percentage: Option<Box<RgbColorModelPercentage>>,
-    scheme_color:               Option<Box<SchemeColor>>,
-    rgb_color_model_hex:        Option<Box<RgbColorModelHex>>,
     #[cfg_attr(feature = "serde", serde(default))]
     preset_color:               Option<Box<PresetColor>>,
-    system_color:               Option<Box<SystemColor>>,
 }
 
 impl SolidFill {

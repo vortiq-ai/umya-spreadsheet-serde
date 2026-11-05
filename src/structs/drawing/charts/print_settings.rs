@@ -18,7 +18,6 @@ use super::{
 use crate::{
     reader::driver::{
         local_name,
-        skip_element,
         try_xml_read_loop,
     },
     writer::driver::{
@@ -27,62 +26,53 @@ use crate::{
     },
 };
 
-/// The print settings of a chart. Each part is absent until the file or the
-/// caller sets it; an absent part writes nothing.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct PrintSettings {
-    header_footer:                Option<HeaderFooter>,
-    page_margins:                 Option<PageMargins>,
-    page_setup:                   Option<PageSetup>,
-    #[cfg_attr(feature = "serde", serde(default))]
-    legacy_drawing_header_footer: Option<String>,
+    header_footer: HeaderFooter,
+    page_margins:  PageMargins,
+    page_setup:    PageSetup,
 }
 
 impl PrintSettings {
     #[must_use]
-    pub fn header_footer(&self) -> Option<&HeaderFooter> {
-        self.header_footer.as_ref()
+    pub fn header_footer(&self) -> &HeaderFooter {
+        &self.header_footer
     }
 
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use header_footer()")]
-    pub fn get_header_footer(&self) -> Option<&HeaderFooter> {
+    pub fn get_header_footer(&self) -> &HeaderFooter {
         self.header_footer()
     }
 
-    pub fn header_footer_mut(&mut self) -> Option<&mut HeaderFooter> {
-        self.header_footer.as_mut()
+    pub fn header_footer_mut(&mut self) -> &mut HeaderFooter {
+        &mut self.header_footer
     }
 
     #[deprecated(since = "3.0.0", note = "Use header_footer_mut()")]
-    pub fn get_header_footer_mut(&mut self) -> Option<&mut HeaderFooter> {
+    pub fn get_header_footer_mut(&mut self) -> &mut HeaderFooter {
         self.header_footer_mut()
     }
 
     pub fn set_header_footer(&mut self, value: HeaderFooter) -> &mut Self {
-        self.header_footer = Some(value);
-        self
-    }
-
-    pub fn remove_header_footer(&mut self) -> &mut Self {
-        self.header_footer = None;
+        self.header_footer = value;
         self
     }
 
     #[must_use]
-    pub fn page_margins(&self) -> Option<&PageMargins> {
-        self.page_margins.as_ref()
+    pub fn page_margins(&self) -> &PageMargins {
+        &self.page_margins
     }
 
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use page_margins()")]
-    pub fn get_page_margins(&self) -> Option<&PageMargins> {
+    pub fn get_page_margins(&self) -> &PageMargins {
         self.page_margins()
     }
 
     pub fn page_margins_mut(&mut self) -> &mut PageMargins {
-        self.page_margins.get_or_insert_with(PageMargins::default)
+        &mut self.page_margins
     }
 
     #[deprecated(since = "3.0.0", note = "Use page_margins_mut()")]
@@ -91,126 +81,66 @@ impl PrintSettings {
     }
 
     pub fn set_page_margins(&mut self, value: PageMargins) -> &mut Self {
-        self.page_margins = Some(value);
-        self
-    }
-
-    pub fn remove_page_margins(&mut self) -> &mut Self {
-        self.page_margins = None;
+        self.page_margins = value;
         self
     }
 
     #[must_use]
-    pub fn page_setup(&self) -> Option<&PageSetup> {
-        self.page_setup.as_ref()
+    pub fn page_setup(&self) -> &PageSetup {
+        &self.page_setup
     }
 
     #[must_use]
     #[deprecated(since = "3.0.0", note = "Use page_setup()")]
-    pub fn get_page_setup(&self) -> Option<&PageSetup> {
+    pub fn get_page_setup(&self) -> &PageSetup {
         self.page_setup()
     }
 
-    pub fn page_setup_mut(&mut self) -> Option<&mut PageSetup> {
-        self.page_setup.as_mut()
+    pub fn page_setup_mut(&mut self) -> &mut PageSetup {
+        &mut self.page_setup
     }
 
     #[deprecated(since = "3.0.0", note = "Use page_setup_mut()")]
-    pub fn get_page_setup_mut(&mut self) -> Option<&mut PageSetup> {
+    pub fn get_page_setup_mut(&mut self) -> &mut PageSetup {
         self.page_setup_mut()
     }
 
     pub fn set_page_setup(&mut self, value: PageSetup) -> &mut Self {
-        self.page_setup = Some(value);
+        self.page_setup = value;
         self
     }
 
-    pub fn remove_page_setup(&mut self) -> &mut Self {
-        self.page_setup = None;
-        self
-    }
-
-    /// The chart part relationship id of the legacy header and footer
-    /// drawing (`c:legacyDrawingHF`), which holds the header and footer
-    /// pictures.
-    #[must_use]
-    pub fn legacy_drawing_header_footer(&self) -> Option<&str> {
-        self.legacy_drawing_header_footer.as_deref()
-    }
-
+    /// The fork keeps no source caches here, so the session is accepted and ignored.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
-        source_owner: &BytesStart,
+        _e: &BytesStart,
         session: &crate::reader::xlsx::SourceCacheSession,
     ) -> Result<(), crate::XlsxError> {
-        let owner_end = source_owner.name().as_ref().to_vec();
-        let _scope_guard = session.enter_child_scope(source_owner)?;
         try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
-                match if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
-                    local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"headerFooter" => {
-                        let mut obj = HeaderFooter::default();
-                        obj.set_attributes(reader, e, false, session)?;
-                        self.header_footer = Some(obj);
-                    }
-                    b"pageMargins" => {
-                        let mut obj = PageMargins::default();
-                        obj.set_attributes(reader, e)?;
-                        self.page_margins = Some(obj);
-                        crate::reader::driver::consume_empty_element(reader, e)?;
-                    }
-                    b"pageSetup" => {
-                        let mut obj = PageSetup::default();
-                        obj.set_attributes(e)?;
-                        self.page_setup = Some(obj);
-                        crate::reader::driver::consume_empty_element(reader, e)?;
-                    }
-                    b"legacyDrawingHF" => {
-                        self.legacy_drawing_header_footer = Some(read_relationship_id(e, session)?);
-                        crate::reader::driver::consume_empty_element(reader, e)?;
-                    }
-                    _ => skip_element(reader, e)?,
+                match local_name(e.name().0) {
+                b"headerFooter" => {
+                    self.header_footer.set_attributes(reader, e, false, session)?;
+                }
+                b"pageSetup" => {
+                    self.page_setup.set_attributes(e)?;
+                }
+                _ => (),
                 }
             },
             Event::Empty(ref e) => {
-                match if session.accepts_child_namespace(e, super::extension_registry::NS_C)? {
-                    local_name(e.name().into_inner())
-                } else {
-                    b""
-                } {
-                    b"headerFooter" => {
-                        let mut obj = HeaderFooter::default();
-                        obj.set_attributes(reader, e, true, session)?;
-                        self.header_footer = Some(obj);
-                    }
-                    b"pageMargins" => {
-                        let mut obj = PageMargins::default();
-                        obj.set_attributes(reader, e)?;
-                        self.page_margins = Some(obj);
-                    }
-                    b"pageSetup" => {
-                        let mut obj = PageSetup::default();
-                        obj.set_attributes(e)?;
-                        self.page_setup = Some(obj);
-                    }
-                    b"legacyDrawingHF" => {
-                        self.legacy_drawing_header_footer = Some(read_relationship_id(e, session)?);
-                    }
-                    _ => (),
+                if local_name(e.name().0) == b"pageMargins" {
+                    self.page_margins.set_attributes(reader, e)?;
                 }
             },
             Event::End(ref e) => {
-                if e.name().as_ref() == owner_end {
+                if local_name(e.name().0) == b"printSettings" {
                     return Ok(());
                 }
             },
-            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:printSettings")))
+            Event::Eof => return Err(crate::xml::xml_error("unterminated chart print settings")),
         );
     }
 
@@ -219,40 +149,21 @@ impl PrintSettings {
         write_start_tag(writer, "c:printSettings", vec![], false);
 
         // c:headerFooter
-        if let Some(v) = &self.header_footer {
-            v.write_to(writer);
-        }
+        self.header_footer.write_to(writer);
 
         // c:pageMargins
-        if let Some(v) = &self.page_margins {
-            v.write_to(writer);
-        }
+        self.page_margins.write_to(writer);
 
         // c:pageSetup
-        if let Some(v) = &self.page_setup {
-            v.write_to(writer);
-        }
-
-        // c:legacyDrawingHF
-        if let Some(id) = &self.legacy_drawing_header_footer {
-            write_start_tag(
-                writer,
-                "c:legacyDrawingHF",
-                vec![("r:id", id.as_str()).into()],
-                true,
-            );
-        }
+        self.page_setup.write_to(writer);
 
         write_end_tag(writer, "c:printSettings");
     }
-}
 
-fn read_relationship_id(
-    element: &BytesStart,
-    session: &crate::reader::xlsx::SourceCacheSession,
-) -> Result<String, crate::XlsxError> {
-    session
-        .relationship_id(element)?
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| crate::xml::xml_error("c:legacyDrawingHF requires a non-empty r:id"))
+    /// Always `None`: this fork neither reads nor writes `c:legacyDrawingHF`, so a chart never
+    /// carries a legacy header/footer drawing and no relationship is emitted for one.
+    #[must_use]
+    pub fn legacy_drawing_header_footer(&self) -> Option<&str> {
+        None
+    }
 }

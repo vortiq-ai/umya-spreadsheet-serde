@@ -298,7 +298,7 @@ impl Theme {
         gradient_fill.set_rotate_with_shape(true);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "0".into();
+        gradient_stop.set_position(0);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut lum_mod = PercentageType::default();
@@ -316,7 +316,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "50000".into();
+        gradient_stop.set_position(50000);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut lum_mod = PercentageType::default();
@@ -334,7 +334,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "100000".into();
+        gradient_stop.set_position(100000);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut lum_mod = PercentageType::default();
@@ -365,7 +365,7 @@ impl Theme {
         gradient_fill.set_rotate_with_shape(true);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "0".into();
+        gradient_stop.set_position(0);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut tint = PositiveFixedPercentageType::default();
@@ -383,7 +383,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "50000".into();
+        gradient_stop.set_position(50000);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut sat_mod = PercentageType::default();
@@ -401,7 +401,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "100000".into();
+        gradient_stop.set_position(100000);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut shade = PositiveFixedPercentageType::default();
@@ -568,7 +568,7 @@ impl Theme {
         gradient_fill.set_rotate_with_shape(true);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "0".into();
+        gradient_stop.set_position(0);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut tint = PositiveFixedPercentageType::default();
@@ -589,7 +589,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "50000".into();
+        gradient_stop.set_position(50000);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut tint = PositiveFixedPercentageType::default();
@@ -610,7 +610,7 @@ impl Theme {
             .add_gradient_stop(gradient_stop);
         //
         let mut gradient_stop = GradientStop::default();
-        gradient_stop.position = "100000".into();
+        gradient_stop.set_position(100000);
         let mut scheme_color = SchemeColor::default();
         scheme_color.set_val(SchemeColorValues::PhColor);
         let mut shade = PositiveFixedPercentageType::default();
