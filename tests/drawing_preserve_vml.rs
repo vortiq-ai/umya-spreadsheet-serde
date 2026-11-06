@@ -306,3 +306,42 @@ fn textbox_line_break_under_a_default_namespace_is_still_written_empty() {
     assert!(!emitted.contains("<br></br>"), "{emitted}");
     assert!(emitted.contains("Two</div>"), "{emitted}");
 }
+
+/// Excel leaves a note's VML shape behind when the comment itself is deleted,
+/// so ordinary workbooks carry note shapes that own nothing. Reading one keeps
+/// the shape verbatim instead of refusing the whole file.
+///
+/// This behaviour has been lost once already: `fc54c13e` fixed it with no test
+/// of its own, and a later wholesale take of `vml_drawing.rs` from master put
+/// the hard error back. Nothing here noticed — the revert surfaced five days
+/// later as a red integration test two repositories downstream. That is what
+/// this test is for.
+#[test]
+fn a_note_shape_whose_comment_is_gone_does_not_refuse_the_workbook() {
+    let source =
+        std::fs::read("tests/fixtures/drawing_anchors/comment-box-origin-base.xlsx").unwrap();
+    // The same workbook with the comment itself removed. The VML still carries
+    // the note shape anchored to C5, which now owns nothing.
+    let ownerless = rewrite(
+        &source,
+        &[(
+            "xl/comments1.xml",
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+                r#"<authors><author>Youssef Wadie</author></authors><commentList/></comments>"#,
+            )
+            .to_string(),
+        )],
+    );
+
+    let book = reader::xlsx::read_reader(Cursor::new(&ownerless), true)
+        .expect("an ownerless note shape must not refuse the workbook");
+
+    // The shape is kept, not quietly dropped on the way back out.
+    let emitted = part(&write(&book), "xl/drawings/vmlDrawing1.vml");
+    assert!(
+        emitted.contains("_x0000_s1025"),
+        "the ownerless note shape was dropped on export: {emitted}"
+    );
+}
