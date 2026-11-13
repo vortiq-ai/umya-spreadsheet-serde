@@ -223,6 +223,16 @@ struct ChartPart {
 
 type MemoizedChartPartVisitor<'a> = dyn FnMut(&[u8], &mut DenseMemo) -> Result<(), XlsxError> + 'a;
 
+/// A chart part's bytes without a leading UTF-8 byte-order mark. quick-xml
+/// skips the mark without counting it in its buffer positions, so the ranges a
+/// lazy cache records while parsing were three bytes off the part they are
+/// replayed against, and the read failed the whole workbook. Every consumer of
+/// a chart part (namespace pre-pass, parse, replay) receives its bytes through
+/// the provider, so dropping the mark here keeps them on the same bytes.
+fn without_utf8_bom(data: &[u8]) -> &[u8] {
+    data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data)
+}
+
 pub(crate) trait ChartPartProvider {
     fn add_pending(&mut self, pending: HashMap<String, (Vec<u8>, Option<std::path::PathBuf>)>);
 
@@ -358,7 +368,7 @@ impl ChartPartProvider for LazyChartPartProvider {
         let (_, data) = self.current.as_ref().ok_or_else(|| {
             crate::xml::xml_error("chart provider did not acquire the required part")
         })?;
-        visit(data, &mut self.memo)
+        visit(without_utf8_bom(data), &mut self.memo)
     }
 
     fn finish_sheet(&mut self, session: &SourceCacheSession) {
@@ -446,7 +456,7 @@ impl<R: std::io::Read + std::io::Seek> ChartPartProvider for EagerChartPartProvi
         let (_, data) = self.current.as_ref().ok_or_else(|| {
             crate::xml::xml_error("chart provider did not acquire the required part")
         })?;
-        visit(&data.data, &mut self.memo)
+        visit(without_utf8_bom(&data.data), &mut self.memo)
     }
 
     fn finish_sheet(&mut self, _session: &SourceCacheSession) {

@@ -33,6 +33,8 @@ mod chart_drawing_namespaces;
 mod chart_drawing_preservation;
 #[path = "chart_drawing_property_choices.rs"]
 mod chart_drawing_property_choices;
+#[path = "chart_part_byte_order_mark.rs"]
+mod chart_part_byte_order_mark;
 // #[path = "chart_drawing_shape_attributes.rs"]
 // EXCLUDED on this branch -- tests parts + Shape::text_link/locks_text, held at
 // the fleet pin. Restore this module together with that model.
