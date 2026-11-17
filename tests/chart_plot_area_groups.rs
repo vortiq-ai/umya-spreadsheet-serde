@@ -630,6 +630,9 @@ fn json_round_trip_keeps_container_order_and_first_containers_in_legacy_fields()
     assert_eq!(serde_json::to_value(&restored).unwrap(), json);
     let previous: PreviousPlotArea = serde_json::from_value(json.clone()).unwrap();
     json.as_object_mut().unwrap().remove("chart_group_order");
+    // The axis order is newer too, and empty for a plot area built here.
+    let axis_order = json.as_object_mut().unwrap().remove("axis_order");
+    assert_eq!(axis_order, Some(serde_json::json!([])));
     // The data table and extension keys (null when the chart has none) are
     // newer than the previous model as well.
     for key in ["data_table", "extensions"] {
@@ -656,13 +659,14 @@ fn json_round_trip_keeps_container_order_and_first_containers_in_legacy_fields()
     let previous: PreviousPlotArea = serde_json::from_value(json).unwrap();
     let old_binary = bincode::serialize(&previous).unwrap();
     let new_binary = bincode::serialize(&legacy).unwrap();
-    // The order list adds its 8-byte length, the absent data table and plot
-    // extensions one tag byte each.
-    assert_eq!(new_binary.len() - old_binary.len(), 10);
-    // `"chart_group_order":[],`, `"data_table":null,` and `"extensions":null,`.
+    // The two order lists add their 8-byte lengths, the absent data table and
+    // plot extensions one tag byte each.
+    assert_eq!(new_binary.len() - old_binary.len(), 18);
+    // `"chart_group_order":[],`, `"data_table":null,`, `"extensions":null,` and
+    // `"axis_order":[],`.
     assert!(
         serde_json::to_vec(&legacy).unwrap().len() - serde_json::to_vec(&previous).unwrap().len()
-            <= 24 + 18 + 18
+            <= 24 + 18 + 18 + 16
     );
 }
 

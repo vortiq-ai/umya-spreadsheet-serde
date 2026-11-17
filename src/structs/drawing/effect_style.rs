@@ -225,7 +225,7 @@ impl EffectStyle {
 
         // a:sp3d
         if let Some(v) = &self.shape_3d_type {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         write_end_tag(writer, "a:effectStyle");

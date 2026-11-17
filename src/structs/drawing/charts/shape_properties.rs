@@ -631,7 +631,7 @@ impl ShapeProperties {
 
         // a:sp3d
         if let Some(v) = &self.shape_3d_type {
-            v.write_to(writer);
+            v.write_to(writer)?;
         }
 
         if let Some(extensions) = self.extensions() {

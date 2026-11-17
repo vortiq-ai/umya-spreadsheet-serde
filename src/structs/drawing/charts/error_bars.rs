@@ -597,7 +597,14 @@ fn read_source<R: std::io::BufRead>(
     Ok((sources, invalid || !complete))
 }
 
-/// Schema cardinality shared by emission, diagnostics and explicit conversions.
+/// Excel's save limit, for emission and diagnostics: Excel keeps one error bar
+/// on pie, radar and surface series when it saves and reopens a chart, though
+/// the schema has none there.
+pub(crate) fn saved_error_bar_limit(family: super::SeriesFamily) -> usize {
+    error_bar_limit(family).max(1)
+}
+
+/// Schema cardinality: explicit conversions and `SeriesFamily::allows`.
 pub(crate) fn error_bar_limit(family: super::SeriesFamily) -> usize {
     use super::SeriesFamily::{
         Area,

@@ -133,6 +133,8 @@ mod chart_reference_roles;
 mod chart_restoration_structural;
 #[path = "chart_root_extensions.rs"]
 mod chart_root_extensions;
+#[path = "chart_round_trip.rs"]
+mod chart_round_trip;
 #[path = "chart_series_cache_text.rs"]
 mod chart_series_cache_text;
 // #[path = "chart_series_family_output.rs"]

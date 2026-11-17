@@ -95,6 +95,20 @@ pub struct PlotArea {
     extensions:        Option<ExtensionList>,
     #[cfg_attr(feature = "serde", serde(default))]
     chart_group_order: Vec<ChartGroupEntry>,
+    /// The axis kinds in the order the part wrote them; empty when that is the
+    /// grouped order, for a plot area built here and for one persisted before
+    /// this field.
+    #[cfg_attr(feature = "serde", serde(default))]
+    axis_order:        Vec<AxisKind>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AxisKind {
+    Category,
+    Date,
+    Value,
+    Series,
 }
 
 // Resolve malformed markers identically for borrowed views and owned repair.
@@ -1293,21 +1307,25 @@ impl PlotArea {
                     let mut obj = CategoryAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_category_axis(obj);
+                    self.axis_order.push(AxisKind::Category);
                 }
                 b"dateAx" => {
                     let mut obj = DateAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_date_axis(obj);
+                    self.axis_order.push(AxisKind::Date);
                 }
                 b"valAx" => {
                     let mut obj = ValueAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_value_axis(obj);
+                    self.axis_order.push(AxisKind::Value);
                 }
                 b"serAx" => {
                     let mut obj = SeriesAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_series_axis(obj);
+                    self.axis_order.push(AxisKind::Series);
                 }
                 b"dTable" => {
                     let mut obj = DataTable::default();
@@ -1338,6 +1356,10 @@ impl PlotArea {
             Event::End(ref e) => {
                 if e.name().as_ref() == owner_end {
                     self.normalize_chart_groups();
+                    // The grouped order is what an empty list writes.
+                    if self.axis_order.is_sorted() {
+                        self.axis_order.clear();
+                    }
                     return Ok(());
                 }
             },
@@ -1360,23 +1382,30 @@ impl PlotArea {
             group.write_to(writer, wb)?;
         }
 
-        // c:catAx
-        for v in &self.category_axis {
+        // c:catAx, c:dateAx, c:valAx, c:serAx: in the part's order, then any
+        // axis added since, grouped by kind.
+        let mut category = self.category_axis.iter();
+        let mut date = self.date_axis.iter();
+        let mut value = self.value_axis.iter();
+        let mut series = self.series_axis.iter();
+        for kind in &self.axis_order {
+            match kind {
+                AxisKind::Category => category.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+                AxisKind::Date => date.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+                AxisKind::Value => value.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+                AxisKind::Series => series.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+            }?;
+        }
+        for v in category {
             v.write_to(writer, wb)?;
         }
-
-        // c:dateAx
-        for v in &self.date_axis {
+        for v in date {
             v.write_to(writer, wb)?;
         }
-
-        // c:valAx
-        for v in &self.value_axis {
+        for v in value {
             v.write_to(writer, wb)?;
         }
-
-        // c:serAx
-        for v in &self.series_axis {
+        for v in series {
             v.write_to(writer, wb)?;
         }
 

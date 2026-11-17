@@ -11,10 +11,14 @@ use quick_xml::{
 };
 
 use super::{
-    super::EnumValue,
+    super::{
+        EnumValue,
+        Int64Value,
+    },
     BevelBottom,
     BevelTop,
     PresetMaterialTypeValues,
+    SolidFill,
 };
 use crate::writer::driver::{
     write_end_tag,
@@ -27,6 +31,12 @@ pub struct Shape3DType {
     preset_material: EnumValue<PresetMaterialTypeValues>,
     bevel_top:       Option<Box<BevelTop>>,
     bevel_bottom:    Option<Box<BevelBottom>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    contour_width:   Int64Value,
+    #[cfg_attr(feature = "serde", serde(default))]
+    contour_color:   Option<Box<SolidFill>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    extrusion_color: Option<Box<SolidFill>>,
 }
 
 impl Shape3DType {
@@ -126,6 +136,15 @@ impl Shape3DType {
             .map(|session| session.enter_child_scope(owner))
             .transpose()?
             .flatten();
+        if let Some(value) = crate::reader::driver::read_attribute(owner, b"contourW")? {
+            let parsed = crate::xml::trim_xml_whitespace(&value)
+                .parse::<i64>()
+                .map_err(crate::xml::xml_error)?;
+            if parsed < 0 {
+                return Err(crate::xml::xml_error("negative DrawingML contourW"));
+            }
+            self.contour_width.set_value(parsed);
+        }
         if let Some(value) = crate::reader::driver::read_attribute(owner, b"prstMaterial")? {
             self.preset_material.set_value(
                 value
@@ -167,6 +186,20 @@ impl Shape3DType {
                             value.read_with_session(reader, child, child_empty, session)?;
                             self.set_bevel_bottom(value);
                         }
+                        b"extrusionClr" => {
+                            let mut value = SolidFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            if value.has_color() {
+                                self.extrusion_color = Some(Box::new(value));
+                            }
+                        }
+                        b"contourClr" => {
+                            let mut value = SolidFill::default();
+                            value.read_with_session(reader, child, child_empty, session)?;
+                            if value.has_color() {
+                                self.contour_color = Some(Box::new(value));
+                            }
+                        }
                         _ => {
                             if !child_empty {
                                 crate::reader::driver::skip_element(reader, child)?;
@@ -187,9 +220,16 @@ impl Shape3DType {
         }
     }
 
-    pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    pub(crate) fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+    ) -> Result<(), crate::XlsxError> {
         // a:sp3d
         let mut attributes: crate::structs::AttrCollection = Vec::new();
+        let contour_width = self.contour_width.value_string();
+        if self.contour_width.has_value() {
+            attributes.push(("contourW", &contour_width).into());
+        }
         let preset_material = self.preset_material.value_string();
         if self.preset_material.has_value() {
             attributes.push(("prstMaterial", preset_material).into());
@@ -206,6 +246,17 @@ impl Shape3DType {
             v.write_to(writer);
         }
 
+        // a:extrusionClr
+        if let Some(v) = &self.extrusion_color {
+            v.write_to_as(writer, "a:extrusionClr")?;
+        }
+
+        // a:contourClr
+        if let Some(v) = &self.contour_color {
+            v.write_to_as(writer, "a:contourClr")?;
+        }
+
         write_end_tag(writer, "a:sp3d");
+        Ok(())
     }
 }
