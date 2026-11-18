@@ -1,77 +1,9 @@
-use chrono::{
-    Duration,
-    NaiveDateTime,
-};
 use jiff::ToSpan as _;
 use num_traits::cast;
 
 pub const CALENDAR_WINDOWS_1900: &str = "1900";
 pub const CALENDAR_MAC_1904: &str = "1904";
 pub const DEFAULT_TIMEZONE: &str = "UTC";
-
-/// Converts an Excel timestamp to a [`NaiveDateTime`] object.
-///
-/// This function takes an Excel timestamp, which is a numeric representation of
-/// a date and time, and converts it into a [`NaiveDateTime`] object. The
-/// integer part of the timestamp represents the number of days since a base
-/// date, while the fractional part represents the time of day.
-///
-/// # Parameters
-///
-/// - `excel_timestamp: f64` The Excel timestamp to be converted and it is
-///   treated as an Excel date.
-///
-/// # Returns
-///
-/// Returns a [`NaiveDateTime`] object representing the converted date and time.
-/// This object does not contain any timezone information.
-///
-/// # Behavior
-///
-/// - If `excel_timestamp` is between 1 and 60, the function accounts for the
-///   1900 leap year bug in Excel by using December 31, 1899, as the base date.
-/// - For `excel_timestamp` values of 60 or greater, it uses December 30, 1899,
-///   as the base date.
-/// - This uses the Windows 1900 scheme which is more common.
-/// - Since 1900-02-29 is not a valid date this function returns 1900-03-01 in
-///   that case.
-///
-/// # Example
-///
-/// ```rust
-/// # use umya_spreadsheet::helper::date::excel_to_date_time_chrono;
-/// # use chrono::{Datelike, Timelike};
-/// let timestamp = 44197.5; // Represents 2021-01-01 12:00:00
-/// let date_time = excel_to_date_time_chrono(timestamp);
-/// assert_eq!(date_time.year(), 2021);
-/// assert_eq!(date_time.month(), 1);
-/// assert_eq!(date_time.day(), 1);
-/// assert_eq!(date_time.hour(), 12);
-/// assert_eq!(date_time.minute(), 0);
-/// ```
-#[must_use]
-pub fn excel_to_date_time_chrono(excel_timestamp: f64) -> NaiveDateTime {
-    let base_date = if excel_timestamp < 61f64 {
-        // Allow adjustment for 1900 Leap Year in MS Excel
-        NaiveDateTime::parse_from_str("1899-12-31 00:00:00", "%Y-%m-%d %T").unwrap()
-    } else {
-        NaiveDateTime::parse_from_str("1899-12-30 00:00:00", "%Y-%m-%d %T").unwrap()
-    };
-
-    let days = excel_timestamp.floor();
-    let part_day = excel_timestamp - days;
-    let hours = (part_day * 24.0).floor();
-    let part_day = part_day * 24f64 - hours;
-    let minutes = (part_day * 60f64).floor();
-    let part_day = part_day * 60f64 - minutes;
-    let seconds = (part_day * 60f64).round();
-
-    base_date
-        + Duration::days(cast(days).unwrap())
-        + Duration::hours(cast(hours).unwrap())
-        + Duration::minutes(cast(minutes).unwrap())
-        + Duration::seconds(cast(seconds).unwrap())
-}
 
 /// Converts an Excel timestamp to a three parts: Base Date, Days, Time
 /// The function is provided for maximum flexibility but for most use cases
@@ -334,21 +266,6 @@ pub fn jiff_date_time_to_excel(value: jiff::civil::DateTime) -> f64 {
              hours",
         );
     duration.as_millis_f64() / (24.0 * 60.0 * 60.0 * 1000.0)
-}
-
-/// See docs for `excel_to_date_time_chrono` for details on how this function
-/// works. Note that the `time_zone` is not used and is ignored. Excel doesn't
-/// store associated timezone info with the dates.
-#[must_use]
-#[deprecated(
-    since = "3.0.0",
-    note = "Please use `excel_to_date_time_jiff` or `excel_to_date_time_chrono` instead"
-)]
-pub fn excel_to_date_time_object(
-    excel_timestamp: f64,
-    _time_zone: Option<String>,
-) -> NaiveDateTime {
-    excel_to_date_time_chrono(excel_timestamp)
 }
 
 /// Converts a date and time to an Excel timestamp using the Windows 1900 date
@@ -728,13 +645,6 @@ mod tests {
             expected,
             actual.strftime("%F %T").to_string(),
             "jiff conversion is incorrect"
-        );
-
-        let actual = excel_to_date_time_chrono(excel_timestamp);
-        assert_eq!(
-            expected,
-            actual.format("%F %T").to_string(),
-            "chrono conversion is incorrect"
         );
     }
 

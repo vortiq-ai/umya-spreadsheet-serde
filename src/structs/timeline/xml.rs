@@ -105,8 +105,8 @@ fn range(node: &OpaqueElement) -> Result<TimelineRange, String> {
         start_date: required(node, "startDate")?,
         end_date:   required(node, "endDate")?,
     };
-    value.start()?;
-    value.end()?;
+    value.start_instant()?;
+    value.end_instant()?;
     Ok(value)
 }
 
