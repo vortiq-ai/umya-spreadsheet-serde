@@ -2,3 +2,4 @@
 tools/legacy-chart-json/** -text
 tests/fixtures/persisted_charts/** -text
 tests/fixtures/chart_round_trip/** -text
+tests/fixtures/chart_conversion/** -text

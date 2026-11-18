@@ -13,6 +13,8 @@ mod chart_axis_options;
 mod chart_binary_round_trip;
 #[path = "chart_category_literal_conflicts.rs"]
 mod chart_category_literal_conflicts;
+#[path = "chart_conversion.rs"]
+mod chart_conversion;
 #[path = "chart_data_labels.rs"]
 mod chart_data_labels;
 #[path = "chart_data_points.rs"]
