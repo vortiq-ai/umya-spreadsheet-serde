@@ -14,8 +14,8 @@ use std::io::{
     Write,
 };
 
-use chrono::NaiveDate;
 use fixture::*;
+use jiff::civil::Date;
 use serde_json::Value;
 use sha2::{
     Digest,
@@ -83,11 +83,11 @@ fn disconnected() -> Vec<u8> {
     checked(EXCEL_DIRECTORY, "disconnected-pivot", "disconnected-pivot")
 }
 
-fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(year, month, day).unwrap()
+fn date(year: i16, month: i8, day: i8) -> Date {
+    Date::new(year, month, day).unwrap()
 }
 
-fn range(start: (i32, u32, u32), end: (i32, u32, u32)) -> TimelineSelection {
+fn range(start: (i16, i8, i8), end: (i16, i8, i8)) -> TimelineSelection {
     TimelineSelection::Range {
         start: date(start.0, start.1, start.2),
         end:   date(end.0, end.1, end.2),

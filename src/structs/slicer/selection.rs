@@ -456,21 +456,19 @@ impl SlicerCache {
                             (format!("error:{value}"), Some(value))
                         }
                         SlicerTableValue::Date(value) => {
-                            use chrono::Datelike;
-                            let date = chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d")
-                                .map_err(|_| {
-                                    "table date values require a valid ISO calendar date"
-                                })?;
-                            let year = u16::try_from(date.year())
-                                .map_err(|_| "table date year out of range")?;
+                            let (year, month, day) = crate::helper::iso8601::parse_date(&value)
+                                .ok_or("table date values require a valid ISO calendar date")?;
+                            let date = crate::helper::iso8601::date_text(year, month, day);
+                            let year =
+                                u16::try_from(year).map_err(|_| "table date year out of range")?;
                             date_groups.push(crate::structs::filter_rule::DateGroupFilter {
                                 year,
                                 month: Some(
-                                    u16::try_from(date.month())
+                                    u16::try_from(month)
                                         .map_err(|_| "table date month out of range")?,
                                 ),
                                 day: Some(
-                                    u16::try_from(date.day())
+                                    u16::try_from(day)
                                         .map_err(|_| "table date day out of range")?,
                                 ),
                                 hour: None,

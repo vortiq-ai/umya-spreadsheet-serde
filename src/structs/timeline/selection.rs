@@ -72,12 +72,13 @@ impl TimelineCache {
                 self.name
             ));
         }
-        let (bounds_start, bounds_end) = (state.bounds.start()?, state.bounds.end()?);
+        let (bounds_start, bounds_end) =
+            (state.bounds.start_instant()?, state.bounds.end_instant()?);
         if bounds_start > bounds_end {
             return Err(format!("timeline cache '{}' has empty bounds", self.name));
         }
         if let Some(selection) = &state.selection {
-            if selection.start()? > selection.end()? {
+            if selection.start_instant()? > selection.end_instant()? {
                 return Err(format!(
                     "timeline cache '{}' selects an empty range",
                     self.name
@@ -100,8 +101,8 @@ impl TimelineCache {
         match &self.state.selection {
             None => Ok(TimelineSelection::All),
             Some(range) => Ok(TimelineSelection::Range {
-                start: range.start()?.date(),
-                end:   range.end()?.date(),
+                start: range.start_day()?,
+                end:   range.end_day()?,
             }),
         }
     }

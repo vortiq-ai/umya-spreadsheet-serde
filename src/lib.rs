@@ -216,7 +216,6 @@
     clippy::collapsible_match
 )]
 
-extern crate chrono;
 extern crate fancy_regex;
 extern crate imagesize;
 extern crate md5;

@@ -1,10 +1,11 @@
-use chrono::{
-    NaiveDate,
-    NaiveDateTime,
+use jiff::civil::{
+    Date,
+    DateTime,
 };
 
 use crate::{
     drawing::charts::OpaqueElement,
+    helper::iso8601,
     structs::SlicerPivotTable,
 };
 
@@ -55,7 +56,7 @@ pub struct TimelineRange {
 impl TimelineRange {
     /// The range from the start of `start` to the start of `end`.
     #[must_use]
-    pub fn from_dates(start: NaiveDate, end: NaiveDate) -> Self {
+    pub fn from_dates(start: Date, end: Date) -> Self {
         Self {
             start_date: date_time_text(start),
             end_date:   date_time_text(end),
@@ -63,25 +64,74 @@ impl TimelineRange {
     }
 
     /// # Errors
-    /// Returns an error when the text is not an `xsd:dateTime`.
-    pub fn start(&self) -> Result<NaiveDateTime, String> {
-        parse_date_time(&self.start_date)
+    /// Returns an error when the text is not an `xsd:dateTime`, or is one a
+    /// [`DateTime`] cannot hold (a leap second, a year past 9999).
+    pub fn start(&self) -> Result<DateTime, String> {
+        civil_date_time(&self.start_date, self.start_instant()?)
     }
 
     /// # Errors
-    /// Returns an error when the text is not an `xsd:dateTime`.
-    pub fn end(&self) -> Result<NaiveDateTime, String> {
+    /// Returns an error when the text is not an `xsd:dateTime`, or is one a
+    /// [`DateTime`] cannot hold (a leap second, a year past 9999).
+    pub fn end(&self) -> Result<DateTime, String> {
+        civil_date_time(&self.end_date, self.end_instant()?)
+    }
+
+    /// `startDate` as read, for validation: every `xsd:dateTime` the reader
+    /// accepts, including those [`Self::start`] cannot return.
+    pub(crate) fn start_instant(&self) -> Result<iso8601::NaiveDateTime, String> {
+        parse_date_time(&self.start_date)
+    }
+
+    /// `endDate` as read; see [`Self::start_instant`].
+    pub(crate) fn end_instant(&self) -> Result<iso8601::NaiveDateTime, String> {
         parse_date_time(&self.end_date)
+    }
+
+    /// The day `startDate` falls on.
+    pub(crate) fn start_day(&self) -> Result<Date, String> {
+        civil_date(&self.start_date, self.start_instant()?)
+    }
+
+    /// The day `endDate` falls on.
+    pub(crate) fn end_day(&self) -> Result<Date, String> {
+        civil_date(&self.end_date, self.end_instant()?)
     }
 }
 
-pub(crate) fn date_time_text(date: NaiveDate) -> String {
-    date.format("%Y-%m-%dT00:00:00").to_string()
+pub(crate) fn date_time_text(date: Date) -> String {
+    iso8601::midnight_text(
+        i32::from(date.year()),
+        u32::from(date.month().cast_unsigned()),
+        u32::from(date.day().cast_unsigned()),
+    )
 }
 
-pub(crate) fn parse_date_time(value: &str) -> Result<NaiveDateTime, String> {
-    NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%dT%H:%M:%S%.f")
-        .map_err(|_| format!("invalid timeline date time '{value}'"))
+pub(crate) fn parse_date_time(value: &str) -> Result<iso8601::NaiveDateTime, String> {
+    iso8601::parse_date_time(value.trim())
+        .ok_or_else(|| format!("invalid timeline date time '{value}'"))
+}
+
+fn out_of_range(value: &str) -> String {
+    format!("timeline date time '{value}' is outside the supported range")
+}
+
+fn civil_date(value: &str, instant: iso8601::NaiveDateTime) -> Result<Date, String> {
+    let year = i16::try_from(instant.year).map_err(|_| out_of_range(value))?;
+    let month = i8::try_from(instant.month).map_err(|_| out_of_range(value))?;
+    let day = i8::try_from(instant.day).map_err(|_| out_of_range(value))?;
+    Date::new(year, month, day).map_err(|_| out_of_range(value))
+}
+
+fn civil_date_time(value: &str, instant: iso8601::NaiveDateTime) -> Result<DateTime, String> {
+    let date = civil_date(value, instant)?;
+    let hour = i8::try_from(instant.hour).map_err(|_| out_of_range(value))?;
+    let minute = i8::try_from(instant.minute).map_err(|_| out_of_range(value))?;
+    let second = i8::try_from(instant.second).map_err(|_| out_of_range(value))?;
+    let nanosecond = i32::try_from(instant.nanosecond).map_err(|_| out_of_range(value))?;
+    jiff::civil::Time::new(hour, minute, second, nanosecond)
+        .map(|time| date.to_datetime(time))
+        .map_err(|_| out_of_range(value))
 }
 
 /// `CT_TimelineState`: the selected range, the bounds of the data and the
@@ -197,5 +247,5 @@ pub enum TimelineSelection {
     #[default]
     All,
     /// Both days included.
-    Range { start: NaiveDate, end: NaiveDate },
+    Range { start: Date, end: Date },
 }
