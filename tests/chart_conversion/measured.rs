@@ -46,21 +46,49 @@ pub struct Part {
     pub subtype:        Option<String>,
     /// The number of series the part holds.
     pub series:         usize,
+    /// The fixture family the part belongs to, such as `bare` or `rich`.
+    pub variant:        String,
 }
 
 /// One conversion Excel was asked to make.
 pub struct Observation {
     /// The part converted, as its position in `Measured::parts`.
-    pub part:   usize,
+    pub part:      usize,
     /// The type asked for, as `ChartSubtype` spells it in `Debug`.
-    pub target: String,
+    pub target:    String,
     /// Whether Excel made the conversion.
-    pub ok:     bool,
+    pub ok:        bool,
+    /// `admitted`, `identity`, `refused:<cause>` or `refused:<cause>:<guard>`.
+    pub operation: String,
+    /// The type Excel reopened the after part as, as `ChartSubtype` spells it
+    /// in `Debug`; empty when Excel refused.
+    pub after:     String,
+    /// Excel's after part, read the way `slots_of` reads a part.
+    pub slots:     Slots,
+    /// The element paths Excel added, dropped and changed.
+    pub pdiff:     Option<ExpectedPaths>,
+    /// The report the conversion gives: `[series or null, part, change]`.
+    pub changes:   Vec<Json>,
+    /// The paint of each series: `[part, colour]`.
+    pub paint:     Vec<Json>,
+}
+
+/// Excel's path diff between the before part and its after part.
+pub struct ExpectedPaths {
+    pub added:   Vec<String>,
+    pub dropped: Vec<String>,
+    /// Path, before value, after value.
+    pub changed: Vec<(String, String, String)>,
 }
 
 pub struct Measured {
     pub parts:        Vec<Part>,
     pub observations: Vec<Observation>,
+    /// The path patterns whose values a conversion chooses itself: each a
+    /// regular expression and why.
+    pub pdiff_ignore: Vec<(String, String)>,
+    /// Per admitted pair, the observation whose package Excel opens.
+    pub witnesses:    Vec<usize>,
 }
 
 pub fn fixtures() -> PathBuf {
@@ -75,6 +103,16 @@ pub fn measured() -> &'static Measured {
 /// The text of a before part.
 pub fn read_part(part: &Part) -> String {
     String::from_utf8(fs::read(fixtures().join(&part.fixture)).unwrap()).unwrap()
+}
+
+/// The text of the measured before part at `fixture`.
+pub fn part_xml(fixture: &str) -> String {
+    let part = measured()
+        .parts
+        .iter()
+        .find(|part| part.fixture == fixture)
+        .unwrap_or_else(|| panic!("no measured part {fixture}"));
+    read_part(part)
 }
 
 fn load() -> Measured {
@@ -118,6 +156,7 @@ fn load() -> Measured {
             layout:         part["layout"].as_str().map(str::to_owned),
             subtype:        part["subtype"].as_str().map(str::to_owned),
             series:         usize::try_from(part["series"].as_u64().unwrap()).unwrap(),
+            variant:        part["variant"].as_str().unwrap_or_default().to_owned(),
         })
         .collect();
     let observations = document["observations"]
@@ -125,14 +164,85 @@ fn load() -> Measured {
         .unwrap()
         .iter()
         .map(|observation| Observation {
-            part:   position(&observation["part"]),
-            target: observation["target"].as_str().unwrap().to_owned(),
-            ok:     observation["ok"].as_bool().unwrap(),
+            part:      position(&observation["part"]),
+            target:    observation["target"].as_str().unwrap().to_owned(),
+            ok:        observation["ok"].as_bool().unwrap(),
+            operation: observation["operation"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            after:     observation["type"].as_str().unwrap_or_default().to_owned(),
+            slots:     observation
+                .get("slots")
+                .map(|slots| {
+                    pairs(slots)
+                        .map(|(key, value)| (keys[key].to_owned(), values[value].clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pdiff:     observation
+                .get("pdiff")
+                .filter(|pdiff| pdiff.is_object())
+                .map(|pdiff| {
+                    let listed = |name: &str| -> Vec<String> {
+                        pdiff[name]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|path| paths[position(path)].to_owned())
+                            .collect()
+                    };
+                    let text = |id: &Value| match &values[position(id)] {
+                        Json::Text(text) => text.clone(),
+                        other => panic!("a changed path holds {other:?}, not text"),
+                    };
+                    ExpectedPaths {
+                        added:   listed("added"),
+                        dropped: listed("dropped"),
+                        changed: pdiff["changed"]
+                            .as_array()
+                            .unwrap()
+                            .chunks(3)
+                            .map(|change| {
+                                (
+                                    paths[position(&change[0])].to_owned(),
+                                    text(&change[1]),
+                                    text(&change[2]),
+                                )
+                            })
+                            .collect(),
+                    }
+                }),
+            changes:   ids(observation.get("changes"))
+                .map(|id| values[id].clone())
+                .collect(),
+            paint:     ids(observation.get("paint"))
+                .map(|id| values[id].clone())
+                .collect(),
         })
+        .collect();
+    let pdiff_ignore = document["pdiff_ignore"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry[0].as_str().unwrap().to_owned(),
+                entry[1].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let witnesses = document["witnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(position)
         .collect();
     Measured {
         parts,
         observations,
+        pdiff_ignore,
+        witnesses,
     }
 }
 
@@ -151,6 +261,14 @@ fn pairs(flat: &Value) -> impl Iterator<Item = (usize, usize)> + '_ {
         .unwrap()
         .chunks(2)
         .map(|pair| (position(&pair[0]), position(&pair[1])))
+}
+
+/// A list of table positions; none when the field is missing.
+fn ids(list: Option<&Value>) -> impl Iterator<Item = usize> + '_ {
+    list.and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(position)
 }
 
 fn position(id: &Value) -> usize {

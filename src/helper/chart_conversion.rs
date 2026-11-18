@@ -1,10 +1,11 @@
 //! Changes a chart to another chart type the way Excel's "Change Chart Type"
 //! does.
 //!
-//! [`Chart::convert_chart_type`] converts the whole chart to a
+//! [`Workbook::convert_chart_type`] converts one chart of a sheet to a
 //! [`ChartSubtype`] and returns a [`ChartConversion`] that lists what changed.
-//! When the chart cannot be converted it returns a
-//! [`ChartConversionRefusal`] and leaves the chart as it was.
+//! It reads the cells the chart's references name, as Excel does. When the
+//! chart cannot be converted it returns a [`ChartConversionRefusal`] and
+//! leaves the chart as it was.
 //!
 //! The chart's own type is read from what its plot groups and series hold,
 //! never from how it was made. It is one of the [`ChartSubtype`]s or one of the
@@ -15,17 +16,30 @@ use std::{
     fmt,
 };
 
-use crate::structs::drawing::charts::{
-    Chart,
-    PlotArea,
-    SeriesPartKind,
+use crate::{
+    Workbook,
+    structs::drawing::charts::{
+        Chart,
+        PlotArea,
+        SeriesPartKind,
+    },
 };
 
+mod axes;
+mod build;
+mod commit;
+mod group_builder;
+mod model;
+mod plan;
 mod rule;
 #[rustfmt::skip]
 mod rules;
+mod series;
 mod slots;
+mod source;
 mod subtype;
+mod write;
+mod xml;
 
 /// A chart type Excel's "Change Chart Type" produces, named the way Excel
 /// names it.
@@ -284,6 +298,16 @@ impl ChartConversion {
         &self.changes
     }
 
+    /// The report of a planned conversion.
+    fn new(plan: &plan::Plan) -> Self {
+        Self {
+            from:         plan.from,
+            to:           plan.to,
+            series_paint: plan.paint.clone(),
+            changes:      plan.changes.clone(),
+        }
+    }
+
     /// The report of a chart that already was `target` and stays as it is.
     fn unchanged(target: ChartSubtype) -> Self {
         Self {
@@ -400,6 +424,9 @@ pub enum ChartConversionRefusal {
     SeriesCountMismatch { required: u8, actual: u8 },
     /// A surface target needs at least two series.
     NotValidForKind,
+    /// The sheet has no chart at that position: no anchor, or an anchor
+    /// without a graphic frame, or its sheet cannot be read.
+    ChartNotFound,
     /// The chart has more than one plot group and is neither a volume stock
     /// chart nor one of the measured combination layouts.
     MultipleGroups,
@@ -429,6 +456,7 @@ impl fmt::Display for ChartConversionRefusal {
                 "the target needs exactly {required} series and the chart has {actual}"
             ),
             Self::NotValidForKind => f.write_str("a surface chart needs at least two series"),
+            Self::ChartNotFound => f.write_str("the sheet has no chart at that position"),
             Self::MultipleGroups => f.write_str(
                 "the chart has several plot groups and is neither a volume stock chart nor a \
                  measured combination layout",
@@ -464,6 +492,19 @@ impl SeriesRequirement {
     }
 }
 
+/// Chart `chart` of the sheet at `sheet`, once the sheet is read. An anchor
+/// without a graphic frame holds no chart.
+fn chart_at(workbook: &Workbook, sheet: usize, chart: usize) -> Option<&Chart> {
+    let frame = workbook
+        .sheet(sheet)
+        .ok()?
+        .chart_collection()
+        .get(chart)?
+        .two_cell_anchor()
+        .graphic_frame()?;
+    Some(frame.graphic().graphic_data().chart_space().chart())
+}
+
 /// The series of every plot group together.
 fn series_count(plot_area: &PlotArea) -> usize {
     plot_area
@@ -472,40 +513,45 @@ fn series_count(plot_area: &PlotArea) -> usize {
         .sum()
 }
 
-impl Chart {
-    /// Converts the whole chart to `target` the way Excel's "Change Chart
-    /// Type" does and reports what changed. On `Err` the chart is unchanged.
+impl Workbook {
+    /// Converts chart `chart` of the sheet at `sheet` (both counted from zero)
+    /// to `target` the way Excel's "Change Chart Type" does and reports what
+    /// changed. On `Err` the chart is unchanged.
     ///
-    /// The chart is read first; see [`ChartConversionRefusal`] for the order in
-    /// which the checks apply. A chart that already is `target` is returned
-    /// unchanged with an empty report. Converting to any other subtype is not
-    /// available yet and is refused as [`ChartConversionRefusal::Unsupported`].
+    /// The conversion reads the cells the chart's references name, as Excel
+    /// reads them; see [`ChartConversionRefusal`] for the order in which the
+    /// checks apply. A sheet of a lazily read workbook is read when the chart
+    /// is on it or reads its cells. A chart that already is `target` is
+    /// returned unchanged with an empty report. A pair whose result Excel was
+    /// not measured to give, or that this version does not build yet, is
+    /// refused as [`ChartConversionRefusal::Unsupported`]; so is a chart whose
+    /// references umya cannot read: a zero or reversed range, or a sheet that
+    /// cannot be read.
     pub fn convert_chart_type(
         &mut self,
+        sheet: usize,
+        chart: usize,
         target: ChartSubtype,
     ) -> Result<ChartConversion, ChartConversionRefusal> {
-        let plot_area = self.plot_area();
-        let Some(source) = subtype::classify(plot_area) else {
-            return Err(if plot_area.chart_groups().nth(1).is_some() {
-                ChartConversionRefusal::MultipleGroups
-            } else {
-                ChartConversionRefusal::Unsupported {
-                    from: None,
-                    to:   target,
-                }
-            });
-        };
-        if let Some(refusal) = target.series_requirement().refusal(series_count(plot_area)) {
-            return Err(refusal);
-        }
-        if source == ChartSource::Subtype(target) {
+        self.try_read_sheet(sheet)
+            .map_err(|_| ChartConversionRefusal::ChartNotFound)?;
+        let Some(plan) = plan::plan(self, sheet, chart, target)? else {
             return Ok(ChartConversion::unchanged(target));
-        }
-        // No conversion table is available yet, so every other pair is refused
-        // and the chart stays as it is.
-        Err(ChartConversionRefusal::Unsupported {
-            from: Some(source),
-            to:   target,
-        })
+        };
+        let conversion = ChartConversion::new(&plan);
+        let chart = self
+            .sheet_mut(sheet)
+            .ok()
+            .and_then(|found| found.chart_collection_mut().get_mut(chart))
+            .and_then(|found| found.two_cell_anchor_mut().graphic_frame_mut())
+            .ok_or(ChartConversionRefusal::ChartNotFound)?
+            .graphic_mut()
+            .graphic_data_mut()
+            .chart_space_mut()
+            .chart_mut();
+        let detached = commit::detach(chart);
+        let built = build::build(plan, detached);
+        commit::attach(chart, built);
+        Ok(conversion)
     }
 }

@@ -15,6 +15,12 @@ use sha2::{
     Sha256,
 };
 
+#[path = "chart_conversion/admission.rs"]
+mod admission;
+#[path = "chart_conversion/admitted.rs"]
+mod admitted;
+#[path = "chart_conversion/cells.rs"]
+mod cells;
 #[path = "chart_conversion/classification.rs"]
 mod classification;
 #[path = "chart_conversion/conversion.rs"]
@@ -27,6 +33,8 @@ mod measured;
 mod projection;
 #[path = "chart_conversion/refusals.rs"]
 mod refusals;
+#[path = "chart_conversion/series_axis.rs"]
+mod series_axis;
 #[path = "chart_conversion/workbook.rs"]
 mod workbook;
 #[path = "chart_conversion/xml.rs"]

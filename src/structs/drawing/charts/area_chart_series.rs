@@ -859,6 +859,36 @@ impl AreaChartSeries {
         );
     }
 
+    /// Removes each of `parts` the series holds and returns them as (kind,
+    /// occurrence), the way `remove_parts_not_allowed_in` does.
+    pub(crate) fn remove_parts(
+        &mut self,
+        parts: &[SeriesPartKind],
+    ) -> Vec<(SeriesPartKind, usize)> {
+        let mut removed = Vec::new();
+        for &part in parts {
+            if !self.has_part(part) {
+                continue;
+            }
+            let occurrences = match part {
+                SeriesPartKind::DataPoints => self.data_points().len(),
+                SeriesPartKind::Trendlines => self.trendlines().len(),
+                SeriesPartKind::ErrorBars => self.error_bars().len(),
+                _ => 1,
+            };
+            removed.extend((0..occurrences).map(|occurrence| (part, occurrence)));
+            self.clear_part(part);
+        }
+        removed
+    }
+
+    /// Removes the series' shape properties, as Excel drops shape properties
+    /// a chart type change leaves empty.
+    pub(crate) fn remove_shape_properties(&mut self) -> &mut Self {
+        self.shape_properties = None;
+        self
+    }
+
     fn has_part(&self, part: SeriesPartKind) -> bool {
         match part {
             SeriesPartKind::Explosion => self.explosion.is_some(),

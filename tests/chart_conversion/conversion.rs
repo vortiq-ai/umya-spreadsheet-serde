@@ -73,7 +73,7 @@ pub fn convert(
     book: &mut Workbook,
     target: ChartSubtype,
 ) -> Result<ChartConversion, ChartConversionRefusal> {
-    chart(book).convert_chart_type(target)
+    book.convert_chart_type(0, 0, target)
 }
 
 /// What the operation reads a chart as. The public API gives no direct view of

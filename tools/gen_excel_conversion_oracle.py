@@ -2027,6 +2027,9 @@ class Fit:
             else:
                 key = ("KIND", target, slot, cls)
             yield key, chart_candidates(slot, before, after) | obs.derived.get(slot, set())
+        # The x values' class (section 12): a pair admits only the classes Excel was measured on.
+        if src.has_x and not src.x_guard(target):
+            yield ("PAIR", row, target, "x", "%s/%s" % src.x_category), {"keep"}
         # The plot area and the group trees follow the source's formatting as the scene sees it.
         scene = style_of(src.scene_styled)
         for slot in ["scene.plotArea"] + ["g%d.%s" % (n, a) for n in range(groups)
@@ -2370,6 +2373,17 @@ class Int:
     @staticmethod
     def unparse(value):
         return str(value)
+
+
+class Measured:
+    """A cell whose only value is that Excel was measured on its class."""
+
+    @staticmethod
+    def action(_action):
+        return UNIT
+
+
+MEASURED = Measured()
 
 
 class Present:
@@ -3092,8 +3106,10 @@ class RuleModel:
                 first_slice_angle=self.by_presence(pair("g%d.firstSliceAng" % n), SLICE_ANGLE),
                 bands=bands, **self.styled_trees(row, t, "g%d." % n, GROUP_TREE_FIELDS)))
         positions = range(STOCK_COUNTS[t]) if t in STOCK_COUNTS else (None,)
+        x_values = self.by_category(
+            lambda data, spacing: ("PAIR", row, t, "x", "%s/%s" % (data, spacing)), MEASURED)
         return St(
-            "Conversion", scene=scene,
+            "Conversion", scene=scene, x_values=x_values,
             groups=array("GroupValuesRule", "GROUP_VALUES", groups),
             axes=array("AxisPairRule", "AXIS_PAIR_RULES", [self.axis_pair_rule(row, t, name, shape)
                                                            for name in AXIS_KEYS]),

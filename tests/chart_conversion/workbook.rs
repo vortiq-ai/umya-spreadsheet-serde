@@ -33,6 +33,21 @@ pub fn workbook_with(part: &str) -> Workbook {
     reader::xlsx::read_reader(Cursor::new(file), true).unwrap()
 }
 
+/// The saved file of a workbook whose first sheet, `Chart`, holds only the
+/// chart `part`, whose second sheet, `Data`, holds the values its series
+/// refer to, and whose further sheets, empty, are named by `more`.
+pub fn file_with_chart_sheet(part: &str, more: &[&str]) -> Vec<u8> {
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.set_name("Chart");
+    sheet.add_chart(base_chart());
+    fill(book.new_sheet("Data").unwrap(), &parse(part));
+    for name in more {
+        book.new_sheet(*name).unwrap();
+    }
+    replace_chart_part(&write_workbook(&book), part)
+}
+
 /// Every reference in the part is one column of `Data`; its cache holds one
 /// value per cell, and a number cache the format of those cells.
 fn fill(sheet: &mut Worksheet, space: &Element) {

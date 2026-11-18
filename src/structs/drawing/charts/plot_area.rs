@@ -454,6 +454,72 @@ impl PlotArea {
         self
     }
 
+    /// Takes every plot group out, in document order, and leaves the plot area
+    /// with none.
+    pub(crate) fn take_chart_groups(&mut self) -> Vec<ChartGroup> {
+        // Boxed, as in `normalize_chart_groups`.
+        let first = [
+            self.line_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::LineChart(chart))),
+            self.line_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Line3DChart(chart))),
+            self.pie_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::PieChart(chart))),
+            self.pie_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Pie3DChart(chart))),
+            self.doughnut_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::DoughnutChart(chart))),
+            self.scatter_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::ScatterChart(chart))),
+            self.bar_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::BarChart(chart))),
+            self.bar_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Bar3DChart(chart))),
+            self.radar_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::RadarChart(chart))),
+            self.bubble_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::BubbleChart(chart))),
+            self.area_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::AreaChart(chart))),
+            self.area_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Area3DChart(chart))),
+            self.of_pie_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::OfPieChart(chart))),
+            self.stock_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::StockChart(*chart))),
+            self.surface_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::SurfaceChart(*chart))),
+            self.surface_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Surface3DChart(*chart))),
+        ];
+        let entries = std::mem::take(&mut self.chart_group_order)
+            .into_iter()
+            .map(|entry| match entry {
+                ChartGroupEntry::First(kind) => (kind, None),
+                ChartGroupEntry::Additional(group) => (group.kind(), Some(group)),
+            });
+        order_chart_groups(first, entries)
+            .into_iter()
+            .map(|group| *group)
+            .collect()
+    }
+
     /// Repairs markers and promotes first containers without changing
     /// traversal.
     pub fn normalize_chart_groups(&mut self) {

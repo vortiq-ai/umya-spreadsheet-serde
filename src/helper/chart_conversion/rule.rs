@@ -548,13 +548,16 @@ pub(super) struct SeriesPartRules {
 pub(super) struct Conversion {
     /// By the chart's style: a varied source counts as styled only as one
     /// series with points.
-    pub(super) scene:  BySeriesStyle<&'static SceneRules>,
+    pub(super) scene:    BySeriesStyle<&'static SceneRules>,
+    /// By the class of the source's x values: measured only for the classes
+    /// Excel converted; a source without x values selects nothing.
+    pub(super) x_values: ByCategoryData<ByDateSpacing<()>>,
     /// One entry for each target group.
-    pub(super) groups: &'static [GroupValuesRule],
+    pub(super) groups:   &'static [GroupValuesRule],
     /// Keyed like the KIND rule's axes.
-    pub(super) axes:   &'static [AxisPairRule],
+    pub(super) axes:     &'static [AxisPairRule],
     /// One entry for every series, or one for each stock position.
-    pub(super) series: &'static [BySeriesStyle<&'static SeriesStyle>],
+    pub(super) series:   &'static [BySeriesStyle<&'static SeriesStyle>],
 }
 
 #[derive(Debug)]

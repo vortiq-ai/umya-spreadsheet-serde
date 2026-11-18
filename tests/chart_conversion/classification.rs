@@ -7,10 +7,12 @@ use std::collections::{
 
 use umya_spreadsheet::{
     ChartType,
-    drawing::charts::{
-        AreaChart,
-        Chart,
-        ChartGroup,
+    drawing::{
+        charts::{
+            AreaChart,
+            ChartGroup,
+        },
+        spreadsheet::GraphicFrame,
     },
     helper::chart_conversion::{
         ChartConversionRefusal,
@@ -308,15 +310,34 @@ fn mixed_or_unknown_source_is_refused() {
         assert_unchanged(&book, &before, what);
     }
 
-    let mut empty = Chart::default();
+    // A frame around an empty chart space, then an anchor without a frame.
+    let mut empty = umya_spreadsheet::Chart::default();
+    empty
+        .two_cell_anchor_mut()
+        .set_graphic_frame(GraphicFrame::default());
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.add_chart(empty);
+    sheet.add_chart(umya_spreadsheet::Chart::default());
     assert_eq!(
-        empty.convert_chart_type(ChartSubtype::Pie).err(),
+        book.convert_chart_type(0, 0, ChartSubtype::Pie).err(),
         Some(ChartConversionRefusal::Unsupported {
             from: None,
             to:   ChartSubtype::Pie,
         }),
         "a chart without a plot group"
     );
+    for (position, what) in [
+        (1, "an anchor without a chart"),
+        (2, "no chart at that position"),
+    ] {
+        assert_eq!(
+            book.convert_chart_type(0, position, ChartSubtype::Pie)
+                .err(),
+            Some(ChartConversionRefusal::ChartNotFound),
+            "{what}"
+        );
+    }
 }
 
 #[test]
