@@ -491,7 +491,7 @@ fn replay(
         scene: read_scene(&source.chart, &after)?,
         series: series::patches(&source, &kind.data, area, &live)?,
     };
-    let staged = stage(chart, workbook, &source, planned, &mut after)?;
+    let staged = stage(chart, &live, workbook, &source, planned, &mut after)?;
     let written = Model::of(&after);
     let changes = model::changes(&Model::of(&source.chart), &written, &staged.removed);
     let paint = model::paint(&written, kind.paint).ok_or(Unresolved::Rejected)?;
@@ -513,10 +513,13 @@ struct Staged {
 
 /// Section 5's commit, on a copy of `chart`: detaches, builds and attaches
 /// the result, writes it with `workbook` and compares it with `after`, the
-/// planned `c:chart`, less what the target families' cleanup removed. On a
-/// match `after` is the `c:chart` umya writes for the result.
+/// planned `c:chart`, less what the target families' cleanup removed. The
+/// data roles that write as the source wrote them (`live` holds the
+/// source's series) are compared as stand-ins. On a match `after` is the
+/// `c:chart` umya writes for the result.
 fn stage(
     chart: &Chart,
+    live: &[&AreaChartSeries],
     workbook: &Workbook,
     source: &Source,
     planned: Planned,
@@ -528,8 +531,6 @@ fn stage(
     if !commit::attach(&mut staged, built) {
         return Err(Unresolved::Rejected);
     }
-    let written = xml::written_bytes(|writer| staged.write_to(writer, workbook))
-        .ok_or(Unresolved::Pending(Step::StagedDifference))?;
     let area = after.child_mut("plotArea").ok_or(Unresolved::Rejected)?;
     let mut removed = Vec::new();
     for cleanup in &cleanups {
@@ -537,14 +538,8 @@ fn stage(
             .series
             .get(cleanup.position)
             .ok_or(Unresolved::Rejected)?;
-        let index = entry.index.to_string();
-        let series = area
-            .children
-            .iter_mut()
-            .filter(|group| group.local().ends_with("Chart"))
-            .flat_map(|group| group.children.iter_mut())
-            .find(|series| series.local() == "ser" && series.val("idx") == Some(index.as_str()))
-            .ok_or(Unresolved::Rejected)?;
+        let series =
+            series::planned_series(area, &entry.index.to_string()).ok_or(Unresolved::Rejected)?;
         series::remove_cleaned(series, cleanup);
         removed.extend(
             cleanup
@@ -553,7 +548,11 @@ fn stage(
                 .map(|(kind, _)| (cleanup.position, *kind)),
         );
     }
-    if !xml::matches_written(after, &written) {
+    let stand_ins = series::stand_in_roles(&mut staged, live, source, &cleanups, after, workbook)?;
+    let matched = xml::written_bytes(|writer| staged.write_to(writer, workbook))
+        .is_some_and(|written| xml::matches_written(after, &written));
+    series::put_back(&mut staged, after, stand_ins)?;
+    if !matched {
         return Err(Unresolved::Pending(Step::StagedDifference));
     }
     Ok(Staged {

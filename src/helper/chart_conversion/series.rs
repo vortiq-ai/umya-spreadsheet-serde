@@ -45,10 +45,14 @@ use super::{
     },
 };
 use crate::{
+    Workbook,
+    XlsxError,
     reader::xlsx::SourceCacheSession,
     structs::drawing::charts::{
         AreaChartSeries,
+        BubbleSize,
         CategoryAxisData,
+        Chart,
         NumberReference,
         NumericData,
         SeriesPartKind,
@@ -636,6 +640,216 @@ fn remove_written(owner: &mut Element, local: &str, positions: &[usize]) {
         at += 1;
         !positions.contains(&(at - 1))
     });
+}
+
+/// The `c:ser` of `c:idx` `index` among the plot groups of `area`, the
+/// planned plot area.
+pub(super) fn planned_series<'a>(area: &'a mut Element, index: &str) -> Option<&'a mut Element> {
+    area.children
+        .iter_mut()
+        .filter(|group| group.local().ends_with("Chart"))
+        .flat_map(|group| group.children.iter_mut())
+        .find(|series| series.local() == "ser" && series.val("idx") == Some(index))
+}
+
+/// One data role's typed part.
+enum RolePart {
+    Categories(CategoryAxisData),
+    Values(Values),
+    XValues(XValues),
+    YValues(YValues),
+    BubbleSize(BubbleSize),
+}
+
+impl RolePart {
+    /// The stand-in for `role`: its own type holding only an empty literal,
+    /// set through the type's public setter.
+    fn stand_in(role: &str) -> Option<Self> {
+        Some(match role {
+            "cat" => {
+                let mut part = CategoryAxisData::default();
+                part.set_number_literal(NumericData::default());
+                Self::Categories(part)
+            }
+            "val" => {
+                let mut part = Values::default();
+                part.set_number_literal(NumericData::default());
+                Self::Values(part)
+            }
+            "xVal" => {
+                let mut part = XValues::default();
+                part.set_number_literal(NumericData::default());
+                Self::XValues(part)
+            }
+            "yVal" => {
+                let mut part = YValues::default();
+                part.set_number_literal(NumericData::default());
+                Self::YValues(part)
+            }
+            "bubbleSize" => {
+                let mut part = BubbleSize::default();
+                part.set_number_literal(NumericData::default());
+                Self::BubbleSize(part)
+            }
+            _ => return None,
+        })
+    }
+
+    /// The part through its own writer.
+    fn write_to(
+        &self,
+        writer: &mut quick_xml::Writer<std::io::Cursor<Vec<u8>>>,
+        workbook: &Workbook,
+    ) -> Result<(), XlsxError> {
+        match self {
+            Self::Categories(part) => part.write_to(writer, workbook),
+            Self::Values(part) => part.write_to(writer, workbook),
+            Self::XValues(part) => part.write_to(writer, workbook),
+            Self::YValues(part) => part.write_to(writer, workbook),
+            Self::BubbleSize(part) => part.write_to(writer, workbook),
+        }
+    }
+
+    /// Puts this part in place of the same role of `series` and returns the
+    /// part it replaces; `None` when the series lacks the role.
+    fn replace_in(self, series: &mut AreaChartSeries) -> Option<Self> {
+        Some(match self {
+            Self::Categories(part) => {
+                Self::Categories(std::mem::replace(series.category_axis_data_mut()?, part))
+            }
+            Self::Values(part) => Self::Values(std::mem::replace(series.values_mut()?, part)),
+            Self::XValues(part) => Self::XValues(std::mem::replace(series.x_values_mut()?, part)),
+            Self::YValues(part) => Self::YValues(std::mem::replace(series.y_values_mut()?, part)),
+            Self::BubbleSize(part) => {
+                Self::BubbleSize(std::mem::replace(series.bubble_size_mut()?, part))
+            }
+        })
+    }
+}
+
+/// The debug form of `role` of `series`, which shows every stored field.
+fn stored_role(series: &AreaChartSeries, role: &str) -> Option<String> {
+    match role {
+        "cat" => series.category_axis_data().map(|part| format!("{part:?}")),
+        "val" => series.values().map(|part| format!("{part:?}")),
+        "xVal" => series.x_values().map(|part| format!("{part:?}")),
+        "yVal" => series.y_values().map(|part| format!("{part:?}")),
+        "bubbleSize" => series.bubble_size().map(|part| format!("{part:?}")),
+        _ => None,
+    }
+}
+
+/// A data role written as a stand-in while the staged chart is compared:
+/// the real part and the planned child it took the place of.
+pub(super) struct StandIn {
+    /// The staged series, in build order.
+    staged: usize,
+    /// Its `c:idx`, which finds its planned `c:ser`.
+    index:  String,
+    role:   &'static str,
+    part:   RolePart,
+    child:  Element,
+}
+
+/// The staged series in build order: attach adds the built groups in order,
+/// each with its series in the order build added them.
+fn staged_series(staged: &mut Chart) -> Vec<&mut AreaChartSeries> {
+    staged
+        .plot_area_mut()
+        .chart_groups_mut()
+        .flat_map(|group| group.series_mut().area_chart_series_mut().iter_mut())
+        .collect()
+}
+
+/// Replaces the proven data roles with stand-ins, in `staged` and in
+/// `after` (the planned `c:chart`), and returns what they replaced. A role is
+/// proven when the source wrote it, the plan expects the child the source
+/// wrote, and the staged part is the live one: its writer reads only the part
+/// and the workbook, and no other writer reads a role, so it writes what the
+/// source wrote. A stand-in keeps the role's name, presence and place, so every
+/// other byte is compared as before. `cleanups` gives the staged series' source
+/// positions in build order; `live` holds umya's series by source position.
+pub(super) fn stand_in_roles(
+    staged: &mut Chart,
+    live: &[&AreaChartSeries],
+    source: &Source,
+    cleanups: &[Cleanup],
+    after: &mut Element,
+    workbook: &Workbook,
+) -> Result<Vec<StandIn>, Unresolved> {
+    let mut series = staged_series(staged);
+    if series.len() != cleanups.len() {
+        return Err(Unresolved::Rejected);
+    }
+    let area = after.child_mut("plotArea").ok_or(Unresolved::Rejected)?;
+    // Each role's stand-in as written, written once.
+    let mut written: [Option<Element>; ROLES.len()] = Default::default();
+    let mut stand_ins = Vec::new();
+    for (at, (staged, cleanup)) in series.iter_mut().zip(cleanups).enumerate() {
+        let entry = source
+            .series
+            .get(cleanup.position)
+            .ok_or(Unresolved::Rejected)?;
+        let live = live.get(cleanup.position).ok_or(Unresolved::Rejected)?;
+        let index = entry.index.to_string();
+        let expected = planned_series(area, &index).ok_or(Unresolved::Rejected)?;
+        for (role, written) in ROLES.into_iter().zip(&mut written) {
+            let (Some(was), Some(now)) = (entry.element.child(role), expected.child(role)) else {
+                continue;
+            };
+            if was != now {
+                continue;
+            }
+            let stored = stored_role(staged, role);
+            if stored.is_none() || stored != stored_role(live, role) {
+                continue;
+            }
+            let stand_in = RolePart::stand_in(role).ok_or(Unresolved::Rejected)?;
+            let child = match written {
+                Some(child) => child.clone(),
+                None => written
+                    .insert(
+                        xml::written(|writer| stand_in.write_to(writer, workbook))
+                            .ok_or(Unresolved::Rejected)?,
+                    )
+                    .clone(),
+            };
+            let part = stand_in.replace_in(staged).ok_or(Unresolved::Rejected)?;
+            let slot = expected.child_mut(role).ok_or(Unresolved::Rejected)?;
+            stand_ins.push(StandIn {
+                staged: at,
+                index: index.clone(),
+                role,
+                part,
+                child: std::mem::replace(slot, child),
+            });
+        }
+    }
+    Ok(stand_ins)
+}
+
+/// Puts back the real parts and planned children `stand_ins` replaced, by
+/// name: the comparison may have moved a planned child within its series.
+pub(super) fn put_back(
+    staged: &mut Chart,
+    after: &mut Element,
+    stand_ins: Vec<StandIn>,
+) -> Result<(), Unresolved> {
+    let mut series = staged_series(staged);
+    let area = after.child_mut("plotArea").ok_or(Unresolved::Rejected)?;
+    for stand_in in stand_ins {
+        let staged = series
+            .get_mut(stand_in.staged)
+            .ok_or(Unresolved::Rejected)?;
+        stand_in
+            .part
+            .replace_in(staged)
+            .ok_or(Unresolved::Rejected)?;
+        *planned_series(area, &stand_in.index)
+            .and_then(|series| series.child_mut(stand_in.role))
+            .ok_or(Unresolved::Rejected)? = stand_in.child;
+    }
+    Ok(())
 }
 
 fn children<'a>(series: &'a Element, name: &str) -> Vec<&'a Element> {

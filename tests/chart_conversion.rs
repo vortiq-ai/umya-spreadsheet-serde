@@ -43,6 +43,8 @@ mod refusals;
 mod retained;
 #[path = "chart_conversion/series_axis.rs"]
 mod series_axis;
+#[path = "chart_conversion/stand_ins.rs"]
+mod stand_ins;
 #[path = "chart_conversion/workbook.rs"]
 mod workbook;
 #[path = "chart_conversion/xml.rs"]

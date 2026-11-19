@@ -109,8 +109,7 @@ macro_rules! read_as {
 /// One group element, read by its type's reader without its series and its
 /// extension lists, which umya reads only within their part.
 fn read_group(element: &Element, session: &SourceCacheSession) -> Option<ChartGroup> {
-    let mut element = xml::without_extensions(element);
-    element.remove("ser");
+    let element = xml::without_extensions(&shallow(element, &["ser"]));
     read_as!(&element, session,
         "lineChart" => LineChart,
         "line3DChart" => Line3DChart,
@@ -131,6 +130,22 @@ fn read_group(element: &Element, session: &SourceCacheSession) -> Option<ChartGr
     )
 }
 
+/// `element` without its children named in `drop`. The dropped children
+/// (series, and axis ids for a skeleton) are never copied.
+fn shallow(element: &Element, drop: &[&str]) -> Element {
+    Element {
+        name:       element.name.clone(),
+        attributes: element.attributes.clone(),
+        children:   element
+            .children
+            .iter()
+            .filter(|child| !drop.contains(&child.local()))
+            .cloned()
+            .collect(),
+        text:       element.text.clone(),
+    }
+}
+
 /// One plot group of the result: how it is built, the ids of its axes, and
 /// the `c:idx` of the series it takes, in order.
 pub(super) type ReadGroup = (Owner<ChartGroup>, Vec<u32>, Vec<u32>);
@@ -144,24 +159,18 @@ pub(super) fn read_groups(
     area: &Element,
     source_area: &Element,
 ) -> Result<Vec<ReadGroup>, Unresolved> {
-    let session = SourceCacheSession::deferred();
-    let groups = |area: &Element| -> Vec<Element> {
+    fn groups(area: &Element) -> Vec<&Element> {
         area.children
             .iter()
             .filter(|child| child.local().ends_with("Chart"))
-            .cloned()
             .collect()
-    };
+    }
+    let session = SourceCacheSession::deferred();
     let sources = groups(source_area);
-    let skeleton = |group: &Element| {
-        let mut skeleton = group.clone();
-        skeleton.remove("ser");
-        skeleton.remove("axId");
-        skeleton
-    };
+    let skeleton = |group: &Element| shallow(group, &["ser", "axId"]);
     let read = |group: &Element| read_group(group, &session).ok_or(Unresolved::Rejected);
     groups(area)
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(at, element)| {
             let axes = element
@@ -174,7 +183,7 @@ pub(super) fn read_groups(
                 .map(|series| series.val("idx").and_then(|idx| idx.parse().ok()))
                 .collect::<Option<Vec<u32>>>()
                 .ok_or(Unresolved::Rejected)?;
-            let owner = match sources.get(at) {
+            let owner = match sources.get(at).copied() {
                 None => Owner::Rebuilt {
                     read:  read(element)?,
                     probe: None,
