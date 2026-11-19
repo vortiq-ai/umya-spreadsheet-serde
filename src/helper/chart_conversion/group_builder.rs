@@ -2,6 +2,8 @@
 //! series through umya's reader for its type, so the group holds exactly the
 //! children Excel writes, absent ones included.
 use super::{
+    axes::restore_shape,
+    build::Owner,
     plan::Unresolved,
     xml::{
         self,
@@ -19,14 +21,13 @@ use crate::{
             BarChart,
             BubbleChart,
             ChartGroup,
+            ChartLines,
             DoughnutChart,
-            ExtensionList,
             Line3DChart,
             LineChart,
             OfPieChart,
             Pie3DChart,
             PieChart,
-            PlotArea,
             RadarChart,
             ScatterChart,
             StockChart,
@@ -91,29 +92,26 @@ pub(super) const fn tag(chart_type: ChartType) -> &'static str {
 }
 
 macro_rules! read_as {
-    ($element:expr, $session:expr, $extensions:expr, $($name:literal => $kind:ident),* $(,)?) => {
+    ($element:expr, $session:expr, $($name:literal => $kind:ident),* $(,)?) => {
         match $element.local() {
             $($name => {
                 let mut group = $kind::default();
-                let read = xml::read($element, |reader, start, _| {
+                xml::read($element, |reader, start, _| {
                     group.set_attributes(reader, start, $session)
-                });
-                group.set_extensions($extensions);
-                read.map(|()| ChartGroup::$kind(group))
+                })
+                .map(|()| ChartGroup::$kind(group))
             })*
             _ => None,
         }
     };
 }
 
-/// One group element without its series, read by its type's reader, with
-/// `extensions` as its extension list.
-fn read_group(
-    element: &Element,
-    session: &SourceCacheSession,
-    extensions: Option<ExtensionList>,
-) -> Option<ChartGroup> {
-    read_as!(element, session, extensions,
+/// One group element, read by its type's reader without its series and its
+/// extension lists, which umya reads only within their part.
+fn read_group(element: &Element, session: &SourceCacheSession) -> Option<ChartGroup> {
+    let mut element = xml::without_extensions(element);
+    element.remove("ser");
+    read_as!(&element, session,
         "lineChart" => LineChart,
         "line3DChart" => Line3DChart,
         "pieChart" => PieChart,
@@ -133,40 +131,121 @@ fn read_group(
     )
 }
 
-/// The result's plot groups, each without its series, and the `c:idx` of the
-/// series each takes, in order. umya reads an extension list only within the
-/// part it came from, so a group that keeps one takes it from `live`'s group
-/// at its position, which must be of its type.
+/// One plot group of the result: how it is built, the ids of its axes, and
+/// the `c:idx` of the series it takes, in order.
+pub(super) type ReadGroup = (Owner<ChartGroup>, Vec<u32>, Vec<u32>);
+
+/// The result's plot groups from their elements in `area`. A group at the
+/// position of a source group retains it: unchanged as written apart from its
+/// series and axis ids, it is the live group; otherwise it is read and takes
+/// the live group's stored state when staged. `source_area` is the source as
+/// written.
 pub(super) fn read_groups(
     area: &Element,
-    live: &PlotArea,
-) -> Result<Vec<(ChartGroup, Vec<u32>)>, Unresolved> {
+    source_area: &Element,
+) -> Result<Vec<ReadGroup>, Unresolved> {
     let session = SourceCacheSession::deferred();
-    let mut live = live.chart_groups();
-    area.children
+    let groups = |area: &Element| -> Vec<Element> {
+        area.children
+            .iter()
+            .filter(|child| child.local().ends_with("Chart"))
+            .cloned()
+            .collect()
+    };
+    let sources = groups(source_area);
+    let skeleton = |group: &Element| {
+        let mut skeleton = group.clone();
+        skeleton.remove("ser");
+        skeleton.remove("axId");
+        skeleton
+    };
+    let read = |group: &Element| read_group(group, &session).ok_or(Unresolved::Rejected);
+    groups(area)
         .iter()
-        .filter(|child| child.local().ends_with("Chart"))
-        .map(|element| {
-            let kept = live.next();
-            let mut skeleton = element.clone();
-            skeleton.remove("ser");
-            let extensions = if skeleton.child("extLst").is_some() {
-                skeleton.remove("extLst");
-                let kept = kept
-                    .filter(|group| tag(group.kind()) == element.local())
-                    .and_then(|group| group.into_reference_role_parts().extensions)
-                    .ok_or(Unresolved::Rejected)?;
-                Some(kept.clone())
-            } else {
-                None
-            };
+        .enumerate()
+        .map(|(at, element)| {
+            let axes = element
+                .children_named("axId")
+                .map(|id| id.attribute("val").and_then(|id| id.parse().ok()))
+                .collect::<Option<Vec<u32>>>()
+                .ok_or(Unresolved::Rejected)?;
             let series = element
                 .children_named("ser")
                 .map(|series| series.val("idx").and_then(|idx| idx.parse().ok()))
                 .collect::<Option<Vec<u32>>>()
                 .ok_or(Unresolved::Rejected)?;
-            let group = read_group(&skeleton, &session, extensions).ok_or(Unresolved::Rejected)?;
-            Ok((group, series))
+            let owner = match sources.get(at) {
+                None => Owner::Rebuilt {
+                    read:  read(element)?,
+                    probe: None,
+                },
+                Some(source) if skeleton(source) == skeleton(element) => Owner::Kept,
+                Some(source) => Owner::Rebuilt {
+                    read:  read(element)?,
+                    probe: Some(read(source)?),
+                },
+            };
+            Ok((owner, axes, series))
         })
         .collect()
+}
+
+/// Restores into `group`, read from a planned element, the stored state of
+/// `previous`, the live group at its position, that the writer leaves out: a
+/// group of the same type through its own restorer, and the labels and lines
+/// a retyped group carries too.
+pub(super) fn restore(group: &mut ChartGroup, previous: &ChartGroup) -> Option<()> {
+    let same_type = group.kind() == previous.kind();
+    let old = previous.as_group_ref();
+    let mut current = group.as_group_mut();
+    current.restore_export_parts(old);
+    let lines = current.lines_mut();
+    let old_lines = old.lines();
+    for (line, old) in [
+        (lines.drop_lines, old_lines.drop_lines),
+        (lines.hi_low_lines, old_lines.hi_low_lines),
+    ] {
+        restore_shape(
+            line.and_then(ChartLines::shape_properties_mut),
+            old.and_then(ChartLines::shape_properties),
+        );
+    }
+    if let (Some(bars), Some(old)) = (lines.up_down_bars, old_lines.up_down_bars) {
+        bars.restore_export_parts(old);
+        restore_shape(
+            bars.up_bars_mut()
+                .and_then(ChartLines::shape_properties_mut),
+            old.up_bars().and_then(ChartLines::shape_properties),
+        );
+        restore_shape(
+            bars.down_bars_mut()
+                .and_then(ChartLines::shape_properties_mut),
+            old.down_bars().and_then(ChartLines::shape_properties),
+        );
+    }
+    // A band format takes the stored state of the one band with its index.
+    for band in lines.band_formats.iter_mut() {
+        let index = band.index().explicit_value();
+        let mut same = old_lines
+            .band_formats
+            .iter()
+            .filter(|old| old.index().explicit_value() == index);
+        if let (Some(old), None) = (same.next(), same.next()) {
+            restore_shape(band.shape_properties_mut(), old.shape_properties());
+        }
+    }
+    let parts = current.into_reference_role_parts();
+    let old_parts = old.into_reference_role_parts();
+    if let (Some(labels), Some(old)) = (parts.labels, old_parts.labels) {
+        labels.restore_export_parts(old).ok()?;
+    }
+    // The same type's restorer brings back its series lines already.
+    if !same_type {
+        if let (Some(lines), Some(old)) = (parts.series_lines, old_parts.series_lines) {
+            for (line, old) in lines.iter_mut().zip(old) {
+                restore_shape(line.shape_properties_mut(), old.shape_properties());
+            }
+        }
+    }
+    Some(())
 }

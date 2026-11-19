@@ -17,7 +17,12 @@ use super::{
         self,
         PlannedAxes,
     },
+    build::{
+        self,
+        Owner,
+    },
     chart_at,
+    commit,
     group_builder,
     model::{
         self,
@@ -94,20 +99,22 @@ pub(super) enum Step {
     UngovernedSeriesPart,
     /// x values of a class no Excel round has converted for this pair yet.
     UnmeasuredXClass,
+    /// Categories of a class no Excel round has converted for this pair yet,
+    /// or of mixed classes.
+    UnmeasuredCategoryClass,
     /// A surface or of-pie source whose series and value counts no Excel
     /// round has converted yet.
     UnmeasuredShape,
     /// Series whose `c:order` differs from their order in the plot area.
     SeriesOrder,
-    /// Axes the plot area would write in another order than Excel's: the
-    /// part's recorded axis order outlives the axes it described.
-    AxisOrder,
-    /// A series axis Excel writes without `c:crosses`: umya's series axis
-    /// always writes one.
-    SeriesAxisCrossing,
     /// A reference to a whole column or row: umya's cell reader projects
     /// ranges between two complete cells only.
     WholeLineReference,
+    /// The result as umya writes it differs from the planned chart.
+    StagedDifference,
+    /// A retained owner holds stored state its restorers cannot carry into
+    /// the owner the plan reads.
+    HiddenState,
 }
 
 /// Why a rule cell gives no result.
@@ -117,8 +124,9 @@ pub(super) enum Unresolved {
     Rejected,
     /// The step is not built yet.
     Pending(Step),
-    /// The input is one umya cannot write or read: a zero or reversed range,
-    /// or a sheet that cannot be read. This says nothing about Excel.
+    /// The input is one umya cannot write or project: a zero column or row, a
+    /// reversed range, or a sheet that cannot be read. This says nothing
+    /// about Excel.
     Invalid,
 }
 
@@ -138,11 +146,13 @@ pub(super) const fn presence(present: bool) -> Presence {
     }
 }
 
-/// One plot group of the result, without its series, and the source
-/// positions of the series it takes, in order.
+/// One plot group of the result, without its series: how it is built, the
+/// ids of its axes, and the source positions of the series it takes, in
+/// order.
 #[derive(Debug)]
 pub(super) struct PlannedGroup {
-    pub(super) group:  ChartGroup,
+    pub(super) owner:  Owner<ChartGroup>,
+    pub(super) axes:   Vec<u32>,
     pub(super) series: Vec<usize>,
 }
 
@@ -150,20 +160,27 @@ pub(super) struct PlannedGroup {
 #[derive(Debug, Default)]
 pub(super) struct PlannedScene {
     pub(super) view:      Option<View3D>,
-    pub(super) floor:     Option<Floor>,
-    pub(super) side_wall: Option<SideWall>,
-    pub(super) back_wall: Option<BackWall>,
+    pub(super) floor:     Option<Owner<Floor>>,
+    pub(super) side_wall: Option<Owner<SideWall>>,
+    pub(super) back_wall: Option<Owner<BackWall>>,
 }
 
-/// Everything the conversion does, resolved. Borrows nothing from the chart.
+/// The parts of the result `build` assembles.
+#[derive(Debug)]
+pub(super) struct Planned {
+    pub(super) groups: Vec<PlannedGroup>,
+    pub(super) axes:   PlannedAxes,
+    pub(super) scene:  Option<PlannedScene>,
+    pub(super) series: Vec<series::Patch>,
+}
+
+/// Everything the conversion does, resolved: the converted chart, written and
+/// compared already, and its report. Borrows nothing from the chart.
 #[derive(Debug)]
 pub(super) struct Plan {
     pub(super) from:    ChartSource,
     pub(super) to:      ChartSubtype,
-    pub(super) groups:  Vec<PlannedGroup>,
-    pub(super) axes:    PlannedAxes,
-    pub(super) scene:   Option<PlannedScene>,
-    pub(super) series:  Vec<series::Patch>,
+    pub(super) chart:   Chart,
     pub(super) changes: Vec<ConversionChange>,
     pub(super) paint:   Vec<SeriesPaint>,
 }
@@ -326,6 +343,15 @@ fn admit(
     source: &Source,
     target: ChartSubtype,
 ) -> Result<(), Unresolved> {
+    // The writer leaves out categories holding both numeric sources, and the
+    // reader refuses them: no rule can read such a series.
+    if live.iter().any(|series| {
+        series.category_axis_data().is_some_and(|categories| {
+            categories.number_reference().is_some() && categories.number_literal().is_some()
+        })
+    }) {
+        return Err(Unresolved::Invalid);
+    }
     if source.series.is_empty() {
         return Err(Unresolved::Rejected);
     }
@@ -381,18 +407,25 @@ fn admit(
     Ok(())
 }
 
-/// Section 12's x classes, as the pair's measurements admit them: x values of
-/// a class no round converted wait for one.
-fn admit_x_values(source: &Source, conversion: &Conversion) -> Result<(), Unresolved> {
-    if !source.has_x {
+/// Section 12's x classes and the categories' data class, as the pair's
+/// measurements admit them: x values or categories of a class no round
+/// converted wait for one, and so do categories of mixed classes.
+fn admit_data_classes(source: &Source, conversion: &Conversion) -> Result<(), Unresolved> {
+    if source.has_x {
+        let (data, spacing) = source.x;
+        let measured = cell(conversion.x_values.get(data))
+            .and_then(|spacings| cell(spacings.get(spacing)))
+            .is_ok();
+        if !measured {
+            return Err(Unresolved::Pending(Step::UnmeasuredXClass));
+        }
         return Ok(());
     }
-    let (data, spacing) = source.x;
-    let measured = cell(conversion.x_values.get(data))
-        .and_then(|spacings| cell(spacings.get(spacing)))
-        .is_ok();
+    let measured = source
+        .joined
+        .is_some_and(|class| cell(conversion.category.get(class)).is_ok());
     if !measured {
-        return Err(Unresolved::Pending(Step::UnmeasuredXClass));
+        return Err(Unresolved::Pending(Step::UnmeasuredCategoryClass));
     }
     Ok(())
 }
@@ -415,7 +448,7 @@ fn replay(
         .collect();
     admit(&live, &source, target)?;
     let conversion = conversion(&source, target)?;
-    admit_x_values(&source, conversion)?;
+    admit_data_classes(&source, conversion)?;
     let replay = Replay {
         source: &source,
         kind,
@@ -423,22 +456,8 @@ fn replay(
         target,
     };
     let mut after = replay.chart()?;
-    let area = after.child_mut("plotArea").ok_or(Unresolved::Rejected)?;
-    let read = group_builder::read_groups(area, chart.plot_area())?;
-    // The parts the target families do not allow go before anything is
-    // reported, so the report holds every removal the result makes.
-    let mut removed = Vec::new();
-    for (element, (group, _)) in area
-        .children
-        .iter_mut()
-        .filter(|child| child.local().ends_with("Chart"))
-        .zip(&read)
-    {
-        removed.extend(series::remove_disallowed(
-            element,
-            group.as_group_ref().series_family(),
-        )?);
-    }
+    let area = after.child("plotArea").ok_or(Unresolved::Rejected)?;
+    let source_area = source.chart.child("plotArea").ok_or(Unresolved::Rejected)?;
     let position = |index: u32| {
         source
             .series
@@ -447,12 +466,16 @@ fn replay(
             .ok_or(Unresolved::Rejected)
     };
     let mut groups = Vec::new();
-    for (group, indexes) in read {
+    for (owner, axes, indexes) in group_builder::read_groups(area, source_area)? {
         let series = indexes
             .into_iter()
             .map(position)
             .collect::<Result<Vec<_>, _>>()?;
-        groups.push(PlannedGroup { group, series });
+        groups.push(PlannedGroup {
+            owner,
+            axes,
+            series,
+        });
     }
     let mut members: Vec<usize> = groups
         .iter()
@@ -462,30 +485,80 @@ fn replay(
     if !members.iter().copied().eq(0..source.series.len()) {
         return Err(Unresolved::Rejected);
     }
-    let removed = removed
-        .into_iter()
-        .map(|(index, kind)| Ok((position(index)?, kind)))
-        .collect::<Result<Vec<(usize, SeriesPartKind)>, Unresolved>>()?;
-    let after_model = Model::of(&after);
-    let changes = model::changes(&Model::of(&source.chart), &after_model, &removed);
-    let paint = model::paint(&after_model, kind.paint).ok_or(Unresolved::Rejected)?;
-    let area = after.child("plotArea").ok_or(Unresolved::Rejected)?;
-    let source_area = source.chart.child("plotArea").ok_or(Unresolved::Rejected)?;
-    if !axes::written_in_order(source_area, area) {
-        return Err(Unresolved::Pending(Step::AxisOrder));
-    }
-    if !axes::crossings_writable(area) {
-        return Err(Unresolved::Pending(Step::SeriesAxisCrossing));
-    }
+    let planned = Planned {
+        groups,
+        axes: axes::read_axes(area, source_area, chart.plot_area())?,
+        scene: read_scene(&source.chart, &after)?,
+        series: series::patches(&source, &kind.data, area, &live)?,
+    };
+    let staged = stage(chart, workbook, &source, planned, &mut after)?;
+    let written = Model::of(&after);
+    let changes = model::changes(&Model::of(&source.chart), &written, &staged.removed);
+    let paint = model::paint(&written, kind.paint).ok_or(Unresolved::Rejected)?;
     Ok(Plan {
         from,
         to: target,
-        groups,
-        axes: axes::read_axes(area, chart.plot_area())?,
-        scene: read_scene(&source.chart, &after)?,
-        series: series::patches(&source, &kind.data, area, &live)?,
+        chart: staged.chart,
         changes,
         paint,
+    })
+}
+
+/// The result on its staging copy.
+struct Staged {
+    chart:   Chart,
+    /// The parts the target families' cleanup removed, by source position.
+    removed: Vec<(usize, SeriesPartKind)>,
+}
+
+/// Section 5's commit, on a copy of `chart`: detaches, builds and attaches
+/// the result, writes it with `workbook` and compares it with `after`, the
+/// planned `c:chart`, less what the target families' cleanup removed. On a
+/// match `after` is the `c:chart` umya writes for the result.
+fn stage(
+    chart: &Chart,
+    workbook: &Workbook,
+    source: &Source,
+    planned: Planned,
+    after: &mut Element,
+) -> Result<Staged, Unresolved> {
+    let mut staged = chart.clone();
+    let detached = commit::detach(&mut staged);
+    let (built, cleanups) = build::build(planned, detached, workbook)?;
+    if !commit::attach(&mut staged, built) {
+        return Err(Unresolved::Rejected);
+    }
+    let written = xml::written_bytes(|writer| staged.write_to(writer, workbook))
+        .ok_or(Unresolved::Pending(Step::StagedDifference))?;
+    let area = after.child_mut("plotArea").ok_or(Unresolved::Rejected)?;
+    let mut removed = Vec::new();
+    for cleanup in &cleanups {
+        let entry = source
+            .series
+            .get(cleanup.position)
+            .ok_or(Unresolved::Rejected)?;
+        let index = entry.index.to_string();
+        let series = area
+            .children
+            .iter_mut()
+            .filter(|group| group.local().ends_with("Chart"))
+            .flat_map(|group| group.children.iter_mut())
+            .find(|series| series.local() == "ser" && series.val("idx") == Some(index.as_str()))
+            .ok_or(Unresolved::Rejected)?;
+        series::remove_cleaned(series, cleanup);
+        removed.extend(
+            cleanup
+                .removed
+                .iter()
+                .map(|(kind, _)| (cleanup.position, *kind)),
+        );
+    }
+    if !xml::matches_written(after, &written) {
+        return Err(Unresolved::Pending(Step::StagedDifference));
+    }
+    Ok(Staged {
+        chart: staged,
+        removed,
     })
 }
 
@@ -687,9 +760,15 @@ impl Replay<'_> {
                 group.put(Element::value("firstSliceAng", angle));
             }
         }
-        // Bands follow the series' own style; the group's trees follow the
-        // style the scene keeps.
-        let bands = *cell(values.bands.get(self.source.style()).get(has("bandFmts")))?;
+        // Bands follow the series' own style and the bands the group holds
+        // (the group rule above reads the wrapper); the group's trees follow
+        // the style the scene keeps.
+        let holds_bands = presence(
+            before
+                .and_then(|group| group.child("bandFmts"))
+                .is_some_and(|bands| bands.child("bandFmt").is_some()),
+        );
+        let bands = *cell(values.bands.get(self.source.style()).get(holds_bands))?;
         let style = self.source.scene;
         if !matches!(bands, super::rule::BandRule::Keep) {
             return Err(Unresolved::Pending(Step::Bands));
@@ -768,29 +847,31 @@ fn read_scene(before: &Element, after: &Element) -> Result<Option<PlannedScene>,
         .ok_or(Unresolved::Rejected)?;
         scene.view = Some(view);
     }
-    if let Some(element) = after.child("floor") {
-        let mut floor = Floor::default();
-        xml::read(element, |reader, start, _| {
-            floor.set_attributes(reader, start)
-        })
-        .ok_or(Unresolved::Rejected)?;
-        scene.floor = Some(floor);
+    // A wall unchanged as written is the live wall; another is read without
+    // its extension lists and takes the live wall's stored state.
+    macro_rules! wall {
+        ($field:ident, $name:literal, $kind:ident) => {
+            if let Some(element) = after.child($name) {
+                let read = |element: &Element| {
+                    let mut wall = $kind::default();
+                    xml::read(&xml::without_extensions(element), |reader, start, _| {
+                        wall.set_attributes(reader, start)
+                    })
+                    .map(|()| wall)
+                    .ok_or(Unresolved::Rejected)
+                };
+                scene.$field = Some(match before.child($name) {
+                    Some(written) if written == element => Owner::Kept,
+                    written => Owner::Rebuilt {
+                        read:  read(element)?,
+                        probe: written.map(read).transpose()?,
+                    },
+                });
+            }
+        };
     }
-    if let Some(element) = after.child("sideWall") {
-        let mut wall = SideWall::default();
-        xml::read(element, |reader, start, _| {
-            wall.set_attributes(reader, start)
-        })
-        .ok_or(Unresolved::Rejected)?;
-        scene.side_wall = Some(wall);
-    }
-    if let Some(element) = after.child("backWall") {
-        let mut wall = BackWall::default();
-        xml::read(element, |reader, start, _| {
-            wall.set_attributes(reader, start)
-        })
-        .ok_or(Unresolved::Rejected)?;
-        scene.back_wall = Some(wall);
-    }
+    wall!(floor, "floor", Floor);
+    wall!(side_wall, "sideWall", SideWall);
+    wall!(back_wall, "backWall", BackWall);
     Ok(Some(scene))
 }

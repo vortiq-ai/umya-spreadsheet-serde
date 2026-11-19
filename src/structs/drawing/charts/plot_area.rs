@@ -454,6 +454,29 @@ impl PlotArea {
         self
     }
 
+    /// Sets the order the axes are written in, one element name (`catAx`,
+    /// `dateAx`, `valAx` or `serAx`) per axis. An unknown name returns `false`
+    /// and changes nothing.
+    pub(crate) fn set_axis_order_by_tags(&mut self, tags: &[&str]) -> bool {
+        let mut order = Vec::with_capacity(tags.len());
+        for tag in tags {
+            order.push(match *tag {
+                "catAx" => AxisKind::Category,
+                "dateAx" => AxisKind::Date,
+                "valAx" => AxisKind::Value,
+                "serAx" => AxisKind::Series,
+                _ => return false,
+            });
+        }
+        // The grouped order is what an empty list writes, as the reader keeps
+        // it.
+        if order.is_sorted() {
+            order.clear();
+        }
+        self.axis_order = order;
+        true
+    }
+
     /// Takes every plot group out, in document order, and leaves the plot area
     /// with none.
     pub(crate) fn take_chart_groups(&mut self) -> Vec<ChartGroup> {

@@ -219,6 +219,19 @@ impl AreaChartSeries {
         self.parts_mut().error_bars_mut()
     }
 
+    /// The positions of the stored error bars a `family` series writes, in
+    /// order: the writer takes the schema's saved count from the front and
+    /// leaves the invalid ones out.
+    pub(crate) fn written_error_bars(&self, family: SeriesFamily) -> Vec<usize> {
+        self.error_bars()
+            .iter()
+            .take(super::error_bars::saved_error_bar_limit(family))
+            .enumerate()
+            .filter(|(_, bars)| bars.is_valid())
+            .map(|(occurrence, _)| occurrence)
+            .collect()
+    }
+
     #[must_use]
     pub fn parts(&self) -> Option<&SeriesParts> {
         self.parts.as_deref()

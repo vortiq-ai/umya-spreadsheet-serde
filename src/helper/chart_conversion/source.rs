@@ -6,8 +6,8 @@ use super::{
     ChartSource,
     ChartSubtype,
     model::{
-        POINT_ACCENT_MAX,
         accent_paint,
+        alpha_of,
         fill_of,
         paint_of,
     },
@@ -89,6 +89,22 @@ pub(super) struct Source {
     /// The class of the series' categories, and of their x values.
     pub(super) category: (CategoryDataClass, DateSpacing),
     pub(super) x:        (CategoryDataClass, DateSpacing),
+    /// The data class every series' categories share, a series without
+    /// categories counting as absent; `None` when they differ.
+    pub(super) joined:   Option<CategoryDataClass>,
+    /// What a created axis' template is selected by.
+    pub(super) creation: Creation,
+}
+
+/// Section 4.6's selector of a created axis' template, read as Excel's
+/// created axes are filed: the data class of the categories the series hold
+/// and of their x values (`Other` when they differ, `None` when no series
+/// holds any), and the spacing of the first numeric categories in whole days.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Creation {
+    categories:         Option<CategoryDataClass>,
+    x:                  Option<CategoryDataClass>,
+    pub(super) spacing: DateSpacing,
 }
 
 const fn style_of(styled: bool) -> SeriesStyleClass {
@@ -109,14 +125,9 @@ pub(super) fn color_class(fill: Option<&Element>, index: u32) -> ColorClass {
     if paint == "noFill" {
         return ColorClass::NoFill;
     }
-    let alpha = paint
-        .strip_suffix(']')
-        .and_then(|rest| rest.rsplit_once("[alpha="))
-        .map(|(_, alpha)| alpha);
     let accent = usize::try_from(index)
         .ok()
-        .filter(|index| *index <= POINT_ACCENT_MAX)
-        .and_then(|index| accent_paint(index, alpha));
+        .map(|index| accent_paint(index, alpha_of(&paint)));
     if accent.as_deref() == Some(paint.as_str()) {
         ColorClass::SeriesAccent
     } else {
@@ -124,21 +135,24 @@ pub(super) fn color_class(fill: Option<&Element>, index: u32) -> ColorClass {
     }
 }
 
-/// The value count of a series: the first `ptCount` of its values.
+/// The value count of a series: the `ptCount` its values' literal, or else
+/// their number cache, holds itself.
 fn values_of(series: &Element) -> Option<usize> {
-    ["val", "yVal"]
+    let data = ["val", "yVal"]
         .into_iter()
-        .find_map(|role| series.child(role))
-        .and_then(|data| data.find("ptCount"))
-        .and_then(|count| count.attribute("val")?.parse().ok())
+        .find_map(|role| series.child(role))?;
+    let owner = data
+        .child("numLit")
+        .or_else(|| data.child("numRef")?.child("numCache"))?;
+    owner.child("ptCount")?.attribute("val")?.parse().ok()
 }
 
 /// The sheets, by index, whose cells the references of `chart` read when umya
-/// writes it, once every reference is one umya can write: an address the
-/// writer can spell (no zero column or row), and for a reference that reads
-/// cells, a range the cell reader projects (two complete corners, the first
-/// not after the second). A sheet the workbook does not hold is no sheet; its
-/// cells read as empty.
+/// writes it, once every reference is one umya can write and project: no zero
+/// column (the writer cannot spell one) or zero row, and for a reference that
+/// reads cells, a range the cell reader projects (two complete corners, the
+/// first not after the second). A sheet the workbook does not hold is no
+/// sheet; its cells read as empty.
 pub(super) fn referenced_sheets(
     chart: &Chart,
     workbook: &Workbook,
@@ -180,8 +194,7 @@ enum ReferenceClass {
     Readable,
     /// A whole column or row.
     WholeLine,
-    /// An address the writer cannot spell, or a range the cell reader cannot
-    /// iterate.
+    /// A zero column or row, or a range the cell reader cannot iterate.
     Invalid,
 }
 
@@ -244,28 +257,42 @@ fn spells_whole_line(text: &str) -> bool {
     )
 }
 
-/// The month of a serial that is the first day of a month, counted from year
-/// 0; `None` for any other day.
-fn month_of(serial: &str) -> Option<i64> {
-    let date = excel_to_date_time_jiff_checked(serial.parse().ok()?)
-        .ok()?
-        .date();
+/// The serial of 1904-01-01 in the 1900 date system.
+const DATE1904_OFFSET: f64 = 1462.0;
+
+/// The month of a serial whose day, the one its whole part names, is the
+/// first of a month, counted from year 0; `None` for any other day. Excel's
+/// 1900 system counts 1900-01-01 as 1 and keeps a 29 February 1900 at 60, which
+/// is no first of a month; its 1904 system counts 1904-01-01 as 0.
+fn month_of(serial: f64, date1904: bool) -> Option<i64> {
+    let serial = if date1904 {
+        serial + DATE1904_OFFSET
+    } else if (60.0..61.0).contains(&serial) {
+        return None;
+    } else {
+        serial
+    };
+    let date = excel_to_date_time_jiff_checked(serial.floor()).ok()?.date();
     (date.day() == 1).then_some(i64::from(date.year()) * 12 + i64::from(date.month()))
+}
+
+/// Whether `number` is exactly `expected`.
+fn exactly(number: f64, expected: f64) -> bool {
+    number.to_bits() == expected.to_bits()
 }
 
 /// Section 3.1's spacing of numeric categories: consecutive serials (General
 /// numbers only as exactly 1 to N) are daily, consecutive first days of a
-/// month monthly.
-fn spacing(values: &[&str], general: bool) -> DateSpacing {
-    let numbers: Option<Vec<f64>> = values.iter().map(|value| value.parse().ok()).collect();
-    let Some(numbers) = numbers.filter(|numbers| numbers.len() >= 2) else {
+/// month monthly, in the workbook's date system. Every comparison is exact.
+fn spacing(numbers: &[f64], general: bool, date1904: bool) -> DateSpacing {
+    if numbers.len() < 2 {
         return DateSpacing::Other;
-    };
+    }
     if general {
         let counting = numbers
             .iter()
             .zip(1_u32..)
-            .all(|(number, position)| (*number - f64::from(position)).abs() < f64::EPSILON);
+            .all(|(number, position)| exactly(*number, f64::from(position)));
         return if counting {
             DateSpacing::Daily
         } else {
@@ -274,11 +301,14 @@ fn spacing(values: &[&str], general: bool) -> DateSpacing {
     }
     if numbers
         .windows(2)
-        .all(|pair| (pair[1] - pair[0] - 1.0).abs() < f64::EPSILON)
+        .all(|pair| exactly(pair[1] - pair[0], 1.0))
     {
         return DateSpacing::Daily;
     }
-    let months: Option<Vec<i64>> = values.iter().map(|value| month_of(value)).collect();
+    let months: Option<Vec<i64>> = numbers
+        .iter()
+        .map(|number| month_of(*number, date1904))
+        .collect();
     if months.is_some_and(|months| months.windows(2).all(|pair| pair[1] - pair[0] == 1)) {
         DateSpacing::Monthly
     } else {
@@ -289,9 +319,19 @@ fn spacing(values: &[&str], general: bool) -> DateSpacing {
 /// The number format of ISO dates.
 const DATE_CODE: &str = "yyyy\\-mm\\-dd";
 
+/// The numbers of a number cache in point order; `None` when one is no
+/// number.
+fn numbers(cache: &Element) -> Option<Vec<f64>> {
+    cache
+        .children_named("pt")
+        .filter_map(|point| point.child("v"))
+        .map(|value| value.text.parse().ok())
+        .collect()
+}
+
 /// The data and spacing class of one series' categories or x values, read
-/// from their cache.
-fn data_class(data: Option<&Element>) -> (CategoryDataClass, DateSpacing) {
+/// from their cache in the workbook's date system.
+fn data_class(data: Option<&Element>, date1904: bool) -> (CategoryDataClass, DateSpacing) {
     let Some(data) = data else {
         return (CategoryDataClass::Absent, DateSpacing::Absent);
     };
@@ -307,17 +347,28 @@ fn data_class(data: Option<&Element>) -> (CategoryDataClass, DateSpacing) {
     else {
         return (CategoryDataClass::Other, DateSpacing::Absent);
     };
-    let code = cache.find("formatCode").map(|code| code.text.as_str());
-    let values: Vec<&str> = cache
-        .children_named("pt")
-        .filter_map(|point| point.child("v").map(|value| value.text.as_str()))
-        .collect();
+    let code = cache.child("formatCode").map(|code| code.text.as_str());
     let class = match code {
         Some(DATE_CODE) => CategoryDataClass::DateSerialReference,
         Some("General") => CategoryDataClass::GeneralReference,
         _ => CategoryDataClass::Other,
     };
-    (class, spacing(&values, code == Some("General")))
+    let general = code == Some("General");
+    let spaced = numbers(cache).map_or(DateSpacing::Other, |numbers| {
+        spacing(&numbers, general, date1904)
+    });
+    (class, spaced)
+}
+
+/// The class `classes` share: `Other` when they differ, `None` when there are
+/// none.
+fn joined_class(mut classes: impl Iterator<Item = CategoryDataClass>) -> Option<CategoryDataClass> {
+    let first = classes.next()?;
+    Some(if classes.all(|class| class == first) {
+        first
+    } else {
+        CategoryDataClass::Other
+    })
 }
 
 /// The one class every series has, or `Other` when they differ.
@@ -401,16 +452,46 @@ impl Source {
             && series
                 .iter()
                 .any(|entry| entry.element.child("xVal").is_some());
-        let category = uniform(
-            series
-                .iter()
-                .map(|entry| data_class(entry.element.child("cat"))),
-        );
+        let date1904 = workbook.date1904();
+        let categories: Vec<(CategoryDataClass, DateSpacing)> = series
+            .iter()
+            .map(|entry| data_class(entry.element.child("cat"), date1904))
+            .collect();
+        let category = uniform(categories.iter().copied());
+        let joined = categories
+            .first()
+            .map(|first| first.0)
+            .filter(|first| categories.iter().all(|class| class.0 == *first));
         let x = uniform(
             series
                 .iter()
-                .map(|entry| data_class(entry.element.child("xVal"))),
+                .map(|entry| data_class(entry.element.child("xVal"), date1904)),
         );
+        let held = |role: &str| {
+            joined_class(
+                series
+                    .iter()
+                    .filter_map(|entry| entry.element.child(role))
+                    .map(|data| data_class(Some(data), date1904).0),
+            )
+        };
+        let first_numbers = series.iter().find_map(|entry| {
+            entry
+                .element
+                .child("cat")?
+                .child("numRef")?
+                .child("numCache")
+        });
+        let creation = Creation {
+            categories: held("cat"),
+            x:          held("xVal"),
+            spacing:    first_numbers.map_or(DateSpacing::Absent, |cache| {
+                numbers(cache).map_or(DateSpacing::Other, |numbers| {
+                    let days: Vec<f64> = numbers.iter().map(|number| number.trunc()).collect();
+                    spacing(&days, false, date1904)
+                })
+            }),
+        };
         Some(Self {
             from,
             chart: tree,
@@ -420,7 +501,20 @@ impl Source {
             has_x,
             category,
             x,
+            joined,
+            creation,
         })
+    }
+
+    /// The data class a created axis' template is selected by: that of the
+    /// categories, or of the x values when no series holds categories and the
+    /// target is not xy; absent when there is neither.
+    pub(super) fn creation_class(&self, xy_target: bool) -> CategoryDataClass {
+        let class = match self.creation.categories {
+            None if !xy_target => self.creation.x,
+            categories => categories,
+        };
+        class.unwrap_or(CategoryDataClass::Absent)
     }
 
     /// The category data and spacing class of the categories after data-role

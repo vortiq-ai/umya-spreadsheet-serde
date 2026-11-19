@@ -146,7 +146,7 @@ const MOVES: [(SeriesSlot, SeriesSlot); 4] = [
 ];
 
 /// The luminance tiers of generated accents, six accents per tier.
-pub(super) const TIERS: [&[(&str, &str)]; 9] = [
+const TIERS: [&[(&str, &str)]; 9] = [
     &[],
     &[("lumMod", "60000")],
     &[("lumMod", "80000"), ("lumOff", "20000")],
@@ -157,9 +157,6 @@ pub(super) const TIERS: [&[(&str, &str)]; 9] = [
     &[("lumMod", "70000")],
     &[("lumMod", "50000"), ("lumOff", "50000")],
 ];
-
-/// The last series or point index whose generated accent was measured.
-pub(super) const POINT_ACCENT_MAX: usize = 50;
 
 const NONE: &str = "\u{0}";
 
@@ -260,21 +257,31 @@ pub(super) fn paint_of(fill: &Element) -> String {
     fill.canonical()
 }
 
-/// The exact paint Excel generates for the series or point at `index`,
-/// keeping a series' alpha.
-pub(super) fn accent_paint(index: usize, alpha: Option<&str>) -> Option<String> {
-    let tier = TIERS.get(index / 6)?;
-    let mut paint = format!("schemeClr:accent{}", index % 6 + 1);
-    for (name, value) in *tier {
-        let _ = write!(paint, "[{name}={value}]");
-    }
-    if let Some(alpha) = alpha {
-        let _ = write!(paint, "[alpha={alpha}]");
-    }
-    Some(paint)
+/// The colour Excel generates for the series or point at `index`, keeping a
+/// series' alpha: its scheme colour and the transforms that follow it in
+/// order. Six accents share a luminance tier; past the last tier the tiers
+/// repeat, so no index is too large for the palette.
+pub(super) fn palette(index: usize, alpha: Option<&str>) -> (String, Vec<(&'static str, String)>) {
+    let tier = TIERS[index / 6 % TIERS.len()];
+    let transforms = tier
+        .iter()
+        .map(|(name, value)| (*name, (*value).to_owned()))
+        .chain(alpha.map(|alpha| ("alpha", alpha.to_owned())))
+        .collect();
+    (format!("accent{}", index % 6 + 1), transforms)
 }
 
-fn alpha_of(paint: &str) -> Option<&str> {
+/// The palette colour at `index` as `paint_of` spells a fill's colour.
+pub(super) fn accent_paint(index: usize, alpha: Option<&str>) -> String {
+    let (scheme, transforms) = palette(index, alpha);
+    let mut paint = format!("schemeClr:{scheme}");
+    for (name, value) in transforms {
+        let _ = write!(paint, "[{name}={value}]");
+    }
+    paint
+}
+
+pub(super) fn alpha_of(paint: &str) -> Option<&str> {
     paint
         .strip_suffix(']')?
         .rsplit_once("[alpha=")
@@ -890,8 +897,10 @@ fn rank(part: ConvertedPart) -> usize {
 
 /// Section 2.3's `changes()`: the chart's changed parts, then each series',
 /// in series order. A series is matched by its `c:idx`.
-/// `removed` holds the parts the target families removed, by source
-/// position; each is reported once, ranked with the slot changes.
+/// `removed` holds the parts the target families' cleanup removed from the
+/// stored series, by source position; each is reported once, ranked with the
+/// slot changes. A removal decides its part over the slot diff, which sees
+/// only what was written, except a part moved to another role.
 pub(super) fn changes(
     before: &Model,
     after: &Model,
@@ -915,8 +924,10 @@ pub(super) fn changes(
         let mut parts = part_changes(was, now, true);
         for (_, kind) in removed.iter().filter(|(at, _)| *at == position) {
             let part = ConvertedPart::SeriesPart(*kind);
-            if !parts.iter().any(|(reported, _)| *reported == part) {
-                parts.push((part, ChangeKind::Removed));
+            match parts.iter_mut().find(|(reported, _)| *reported == part) {
+                Some((_, ChangeKind::MovedTo(_))) => (),
+                Some((_, change)) => *change = ChangeKind::Removed,
+                None => parts.push((part, ChangeKind::Removed)),
             }
         }
         parts.sort_by_key(|(part, _)| rank(*part));
@@ -971,8 +982,7 @@ fn paint_color(paint: Option<&str>, index: u32) -> PaintColor {
     }
     let accent = usize::try_from(index)
         .ok()
-        .filter(|index| *index <= POINT_ACCENT_MAX)
-        .and_then(|index| accent_paint(index, alpha_of(paint)));
+        .map(|index| accent_paint(index, alpha_of(paint)));
     if accent.as_deref() == Some(paint) {
         PaintColor::SeriesAccent
     } else {

@@ -552,6 +552,10 @@ pub(super) struct Conversion {
     /// By the class of the source's x values: measured only for the classes
     /// Excel converted; a source without x values selects nothing.
     pub(super) x_values: ByCategoryData<ByDateSpacing<()>>,
+    /// By the data class every series' categories share: measured only for
+    /// the classes Excel converted. Categories of mixed classes are none of
+    /// them; a source with x values selects nothing.
+    pub(super) category: ByCategoryData<()>,
     /// One entry for each target group.
     pub(super) groups:   &'static [GroupValuesRule],
     /// Keyed like the KIND rule's axes.

@@ -6,6 +6,7 @@
 //! `remove_parts` and their new content is read onto the series by umya's own
 //! series reader, so references and every unchanged part stay as they were.
 use super::{
+    build::Cleanup,
     plan::{
         Replay,
         Step,
@@ -48,7 +49,8 @@ use crate::{
     structs::drawing::charts::{
         AreaChartSeries,
         CategoryAxisData,
-        SeriesFamily,
+        NumberReference,
+        NumericData,
         SeriesPartKind,
         Values,
         XValues,
@@ -122,68 +124,145 @@ pub(super) fn role_moves(data: &DataRules, before: &Element) -> Result<Vec<RoleM
     Ok(moves)
 }
 
-/// Moves one role's typed content into another on `series`; the source role
-/// stays when the result keeps it. `None` for a move no role pair supports.
-fn move_role(series: &mut AreaChartSeries, role_move: RoleMove, keep_source: bool) -> Option<()> {
-    fn taken<T: Clone + Default>(value: &mut T, keep: bool) -> T {
-        if keep {
+/// A data role's content in the form its writer reads it.
+enum Content {
+    Reference(NumberReference),
+    Literal(NumericData),
+    Text(Box<CategoryAxisData>),
+}
+
+/// What `role` of `series` writes, by its writer's precedence: moved out, or
+/// copied when the result keeps the role.
+fn take(series: &mut AreaChartSeries, role: DataRole, keep: bool) -> Result<Content, Unresolved> {
+    fn owned<T: Clone + Default>(value: Option<&mut T>, keep: bool) -> Result<T, Unresolved> {
+        let value = value.ok_or(Unresolved::Rejected)?;
+        Ok(if keep {
             value.clone()
         } else {
             std::mem::take(value)
-        }
+        })
     }
-    match (role_move.from, role_move.to) {
-        (DataRole::Categories, DataRole::XValues) => {
-            let categories = taken(series.category_axis_data_mut()?, keep_source);
+    Ok(match role {
+        // The text source is written first, and it keeps an older literal.
+        DataRole::XValues => {
+            let mut x = owned(series.x_values_mut(), keep)?;
+            if x.text_source().is_some() {
+                Content::Text(Box::new(
+                    x.text_source_mut().map(std::mem::take).unwrap_or_default(),
+                ))
+            } else if let Some(literal) = x.number_literal_mut() {
+                Content::Literal(std::mem::take(literal))
+            } else {
+                Content::Reference(std::mem::take(x.number_reference_mut()))
+            }
+        }
+        DataRole::YValues => {
+            let mut y = owned(series.y_values_mut(), keep)?;
+            match y.number_literal_mut() {
+                Some(literal) => Content::Literal(std::mem::take(literal)),
+                None => Content::Reference(std::mem::take(y.number_reference_mut())),
+            }
+        }
+        DataRole::Values => {
+            let mut values = owned(series.values_mut(), keep)?;
+            match values.reference_role_parts_mut() {
+                (_, Some(literal)) => Content::Literal(std::mem::take(literal)),
+                (Some(reference), None) => Content::Reference(std::mem::take(reference)),
+                (None, None) => return Err(Unresolved::Rejected),
+            }
+        }
+        DataRole::Categories => {
+            let mut categories = owned(series.category_axis_data_mut(), keep)?;
+            if categories.holds_text() {
+                Content::Text(Box::new(categories))
+            } else {
+                match categories.take_numeric() {
+                    (Some(reference), None) => Content::Reference(reference),
+                    (None, Some(literal)) => Content::Literal(literal),
+                    _ => return Err(Unresolved::Rejected),
+                }
+            }
+        }
+        DataRole::BubbleSize => return Err(Unresolved::Rejected),
+    })
+}
+
+/// Installs `content` as `role` of `series`, the way the role's reader
+/// installs it.
+fn put(series: &mut AreaChartSeries, role: DataRole, content: Content) -> Result<(), Unresolved> {
+    match (role, content) {
+        (DataRole::XValues, content) => {
             let mut x = XValues::default();
-            x.set_text_source(categories);
+            match content {
+                Content::Text(text) => x.set_text_source(*text),
+                Content::Literal(literal) => x.set_number_literal(literal),
+                Content::Reference(reference) => x.set_number_reference(reference),
+            };
             series.set_x_values(x);
         }
-        (DataRole::XValues, DataRole::Categories) => {
-            let x = series.x_values_mut()?;
-            let categories = if let Some(source) = x.text_source_mut() {
-                taken(source, keep_source)
-            } else {
-                // Categories write every source they hold: take only the one
-                // the x values write, the literal when there is one.
-                let mut categories = CategoryAxisData::default();
-                if let Some(literal) = x.number_literal_mut() {
-                    categories.set_number_literal(taken(literal, keep_source));
-                } else {
-                    categories.set_number_reference(taken(x.number_reference_mut(), keep_source));
+        (DataRole::Categories, content) => {
+            let categories = match content {
+                Content::Text(text) => *text,
+                Content::Literal(literal) => {
+                    let mut categories = CategoryAxisData::default();
+                    categories.set_number_literal(literal);
+                    categories
                 }
-                categories
+                Content::Reference(reference) => {
+                    let mut categories = CategoryAxisData::default();
+                    categories.set_number_reference(reference);
+                    categories
+                }
             };
             series.set_category_axis_data(categories);
         }
-        (DataRole::Values, DataRole::YValues) => {
-            let values = series.values_mut()?;
+        (DataRole::YValues, Content::Literal(literal)) => {
             let mut y = YValues::default();
-            y.set_number_reference(taken(values.number_reference_mut(), keep_source));
-            if let Some(literal) = values.number_literal_mut() {
-                y.set_number_literal(taken(literal, keep_source));
-            }
+            y.set_number_literal(literal);
             series.set_y_values(y);
         }
-        (DataRole::YValues, DataRole::Values) => {
-            let y = series.y_values_mut()?;
+        (DataRole::YValues, Content::Reference(reference)) => {
+            let mut y = YValues::default();
+            y.set_number_reference(reference);
+            series.set_y_values(y);
+        }
+        (DataRole::Values, Content::Literal(literal)) => {
             let mut values = Values::default();
-            values.set_number_reference(taken(y.number_reference_mut(), keep_source));
-            if let Some(literal) = y.number_literal_mut() {
-                values.set_number_literal(taken(literal, keep_source));
-            }
+            values.set_number_literal(literal);
             series.set_values(values);
         }
-        _ => return None,
+        (DataRole::Values, Content::Reference(reference)) => {
+            let mut values = Values::default();
+            values.set_number_reference(reference);
+            series.set_values(values);
+        }
+        _ => return Err(Unresolved::Rejected),
     }
+    Ok(())
+}
+
+/// Moves one role's typed content into another on `series`; the source role
+/// stays when the result keeps it.
+fn move_role(
+    series: &mut AreaChartSeries,
+    role_move: RoleMove,
+    keep_source: bool,
+) -> Result<(), Unresolved> {
+    let content = take(series, role_move.from, keep_source)?;
+    put(series, role_move.to, content)?;
     if !keep_source {
-        let kind = PARTS
-            .iter()
-            .find(|(name, _)| *name == role_name(role_move.from))
-            .map(|(_, kind)| *kind)?;
+        let kind = part_kind(role_name(role_move.from)).ok_or(Unresolved::Rejected)?;
         drop(series.remove_parts(&[kind]));
     }
-    Some(())
+    Ok(())
+}
+
+/// The part kind of the series child `name`.
+fn part_kind(name: &str) -> Option<SeriesPartKind> {
+    PARTS
+        .iter()
+        .find(|(part, _)| *part == name)
+        .map(|(_, kind)| *kind)
 }
 
 /// Shape properties that held something before and nothing now go, as Excel
@@ -497,31 +576,66 @@ pub(super) struct Patch {
     pub(super) resolved: Option<AreaChartSeries>,
 }
 
-/// Removes the parts `family` does not allow from every `c:ser` of `group`,
-/// as umya's family rule does after the series join their group, and returns
-/// each removal with the series' `c:idx`.
-pub(super) fn remove_disallowed(
-    group: &mut Element,
-    family: SeriesFamily,
-) -> Result<Vec<(u32, SeriesPartKind)>, Unresolved> {
-    let mut removed = Vec::new();
-    for series in group
-        .children
-        .iter_mut()
-        .filter(|child| child.local() == "ser")
-    {
-        let index = series
-            .val("idx")
-            .and_then(|idx| idx.parse().ok())
-            .ok_or(Unresolved::Rejected)?;
-        for (name, kind) in PARTS {
-            if !family.allows(kind) && series.child(name).is_some() {
-                series.remove(name);
-                removed.push((index, kind));
+/// Takes out of `series`, the `c:ser` the source wrote as the plan edited it,
+/// the children of the parts the target family's cleanup removed from the
+/// stored series. A stored error bar or extension is a written child only
+/// when the source family's writer emitted it.
+pub(super) fn remove_cleaned(series: &mut Element, cleanup: &Cleanup) {
+    let mut error_bars = Vec::new();
+    let mut extensions = Vec::new();
+    for &(kind, occurrence) in &cleanup.removed {
+        match kind {
+            SeriesPartKind::ErrorBars => {
+                error_bars.extend(cleanup.error_bars.iter().position(|at| *at == occurrence));
+            }
+            SeriesPartKind::Extensions => {
+                extensions.extend(cleanup.extensions.iter().position(|at| *at == occurrence));
+            }
+            // Every other kind, repeated ones included, goes whole.
+            kind => {
+                if let Some((name, _)) = PARTS.iter().find(|(_, part)| *part == kind) {
+                    series.remove(name);
+                }
             }
         }
     }
-    Ok(removed)
+    remove_written(series, "errBars", &error_bars);
+    if cleanup
+        .removed
+        .iter()
+        .any(|(kind, _)| *kind == SeriesPartKind::Extensions)
+    {
+        if let Some(list) = series.child_mut("extLst") {
+            remove_written(list, "ext", &extensions);
+        }
+        if cleanup.extensions_left == 0 {
+            // The cleanup emptied the stored list, which is written as it is
+            // now whether or not the source wrote it.
+            match &cleanup.emptied {
+                Some(list) => series.put(list.clone()),
+                None => series.remove("extLst"),
+            }
+        } else if series
+            .child("extLst")
+            .is_some_and(|list| list.child("ext").is_none())
+        {
+            // The writer leaves out a stored list none of whose entries it
+            // emits.
+            series.remove("extLst");
+        }
+    }
+}
+
+/// Removes the children `local` of `owner` at `positions` among them.
+fn remove_written(owner: &mut Element, local: &str, positions: &[usize]) {
+    let mut at = 0;
+    owner.children.retain(|child| {
+        if child.local() != local {
+            return true;
+        }
+        at += 1;
+        !positions.contains(&(at - 1))
+    });
 }
 
 fn children<'a>(series: &'a Element, name: &str) -> Vec<&'a Element> {
@@ -609,7 +723,7 @@ pub(super) fn patches(
             let mut series = (*live.get(position).ok_or(Unresolved::Rejected)?).clone();
             for role in &moves {
                 let keep_source = after.child(role_name(role.from)).is_some();
-                move_role(&mut series, *role, keep_source).ok_or(Unresolved::Rejected)?;
+                move_role(&mut series, *role, keep_source)?;
             }
             drop(series.remove_parts(&removed));
             if remove_shape {

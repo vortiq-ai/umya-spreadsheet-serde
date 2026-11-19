@@ -2,7 +2,7 @@
 //! holds a value of its own: every value comes from the rule table or from
 //! the source chart.
 use super::{
-    model::TIERS,
+    model::palette,
     plan::Unresolved,
     rule::{
         AxisPosition,
@@ -189,22 +189,13 @@ fn color_element(paint: &Paint) -> Element {
     fill
 }
 
-/// The palette fill Excel generates at `index`, keeping `alpha`. Past the
-/// measured tiers the tiers repeat: a chart is never refused for holding more
-/// series or points than were measured.
-fn accent(index: u32, alpha: Option<String>) -> Result<Element, Unresolved> {
+/// The palette fill Excel generates at `index`, keeping `alpha`: a chart is
+/// never refused for holding more series or points than were measured.
+fn accent(index: u32, alpha: Option<&str>) -> Result<Element, Unresolved> {
     let position = usize::try_from(index).map_err(|_| Unresolved::Rejected)?;
-    let tier = TIERS
-        .get(position / 6 % TIERS.len())
-        .ok_or(Unresolved::Rejected)?;
+    let (scheme, transforms) = palette(position, alpha);
     let mut color = Element::new("a:schemeClr");
-    color
-        .attributes
-        .push(("val".to_owned(), format!("accent{}", position % 6 + 1)));
-    let transforms = tier
-        .iter()
-        .map(|(name, value)| (*name, (*value).to_owned()))
-        .chain(alpha.map(|alpha| ("alpha", alpha)));
+    color.attributes.push(("val".to_owned(), scheme));
     for (name, value) in transforms {
         let mut child = Element::new(format!("a:{name}"));
         child.attributes.push(("val".to_owned(), value));
@@ -305,13 +296,14 @@ pub(super) fn color(
     let fill = match action {
         ColorAction::Keep => return Ok(()),
         ColorAction::Remove => None,
-        ColorAction::SeriesAccent => Some(accent(place.series, replaced)?),
+        ColorAction::SeriesAccent => Some(accent(place.series, replaced.as_deref())?),
         ColorAction::SeriesAccentWithAlpha(alpha) => {
-            Some(accent(place.series, Some(alpha.to_string()))?)
+            Some(accent(place.series, Some(&alpha.to_string()))?)
         }
-        ColorAction::PointAccent => {
-            Some(accent(place.point.ok_or(Unresolved::Rejected)?, replaced)?)
-        }
+        ColorAction::PointAccent => Some(accent(
+            place.point.ok_or(Unresolved::Rejected)?,
+            replaced.as_deref(),
+        )?),
         ColorAction::Set(paint) => Some(color_element(paint)),
         ColorAction::FromSeries => {
             place.point.ok_or(Unresolved::Rejected)?;

@@ -942,6 +942,15 @@ def marker_class(symbol):
     return "hidden" if symbol == "none" else "shown"
 
 
+def serial_date(serial):
+    """The day of a serial in Excel's 1900 date system: 1 is 1900-01-01 and 60 the 29 February
+    1900 that Excel keeps, which no calendar has (None); 61 is 1900-03-01."""
+    if 60 <= serial < 61:
+        return None
+    base = datetime.datetime(1899, 12, 31) if serial < 60 else datetime.datetime(1899, 12, 30)
+    return base + datetime.timedelta(days=serial)
+
+
 def date_spacing(values, general):
     """Daily: consecutive serials (General: exactly 1..N); monthly: consecutive first-of-month."""
     if len(values) < 2:
@@ -950,8 +959,8 @@ def date_spacing(values, general):
         return "daily" if values == list(range(1, len(values) + 1)) else "other"
     if all(b - a == 1 for a, b in zip(values, values[1:])):
         return "daily"
-    dates = [datetime.datetime(1899, 12, 30) + datetime.timedelta(days=v) for v in values]
-    if all(d.day == 1 for d in dates) and all(
+    dates = [serial_date(v) for v in values]
+    if all(d is not None and d.day == 1 for d in dates) and all(
             b.year * 12 + b.month - a.year * 12 - a.month == 1 for a, b in zip(dates, dates[1:])):
         return "monthly"
     return "other"
@@ -1339,6 +1348,9 @@ class Source:
     """A before part with everything its classes need, shared by its observations."""
 
     def __init__(self, root, kind, layout):
+        if val(root, "date1904") not in (None, "0", "false"):
+            # Category classes read serials in the 1900 date system only (`serial_date`).
+            raise Mismatch("a before part in the 1904 date system")
         self.model = ChartModel(root)
         self.kind = kind            # the Rust ChartSubtype variant, or None for a combo
         self.layout = layout        # the Rust ComboLayout variant, or None
@@ -1371,6 +1383,9 @@ class Source:
         self.has_x = all(c is None for c in cats) and any(x is not None for x in xs)
         self.category = self.uniform([category_class(c) for c in cats])
         self.x_category = self.uniform([category_class(x) for x in xs])
+        # Every series' category data class, unfolded (a series without categories counts as
+        # absent): a pair admits a class only as Excel converted it.
+        self.category_join = "/".join(sorted({category_class(c)[0] for c in cats}))
 
     @staticmethod
     def uniform(classes):
@@ -2030,6 +2045,12 @@ class Fit:
         # The x values' class (section 12): a pair admits only the classes Excel was measured on.
         if src.has_x and not src.x_guard(target):
             yield ("PAIR", row, target, "x", "%s/%s" % src.x_category), {"keep"}
+        # The categories' class: a pair admits only the classes Excel was measured on, and a
+        # mixture of classes is none of them, so no measured source may hold one.
+        if not src.has_x:
+            if "/" in src.category_join:
+                raise Mismatch("%s: categories of mixed classes %s" % (obs.name, src.category_join))
+            yield ("PAIR", row, target, "cat", src.category_join), {"keep"}
         # The plot area and the group trees follow the source's formatting as the scene sees it.
         scene = style_of(src.scene_styled)
         for slot in ["scene.plotArea"] + ["g%d.%s" % (n, a) for n in range(groups)
@@ -3108,8 +3129,10 @@ class RuleModel:
         positions = range(STOCK_COUNTS[t]) if t in STOCK_COUNTS else (None,)
         x_values = self.by_category(
             lambda data, spacing: ("PAIR", row, t, "x", "%s/%s" % (data, spacing)), MEASURED)
+        categories = St("ByCategoryData", **{
+            data: self.cell(("PAIR", row, t, "cat", data), MEASURED) for data in DATA_CLASSES})
         return St(
-            "Conversion", scene=scene, x_values=x_values,
+            "Conversion", scene=scene, x_values=x_values, category=categories,
             groups=array("GroupValuesRule", "GROUP_VALUES", groups),
             axes=array("AxisPairRule", "AXIS_PAIR_RULES", [self.axis_pair_rule(row, t, name, shape)
                                                            for name in AXIS_KEYS]),

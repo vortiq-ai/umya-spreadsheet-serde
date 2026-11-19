@@ -3,6 +3,7 @@
 use super::{
     AxisRole,
     ChartSubtype,
+    build::Owner,
     model,
     plan::{
         Replay,
@@ -39,11 +40,15 @@ use super::{
 use crate::{
     reader::xlsx::SourceCacheSession,
     structs::drawing::charts::{
-        AxisId,
         CategoryAxis,
         DateAxis,
+        MajorGridlines,
+        MinorGridlines,
         PlotArea,
+        RestoreReport,
         SeriesAxis,
+        ShapeProperties,
+        Title,
         ValueAxis,
     },
 };
@@ -273,16 +278,18 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
             }
             AxisOutcome::Created => {
                 // A created axis of any role is selected by the source's
-                // style and category data. Monthly `c:cat` categories select
-                // the monthly tree when Excel created a date axis for them;
-                // for a category axis they are filed with the ordinary trees.
+                // style and its creation class. Monthly categories select the
+                // monthly tree only when Excel created a date axis for them;
+                // otherwise they are filed with the ordinary trees.
                 let by_creation = cell(pair.created.get(presence(source.styled)))?;
-                let ordinary = || cell(by_creation.get(CreationClass::Ordinary).get(categories.0));
-                let template = if source.category.1 == DateSpacing::Monthly {
-                    cell(by_creation.get(CreationClass::Monthly).get(categories.0))
-                        .or_else(|_| ordinary())?
-                } else {
-                    ordinary()?
+                let created = source.creation_class(xy);
+                let monthly = (source.creation.spacing == DateSpacing::Monthly)
+                    .then(|| cell(by_creation.get(CreationClass::Monthly).get(created)).ok())
+                    .flatten()
+                    .filter(|template| template.root.name == "dateAx");
+                let template = match monthly {
+                    Some(template) => template,
+                    None => cell(by_creation.get(CreationClass::Ordinary).get(created))?,
                 };
                 Origin::Created(template)
             }
@@ -423,140 +430,230 @@ fn title_body(axis: &mut Element) -> Option<&mut Element> {
         .child_mut("bodyPr")
 }
 
-/// The axis elements in the order the writer groups them.
+/// The axis elements of a plot area.
 const AXIS_NAMES: [&str; 4] = ["catAx", "dateAx", "valAx", "serAx"];
 
-fn axis_names(area: &Element) -> Vec<&str> {
-    area.children
-        .iter()
-        .map(Element::local)
-        .filter(|name| AXIS_NAMES.contains(name))
-        .collect()
+/// One axis of the result as umya's axis structs hold it.
+#[derive(Debug)]
+pub(super) enum AnyAxis {
+    Category(CategoryAxis),
+    Date(DateAxis),
+    Value(ValueAxis),
+    Series(SeriesAxis),
 }
 
-/// Whether umya's writer puts the planned axes in the planned order. A plot
-/// area writes its axes in the order its part was read with (none when that
-/// is the grouped order), then every other axis grouped by kind; the source
-/// as written shows that order.
-pub(super) fn written_in_order(source_area: &Element, planned_area: &Element) -> bool {
-    let rank = |name: &&str| AXIS_NAMES.iter().position(|axis| axis == name);
-    let mut recorded = axis_names(source_area);
-    if recorded.is_sorted_by_key(rank) {
-        recorded.clear();
+/// `$body` with `$axis` bound to the axis struct, whatever its type.
+macro_rules! each {
+    ($any:expr, $axis:ident => $body:expr) => {
+        match $any {
+            AnyAxis::Category($axis) => $body,
+            AnyAxis::Date($axis) => $body,
+            AnyAxis::Value($axis) => $body,
+            AnyAxis::Series($axis) => $body,
+        }
+    };
+}
+
+impl AnyAxis {
+    pub(super) fn id(&self) -> u32 {
+        each!(self, axis => axis.axis_id().val())
     }
-    let planned = axis_names(planned_area);
-    let mut left = planned.clone();
-    let mut written = Vec::new();
-    for kind in recorded {
-        if let Some(at) = left.iter().position(|name| *name == kind) {
-            written.push(left.remove(at));
+
+    /// The axis `element` names, read by its type's reader without the
+    /// extension lists, which umya reads only within their part.
+    fn read(element: &Element, session: &SourceCacheSession) -> Option<Self> {
+        let element = xml::without_extensions(element);
+        macro_rules! read_as {
+            ($kind:ident, $variant:ident) => {{
+                let mut axis = $kind::default();
+                xml::read(&element, |reader, start, _| {
+                    axis.set_attributes(reader, start, session)
+                })?;
+                Self::$variant(axis)
+            }};
+        }
+        Some(match element.local() {
+            "catAx" => read_as!(CategoryAxis, Category),
+            "dateAx" => read_as!(DateAxis, Date),
+            "valAx" => read_as!(ValueAxis, Value),
+            "serAx" => read_as!(SeriesAxis, Series),
+            _ => return None,
+        })
+    }
+
+    /// Restores into this axis, read from a planned element, the stored
+    /// state of `previous` that its writer leaves out, through the owners'
+    /// own restorers.
+    pub(super) fn restore(&mut self, previous: &Self) -> Option<()> {
+        let mut report = RestoreReport::default();
+        match (&mut *self, previous) {
+            (Self::Category(axis), Self::Category(old)) => {
+                axis.restore_export_parts(old, &mut report).ok()?;
+            }
+            (Self::Date(axis), Self::Date(old)) => {
+                axis.restore_export_parts(old, &mut report).ok()?;
+            }
+            (Self::Value(axis), Self::Value(old)) => {
+                axis.restore_export_parts(old, &mut report).ok()?;
+            }
+            (Self::Series(axis), Self::Series(old)) => {
+                axis.restore_export_parts(old, &mut report).ok()?;
+            }
+            (any, old) => {
+                // No restorer crosses axis types: the axis' own extension
+                // list moves whole, and the parts both types have restore
+                // through their own owners.
+                let extensions = each!(old, axis => axis.extensions().cloned());
+                each!(any, axis => {
+                    axis.set_extensions(extensions);
+                });
+                let scaling = each!(old, axis => axis.scaling());
+                each!(any, axis => axis.scaling_mut().restore_export_parts(scaling, &mut report));
+                let format = each!(any, axis => axis.numbering_format_mut());
+                format.discard_incoming_export_parts();
+                format.restore_export_parts(each!(old, axis => axis.numbering_format()));
+                let old_text = each!(old, axis => axis.text_properties());
+                if let (Some(text), Some(old_text)) =
+                    (each!(any, axis => axis.text_properties_mut()), old_text)
+                {
+                    text.discard_incoming_export_parts();
+                    if text.projected_structure_matches(old_text) {
+                        for (paragraph, old) in
+                            text.paragraph_mut().iter_mut().zip(old_text.paragraph())
+                        {
+                            paragraph.restore_break_field_ranks(old);
+                        }
+                        text.restore_export_parts(old_text).ok()?;
+                    }
+                }
+            }
+        }
+        // Title, shape and gridlines, which the axis restorers leave to the
+        // chart's own traversal.
+        let parts = each!(self, axis => axis.reference_role_parts_mut());
+        let old = each!(previous, axis => axis.reference_role_parts());
+        if let (Some(title), Some(old_title)) = (parts.title, old.title) {
+            restore_title(title, old_title, &mut report)?;
+        }
+        restore_shape(parts.shape, old.shape);
+        restore_shape(
+            parts
+                .gridlines
+                .and_then(MajorGridlines::shape_properties_mut),
+            old.gridlines.and_then(MajorGridlines::shape_properties),
+        );
+        restore_shape(
+            parts
+                .minor_gridlines
+                .and_then(MinorGridlines::shape_properties_mut),
+            old.minor_gridlines
+                .and_then(MinorGridlines::shape_properties),
+        );
+        Some(())
+    }
+}
+
+/// Restores the stored state of shape properties `previous` that the writer
+/// leaves out, when both are there.
+pub(super) fn restore_shape(
+    current: Option<&mut ShapeProperties>,
+    previous: Option<&ShapeProperties>,
+) {
+    if let (Some(current), Some(previous)) = (current, previous) {
+        current.restore_export_parts(previous);
+    }
+}
+
+/// An axis title's stored state: its extension list and text parts, its
+/// text, shape and layout.
+fn restore_title(title: &mut Title, previous: &Title, report: &mut RestoreReport) -> Option<()> {
+    title.restore_export_parts(previous, report).ok()?;
+    let (text, shape, layout, _) = title.reference_role_parts_mut();
+    let (old_text, old_shape, old_layout, _) = previous.reference_role_parts();
+    if let (Some(text), Some(old_text)) = (text, old_text) {
+        if let (Some(rich), Some(old)) = (text.rich_text_mut(), old_text.rich_text()) {
+            rich.restore_edited_export_parts(old, report).ok()?;
+        }
+        if let (Some(reference), Some(old)) =
+            (text.string_reference_mut(), old_text.string_reference())
+        {
+            reference.restore_export_parts(old);
+            let formula = reference.formula().address_str();
+            let source = old
+                .string_cache()
+                .source()
+                .filter(|source| source.formula() == formula)
+                .cloned();
+            reference.string_cache_mut().set_source(source);
         }
     }
-    left.sort_by_key(rank);
-    written.extend(left);
-    written == planned
+    restore_shape(shape, old_shape);
+    if let (Some(layout), Some(old)) = (layout, old_layout) {
+        layout.restore_export_parts(old);
+        if let (Some(manual), Some(old)) = (layout.manual_layout_mut(), old.manual_layout()) {
+            manual.restore_export_parts(old);
+        }
+    }
+    Some(())
 }
 
-/// Whether every series axis of `planned_area` crosses as umya writes it:
-/// umya's series axis always writes `c:crosses` unless it holds `c:crossesAt`.
-pub(super) fn crossings_writable(planned_area: &Element) -> bool {
-    planned_area
-        .children_named("serAx")
-        .all(|axis| axis.child("crosses").is_some() || axis.child("crossesAt").is_some())
-}
-
-/// The axes of the result as umya's own axis structs.
+/// The axes of the result in the order they are written: the element name
+/// and id of each, and how the result gets it.
 #[derive(Debug, Default)]
 pub(super) struct PlannedAxes {
-    pub(super) category: Vec<CategoryAxis>,
-    pub(super) date:     Vec<DateAxis>,
-    pub(super) value:    Vec<ValueAxis>,
-    pub(super) series:   Vec<SeriesAxis>,
+    pub(super) axes: Vec<(&'static str, u32, Owner<AnyAxis>)>,
 }
 
-/// Reads the result's axes through umya's axis readers; a kept axis keeps
-/// the extension list of its live axis in `live`.
-pub(super) fn read_axes(area: &Element, live: &PlotArea) -> Result<PlannedAxes, Unresolved> {
+/// Plans the result's axes from their elements in `area`. An axis whose id is
+/// a live axis' replaces that axis, of whatever type: unchanged as written,
+/// it is the live axis; otherwise it is read and takes the live axis' stored
+/// state when staged. `source_area` is the source as written. Two live axes
+/// with one id cannot be told apart.
+pub(super) fn read_axes(
+    area: &Element,
+    source_area: &Element,
+    live: &PlotArea,
+) -> Result<PlannedAxes, Unresolved> {
     let session = SourceCacheSession::deferred();
+    let live_ids: Vec<u32> = live
+        .category_axis()
+        .iter()
+        .map(|axis| axis.axis_id().val())
+        .chain(live.date_axis().iter().map(|axis| axis.axis_id().val()))
+        .chain(live.value_axis().iter().map(|axis| axis.axis_id().val()))
+        .chain(live.series_axis().iter().map(|axis| axis.axis_id().val()))
+        .collect();
+    let id_of = |element: &Element| element.val("axId").and_then(|id| id.parse::<u32>().ok());
+    let read = |element: &Element| AnyAxis::read(element, &session).ok_or(Unresolved::Rejected);
     let mut axes = PlannedAxes::default();
     for element in &area.children {
-        if !AXIS_NAMES.contains(&element.local()) {
+        let Some(tag) = AXIS_NAMES.into_iter().find(|name| *name == element.local()) else {
             continue;
-        }
-        // umya reads an extension list only within the part it came from: an
-        // axis that keeps one takes it from the live axis with its id.
-        let mut skeleton = element.clone();
-        let kept = if skeleton.child("extLst").is_some() {
-            skeleton.remove("extLst");
-            let id = element.val("axId").and_then(|id| id.parse::<u32>().ok());
-            let same = |axis: &AxisId| Some(axis.val()) == id;
-            let kept = match element.local() {
-                "catAx" => live
-                    .category_axis()
-                    .iter()
-                    .find(|axis| same(axis.axis_id()))
-                    .and_then(CategoryAxis::extensions),
-                "dateAx" => live
-                    .date_axis()
-                    .iter()
-                    .find(|axis| same(axis.axis_id()))
-                    .and_then(DateAxis::extensions),
-                "valAx" => live
-                    .value_axis()
-                    .iter()
-                    .find(|axis| same(axis.axis_id()))
-                    .and_then(ValueAxis::extensions),
-                "serAx" => live
-                    .series_axis()
-                    .iter()
-                    .find(|axis| same(axis.axis_id()))
-                    .and_then(SeriesAxis::extensions),
-                _ => None,
-            };
-            Some(kept.ok_or(Unresolved::Rejected)?.clone())
-        } else {
-            None
         };
-        let read = match element.local() {
-            "catAx" => {
-                let mut axis = CategoryAxis::default();
-                let read = xml::read(&skeleton, |reader, start, _| {
-                    axis.set_attributes(reader, start, &session)
-                });
-                axis.set_extensions(kept);
-                axes.category.push(axis);
-                read
+        let id = id_of(element).ok_or(Unresolved::Rejected)?;
+        let owner = match live_ids.iter().filter(|live| **live == id).count() {
+            0 => Owner::Rebuilt {
+                read:  read(element)?,
+                probe: None,
+            },
+            1 => {
+                let written = source_area
+                    .children
+                    .iter()
+                    .find(|axis| AXIS_NAMES.contains(&axis.local()) && id_of(axis) == Some(id))
+                    .ok_or(Unresolved::Rejected)?;
+                if element == written {
+                    Owner::Kept
+                } else {
+                    Owner::Rebuilt {
+                        read:  read(element)?,
+                        probe: Some(read(written)?),
+                    }
+                }
             }
-            "dateAx" => {
-                let mut axis = DateAxis::default();
-                let read = xml::read(&skeleton, |reader, start, _| {
-                    axis.set_attributes(reader, start, &session)
-                });
-                axis.set_extensions(kept);
-                axes.date.push(axis);
-                read
-            }
-            "valAx" => {
-                let mut axis = ValueAxis::default();
-                let read = xml::read(&skeleton, |reader, start, _| {
-                    axis.set_attributes(reader, start, &session)
-                });
-                axis.set_extensions(kept);
-                axes.value.push(axis);
-                read
-            }
-            "serAx" => {
-                let mut axis = SeriesAxis::default();
-                let read = xml::read(&skeleton, |reader, start, _| {
-                    axis.set_attributes(reader, start, &session)
-                });
-                axis.set_extensions(kept);
-                axes.series.push(axis);
-                read
-            }
-            _ => Some(()),
+            _ => return Err(Unresolved::Invalid),
         };
-        read.ok_or(Unresolved::Rejected)?;
+        axes.axes.push((tag, id, owner));
     }
     Ok(axes)
 }

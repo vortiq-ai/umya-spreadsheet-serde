@@ -539,7 +539,8 @@ impl Workbook {
             return Ok(ChartConversion::unchanged(target));
         };
         let conversion = ChartConversion::new(&plan);
-        let chart = self
+        // The plan holds the result, written and compared already.
+        *self
             .sheet_mut(sheet)
             .ok()
             .and_then(|found| found.chart_collection_mut().get_mut(chart))
@@ -548,10 +549,7 @@ impl Workbook {
             .graphic_mut()
             .graphic_data_mut()
             .chart_space_mut()
-            .chart_mut();
-        let detached = commit::detach(chart);
-        let built = build::build(plan, detached);
-        commit::attach(chart, built);
+            .chart_mut() = plan.chart;
         Ok(conversion)
     }
 }
