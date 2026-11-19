@@ -19,6 +19,8 @@ use sha2::{
 mod admission;
 #[path = "chart_conversion/admitted.rs"]
 mod admitted;
+#[path = "chart_conversion/caches.rs"]
+mod caches;
 #[path = "chart_conversion/categories.rs"]
 mod categories;
 #[path = "chart_conversion/cells.rs"]

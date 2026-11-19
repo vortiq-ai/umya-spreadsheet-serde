@@ -20,20 +20,26 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct MultiLevelStringReference {
-    formula:    Formula,
-    cache:      Option<MultiLevelStringCache>,
+    formula:          Formula,
+    cache:            Option<MultiLevelStringCache>,
     #[cfg_attr(feature = "serde", serde(default))]
-    extensions: Option<Box<super::ExtensionList>>,
+    extensions:       Option<Box<super::ExtensionList>>,
+    /// The extension list the cache closes with.
+    #[cfg_attr(feature = "serde", serde(default))]
+    cache_extensions: Option<Box<super::ExtensionList>>,
 }
 
 impl MultiLevelStringReference {
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
-        let previous = if self.formula.address_str() == previous.formula.address_str() {
-            previous.extensions.as_ref()
-        } else {
-            None
-        };
-        super::chart_metadata_restoration::replace_hidden_parts(&mut self.extensions, previous)
+        let previous =
+            (self.formula.address_str() == previous.formula.address_str()).then_some(previous);
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.and_then(|previous| previous.extensions.as_ref()),
+        ) + super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.cache_extensions,
+            previous.and_then(|previous| previous.cache_extensions.as_ref()),
+        )
     }
 
     // A retaining Formula projection must consume these disjoint fields once.
@@ -50,6 +56,7 @@ impl MultiLevelStringReference {
 
     pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions = None;
+        self.cache_extensions = None;
         None
     }
 
@@ -140,9 +147,11 @@ impl MultiLevelStringReference {
                         }
                         b"multiLvlStrCache" => {
                             let mut cache = MultiLevelStringCache::default();
-                            if !empty {
-                                cache.set_attributes(reader, child, session)?;
-                            }
+                            self.cache_extensions = if empty {
+                                None
+                            } else {
+                                cache.set_attributes(reader, child, session)?
+                            };
                             self.cache = Some(cache);
                             true
                         }
@@ -177,7 +186,7 @@ impl MultiLevelStringReference {
         write_start_tag(writer, "c:multiLvlStrRef", vec![], false);
         self.formula.write_to(writer);
         if let Some(cache) = &self.cache {
-            cache.write_to(writer);
+            cache.write_to(writer, self.cache_extensions.as_deref())?;
         }
         if let Some(ext) = self.extensions() {
             ext.write_for_owner(writer, None, "multiLvlStrRef", None)?;
@@ -216,16 +225,20 @@ impl MultiLevelStringCache {
         &mut self.levels
     }
 
+    /// Reads the cache's levels; with a `session`, the extension list the
+    /// cache closes with is read through the chart's namespace context and
+    /// returned.
     fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         e: &BytesStart,
         session: Option<&crate::reader::xlsx::SourceCacheSession>,
-    ) -> Result<(), crate::XlsxError> {
+    ) -> Result<Option<Box<super::ExtensionList>>, crate::XlsxError> {
         let _scope_guard = session
             .map(|session| session.enter_child_scope(e))
             .transpose()?
             .flatten();
+        let mut extensions = None;
         let complete = super::numeric_data::children(
             reader,
             e,
@@ -260,6 +273,15 @@ impl MultiLevelStringCache {
                                 .push(Self::read_level(reader, child, empty, session)?);
                             true
                         }
+                        b"extLst" => match session {
+                            Some(session) => {
+                                extensions = Some(Box::new(super::ExtensionList::read(
+                                    reader, child, empty, session,
+                                )?));
+                                true
+                            }
+                            None => false,
+                        },
                         _ => false,
                     }
                 })
@@ -270,7 +292,7 @@ impl MultiLevelStringCache {
                 "Could not read multi-level string cache",
             ));
         }
-        Ok(())
+        Ok(extensions)
     }
 
     fn read_level<R: std::io::BufRead>(
@@ -322,7 +344,11 @@ impl MultiLevelStringCache {
         Ok(points)
     }
 
-    fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+    fn write_to(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        extensions: Option<&super::ExtensionList>,
+    ) -> Result<(), crate::XlsxError> {
         write_start_tag(writer, "c:multiLvlStrCache", vec![], false);
         if let Some(count) = self.point_count {
             write_start_tag(
@@ -348,7 +374,11 @@ impl MultiLevelStringCache {
             }
             write_end_tag(writer, "c:lvl");
         }
+        if let Some(ext) = extensions {
+            ext.write_for_owner(writer, None, "multiLvlStrCache", None)?;
+        }
         write_end_tag(writer, "c:multiLvlStrCache");
+        Ok(())
     }
 }
 

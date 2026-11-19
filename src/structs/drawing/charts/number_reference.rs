@@ -28,12 +28,15 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct NumberReference {
-    formula:         Formula,
-    numbering_cache: NumberingCache,
+    formula:          Formula,
+    numbering_cache:  NumberingCache,
     #[cfg_attr(feature = "serde", serde(default))]
-    extensions:      Option<Box<super::ExtensionList>>,
+    extensions:       Option<Box<super::ExtensionList>>,
     #[cfg_attr(feature = "serde", serde(default))]
-    pivot_cache:     Option<Box<PivotNumericCache>>,
+    pivot_cache:      Option<Box<PivotNumericCache>>,
+    /// The extension list the number cache closes with.
+    #[cfg_attr(feature = "serde", serde(default))]
+    cache_extensions: Option<Box<super::ExtensionList>>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -73,15 +76,16 @@ impl NumberReference {
             .filter(|cache| cache.formula == self.formula.address_str());
         let restored =
             super::chart_metadata_restoration::replace_hidden_parts(&mut self.pivot_cache, cache);
-        let previous = if self.formula.address_str() == previous.formula.address_str() {
-            previous.extensions.as_ref()
-        } else {
-            None
-        };
+        let previous =
+            (self.formula.address_str() == previous.formula.address_str()).then_some(previous);
         restored
             + super::chart_metadata_restoration::replace_hidden_parts(
                 &mut self.extensions,
-                previous,
+                previous.and_then(|previous| previous.extensions.as_ref()),
+            )
+            + super::chart_metadata_restoration::replace_hidden_parts(
+                &mut self.cache_extensions,
+                previous.and_then(|previous| previous.cache_extensions.as_ref()),
             )
     }
 
@@ -99,6 +103,7 @@ impl NumberReference {
 
     pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions = None;
+        self.cache_extensions = None;
         self.clear_pivot_cache();
         None
     }
@@ -294,7 +299,9 @@ impl NumberReference {
                                 }
                                 pivot_data = Some(data);
                             } else if !empty {
-                                self.numbering_cache.set_attributes(reader, child)?;
+                                self.cache_extensions = self
+                                    .numbering_cache
+                                    .set_attributes(reader, child, session)?;
                             }
                             true
                         }
@@ -329,8 +336,12 @@ impl NumberReference {
         if let Some(cache) = self.pivot_cache() {
             cache.write_to_as(writer, "c:numCache")?;
         } else {
-            self.numbering_cache
-                .write_to(writer, self.formula().address(), wb);
+            self.numbering_cache.write_to(
+                writer,
+                self.formula().address(),
+                wb,
+                self.cache_extensions.as_deref(),
+            )?;
         }
 
         if let Some(ext) = self.extensions() {

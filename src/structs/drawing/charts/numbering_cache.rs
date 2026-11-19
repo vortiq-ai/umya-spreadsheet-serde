@@ -4,18 +4,18 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
-use super::FormatCode;
+use super::{
+    FormatCode,
+    extension_registry::NS_C,
+};
 use crate::{
     CellErrorType,
-    reader::driver::{
-        local_name,
-        try_xml_read_loop,
+    reader::{
+        driver::local_name,
+        xlsx::SourceCacheSession,
     },
     structs::{
         Address,
@@ -61,26 +61,43 @@ impl NumberingCache {
         self
     }
 
+    /// Only the cache's own `formatCode` is its code: content inside its
+    /// extension list may use the same name. With a `session`, the list
+    /// itself is read through the chart's namespace context and returned.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         source_owner: &BytesStart,
-    ) -> Result<(), crate::XlsxError> {
-        let owner_end = source_owner.name().as_ref().to_vec();
-        try_xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().0) == b"formatCode" {
-                    self.format_code.set_attributes(reader, e)?;
+        session: Option<&SourceCacheSession>,
+    ) -> Result<Option<Box<super::ExtensionList>>, crate::XlsxError> {
+        let mut extensions = None;
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(source_owner))
+            .transpose()?
+            .flatten();
+        super::numeric_data::children(reader, source_owner, false, |reader, child, empty| {
+            let name = local_name(child.name().into_inner());
+            if !matches!(name, b"formatCode" | b"extLst") {
+                return Ok(false);
+            }
+            if let Some(session) = session {
+                if !session.accepts_child_namespace(child, NS_C)? {
+                    return Ok(false);
                 }
-            },
-            Event::End(ref e) => {
-               if e.name().as_ref() == owner_end {
-                   return Ok(());
-               }
-            },
-            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:numCache"))),
-        );
+                if name == b"extLst" {
+                    extensions = Some(Box::new(super::ExtensionList::read(
+                        reader, child, empty, session,
+                    )?));
+                    return Ok(true);
+                }
+            }
+            if empty || name != b"formatCode" {
+                return Ok(false);
+            }
+            self.format_code.set_attributes(reader, child)?;
+            Ok(true)
+        })?;
+        Ok(extensions)
     }
 
     pub(crate) fn write_to(
@@ -88,7 +105,8 @@ impl NumberingCache {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         address: &Address,
         wb: &Workbook,
-    ) {
+        extensions: Option<&super::ExtensionList>,
+    ) -> Result<(), crate::XlsxError> {
         let cell_value_list = wb.cell_value_by_address_crate(address);
         let coll_value_count = cell_value_list.len().to_string();
         // c:numCache
@@ -131,6 +149,10 @@ impl NumberingCache {
             write_end_tag(writer, "c:pt");
         }
 
+        if let Some(ext) = extensions {
+            ext.write_for_owner(writer, None, "numCache", None)?;
+        }
         write_end_tag(writer, "c:numCache");
+        Ok(())
     }
 }

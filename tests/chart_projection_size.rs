@@ -47,7 +47,9 @@ const RANGE_ROWS: u32 = 100_000;
 // The line group's marker and smooth flags and the crossing flag of both axes
 // add one bincode byte each, and the empty axis order (the part wrote them
 // grouped) its 8-byte length; their JSON cost is the keys and values below.
-const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3 + 2 + 4 + 8;
+// The category and value references each add the None tag and null key of
+// the extension list their cache closes with.
+const CHART_BINCODE_BYTES: usize = 696 + 27 + 15 + 3 + 2 + 4 + 8 + 2;
 const CHART_JSON_BYTES: usize = 5718
     + 527
     + 265
@@ -58,7 +60,8 @@ const CHART_JSON_BYTES: usize = 5718
     + r#","marker_absent":false"#.len()
     + r#","smooth_absent":false"#.len()
     + 2 * r#","absent":false"#.len()
-    + r#","axis_order":[]"#.len();
+    + r#","axis_order":[]"#.len()
+    + 2 * r#","cache_extensions":null"#.len();
 
 fn marker(coordinate: &str) -> MarkerType {
     let mut marker = MarkerType::default();

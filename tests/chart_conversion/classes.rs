@@ -13,11 +13,13 @@ use umya_spreadsheet::{
 };
 
 use super::{
+    caches::pivot,
     conversion::{
         chart,
         chart_part,
         convert,
         replaced,
+        replaced_all,
     },
     measured::part_xml,
     workbook::workbook_with,
@@ -160,6 +162,59 @@ fn general_x_values_count_from_one_exactly() {
         Err(refused(ChartSubtype::ScatterLines, target))
     );
     assert_eq!(typed(&mut book), before);
+}
+
+/// A PivotChart stores its category cache, so the format code it is read by
+/// is the cache's own: a format code inside another vendor's extension is
+/// none, and the categories read as a cache without one does, not as dates.
+#[test]
+fn a_format_code_is_the_one_its_owner_holds() {
+    let dated = pivot(&part_xml(MONTHLY_RADAR));
+    assert_eq!(line_date_axis(&mut workbook_with(&dated)), monthly_axis());
+    let code = r"<c:formatCode>yyyy\-mm\-dd</c:formatCode>";
+    let categories_end = "</c:numCache></c:numRef></c:cat>";
+    let uncoded = replaced_all(&dated, &format!("<c:numCache>{code}"), "<c:numCache>");
+    let vendor_code = concat!(
+        r#"<c:extLst><c:ext uri="{00000000-0000-0000-0000-0000000000C3}" "#,
+        r#"xmlns:vendor="urn:example:vendor"><vendor:formatCode>yyyy\-mm\-dd"#,
+        r#"</vendor:formatCode></c:ext></c:extLst>"#
+    );
+    let vendor = replaced_all(
+        &uncoded,
+        categories_end,
+        &format!("{vendor_code}{categories_end}"),
+    );
+    let mut without = workbook_with(&uncoded);
+    let mut with = workbook_with(&vendor);
+    let kept = concat!(
+        r#"<vendor:formatCode>yyyy\-mm\-dd</vendor:formatCode></c:ext></c:extLst>"#,
+        "</c:numCache></c:numRef></c:cat>"
+    );
+    assert_eq!(chart_part(&with).matches(kept).count(), 3);
+    let expected = convert(&mut without, ChartSubtype::Line);
+    let monthly = monthly_axis();
+    assert_ne!(
+        element(&chart_part(&without), "c:dateAx"),
+        Some(monthly.as_str())
+    );
+    assert_eq!(convert(&mut with, ChartSubtype::Line), expected);
+    assert_eq!(
+        without_category_extensions(&chart_part(&with)),
+        chart_part(&without)
+    );
+}
+
+/// `xml` without the extension list that closes each category number cache.
+fn without_category_extensions(xml: &str) -> String {
+    let end = "</c:numCache></c:numRef></c:cat>";
+    let mut pieces: Vec<&str> = xml.split(end).collect();
+    let last = pieces.len() - 1;
+    for piece in &mut pieces[..last] {
+        if piece.ends_with("</c:extLst>") {
+            *piece = &piece[..piece.rfind("<c:extLst").unwrap()];
+        }
+    }
+    pieces.join(end)
 }
 
 /// The accent Excel generates for series 51, in its ninth luminance tier.

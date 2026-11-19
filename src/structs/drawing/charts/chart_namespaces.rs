@@ -22,9 +22,12 @@ use sha2::{
     Sha256,
 };
 
-use super::extension_names::{
-    NamespaceScope,
-    QName,
+use super::{
+    extension_names::{
+        NamespaceScope,
+        QName,
+    },
+    extension_registry::NS_C15,
 };
 const NS_C: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const NS_A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -56,14 +59,15 @@ struct Frame {
     name:     QName,
     path:     String,
     children: HashMap<(String, String), usize>,
+    /// Its `pt` children are cache or literal points.
+    points:   bool,
 }
-fn decoded_namespace(value: &[u8]) -> Result<String, String> {
+fn decoded_namespace(value: &[u8]) -> Result<Cow<'_, str>, String> {
     Attribute {
         key:   XmlQName(b"xmlns"),
         value: Cow::Borrowed(value),
     }
     .normalized_value(XmlVersion::Implicit1_0)
-    .map(Cow::into_owned)
     .map_err(|e| e.to_string())
 }
 impl ChartNamespaces {
@@ -90,13 +94,23 @@ impl ChartNamespaces {
             match reader.read_event().map_err(|e| e.to_string())? {
                 ref event @ (Event::Start(ref e) | Event::Empty(ref e)) => {
                     let empty = matches!(event, Event::Empty(_));
-                    let mut bindings = Vec::new();
                     // Snapshot bindings only at boundaries; no cache payload
                     // values are decoded.
+                    let mut bindings = Vec::new();
+                    // No chart reader looks up an extension list inside a
+                    // point, so every `pt` of a cache or literal is passed
+                    // over before name resolution: a cache of millions of
+                    // points costs no text decoding or per-point metadata.
+                    if e.local_name().as_ref() == b"pt" && stack.last().is_some_and(|f| f.points) {
+                        if !empty {
+                            reader.read_to_end(e.name()).map_err(|e| e.to_string())?;
+                        }
+                        continue;
+                    }
                     let (resolved, local) = reader.resolver().resolve_element(e.name());
                     let uri = match resolved {
                         quick_xml::name::ResolveResult::Bound(ns) => {
-                            decoded_namespace(ns.as_ref())?
+                            decoded_namespace(ns.into_inner())?.into_owned()
                         }
                         quick_xml::name::ResolveResult::Unbound => String::new(),
                         quick_xml::name::ResolveResult::Unknown(_) => {
@@ -147,7 +161,10 @@ impl ChartNamespaces {
                                         .to_owned(),
                                 ),
                             };
-                            bindings.push((prefix, decoded_namespace(namespace.as_ref())?));
+                            bindings.push((
+                                prefix,
+                                decoded_namespace(namespace.as_ref())?.into_owned(),
+                            ));
                         }
                         let scope = NamespaceScope::with_bindings(bindings);
                         let Some(owner) = stack.last() else {
@@ -167,26 +184,30 @@ impl ChartNamespaces {
                             },
                         );
                     }
-                    // These cache/data point payloads cannot contain native
-                    // extLst. Skip without text decoding or
-                    // per-point metadata retention.
-                    let cache = (uri == NS_C
-                        && matches!(local.as_str(), "strCache" | "numCache" | "multiLvlStrCache"))
-                        || (uri == "http://schemas.microsoft.com/office/drawing/2012/chart"
-                            && matches!(local.as_str(), "dlblRangeCache" | "dlblFieldTableCache"));
-                    let point = uri == NS_C
-                        && local == "pt"
-                        && stack.last().is_some_and(|f| {
-                            f.name.namespace_uri == NS_C
-                                && matches!(f.name.local_name.as_str(), "numLit" | "strLit")
-                        });
-                    if !empty && (cache || point) {
-                        reader.read_to_end(e.name()).map_err(|e| e.to_string())?;
-                    } else if !empty {
+                    // A cache holds its own extLst after its points, so it
+                    // is walked like any owner; only its points are skipped.
+                    if !empty {
+                        let points = (uri == NS_C
+                            && matches!(
+                                local.as_str(),
+                                "numCache" | "strCache" | "numLit" | "strLit"
+                            ))
+                            || (uri == NS_C
+                                && local == "lvl"
+                                && stack.last().is_some_and(|f| {
+                                    f.name.namespace_uri == NS_C
+                                        && f.name.local_name == "multiLvlStrCache"
+                                }))
+                            || (uri == NS_C15
+                                && matches!(
+                                    local.as_str(),
+                                    "dlblRangeCache" | "dlblFieldTableCache"
+                                ));
                         stack.push(Frame {
                             name,
                             path,
                             children: HashMap::new(),
+                            points,
                         });
                     }
                 }
