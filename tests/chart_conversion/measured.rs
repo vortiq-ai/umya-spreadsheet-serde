@@ -1,7 +1,9 @@
 //! The checked-in measurement: what Excel reported for every before part.
 //! `measured.json` is stored deflated in a zip, as interned tables that the
-//! parts and observations refer to by position.
+//! parts and observations refer to by position; each measurement's before
+//! parts are one zip, `before/<measurement>.zip`.
 use std::{
+    collections::BTreeMap,
     fs,
     io::{
         Cursor,
@@ -23,7 +25,8 @@ use super::projection::{
 };
 
 pub struct Part {
-    /// The checked-in part, relative to `fixtures()`.
+    /// The part's path, `before/<measurement>/<entry>`: the entry of
+    /// `before/<measurement>.zip` under `fixtures()`.
     pub fixture:        String,
     /// The sha256 the measurement recorded for the part's XML.
     pub sha256:         String,
@@ -48,6 +51,21 @@ pub struct Part {
     pub series:         usize,
     /// The fixture family the part belongs to, such as `bare` or `rich`.
     pub variant:        String,
+    /// The cells each reference without a cache reads, as the caches Excel
+    /// rebuilt from them show them.
+    pub cells:          Vec<Cells>,
+}
+
+/// The cells one reference reads.
+pub struct Cells {
+    /// The reference's formula.
+    pub formula: String,
+    /// Whether they hold numbers (a `numCache`) or text (a `strCache`).
+    pub numeric: bool,
+    /// The number format of numbers.
+    pub format:  Option<String>,
+    /// Each point's position in the reference and its value.
+    pub points:  Vec<(u32, String)>,
 }
 
 /// One conversion Excel was asked to make.
@@ -100,9 +118,40 @@ pub fn measured() -> &'static Measured {
     MEASURED.get_or_init(load)
 }
 
+/// The checked-in before parts by path, read from every zip under `before/`.
+pub fn before_parts() -> &'static BTreeMap<String, Vec<u8>> {
+    static PARTS: OnceLock<BTreeMap<String, Vec<u8>>> = OnceLock::new();
+    PARTS.get_or_init(|| {
+        let mut parts = BTreeMap::new();
+        for entry in fs::read_dir(fixtures().join("before")).unwrap() {
+            let path = entry.unwrap().path();
+            let measurement = path
+                .file_name()
+                .and_then(|name| name.to_str()?.strip_suffix(".zip"))
+                .unwrap_or_else(|| panic!("{path:?} is not a measurement's zip"))
+                .to_owned();
+            let mut archive = zip::ZipArchive::new(Cursor::new(fs::read(&path).unwrap())).unwrap();
+            for index in 0..archive.len() {
+                let mut file = archive.by_index(index).unwrap();
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).unwrap();
+                let name = format!("before/{measurement}/{}", file.name().unwrap());
+                assert!(
+                    parts.insert(name, bytes).is_none(),
+                    "{path:?} repeats an entry"
+                );
+            }
+        }
+        parts
+    })
+}
+
 /// The text of a before part.
 pub fn read_part(part: &Part) -> String {
-    String::from_utf8(fs::read(fixtures().join(&part.fixture)).unwrap()).unwrap()
+    let bytes = before_parts()
+        .get(&part.fixture)
+        .unwrap_or_else(|| panic!("{} is not checked in", part.fixture));
+    String::from_utf8(bytes.clone()).unwrap()
 }
 
 /// The text of the measured before part at `fixture`.
@@ -157,6 +206,13 @@ fn load() -> Measured {
             subtype:        part["subtype"].as_str().map(str::to_owned),
             series:         usize::try_from(part["series"].as_u64().unwrap()).unwrap(),
             variant:        part["variant"].as_str().unwrap_or_default().to_owned(),
+            cells:          part
+                .get("cells")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(cells)
+                .collect(),
         })
         .collect();
     let observations = document["observations"]
@@ -243,6 +299,30 @@ fn load() -> Measured {
         observations,
         pdiff_ignore,
         witnesses,
+    }
+}
+
+/// `[formula, cache kind, format or null, [[index, value], ...]]`.
+fn cells(entry: &Value) -> Cells {
+    Cells {
+        formula: entry[0].as_str().unwrap().to_owned(),
+        numeric: match entry[1].as_str().unwrap() {
+            "numCache" => true,
+            "strCache" => false,
+            other => panic!("cells of a {other}"),
+        },
+        format:  entry[2].as_str().map(str::to_owned),
+        points:  entry[3]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|point| {
+                (
+                    u32::try_from(point[0].as_u64().unwrap()).unwrap(),
+                    point[1].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect(),
     }
 }
 

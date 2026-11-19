@@ -556,6 +556,10 @@ pub(super) struct Conversion {
     /// the classes Excel converted. Categories of mixed classes are none of
     /// them; a source with x values selects nothing.
     pub(super) category: ByCategoryData<()>,
+    /// By the two data classes the series' categories hold, the first one
+    /// earlier in `CategoryDataClass`: measured only for the mixtures Excel
+    /// converted.
+    pub(super) mixed:    &'static ByCategoryData<ByCategoryData<()>>,
     /// One entry for each target group.
     pub(super) groups:   &'static [GroupValuesRule],
     /// Keyed like the KIND rule's axes.
@@ -695,7 +699,7 @@ pub(super) struct PointLine {
 }
 
 /// The points made from a surface source's bands. A band's shape properties are
-/// copied unless they equal the series' own.
+/// copied unless they equal the series' own, as `own_style` says.
 #[derive(Debug)]
 pub(super) struct BandPointFormat {
     /// Leaves the outline out.
@@ -704,6 +708,18 @@ pub(super) struct BandPointFormat {
     pub(super) hidden_line_width:  Option<u32>,
     pub(super) invert_if_negative: Option<bool>,
     pub(super) bubble_3d:          bool,
+    /// By the categories' data and spacing: which points still take a band's
+    /// shape properties that equal the series' own.
+    pub(super) own_style:          ByCategoryData<ByDateSpacing<BandOwnStyle>>,
+}
+
+/// What a band whose shape properties equal its series' own gives its point.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum BandOwnStyle {
+    /// Nothing: the point inherits them from the series.
+    Elided,
+    /// The properties, when the point holds a value; nothing otherwise.
+    KeptForValues,
 }
 
 #[derive(Debug)]

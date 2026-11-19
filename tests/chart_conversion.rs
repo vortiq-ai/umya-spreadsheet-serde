@@ -1,13 +1,9 @@
 //! Excel's measured chart-type conversions, as test data: the before parts it
 //! was given, what Excel reported about each, the extractor that reads a part
 //! the way the measurement did, and umya's own read and write of every part.
-use std::{
-    collections::{
-        BTreeMap,
-        BTreeSet,
-    },
-    fs,
-    path::Path,
+use std::collections::{
+    BTreeMap,
+    BTreeSet,
 };
 
 use sha2::{
@@ -52,7 +48,7 @@ mod xml;
 
 use measured::{
     Part,
-    fixtures,
+    before_parts,
     measured,
     read_part,
 };
@@ -61,11 +57,11 @@ use projection::{
     paths_of,
     slots_of,
 };
-use workbook::workbook_with;
+use workbook::workbook_with_cells;
 
-/// 763 native parts, 10 combination layouts, 10 combination probes and 3
+/// 2,817 native parts, 178 combination layouts, 10 combination probes and 3
 /// scatter parts the driver flagged invalid.
-const PARTS: usize = 786;
+const PARTS: usize = 3_008;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -86,19 +82,6 @@ fn with_text_mode_line_ends(bytes: &[u8]) -> Vec<u8> {
         translated.push(byte);
     }
     translated
-}
-
-/// The paths of the files under `directory`, relative to `root`.
-fn files_under(directory: &Path, root: &Path, found: &mut BTreeSet<String>) {
-    for entry in fs::read_dir(directory).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            files_under(&path, root, found);
-        } else {
-            let relative = path.strip_prefix(root).unwrap();
-            found.insert(relative.to_str().unwrap().replace('\\', "/"));
-        }
-    }
 }
 
 /// How the slots and paths of `xml` differ from the measured ones of `part`,
@@ -194,8 +177,7 @@ fn before_parts_match_their_recorded_hashes() {
     let measurement = measured();
     assert_eq!(measurement.parts.len(), PARTS);
 
-    let mut on_disk = BTreeSet::new();
-    files_under(&fixtures().join("before"), &fixtures(), &mut on_disk);
+    let on_disk: BTreeSet<String> = before_parts().keys().cloned().collect();
     let recorded: BTreeSet<String> = measurement
         .parts
         .iter()
@@ -213,7 +195,7 @@ fn before_parts_match_their_recorded_hashes() {
     );
 
     for part in &measurement.parts {
-        let bytes = fs::read(fixtures().join(&part.fixture)).unwrap();
+        let bytes = before_parts()[&part.fixture].clone();
         assert_eq!(sha256_hex(&bytes), part.sha256, "{}", part.fixture);
         let left_on_disk = if part.translated {
             with_text_mode_line_ends(&bytes)
@@ -237,6 +219,6 @@ fn extractor_matches_the_measurement() {
 #[test]
 fn umya_round_trip_keeps_every_before_part() {
     assert_no_differences("reading and writing the part", |part| {
-        fixture::chart_xml(&workbook_with(&read_part(part)))
+        fixture::chart_xml(&workbook_with_cells(&read_part(part), &part.cells))
     });
 }

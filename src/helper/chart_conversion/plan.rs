@@ -407,9 +407,10 @@ fn admit(
     Ok(())
 }
 
-/// Section 12's x classes and the categories' data class, as the pair's
+/// Section 12's x classes and the categories' data classes, as the pair's
 /// measurements admit them: x values or categories of a class no round
-/// converted wait for one, and so do categories of mixed classes.
+/// converted wait for one, and so do categories of a mixture no round
+/// converted.
 fn admit_data_classes(source: &Source, conversion: &Conversion) -> Result<(), Unresolved> {
     if source.has_x {
         let (data, spacing) = source.x;
@@ -421,9 +422,13 @@ fn admit_data_classes(source: &Source, conversion: &Conversion) -> Result<(), Un
         }
         return Ok(());
     }
-    let measured = source
-        .joined
-        .is_some_and(|class| cell(conversion.category.get(class)).is_ok());
+    let measured = match *source.joined.as_slice() {
+        [class] => cell(conversion.category.get(class)).is_ok(),
+        [first, second] => cell(conversion.mixed.get(first))
+            .and_then(|by_second| cell(by_second.get(second)))
+            .is_ok(),
+        _ => false,
+    };
     if !measured {
         return Err(Unresolved::Pending(Step::UnmeasuredCategoryClass));
     }

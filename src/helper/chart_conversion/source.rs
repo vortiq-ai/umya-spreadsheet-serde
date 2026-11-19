@@ -89,9 +89,9 @@ pub(super) struct Source {
     /// The class of the series' categories, and of their x values.
     pub(super) category: (CategoryDataClass, DateSpacing),
     pub(super) x:        (CategoryDataClass, DateSpacing),
-    /// The data class every series' categories share, a series without
-    /// categories counting as absent; `None` when they differ.
-    pub(super) joined:   Option<CategoryDataClass>,
+    /// The data classes the series' categories hold, in class order, a
+    /// series without categories counting as absent.
+    pub(super) joined:   Vec<CategoryDataClass>,
     /// What a created axis' template is selected by.
     pub(super) creation: Creation,
 }
@@ -283,7 +283,10 @@ fn exactly(number: f64, expected: f64) -> bool {
 
 /// Section 3.1's spacing of numeric categories: consecutive serials (General
 /// numbers only as exactly 1 to N) are daily, consecutive first days of a
-/// month monthly, in the workbook's date system. Every comparison is exact.
+/// month monthly, in the workbook's date system. Other numbers are filed by
+/// the smallest gap between their whole days, which Excel's base unit
+/// follows: under 28 days other, from 28 days or a repeated day wide. Every
+/// comparison is exact.
 fn spacing(numbers: &[f64], general: bool, date1904: bool) -> DateSpacing {
     if numbers.len() < 2 {
         return DateSpacing::Other;
@@ -310,9 +313,15 @@ fn spacing(numbers: &[f64], general: bool, date1904: bool) -> DateSpacing {
         .map(|number| month_of(*number, date1904))
         .collect();
     if months.is_some_and(|months| months.windows(2).all(|pair| pair[1] - pair[0] == 1)) {
-        DateSpacing::Monthly
-    } else {
+        return DateSpacing::Monthly;
+    }
+    let mut days: Vec<f64> = numbers.iter().map(|number| number.trunc()).collect();
+    days.sort_by(f64::total_cmp);
+    let gaps = || days.windows(2).map(|pair| pair[1] - pair[0]);
+    if gaps().all(|gap| gap > 0.0) && gaps().any(|gap| gap < 28.0) {
         DateSpacing::Other
+    } else {
+        DateSpacing::Wide
     }
 }
 
@@ -458,10 +467,9 @@ impl Source {
             .map(|entry| data_class(entry.element.child("cat"), date1904))
             .collect();
         let category = uniform(categories.iter().copied());
-        let joined = categories
-            .first()
-            .map(|first| first.0)
-            .filter(|first| categories.iter().all(|class| class.0 == *first));
+        let mut joined: Vec<CategoryDataClass> = categories.iter().map(|class| class.0).collect();
+        joined.sort_unstable();
+        joined.dedup();
         let x = uniform(
             series
                 .iter()

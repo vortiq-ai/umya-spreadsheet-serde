@@ -109,11 +109,11 @@ fn plot_groups(part: &str) -> Vec<String> {
         .collect()
 }
 
-/// 763 native parts, 10 parts of the four combination layouts, 10 combination
-/// probes and 3 scatter parts the measurement flagged invalid.
+/// 2,817 native parts, 178 parts of the four combination layouts, 10
+/// combination probes and 3 scatter parts the measurement flagged invalid.
 const CLASSES: [(&str, usize); 4] = [
-    ("native", 763),
-    ("combo", 10),
+    ("native", 2_817),
+    ("combo", 178),
     ("probe", 10),
     ("invalid_scatter", 3),
 ];

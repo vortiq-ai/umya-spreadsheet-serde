@@ -98,6 +98,15 @@ fn monthly_axis() -> String {
     axis
 }
 
+/// The axis Excel writes for the radar's dates at irregular spacing: the same
+/// date axis by days.
+fn daily_axis() -> String {
+    monthly_axis().replace(
+        r#"<c:baseTimeUnit val="months"/>"#,
+        r#"<c:baseTimeUnit val="days"/>"#,
+    )
+}
+
 /// 1904-01-01 to 1904-06-01, 1904 being a leap year, are serials 0, 31, 60,
 /// 91, 121 and 152 of the 1904 date system.
 #[test]
@@ -108,23 +117,21 @@ fn a_1904_workbook_reads_its_dates_in_the_1904_system() {
 
 /// Excel's 1900 system counts 1900-01-01 as 1 and keeps a 29 February 1900 at
 /// 60, so 1 March 1900 is 61. Categories with 60 in place of 61 are therefore
-/// not monthly: a spacing no round measured for this pair.
+/// not monthly, and their smallest gap is 28 days: Excel gives them months;
+/// the table does not hold that cell yet.
 #[test]
 fn the_1900_date_system_keeps_29_february_1900() {
     let mut book = radar_with_categories([1.0, 32.0, 61.0, 92.0, 122.0, 153.0], false);
     assert_eq!(line_date_axis(&mut book), monthly_axis());
     let mut book = radar_with_categories([1.0, 32.0, 60.0, 92.0, 122.0, 153.0], false);
-    let before = typed(&mut book);
-    assert_eq!(
-        convert(&mut book, ChartSubtype::Line),
-        Err(refused(ChartSubtype::Radar, ChartSubtype::Line))
-    );
-    assert_eq!(typed(&mut book), before);
+    assert_refused(&mut book);
 }
 
 /// A serial falls on the day its whole part names, the day the measured
 /// classes were filed by: 44926.999995 is the end of 31 December 2022, not
-/// 1 January 2023, so categories that start there are not monthly.
+/// 1 January 2023, so categories that start there are not monthly, and their
+/// smallest gap is 28 days: Excel gives them months; the table does not hold
+/// that cell yet.
 #[test]
 fn a_serial_falls_on_the_day_of_its_whole_part() {
     let months = [44927.0, 44958.0, 44986.0, 45017.0, 45047.0, 45078.0];
@@ -133,12 +140,55 @@ fn a_serial_falls_on_the_day_of_its_whole_part() {
     let mut late = months;
     late[0] = 44926.999995;
     let mut book = radar_with_categories(late, false);
-    let before = typed(&mut book);
+    assert_refused(&mut book);
+}
+
+/// Dates a week apart have a smallest gap under 28 days, so they take the
+/// irregular dates' cell: Excel gives them a base unit of days.
+#[test]
+fn weekly_dates_get_a_date_axis_by_days() {
+    let weeks = [44927.0, 44934.0, 44941.0, 44948.0, 44955.0, 44962.0];
+    let mut book = radar_with_categories(weeks, false);
+    assert_eq!(line_date_axis(&mut book), daily_axis());
+}
+
+/// Dates a year apart have a smallest gap of 365 days or more, which Excel
+/// gives a base unit of years: no cell holds it yet, so they are refused.
+#[test]
+fn yearly_dates_wait_for_a_measured_cell() {
+    let years = [44927.0, 45292.0, 45658.0, 46023.0, 46388.0, 46753.0];
+    let mut book = radar_with_categories(years, false);
+    assert_refused(&mut book);
+}
+
+/// Dates that repeat a day have no gap Excel's base unit was measured on, so
+/// they are refused.
+#[test]
+fn repeated_dates_wait_for_a_measured_cell() {
+    let pairs = [44927.0, 44927.0, 44958.0, 44958.0, 44986.0, 44986.0];
+    let mut book = radar_with_categories(pairs, false);
+    assert_refused(&mut book);
+}
+
+/// The gap rule reads the day a serial's whole part names: a time of day
+/// before the first date leaves a smallest gap of 28 whole days, which Excel
+/// gives months, so the categories are refused.
+#[test]
+fn a_time_of_day_does_not_shorten_the_smallest_gap() {
+    let dates = [45000.5, 45028.0, 45056.0, 45084.0, 45112.0, 45140.0];
+    let mut book = radar_with_categories(dates, false);
+    assert_refused(&mut book);
+}
+
+/// Converting `book`'s radar to a line chart is refused and leaves it as it
+/// was.
+fn assert_refused(book: &mut Workbook) {
+    let before = typed(book);
     assert_eq!(
-        convert(&mut book, ChartSubtype::Line),
+        convert(book, ChartSubtype::Line),
         Err(refused(ChartSubtype::Radar, ChartSubtype::Line))
     );
-    assert_eq!(typed(&mut book), before);
+    assert_eq!(typed(book), before);
 }
 
 /// General x values count from one only when they are exactly 1 to N: the

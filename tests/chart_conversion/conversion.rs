@@ -24,7 +24,7 @@ use super::{
         measured,
         read_part,
     },
-    workbook::workbook_with,
+    workbook::workbook_with_cells,
 };
 
 /// The chart of the workbook's first sheet.
@@ -36,7 +36,7 @@ pub fn chart(book: &mut Workbook) -> &mut Chart {
 
 /// The workbook around a measured part.
 pub fn open(part: &Part) -> Workbook {
-    workbook_with(&read_part(part))
+    workbook_with_cells(&read_part(part), &part.cells)
 }
 
 /// The first native part of `subtype` that holds `series` series.

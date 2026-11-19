@@ -110,7 +110,7 @@ pub(super) enum ValueCountClass {
 
 /// What the categories hold, after the data roles are remapped: moved x values
 /// are categories too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum CategoryDataClass {
     Absent,
     TextReference,
@@ -130,7 +130,13 @@ pub(super) enum DateSpacing {
     Daily,
     /// The first day of consecutive months.
     Monthly,
+    /// Any other distinct whole days whose smallest gap is under 28 days:
+    /// Excel gives such dates a base unit of days.
     Other,
+    /// Any other whole days whose smallest gap is 28 days or more, which
+    /// Excel gives months or years, or that repeat a day, which no
+    /// measurement covers.
+    Wide,
 }
 
 /// What a series' or a point's 3-D shape (`a:sp3d`) holds.
@@ -346,6 +352,7 @@ pub(super) struct ByDateSpacing<T> {
     pub(super) daily:   RuleCell<T>,
     pub(super) monthly: RuleCell<T>,
     pub(super) other:   RuleCell<T>,
+    pub(super) wide:    RuleCell<T>,
 }
 
 impl<T> ByDateSpacing<T> {
@@ -355,6 +362,7 @@ impl<T> ByDateSpacing<T> {
             DateSpacing::Daily => &self.daily,
             DateSpacing::Monthly => &self.monthly,
             DateSpacing::Other => &self.other,
+            DateSpacing::Wide => &self.wide,
         }
     }
 }

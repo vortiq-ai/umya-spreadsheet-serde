@@ -42,9 +42,9 @@ use super::{
 /// Excel made 283 conversions of a chart to the type it already was.
 const MEASURED_IDENTITIES: usize = 283;
 
-/// Excel refused 2,034 conversions and made 20,293.
+/// Excel refused 2,034 conversions and made 39,929.
 const MEASURED_REFUSALS: usize = 2_034;
-const MEASURED_SUCCESSES: usize = 20_293;
+const MEASURED_SUCCESSES: usize = 39_929;
 
 /// Of the refusals, 26 were conversions to the type the chart already was.
 const MEASURED_SAME_TYPE_REFUSALS: usize = 26;

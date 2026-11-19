@@ -15,6 +15,7 @@ use super::{
         replace_chart_part,
         write_workbook,
     },
+    measured::Cells,
     xml::{
         CHART,
         Element,
@@ -24,10 +25,16 @@ use super::{
 
 /// The workbook read back from a file whose chart is `part`.
 pub fn workbook_with(part: &str) -> Workbook {
+    workbook_with_cells(part, &[])
+}
+
+/// The workbook read back from a file whose chart is `part`, its references
+/// without a cache reading `cells`.
+pub fn workbook_with_cells(part: &str, cells: &[Cells]) -> Workbook {
     let mut book = umya_spreadsheet::new_file();
     let sheet = book.sheet_mut(0).unwrap();
     sheet.set_name("Data");
-    fill(sheet, &parse(part));
+    fill(sheet, &parse(part), cells);
     sheet.add_chart(base_chart());
     let file = replace_chart_part(&write_workbook(&book), part);
     reader::xlsx::read_reader(Cursor::new(file), true).unwrap()
@@ -41,16 +48,17 @@ pub fn file_with_chart_sheet(part: &str, more: &[&str]) -> Vec<u8> {
     let sheet = book.sheet_mut(0).unwrap();
     sheet.set_name("Chart");
     sheet.add_chart(base_chart());
-    fill(book.new_sheet("Data").unwrap(), &parse(part));
+    fill(book.new_sheet("Data").unwrap(), &parse(part), &[]);
     for name in more {
         book.new_sheet(*name).unwrap();
     }
     replace_chart_part(&write_workbook(&book), part)
 }
 
-/// Every reference in the part is one column of `Data`; its cache holds one
-/// value per cell, and a number cache the format of those cells.
-fn fill(sheet: &mut Worksheet, space: &Element) {
+/// Every reference in the part is one column of `Data`; its cache, or the
+/// `cells` of its formula when it has none, holds one value per cell, and a
+/// number cache the format of those cells.
+fn fill(sheet: &mut Worksheet, space: &Element, cells: &[Cells]) {
     for (kind, cache_kind, numeric) in [("numRef", "numCache", true), ("strRef", "strCache", false)]
     {
         for reference in space.all_named(CHART, kind) {
@@ -60,11 +68,33 @@ fn fill(sheet: &mut Worksheet, space: &Element) {
             let (column, first_row) = coordinate(first);
             assert_eq!(column, coordinate(last).0, "{formula} spans columns");
 
-            let cache = reference.c(cache_kind).expect("a reference has a cache");
-            let number_format = cache.c("formatCode").map(|code| code.text.as_str());
-            for point in cache.all_c("pt") {
-                let offset: u32 = point.attribute("idx").unwrap().parse().unwrap();
-                let value = point.c("v").expect("a point has c:v").text.as_str();
+            let (number_format, points): (Option<&str>, Vec<(u32, &str)>) =
+                match reference.c(cache_kind) {
+                    Some(cache) => (
+                        cache.c("formatCode").map(|code| code.text.as_str()),
+                        cache
+                            .all_c("pt")
+                            .map(|point| {
+                                let offset = point.attribute("idx").unwrap().parse().unwrap();
+                                (offset, point.c("v").expect("a point has c:v").text.as_str())
+                            })
+                            .collect(),
+                    ),
+                    None => {
+                        let held = cells
+                            .iter()
+                            .find(|held| held.formula == *formula && held.numeric == numeric)
+                            .unwrap_or_else(|| panic!("{formula} has neither a cache nor cells"));
+                        (
+                            held.format.as_deref(),
+                            held.points
+                                .iter()
+                                .map(|(offset, value)| (*offset, value.as_str()))
+                                .collect(),
+                        )
+                    }
+                };
+            for (offset, value) in points {
                 let cell = sheet.cell_mut((column, first_row + offset));
                 if numeric {
                     cell.set_value_number(value.parse::<f64>().unwrap());

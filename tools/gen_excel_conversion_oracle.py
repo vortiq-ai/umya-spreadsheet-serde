@@ -2,12 +2,12 @@
 """Writes the Excel-measured oracle that the chart-type conversion tests compare against.
 
 Excel was driven through COM to change the chart type of charts that had been saved and
-reopened first. Six measurement files hold what it reported: the reopened chart type, a
+reopened first. Seven measurement files hold what it reported: the reopened chart type, a
 feature projection of every part and a path-level XML diff between each before and after part.
 Beside each file sits a directory with the XML parts Excel saved.
 
 This script
-  * accepts only the six pinned measurement files (sha256 below); an unknown file is an error;
+  * accepts only the seven pinned measurement files (sha256 below); an unknown file is an error;
   * checks every recorded part hash against the saved part, and every recorded feature
     projection and path diff against a re-extraction from that part with the projection below;
   * asserts the 52-name chart type map against each file's own `method.names`;
@@ -17,15 +17,20 @@ This script
   * writes the parts the tests read and the measured results (layout below).
 
     gen_excel_conversion_oracle.py --source conversions.json [--source conversions2.json ...]
-                                   [--check]
+                                   [--check] [--workers N]
 
 `--check` regenerates in memory and compares with the checked-in files; it writes nothing.
+`--workers` sets how many processes replay the observations for the self-checks (default 8);
+the output is the same for any number, and 1 replays them in this process.
 The `census:` lines are exact counts a reviewer can compare with independently derived
 numbers; `record:` lines are informational. Only the standard library is used.
 
 Outputs, under tests/fixtures/chart_conversion/
-  before/<measurement>/<variant>/<name>.chart.xml
-      each part a test reads, as the bytes whose sha256 the measurement recorded for it.
+  before/<measurement>.zip
+      each part a test reads from that measurement, as the bytes whose sha256 the
+      measurement recorded for it: one deflated entry <variant>/<name>.chart.xml per part,
+      in name order, written reproducibly (fixed timestamp). A part's fixture path is
+      before/<measurement>/<variant>/<name>.chart.xml.
   measured.json.zip
       one deflated entry, measured.json, written reproducibly (fixed timestamp). Its layout:
         format        1
@@ -38,7 +43,8 @@ Outputs, under tests/fixtures/chart_conversion/
                       series count, sha256 (the original XML as measured), sidecar_sha256
                       (the bytes Excel's driver left on disk), translated (whether those
                       bytes went through the text-mode newline translation), slots and
-                      paths
+                      paths; a part with references that hold no cache adds `cells`, what
+                      those cells hold as the caches Excel rebuilt from them show it
         observations  one per measured change: part index, target subtype, ok, series (after),
                       type (after); a refusal adds the COM error; a success that is not an
                       identity adds slots and pdiff. Every observation holds the operation's
@@ -64,11 +70,13 @@ band formats, series line cap and join, data point formats, bubble size literals
 marks and styles.
 """
 import argparse
+import concurrent.futures
 import copy
 import datetime
 import hashlib
 import io
 import json
+import pickle
 import re
 import sys
 import zipfile
@@ -99,6 +107,8 @@ PINS = (
         "96f6bee2c8bee31c341eb832a2eaee73c4c244054cc2fdaabf3727c20241caf8", False),
     Pin("conversions6.json", "out6",
         "906cbfd0b54cb22ff9fdb8a345327660c7268fa652ca170bc3b81c0692d6d5f1", False),
+    Pin("conversions9.json", "out9",
+        "a0801cbc65ec1850dc453060b7ee22105a16faeff5b5381229a1496eb1c4491b", False),
 )
 FIRST_PIN = PINS[0]
 
@@ -532,6 +542,62 @@ def verify_first_manifest(directory, data):
     return len(kinds), size
 
 
+REFERENCE_CACHES = (("numRef", "numCache"), ("strRef", "strCache"))
+
+
+def cacheless_references(root):
+    """The numeric and string references of a part that hold no cache."""
+    return [(ref, cache) for kind, cache in REFERENCE_CACHES
+            for ref in root.iter("{%s}%s" % (NS["c"], kind)) if ref.find("c:" + cache, NS) is None]
+
+
+def rebuilt_caches(pin, directory, data, key, root, pairs):
+    """Excel rebuilds a missing cache from the cells the reference reads: each cacheless
+    reference of source `key` gets the cache every after part of the source holds for its
+    formula, as the reference's own kind. Those caches must agree."""
+    wanted = {ref.find("c:f", NS).text: cache for ref, cache in cacheless_references(root)}
+    found = {}
+    for pair_key in pairs:
+        pair = data["pairs"][pair_key]
+        if not pair.get("ok"):
+            continue
+        _, original = saved_part(pin, directory, "after/" + pair_key.replace("->", "__") + ".chart.xml")
+        after = ET.fromstring(original)
+        for formula, cache in wanted.items():
+            held = [ref.find("c:" + cache, NS) for kind, tag in REFERENCE_CACHES if tag == cache
+                    for ref in after.iter("{%s}%s" % (NS["c"], kind))
+                    if ref.find("c:f", NS).text == formula]
+            held = {ET.tostring(c) for c in held if c is not None}
+            if len(held) != 1:
+                raise Mismatch("%s %s: %d caches rebuilt for %s" % (pin.file, pair_key, len(held),
+                                                                     formula))
+            found.setdefault(formula, set()).update(held)
+    if any(len(found.get(formula, ())) != 1 for formula in wanted):
+        raise Mismatch("%s %s: the rebuilt caches differ or are missing" % (pin.file, key))
+    return {formula: ET.fromstring(found[formula].pop()) for formula in wanted}
+
+
+def with_caches(root, caches):
+    """A copy of `root` whose cacheless references hold `caches`, as umya writes them from the
+    cells."""
+    root = copy.deepcopy(root)
+    for ref, _ in cacheless_references(root):
+        ref.insert(1, copy.deepcopy(caches[ref.find("c:f", NS).text]))
+    return root
+
+
+def cells_of(caches):
+    """The cells a test workbook gives a cacheless reference: [formula, cache kind, format code
+    or None, [[index, value], ...]]."""
+    out = []
+    for formula in sorted(caches):
+        cache = caches[formula]
+        code = cache.find("c:formatCode", NS)
+        out.append([formula, local(cache.tag), None if code is None else code.text,
+                    [[int(p.get("idx")), p.find("c:v", NS).text] for p in cache.findall("c:pt", NS)]])
+    return out
+
+
 def check_names(pin, data):
     names = data["method"]["names"]
     if len(names) != len(VARIANTS) or set(names.values()) != set(VARIANTS):
@@ -648,6 +714,9 @@ class Run:
         before_paths, part_index = {}, {}
         verified_before = 0
         ignored_sources = []
+        pairs_of = defaultdict(list)
+        for key in sorted(data["pairs"]):
+            pairs_of[data["pairs"][key]["source"]].append(key)
         for key in sorted(data["sources"]):
             source = data["sources"][key]
             if "sha256Before" not in source:
@@ -667,8 +736,12 @@ class Run:
                 continue
             cls, subtype, layout = kind
             self.classes[cls] += 1
+            # A conversion reads what umya writes: every reference with the cache its cells give.
+            caches = {}
+            if cacheless_references(root):
+                caches = rebuilt_caches(pin, directory, data, key, root, pairs_of[key])
             if cls in ("native", "combo"):
-                self.sources[len(self.parts)] = Source(root, subtype, layout)
+                self.sources[len(self.parts)] = Source(with_caches(root, caches), subtype, layout)
             fixture = "before/%s/%s.chart.xml" % (stem, key)
             self.fixtures[fixture] = original
             part_index[key] = len(self.parts)
@@ -681,6 +754,8 @@ class Run:
                 "slots": self.interner.slots(slots_of(root)),
                 "paths": self.interner.paths_map(before_paths[key]),
             })
+            if caches:
+                self.parts[-1]["cells"] = cells_of(caches)
         verified_after = 0
         skipped = Counter()
         order = {key: i for i, key in enumerate(data["pairs"])}
@@ -776,14 +851,35 @@ def encode(document):
 
 
 def zip_bytes(data):
+    return zip_entries({MEASURED_ENTRY: data})
+
+
+def zip_entries(entries):
+    """A deflated zip of `entries` (name -> bytes) in name order, with a fixed timestamp."""
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        info = zipfile.ZipInfo(MEASURED_ENTRY, date_time=(1980, 1, 1, 0, 0, 0))
-        info.compress_type = zipfile.ZIP_DEFLATED
-        info.create_system = 3
-        info.external_attr = 0o644 << 16
-        archive.writestr(info, data, compresslevel=9)
+        for name in sorted(entries):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, entries[name], compresslevel=9)
     return out.getvalue()
+
+
+def part_archives(fixtures):
+    """The fixture zips, `before/<measurement>.zip` -> {entry: bytes}, of the parts at
+    `before/<measurement>/<entry>`."""
+    archives = defaultdict(dict)
+    for name, content in fixtures.items():
+        _, measurement, entry = name.split("/", 2)
+        archives["before/%s.zip" % measurement][entry] = content
+    return archives
+
+
+def read_entries(path):
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
 
 
 def read_zip(path):
@@ -952,7 +1048,9 @@ def serial_date(serial):
 
 
 def date_spacing(values, general):
-    """Daily: consecutive serials (General: exactly 1..N); monthly: consecutive first-of-month."""
+    """Daily: consecutive serials (General: exactly 1..N); monthly: consecutive first-of-month;
+    any other numbers by the smallest gap between their whole days, which Excel's base unit
+    follows: under 28 days other, from 28 days or a repeated day wide."""
     if len(values) < 2:
         return "other"
     if general:
@@ -963,7 +1061,9 @@ def date_spacing(values, general):
     if all(d is not None and d.day == 1 for d in dates) and all(
             b.year * 12 + b.month - a.year * 12 - a.month == 1 for a, b in zip(dates, dates[1:])):
         return "monthly"
-    return "other"
+    days = sorted(float(int(v)) for v in values)
+    gaps = [b - a for a, b in zip(days, days[1:])]
+    return "other" if all(g > 0 for g in gaps) and any(g < 28 for g in gaps) else "wide"
 
 
 def category_class(element):
@@ -1519,6 +1619,9 @@ def series_candidates(slot, before, after, idx, info, source):
         for other in ROLE_SLOTS:
             if other != slot and va is not None and before.get(other) == va:
                 out.add("copy:" + other)
+            # A role that stays absent took the content of any role the series lacks.
+            if other != slot and vb is None and va is None and before.get(other) is None:
+                out.add("copy:" + other)
         if slot == "bubbleSize" and va == "(literal)":
             out.add("ones_per_point")
     if slot == "dPt":
@@ -1815,6 +1918,8 @@ def describe_template(axis):
         parts.append("DELETED")
     if "numFmt" in children and children["numFmt"].get("formatCode") == "0%":
         parts.append("PERCENT")
+    if tag == "catAx" and "numFmt" in children and children["numFmt"].get("formatCode") == DATE_CODE:
+        parts.append("ISO_DATES")
     if tag == "valAx":
         parts.append("MID_CATEGORY" if value("crossBetween") == "midCat"
                      else None if "PERCENT" in parts else "BETWEEN")
@@ -2045,11 +2150,9 @@ class Fit:
         # The x values' class (section 12): a pair admits only the classes Excel was measured on.
         if src.has_x and not src.x_guard(target):
             yield ("PAIR", row, target, "x", "%s/%s" % src.x_category), {"keep"}
-        # The categories' class: a pair admits only the classes Excel was measured on, and a
-        # mixture of classes is none of them, so no measured source may hold one.
+        # The categories' classes: a pair admits only the joins Excel was measured on; a mixture
+        # is keyed by its own classes, so it never borrows the cell of one of them.
         if not src.has_x:
-            if "/" in src.category_join:
-                raise Mismatch("%s: categories of mixed classes %s" % (obs.name, src.category_join))
             yield ("PAIR", row, target, "cat", src.category_join), {"keep"}
         # The plot area and the group trees follow the source's formatting as the scene sees it.
         scene = style_of(src.scene_styled)
@@ -2071,7 +2174,12 @@ class Fit:
                     key = ("PAIR", row, target, slot, cls) + stock
                 else:
                     key = ("KIND", target, slot, cls)
-                yield key, series_candidates(slot, b, a, idx, info, src)
+                candidates = series_candidates(slot, b, a, idx, info, src)
+                yield key, candidates
+                if slot == "dPt" and "one_per_band" in candidates:
+                    yield (("PAIR", row, target, "dPt.bands", "%s/%s/%s" % (
+                        *src.categories_for(target), point_context(src, idx))) + stock,
+                           band_style_candidates(src, target, idx, a))
             if bt.get("st.ln") and empty_line(a):
                 # An outline left with nothing the vocabulary reads, by whether it held some.
                 yield (("KIND", target, "st.ln", "absent" if empty_line(b) else "present"),
@@ -2109,6 +2217,35 @@ def point_context(source, idx):
     context = "%s/%s/values-%s" % ("styled" if info["styled"] else "automatic", source.roles[idx],
                                    count_class(info["values"]))
     return context + ("/shape-%dx%s" % source.shape if source.shape else "")
+
+
+def band_point_constants(row, t):
+    """The fields of a band point format that follow the source and the target alone."""
+    wire = row in WIREFRAMES
+    hidden = Sm(25_400 if wire else 38_100) if t in HIDDEN_LINE_TARGETS else None
+    return {"remove_line": not wire and t in LINE_TARGETS, "hidden_line_width": hidden,
+            "invert_if_negative": Sm(False) if t in INVERTING_TARGETS else None,
+            "bubble_3d": t == "Bubble3DEffect"}
+
+
+def band_copied(src, idx, band, kept_for_values):
+    """Whether a band gives its shape properties to its point: unless they are the series' own,
+    or, with `kept_for_values`, unless they are the series' own and its point holds no value."""
+    sp = band.find("c:spPr", NS)
+    if canon(sp) != canon(src.model.elements[idx].find("c:spPr", NS)):
+        return True
+    return kept_for_values and int(val(band, "idx")) < src.info[idx]["values"]
+
+
+def band_style_candidates(src, target, idx, after):
+    """Whether Excel gave a band's own-style shape properties to the points that hold a value:
+    `keep` when that reproduces Excel's points, `remove` when leaving them out does."""
+    fmt = band_point_constants(src.row, target)
+    names = ("idx", "fill", "line", "lnW", "dash", "bubble3D")
+    count = len(after.get("dPt.idx") or [])
+    excel = list(zip(*[after.get("dPt." + name) or [None] * count for name in names]))
+    return {action for action, kept in (("keep", True), ("remove", False))
+            if Replay.band_points(fmt, src, idx, kept) == excel}
 
 
 def point_cells(source, target, idx, before, after, before_trees, after_trees):
@@ -2891,7 +3028,7 @@ ROLES = ("ordinary", "surface_first", "surface_remaining", "volume", "stock")
 COUNT_FIELDS = (("six", "6"), ("seven", "7"), ("twelve", "12"), ("sixteen", "16"),
                 ("twenty_four", "24"), ("fifty", "50"), ("other", "other"))
 DATA_CLASSES = ("absent", "text", "date_serial", "general", "other")
-SPACINGS = ("absent", "daily", "monthly", "other")
+SPACINGS = ("absent", "daily", "monthly", "other", "wide")
 FLAG_FIELDS = (("absent", "absent"), ("off", "0"), ("on", "1"))
 COMBO_GROUPS = (("combo_area", "areaChart"), ("combo_bar", "barChart"), ("combo_line", "lineChart"))
 STYLES = ("automatic", "styled")
@@ -2942,6 +3079,10 @@ class RuleModel:
 
     def __init__(self, choices, rows, admission, created, template_names):
         self.choices = choices
+        self.kind_keys = defaultdict(list)
+        for key in choices:
+            if key[0] == "KIND":
+                self.kind_keys[key[1]].append(key)
         self.created = created
         self.template_names = template_names
         self.declared, self.observed = Counter(), Counter()
@@ -3017,6 +3158,18 @@ class RuleModel:
             fields[data] = measured(spacing) if seen else REJECTED
         return St("ByCategoryData", **fields)
 
+    def by_class_pair(self, key):
+        """`ByCategoryData<ByCategoryData<()>>` of two different classes, the first earlier in
+        `DATA_CLASSES`; `key(first, second)`."""
+        fields = {}
+        for n, first in enumerate(DATA_CLASSES):
+            second = St("ByCategoryData", **{
+                other: self.cell(key(first, other), MEASURED) if m > n else REJECTED
+                for m, other in enumerate(DATA_CLASSES)})
+            seen = any(c.variant == "Measured" for c in second.fields.values())
+            fields[first] = measured(second) if seen else REJECTED
+        return St("ByCategoryData", **fields)
+
     def plain(self, key, codec):
         """A field with no class of its own: its one cell must be measured."""
         found = self.cell(key, codec)
@@ -3049,7 +3202,7 @@ class RuleModel:
 
     def group_rule(self, t, n, group):
         tag, selection, axis_set, placeholder = group
-        self.used.update(k for k in self.choices if k[:2] == ("KIND", t) and k[2] == "g%d.type" % n)
+        self.used.update(k for k in self.kind_keys[t] if k[2] == "g%d.type" % n)
         return St(
             "GroupRule", chart_type=En("ChartType::" + tag[0].upper() + tag[1:]),
             series=En("SeriesSelection::" + selection), axes=En("AxisSet::" + axis_set),
@@ -3065,8 +3218,8 @@ class RuleModel:
                 found = self.cell(("KIND", t, "ax." + name, "absent"), AxisOutcomeCodec)
                 outcome[cls] = found
                 continue
-            removal = {choose(c) == "remove" for k, c in self.choices.items()
-                       if k[:3] == ("KIND", t, "ax.%s._type" % name) and k[3].split("/")[0] == cls}
+            removal = {choose(self.choices[k]) == "remove" for k in self.kind_keys[t]
+                       if k[2] == "ax.%s._type" % name and k[3].split("/")[0] == cls}
             if not removal:
                 self.declared["KIND"] += 1
                 outcome[cls] = REJECTED
@@ -3074,8 +3227,8 @@ class RuleModel:
                 self.declared["KIND"] += 1
                 self.observed["KIND"] += 1
                 prefix = "ax.%s." % name
-                self.used.update(k for k in self.choices if k[:2] == ("KIND", t)
-                                 and k[2].startswith(prefix) and k[2][len(prefix):] in AXIS_SLOTS
+                self.used.update(k for k in self.kind_keys[t]
+                                 if k[2].startswith(prefix) and k[2][len(prefix):] in AXIS_SLOTS
                                  and k[3].split("/")[0] == cls)
                 outcome[cls] = measured(En("AxisOutcome::Absent"))
             elif removal == {False}:
@@ -3131,8 +3284,10 @@ class RuleModel:
             lambda data, spacing: ("PAIR", row, t, "x", "%s/%s" % (data, spacing)), MEASURED)
         categories = St("ByCategoryData", **{
             data: self.cell(("PAIR", row, t, "cat", data), MEASURED) for data in DATA_CLASSES})
+        mixed = Rf("ByCategoryData<ByCategoryData<()>>", "CATEGORY_MIXTURES", self.by_class_pair(
+            lambda first, second: ("PAIR", row, t, "cat", "/".join(sorted((first, second))))))
         return St(
-            "Conversion", scene=scene, x_values=x_values, category=categories,
+            "Conversion", scene=scene, x_values=x_values, category=categories, mixed=mixed,
             groups=array("GroupValuesRule", "GROUP_VALUES", groups),
             axes=array("AxisPairRule", "AXIS_PAIR_RULES", [self.axis_pair_rule(row, t, name, shape)
                                                            for name in AXIS_KEYS]),
@@ -3361,15 +3516,26 @@ class PointsCodec:
             return En("DataPointsRule::" + name,
                       self.model.point_format(self.key, self.context, True))
         if action == "one_per_band":
-            wire = self.row in WIREFRAMES
-            hidden = Sm(25_400 if wire else 38_100) if self.t in HIDDEN_LINE_TARGETS else None
+            own_style = self.model.by_category(lambda data, spacing: self.key(
+                "dPt.bands", "%s/%s/%s" % (data, spacing, self.context)), BandOwnStyleCodec)
             return En("DataPointsRule::FromSurfaceBands", Rf(
                 "BandPointFormat", "BAND_POINT_FORMAT", St(
-                    "BandPointFormat", remove_line=not wire and self.t in LINE_TARGETS,
-                    hidden_line_width=hidden,
-                    invert_if_negative=Sm(False) if self.t in INVERTING_TARGETS else None,
-                    bubble_3d=self.t == "Bubble3DEffect")))
+                    "BandPointFormat", **band_point_constants(self.row, self.t),
+                    own_style=own_style)))
         raise Mismatch("no DataPointsRule for %s" % action)
+
+
+class BandOwnStyleCodec:
+    @staticmethod
+    def action(action):
+        return En({"keep": "BandOwnStyle::KeptForValues", "remove": "BandOwnStyle::Elided"}[action])
+
+
+def own_style_kept(fmt, src, t):
+    """Whether the format gives a band's own-style shape properties to the points that hold a
+    value, for the source's categories."""
+    data, spacing = src.categories_for(t)
+    return resolve(resolve(fmt["own_style"][data])[spacing]).variant == "KeptForValues"
 
 
 def axis_node(el):
@@ -3710,7 +3876,8 @@ class Replay:
         if name == "Remove":
             return []
         if name == "FromSurfaceBands":
-            return self.band_points(deref(rule.args[0]), src, idx)
+            fmt = deref(rule.args[0])
+            return self.band_points(fmt, src, idx, own_style_kept(fmt, src, t))
         indices = kept
         if name == "CompletePerValue":
             indices = sorted(set(kept) | set(range(info["values"])))
@@ -3741,13 +3908,12 @@ class Replay:
         return out
 
     @staticmethod
-    def band_points(fmt, src, idx):
-        series_style = src.model.elements[idx].find("c:spPr", NS)
+    def band_points(fmt, src, idx, kept_for_values):
         out = []
         for band in src.bands:
             sp = band.find("c:spPr", NS)
             shape = {}
-            if canon(sp) != canon(series_style):
+            if band_copied(src, idx, band, kept_for_values):
                 shape = dict(shape_of(sp) or {})
                 if fmt["remove_line"]:
                     for key in ("line", "lnW", "dash", "cap", "join"):
@@ -4218,7 +4384,8 @@ class PathReplay:
         count = count_field(info["values"])
         rule = resolve(deref(rules["points"])[role][count][presence(b.get("dPt"))])
         if rule.variant == "FromSurfaceBands":
-            return self.band_points(deref(rule.args[0]), src, idx)
+            fmt = deref(rule.args[0])
+            return self.band_points(fmt, src, idx, own_style_kept(fmt, src, t))
         kept = {int(val(p, "idx")): (n, p) for n, p in enumerate(src.model.elements[idx].findall(
             "c:dPt", NS))}
         values = pred.get("dPt.idx") or []
@@ -4269,9 +4436,8 @@ class PathReplay:
         return out
 
     @staticmethod
-    def band_points(fmt, src, idx):
-        """Each band's shape properties, unless they are the series' own (FromSurfaceBands)."""
-        series_style = src.model.elements[idx].find("c:spPr", NS)
+    def band_points(fmt, src, idx, kept_for_values):
+        """Each band's shape properties, as `band_copied` gives them (FromSurfaceBands)."""
         out = []
         for band in src.bands:
             p = ET.Element("{%s}dPt" % NS["c"])
@@ -4280,7 +4446,7 @@ class PathReplay:
                 set_value(p, "invertIfNegative", Bool.unparse(fmt["invert_if_negative"].value))
             set_value(p, "bubble3D", "1" if fmt["bubble_3d"] else "0")
             sp = band.find("c:spPr", NS)
-            if canon(sp) != canon(series_style):
+            if band_copied(src, idx, band, kept_for_values):
                 sp = copy.deepcopy(sp)
                 ln = outline(sp)
                 if fmt["remove_line"] and ln is not None:
@@ -4531,6 +4697,79 @@ class Emitter:
             return lines + [pad + ")" + suffix]
         raise Mismatch("a line of rules.rs is wider than %d columns: %s"
                        % (WIDTH, one.strip()[:80]))
+
+
+# --- The self-checks in worker processes -------------------------------------------------
+# Each worker gets the KIND rules once and then slices of the admitted rows, each slice with
+# the conversions of its source row only; the failures come back under the rows' indices
+# and are put in row order, so any number of workers gives the serial output.
+
+WORKER = {}
+
+
+def in_workers(workers, start, state, run, jobs):
+    """`run` over `jobs` in order, in `workers` processes that each `start` from `state`
+    (pickled once); with one worker, here."""
+    if workers <= 1 or len(jobs) <= 1:
+        start(state)
+        return [run(job) for job in jobs]
+    blob = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
+    with concurrent.futures.ProcessPoolExecutor(
+            min(workers, len(jobs)), initializer=start_pickled, initargs=(start, blob)) as pool:
+        return list(pool.map(run, jobs))
+
+
+def start_pickled(start, blob):
+    start(pickle.loads(blob))
+
+
+class ReplayModel:
+    """What the self-checks read of a `RuleModel`: the KIND rules, and the conversions and
+    created-axis rows of some of the pairs."""
+
+    def __init__(self, kinds, pairs, created_rows):
+        self.kinds, self.pairs = kinds, pairs
+        self.created = CreatedAxes()
+        self.created.rows = created_rows
+
+
+def start_replays(state):
+    WORKER["kinds"], WORKER["directories"] = state
+
+
+def replay_slice(job):
+    """Both self-checks for a slice of one source row's admitted observations, each
+    observation's failures under its index."""
+    pairs, created_rows, rows, admission = job
+    model = ReplayModel(WORKER["kinds"], pairs, created_rows)
+    paths = PathReplay.__new__(PathReplay)
+    paths.model, paths.replay, paths.directories = model, Replay(model), WORKER["directories"]
+    return [(obs.index, replay_failures(paths.replay, [obs], admission)[1],
+             path_failures(paths, [obs], admission)[1]) for obs in rows]
+
+
+def self_checks(model, run, admission, workers):
+    """`replay_failures` and `path_failures` over every admitted row, in `workers` processes."""
+    admitted = [obs for obs in run.rows if admission.admits(obs)]
+    by_row = defaultdict(list)
+    for obs in admitted:
+        by_row[obs.source.row].append(obs)
+    size = max(1, -(-len(admitted) // (max(workers, 1) * 16)))
+    jobs = []
+    for row, rows in sorted(by_row.items(), key=lambda item: -len(item[1])):
+        pairs = {key: value for key, value in model.pairs.items() if key[0] == row}
+        for n in range(0, len(rows), size):
+            part = rows[n:n + size]
+            jobs.append((pairs, {(obs.stem, obs.name): model.created.rows[(obs.stem, obs.name)]
+                                 for obs in part}, part, admission))
+    found = {}
+    for results in in_workers(workers, start_replays, (model.kinds, run.directories),
+                              replay_slice, jobs):
+        for index, replayed, paths_failed in results:
+            found[index] = (replayed, paths_failed)
+    ordered = [found[obs.index] for obs in admitted]
+    return ((len(admitted), [f for replayed, _ in ordered for f in replayed]),
+            (len(admitted), [f for _, paths_failed in ordered for f in paths_failed]))
 
 
 def emit_rules(model):
@@ -4837,6 +5076,7 @@ def unhoused_keys(model, fit):
 # ---------------------------------------------------------------------------------------
 
 def existing_fixtures():
+    """Every file under before/: the fixture zips, and anything else, which is unexpected."""
     if not PARTS_DIR.exists():
         return {}
     return {p.relative_to(FIXTURES).as_posix(): p for p in PARTS_DIR.rglob("*") if p.is_file()}
@@ -4858,24 +5098,31 @@ def check_outputs(run, data, rules):
                 problems.append("%s differs from the regenerated rules"
                                 % RULES_RS.relative_to(ROOT).as_posix())
     present = existing_fixtures()
-    for name in sorted(set(run.fixtures) | set(present)):
+    archives = part_archives(run.fixtures)
+    for name in sorted(set(archives) | set(present)):
         if name not in present:
             problems.append("missing fixture %s" % name)
-        elif name not in run.fixtures:
+        elif name not in archives:
             problems.append("unexpected fixture %s" % name)
-        elif present[name].read_bytes() != run.fixtures[name]:
-            problems.append("fixture %s differs" % name)
+        else:
+            entries = read_entries(present[name])
+            for entry in sorted(set(archives[name]) | set(entries)):
+                if entries.get(entry) != archives[name].get(entry):
+                    problems.append("fixture %s/%s differs" % (name[:-len(".zip")], entry))
     return problems
 
 
 def write_outputs(run, zipped, rules):
+    archives = part_archives(run.fixtures)
     for name, path in existing_fixtures().items():
-        if name not in run.fixtures:
+        if name not in archives:
             path.unlink()
-    for name, content in run.fixtures.items():
+    for directory in sorted((p for p in PARTS_DIR.rglob("*") if p.is_dir()), reverse=True):
+        directory.rmdir()
+    for name, entries in archives.items():
         path = FIXTURES / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        path.write_bytes(zip_entries(entries))
     FIXTURES.mkdir(parents=True, exist_ok=True)
     MEASURED_ZIP.write_bytes(zipped)
     RULES_RS.write_text(rules, encoding="utf-8", newline="\n")
@@ -4884,9 +5131,11 @@ def write_outputs(run, zipped, rules):
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", action="append", default=[], metavar="JSON",
-                        help="a pinned measurement file; give all six")
+                        help="a pinned measurement file; give all seven")
     parser.add_argument("--check", action="store_true",
                         help="compare with the checked-in files instead of writing them")
+    parser.add_argument("--workers", type=int, default=8, metavar="N",
+                        help="processes that replay the observations (1: none)")
     args = parser.parse_args(argv)
     try:
         found = load_pinned(args.source)
@@ -4905,10 +5154,9 @@ def main(argv):
             model = RuleModel(fit.choices, run.rows, admission, run.created,
                               name_templates(run.created))
             rules = "\n".join(emit_rules(model)) + "\n"
-            checked, replayed = replay_failures(Replay(model), run.rows, admission)
+            (checked, replayed), (paths_checked, paths_failed) = self_checks(
+                model, run, admission, args.workers)
             failures += replayed + unhoused_keys(model, fit)
-            paths_checked, paths_failed = path_failures(PathReplay(model, run), run.rows,
-                                                        admission)
             failures += paths_failed
         operations = operation_side(run, admission)
         document = run.document([{"file": pin.file, "sha256": pin.sha256} for pin in PINS])
@@ -4938,7 +5186,9 @@ def main(argv):
     for line in run.records:
         print(line)
     print("record: used-parts %d" % len(run.parts))
-    print("record: fixture bytes %d" % sum(len(b) for b in run.fixtures.values()))
+    print("record: fixture bytes %d, zip bytes %d" % (
+        sum(len(b) for b in run.fixtures.values()),
+        sum(len(zip_entries(e)) for e in part_archives(run.fixtures).values())))
     print("record: interned keys %d paths %d values %d" % (
         len(run.interner.keys.items), len(run.interner.paths.items),
         len(run.interner.values.items)))

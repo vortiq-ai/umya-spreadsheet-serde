@@ -120,7 +120,13 @@ pub(super) fn role_moves(data: &DataRules, before: &Element) -> Result<Vec<RoleM
         let present = before.child(role_name(to)).is_some();
         if let RoleAction::MoveFrom(from) = *cell(rule.get(presence(present)))? {
             if before.child(role_name(from)).is_none() {
-                return Err(Unresolved::Rejected);
+                // An absent role that takes the content of a role the series
+                // lacks stays absent, as Excel leaves a pie's categories
+                // absent for a series with neither categories nor x values.
+                if present {
+                    return Err(Unresolved::Rejected);
+                }
+                continue;
             }
             moves.push(RoleMove { from, to });
         }
@@ -334,14 +340,17 @@ pub(super) fn after(
         match *cell(rule.get(has(name)))? {
             RoleAction::Keep => (),
             RoleAction::Remove => series.remove(name),
-            RoleAction::MoveFrom(from) => {
-                let mut moved = before
-                    .child(role_name(from))
-                    .ok_or(Unresolved::Rejected)?
-                    .clone();
-                format!("c:{name}").clone_into(&mut moved.name);
-                series.put(moved);
-            }
+            RoleAction::MoveFrom(from) => match before.child(role_name(from)) {
+                Some(source) => {
+                    let mut moved = source.clone();
+                    format!("c:{name}").clone_into(&mut moved.name);
+                    series.put(moved);
+                }
+                // An absent role takes nothing from a role the series lacks,
+                // as `role_moves` reads it.
+                None if before.child(name).is_none() => (),
+                None => return Err(Unresolved::Rejected),
+            },
             RoleAction::OnesPerPoint => series.put(ones(entry.values.ok_or(Unresolved::Rejected)?)),
         }
     }
