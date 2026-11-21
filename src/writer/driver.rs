@@ -80,6 +80,80 @@ where
     write_text_node_no_escape(writer, partial_escape(data.into()));
 }
 
+/// How a cache point's text is escaped: as `write_text_node` escapes text, or
+/// as `write_text_node_conversion` does, which leaves quotes as they are.
+pub(crate) enum PointEscape {
+    Text,
+    Conversion,
+}
+
+impl PointEscape {
+    fn apply(self, text: &str) -> Cow<'_, str> {
+        match self {
+            Self::Text => quick_xml::escape::escape(text),
+            Self::Conversion => partial_escape(text),
+        }
+    }
+}
+
+/// Writes one chart cache point, `<c:pt idx="N"><c:v>value</c:v></c:pt>`, or
+/// `<c:pt idx="N"></c:pt>` without a value: the bytes that `write_start_tag`,
+/// `write_text_node` (or `write_text_node_conversion`, as `escape` says) and
+/// `write_end_tag` write, without building a tag, its attributes or the index
+/// text. A chart cache holds one point per cell, so allocations per point
+/// would dominate writing a large chart.
+pub(crate) fn write_cache_point(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    index: usize,
+    value: Option<&str>,
+    escape: PointEscape,
+) {
+    let out = writer.get_mut();
+    write!(out, "<c:pt idx=\"{index}\">").unwrap();
+    if let Some(value) = value {
+        out.write_all(b"<c:v>").unwrap();
+        out.write_all(escape.apply(value).as_bytes()).unwrap();
+        out.write_all(b"</c:v>").unwrap();
+    }
+    out.write_all(b"</c:pt>").unwrap();
+}
+
+/// Writes a numeric cell value as one cache point, the bytes
+/// `write_cache_point` writes for its `value_for_xml()` text, which holds
+/// nothing to escape, and returns `true`. Writes nothing for any other value
+/// and returns `false`.
+pub(crate) fn write_cache_number(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    index: usize,
+    value: &crate::structs::CellValue,
+) -> bool {
+    if value.value_number().is_none() {
+        return false;
+    }
+    let out = writer.get_mut();
+    write!(out, "<c:pt idx=\"{index}\"><c:v>").unwrap();
+    let written = value.write_number_for_xml(out);
+    out.write_all(b"</c:v></c:pt>").unwrap();
+    written
+}
+
+/// Writes one text cache point whose text is `runs` in order: the bytes
+/// `write_cache_point` writes for their concatenation with `PointEscape::Text`,
+/// whose escape replaces each markup character on its own.
+pub(crate) fn write_cache_text<'a>(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    index: usize,
+    runs: impl Iterator<Item = &'a str>,
+) {
+    let out = writer.get_mut();
+    write!(out, "<c:pt idx=\"{index}\"><c:v>").unwrap();
+    for run in runs {
+        out.write_all(PointEscape::Text.apply(run).as_bytes())
+            .unwrap();
+    }
+    out.write_all(b"</c:v></c:pt>").unwrap();
+}
+
 #[inline]
 pub(crate) fn write_new_line(writer: &mut Writer<Cursor<Vec<u8>>>) {
     write_text_node(writer, "\r\n");

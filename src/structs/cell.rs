@@ -597,6 +597,21 @@ impl Cell {
         to_formatted_chart_string(&value, code)
     }
 
+    /// The text of a string or rich text cell as borrowed runs, in order:
+    /// `formatted_chart_value()` is their concatenation. `None` for any other
+    /// cell.
+    pub(crate) fn chart_text_runs(&self) -> Option<impl Iterator<Item = &str>> {
+        let (text, runs): (Option<&str>, &[super::TextElement]) = match self.raw_value() {
+            CellRawValue::String(text) => (Some(text), &[]),
+            CellRawValue::RichText(text) => (None, text.rich_text_elements()),
+            _ => return None,
+        };
+        Some(
+            text.into_iter()
+                .chain(runs.iter().map(super::TextElement::text)),
+        )
+    }
+
     pub(crate) fn cache_display(&self, scratch: &mut String) -> CacheDisplay<'_> {
         match self.raw_value() {
             CellRawValue::String(text) => CacheDisplay::Borrowed(text),

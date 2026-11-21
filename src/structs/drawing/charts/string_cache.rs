@@ -118,13 +118,16 @@ use crate::{
         try_attribute_u32,
     },
     structs::{
+        CacheDisplay,
         Cells,
         Workbook,
     },
     writer::driver::{
+        PointEscape,
+        write_cache_point,
+        write_cache_text,
         write_end_tag,
         write_start_tag,
-        write_text_node,
     },
 };
 
@@ -318,6 +321,40 @@ impl<'a> DisplaySource<'a> {
             }
             Self::Unavailable => None,
         }
+    }
+
+    /// `display(index)` without a new string: borrowed from the cell, the
+    /// literal or the streamed values, or written into `scratch`.
+    fn display_in<'s>(&'s self, index: u32, scratch: &'s mut String) -> Option<&'s str> {
+        match self {
+            Self::Literal(text) => (index == 0).then_some(text.as_str()),
+            Self::Cells { cells, range } => {
+                let coordinate = range.as_ref()?.coordinate(index)?;
+                let Some(cell) = cells.get(coordinate) else {
+                    return Some("");
+                };
+                Some(match cell.cache_display(scratch) {
+                    CacheDisplay::Borrowed(text) => text,
+                    CacheDisplay::Scratch => scratch.as_str(),
+                })
+            }
+            Self::Streamed { values, range } => {
+                let coordinate = range.as_ref()?.coordinate(index)?;
+                Some(values.get(&coordinate).map_or("", String::as_str))
+            }
+            Self::Unavailable => None,
+        }
+    }
+
+    /// The borrowed runs of the string or rich text cell the point `index`
+    /// shows, when the sheet's cells are loaded.
+    fn text_runs(&self, index: u32) -> Option<impl Iterator<Item = &str>> {
+        let Self::Cells { cells, range } = self else {
+            return None;
+        };
+        cells
+            .get(range.as_ref()?.coordinate(index)?)?
+            .chart_text_runs()
     }
 }
 
@@ -705,11 +742,10 @@ impl StringCache {
         } else {
             let address = formula.address();
             match wb.sheet_by_name(&unescape_sheet_name(address.sheet_name())) {
-                Ok(sheet) => sheet
-                    .cells_crate()
-                    .iter_all_cells_by_range_sorted_by_row(&address.range().range())
-                    .map(|cell| cell.map_or_else(String::new, Cell::formatted_chart_value))
-                    .collect(),
+                Ok(sheet) => {
+                    Self::write_cells(writer, name, sheet.cells_crate(), &address.range().range());
+                    return;
+                }
                 Err(_) => vec![],
             }
         };
@@ -726,15 +762,37 @@ impl StringCache {
         );
 
         for (idx, cell_value) in cell_value_list.into_iter().enumerate() {
-            // c:pt
-            write_start_tag(writer, "c:pt", vec![("idx", idx.to_string()).into()], false);
+            write_cache_point(writer, idx, Some(&cell_value), PointEscape::Text);
+        }
+    }
 
-            // c:v
-            write_start_tag(writer, "c:v", vec![], false);
-            write_text_node(writer, cell_value);
-            write_end_tag(writer, "c:v");
-
-            write_end_tag(writer, "c:pt");
+    /// Writes the start tag, the point count and one point per cell of
+    /// `range`, each from the cell's own text where it has one, without a new
+    /// string per point.
+    fn write_cells(writer: &mut Writer<Cursor<Vec<u8>>>, name: &str, cells: &Cells, range: &str) {
+        write_start_tag(writer, name, vec![], false);
+        let count = cells.iter_all_cells_by_range_sorted_by_row(range).count();
+        write_start_tag(
+            writer,
+            "c:ptCount",
+            vec![("val", count.to_string()).into()],
+            true,
+        );
+        let mut scratch = String::new();
+        for (idx, cell) in cells
+            .iter_all_cells_by_range_sorted_by_row(range)
+            .enumerate()
+        {
+            let Some(cell) = cell else {
+                write_cache_point(writer, idx, Some(""), PointEscape::Text);
+                continue;
+            };
+            if let Some(runs) = cell.chart_text_runs() {
+                write_cache_text(writer, idx, runs);
+                continue;
+            }
+            let display = cell.cache_display(&mut scratch);
+            write_cache_point(writer, idx, Some(display.text(&scratch)), PointEscape::Text);
         }
     }
 
@@ -765,15 +823,21 @@ impl StringCache {
         }
 
         let mut exceptions = cache.exceptions().iter().peekable();
+        let mut scratch = String::new();
         for index in cache.indices() {
-            let display = current.display(index);
-            let value = match exceptions.next_if(|exception| exception.index() == index) {
-                Some(exception) if display.as_deref() == exception.loaded_display() => {
-                    exception.value().map(str::to_string)
+            let exception = exceptions.next_if(|exception| exception.index() == index);
+            if exception.is_none() {
+                if let Some(runs) = current.text_runs(index) {
+                    write_cache_text(writer, index as usize, runs);
+                    continue;
                 }
+            }
+            let display = current.display_in(index, &mut scratch);
+            let value = match exception {
+                Some(exception) if display == exception.loaded_display() => exception.value(),
                 _ => Some(display.unwrap_or_default()),
             };
-            write_point(writer, &index.to_string(), value.as_deref());
+            write_cache_point(writer, index as usize, value, PointEscape::Text);
         }
     }
 }
@@ -1095,20 +1159,6 @@ pub(crate) fn materialize_deferred_cache(
             _ => (),
         }
     }
-}
-
-fn write_point(writer: &mut Writer<Cursor<Vec<u8>>>, index: &str, value: Option<&str>) {
-    // c:pt
-    write_start_tag(writer, "c:pt", vec![("idx", index).into()], false);
-
-    // c:v
-    if let Some(value) = value {
-        write_start_tag(writer, "c:v", vec![], false);
-        write_text_node(writer, value);
-        write_end_tag(writer, "c:v");
-    }
-
-    write_end_tag(writer, "c:pt");
 }
 
 #[cfg(test)]

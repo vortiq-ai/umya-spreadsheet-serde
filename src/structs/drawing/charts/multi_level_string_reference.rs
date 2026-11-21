@@ -10,9 +10,10 @@ use super::Formula;
 use crate::{
     reader::driver::local_name,
     writer::driver::{
+        PointEscape,
+        write_cache_point,
         write_end_tag,
         write_start_tag,
-        write_text_node_conversion,
     },
 };
 
@@ -361,16 +362,12 @@ impl MultiLevelStringCache {
         for level in &self.levels {
             write_start_tag(writer, "c:lvl", vec![], false);
             for point in level {
-                write_start_tag(
+                write_cache_point(
                     writer,
-                    "c:pt",
-                    vec![("idx", point.index.to_string()).into()],
-                    false,
+                    point.index as usize,
+                    Some(&point.value),
+                    PointEscape::Conversion,
                 );
-                write_start_tag(writer, "c:v", vec![], false);
-                write_text_node_conversion(writer, &point.value);
-                write_end_tag(writer, "c:v");
-                write_end_tag(writer, "c:pt");
             }
             write_end_tag(writer, "c:lvl");
         }

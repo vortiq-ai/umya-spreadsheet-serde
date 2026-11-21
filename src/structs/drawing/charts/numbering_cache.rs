@@ -23,9 +23,11 @@ use crate::{
         Workbook,
     },
     writer::driver::{
+        PointEscape,
+        write_cache_number,
+        write_cache_point,
         write_end_tag,
         write_start_tag,
-        write_text_node,
     },
 };
 
@@ -124,11 +126,9 @@ impl NumberingCache {
         );
 
         for (idx, cell_value) in cell_value_list.into_iter().enumerate() {
-            // c:pt
-            write_start_tag(writer, "c:pt", vec![("idx", idx.to_string()).into()], false);
-
-            // c:v
-            write_start_tag(writer, "c:v", vec![], false);
+            if write_cache_number(writer, idx, cell_value) {
+                continue;
+            }
             match cell_value.raw_value() {
                 CellRawValue::Error(
                     CellErrorType::Div0
@@ -140,13 +140,15 @@ impl NumberingCache {
                 ) => {
                     // Excel saves these worksheet errors as zero in numeric
                     // caches.
-                    write_text_node(writer, "0");
+                    write_cache_point(writer, idx, Some("0"), PointEscape::Text);
                 }
-                _ => write_text_node(writer, cell_value.value_for_xml()),
+                _ => write_cache_point(
+                    writer,
+                    idx,
+                    Some(&cell_value.value_for_xml()),
+                    PointEscape::Text,
+                ),
             }
-            write_end_tag(writer, "c:v");
-
-            write_end_tag(writer, "c:pt");
         }
 
         if let Some(ext) = extensions {

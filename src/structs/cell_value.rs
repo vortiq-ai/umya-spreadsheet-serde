@@ -78,6 +78,21 @@ impl CellValue {
         self.raw_value.to_string().into()
     }
 
+    /// Writes `value_for_xml()`'s text of a numeric value into `out`, with
+    /// the same two spellings, without building a string, and returns `true`.
+    /// Writes nothing for any other value and returns `false`.
+    pub(crate) fn write_number_for_xml(&self, out: &mut impl std::io::Write) -> bool {
+        let CellRawValue::Numeric(value) = self.raw_value() else {
+            return false;
+        };
+        if value.is_finite() && value.abs() >= 1e308 {
+            write!(out, "{value:e}").unwrap();
+        } else {
+            write!(out, "{value}").unwrap();
+        }
+        true
+    }
+
     pub(crate) fn value_for_xml(&self) -> Cow<'static, str> {
         // Excel accepts these magnitudes in scientific notation, but rejects
         // their 309-digit decimal encodings in cells and numeric chart caches.
