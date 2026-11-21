@@ -123,6 +123,50 @@ impl NamespaceScope {
         Ok(result)
     }
 
+    /// Whether `name`'s lexical form resolves to `name`: what
+    /// `resolve(name.lexical())` decides, with the same errors, without
+    /// building either name.
+    pub(crate) fn resolves_to(&self, name: &QName, attribute: bool) -> Result<bool, String> {
+        let prefix = name.preferred_prefix.as_deref();
+        if prefix.is_some_and(|prefix| prefix.contains(':')) || name.local_name.contains(':') {
+            // The lexical form splits elsewhere than at the prefix.
+            return self
+                .resolve(name.lexical().as_bytes(), attribute)
+                .map(|resolved| resolved == *name);
+        }
+        if !valid_ncname(&name.local_name) || prefix.is_some_and(|p| !valid_ncname(p)) {
+            return Err("invalid QName".into());
+        }
+        let uri = if attribute && prefix.is_none() {
+            ""
+        } else {
+            match self
+                .bindings
+                .iter()
+                .rev()
+                .find(|(p, _)| p.as_deref() == prefix)
+            {
+                Some((_, uri)) => uri.as_str(),
+                None if prefix.is_none() => "",
+                None => return Err(format!("undeclared prefix in {}", name.lexical())),
+            }
+        };
+        if prefix.is_some() && uri.is_empty() {
+            return Err("prefixed QName has empty namespace".into());
+        }
+        Ok(uri == name.namespace_uri)
+    }
+
+    /// Whether `prefix` is bound to `uri` here: what
+    /// `effective_bindings().contains(&(prefix, uri))` decides.
+    pub(crate) fn binds(&self, prefix: Option<&str>, uri: &str) -> bool {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(p, _)| p.as_deref() == prefix)
+            .is_some_and(|(_, bound)| bound == uri)
+    }
+
     pub fn resolve(&self, raw: &[u8], attribute: bool) -> Result<QName, String> {
         let raw = std::str::from_utf8(raw).map_err(|e| e.to_string())?;
         let (prefix, local) = match raw.split_once(':') {

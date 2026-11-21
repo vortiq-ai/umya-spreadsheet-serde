@@ -208,6 +208,60 @@ fn a_sheet_named_only_by_reference_metadata_is_not_read() {
     assert_eq!(converted, chart_part(&readable));
 }
 
+/// Converts the same file read eagerly and read lazily with the sheet at
+/// `corrupt` unreadable, to the first target the eager read converts with a
+/// change: the conversion reads no cell of that sheet, so both give one report
+/// and one chart part.
+fn assert_converts_without_reading(file: &[u8], corrupt: usize) -> String {
+    let (target, expected) = ChartSubtype::ALL
+        .iter()
+        .find_map(|&target| {
+            convert(&mut read(file, true), target)
+                .ok()
+                .filter(|report| !report.changes().is_empty())
+                .map(|report| (target, report))
+        })
+        .expect("the workbook converts to some target");
+    let mut readable = read(file, true);
+    let mut lazy = read(&with_corrupt_sheet(file, corrupt), false);
+    convert(&mut readable, target).unwrap();
+    assert_eq!(convert(&mut lazy, target).unwrap(), expected, "{target:?}");
+    assert!(
+        lazy.sheet(corrupt).is_err(),
+        "the conversion read the sheet"
+    );
+    let converted = chart_part(&lazy);
+    assert_eq!(converted, chart_part(&readable), "{target:?}");
+    converted
+}
+
+/// A multi-level category reference writes its own cache and reads no cells:
+/// the sheet it names may be one that cannot be read.
+#[test]
+fn a_sheet_named_only_by_a_multi_level_reference_is_not_read() {
+    let levels = concat!(
+        r#"<c:cat><c:multiLvlStrRef><c:f>Meta!$A$2:$B$7</c:f><c:multiLvlStrCache>"#,
+        r#"<c:ptCount val="6"/><c:lvl><c:pt idx="0"><c:v>C1</c:v></c:pt></c:lvl>"#,
+        r#"</c:multiLvlStrCache></c:multiLvlStrRef></c:cat>"#
+    );
+    // Every series is multi-level: a mixture with single-level categories is
+    // a different case, and the conversion waits on it.
+    let mut xml = part_xml(COLUMNS);
+    let mut from = 0;
+    while let Some(found) = xml[from..].find("<c:cat>") {
+        let start = from + found;
+        let end = start + xml[start..].find("</c:cat>").unwrap() + "</c:cat>".len();
+        xml = format!("{}{levels}{}", &xml[..start], &xml[end..]);
+        from = start + levels.len();
+    }
+    let file = file_with_chart_sheet(&xml, &["Meta"]);
+    let converted = assert_converts_without_reading(&file, 2);
+    assert!(
+        converted.contains("<c:f>Meta!$A$2:$B$7</c:f>"),
+        "{converted}"
+    );
+}
+
 /// The first series' values formula.
 fn values_formula(book: &mut Workbook) -> &mut Formula {
     let ChartGroupMut::BarChart(group) = chart(book)

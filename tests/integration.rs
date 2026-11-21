@@ -75,6 +75,8 @@ mod chart_ex_scalar_values;
 mod chart_ex_sheet_deletion;
 #[path = "chart_ex_string_expressions.rs"]
 mod chart_ex_string_expressions;
+#[path = "chart_extension_checks.rs"]
+mod chart_extension_checks;
 #[path = "chart_extension_content.rs"]
 mod chart_extension_content;
 #[path = "chart_extensions.rs"]

@@ -27,6 +27,8 @@ mod classes;
 mod classification;
 #[path = "chart_conversion/conversion.rs"]
 mod conversion;
+#[path = "chart_conversion/created_axes.rs"]
+mod created_axes;
 #[path = "support/chart_xml_fixture.rs"]
 mod fixture;
 #[path = "chart_conversion/measured.rs"]

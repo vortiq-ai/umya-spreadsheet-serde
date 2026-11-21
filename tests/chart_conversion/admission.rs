@@ -10,6 +10,7 @@ use umya_spreadsheet::{
     helper::chart_conversion::{
         ChangeKind,
         ChartConversionRefusal,
+        ChartSource,
         ChartSubtype,
         ConvertedPart,
     },
@@ -54,13 +55,18 @@ fn converting_target(xml: &str) -> ChartSubtype {
         .expect("the measured part converts to some target")
 }
 
-/// `edited` is refused as `Unsupported` for `target` and keeps its bytes.
-fn refused_unchanged(edited: &str, target: ChartSubtype, what: &str) {
+/// `edited`, a chart read as `source`, is refused as `Unsupported` for
+/// `target` and keeps its bytes.
+fn refused_unchanged(edited: &str, source: ChartSubtype, target: ChartSubtype, what: &str) {
     let mut book = workbook_with(edited);
     let before = chart_part(&book);
     let refusal = convert(&mut book, target).err();
     assert!(
-        matches!(refusal, Some(ChartConversionRefusal::Unsupported { to, .. }) if to == target),
+        matches!(
+            refusal,
+            Some(ChartConversionRefusal::Unsupported { from: Some(from), to })
+                if from == ChartSource::Subtype(source) && to == target
+        ),
         "{what}: {refusal:?}"
     );
     assert_eq!(
@@ -83,7 +89,7 @@ fn a_chart_without_series_is_refused_and_left_alone() {
         let end = start + edited[start..].find("</c:ser>").unwrap() + "</c:ser>".len();
         edited.replace_range(start..end, "");
     }
-    refused_unchanged(&edited, target, "no series");
+    refused_unchanged(&edited, ChartSubtype::ClusteredColumn, target, "no series");
 }
 
 #[test]
@@ -96,7 +102,7 @@ fn a_surface_without_band_formats_is_refused_and_left_alone() {
         |end| end + "</c:bandFmts>".len(),
     );
     let edited = format!("{}{}", &xml[..start], &xml[end..]);
-    refused_unchanged(&edited, target, "no band formats");
+    refused_unchanged(&edited, ChartSubtype::Surface3D, target, "no band formats");
 }
 
 /// Section 4.2: an automatic wireframe surface converts with three series;
@@ -108,7 +114,12 @@ fn an_unmeasured_restricted_shape_waits_and_leaves_the_chart_alone() {
     let last = xml.rfind("<c:ser>").unwrap();
     let end = last + xml[last..].find("</c:ser>").unwrap() + "</c:ser>".len();
     let edited = format!("{}{}", &xml[..last], &xml[end..]);
-    refused_unchanged(&edited, target, "two automatic wireframe series");
+    refused_unchanged(
+        &edited,
+        ChartSubtype::WireframeSurface3D,
+        target,
+        "two automatic wireframe series",
+    );
 }
 
 /// Two series with one `c:idx` cannot be told apart; series whose `c:order`
@@ -118,9 +129,19 @@ fn series_identity_and_order_are_checked_before_anything_changes() {
     let xml = bare_clustered_column();
     let target = converting_target(&xml);
     let duplicate = replaced(&xml, r#"<c:idx val="1"/>"#, r#"<c:idx val="0"/>"#);
-    refused_unchanged(&duplicate, target, "a repeated c:idx");
+    refused_unchanged(
+        &duplicate,
+        ChartSubtype::ClusteredColumn,
+        target,
+        "a repeated c:idx",
+    );
     let reordered = replaced(&xml, r#"<c:order val="0"/>"#, r#"<c:order val="5"/>"#);
-    refused_unchanged(&reordered, target, "c:order out of plot-area order");
+    refused_unchanged(
+        &reordered,
+        ChartSubtype::ClusteredColumn,
+        target,
+        "c:order out of plot-area order",
+    );
 }
 
 /// A measured part by its fixture path.
@@ -166,7 +187,12 @@ fn x_values_select_by_their_cell_values() {
     );
     let refusal = convert(&mut book, target).err();
     assert!(
-        matches!(refusal, Some(ChartConversionRefusal::Unsupported { to, .. }) if to == target),
+        matches!(
+            refusal,
+            Some(ChartConversionRefusal::Unsupported { from: Some(from), to })
+                if from == ChartSource::Subtype(ChartSubtype::ScatterLines)
+                    && to == target
+        ),
         "x = 5..10: {refusal:?}"
     );
     assert_eq!(
