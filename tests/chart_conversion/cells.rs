@@ -244,8 +244,9 @@ fn a_sheet_named_only_by_a_multi_level_reference_is_not_read() {
         r#"<c:ptCount val="6"/><c:lvl><c:pt idx="0"><c:v>C1</c:v></c:pt></c:lvl>"#,
         r#"</c:multiLvlStrCache></c:multiLvlStrRef></c:cat>"#
     );
-    // Every series is multi-level: a mixture with single-level categories is
-    // a different case, and the conversion waits on it.
+    // Every series is multi-level, so only multi-level references name the
+    // sheet. Multi-level and single-level text are one class, so a mixture of
+    // them converts as well.
     let mut xml = part_xml(COLUMNS);
     let mut from = 0;
     while let Some(found) = xml[from..].find("<c:cat>") {

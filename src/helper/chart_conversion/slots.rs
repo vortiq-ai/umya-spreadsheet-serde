@@ -108,34 +108,47 @@ pub(super) enum ValueCountClass {
     Other,
 }
 
-/// What the categories hold, after the data roles are remapped: moved x values
-/// are categories too.
+/// What a series' categories or x values hold. Categories are classed by
+/// their cache's format code as written (`FORMAT_CLASSES`); x values, and
+/// moved x values, keep the folded classes `DateSerialReference` and `Other`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum CategoryDataClass {
     Absent,
+    /// Categories: a cached string reference, a string literal or a
+    /// multi-level reference. X values: a cached string reference.
     TextReference,
-    /// Numbers formatted `yyyy\-mm\-dd`.
+    /// X values formatted `yyyy\-mm\-dd`.
     DateSerialReference,
     /// Numbers formatted `General`.
     GeneralReference,
+    /// Any other x values.
     Other,
+    /// Categories formatted with a listed date code at a listed spacing.
+    Date,
+    /// Categories formatted with a listed number code at a listed spacing.
+    Number,
+    /// A number literal.
+    NumberLiteral,
+    /// Numeric categories no round measured: a code or spacing that is not
+    /// listed, a number format that is not known, or a reference with no
+    /// numbers to read.
+    Unmeasured,
 }
 
 /// The spacing of numeric categories.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DateSpacing {
-    /// Text or absent categories.
+    /// Text, absent, date or unmeasured categories: dates take their unit
+    /// from the smallest gap, so no spacing selects their cells.
     Absent,
     /// Consecutive serials; `General` numbers only as exactly 1 to N.
     Daily,
     /// The first day of consecutive months.
     Monthly,
-    /// Any other distinct whole days whose smallest gap is under 28 days:
-    /// Excel gives such dates a base unit of days.
+    /// Any other numbers; dates are other when they fall on distinct days,
+    /// whatever their gap.
     Other,
-    /// Any other whole days whose smallest gap is 28 days or more, which
-    /// Excel gives months or years, or that repeat a day, which no
-    /// measurement covers.
+    /// Dates that repeat a day, which no measurement covers.
     Wide,
 }
 
@@ -369,11 +382,15 @@ impl<T> ByDateSpacing<T> {
 
 #[derive(Debug)]
 pub(super) struct ByCategoryData<T> {
-    pub(super) absent:      RuleCell<T>,
-    pub(super) text:        RuleCell<T>,
-    pub(super) date_serial: RuleCell<T>,
-    pub(super) general:     RuleCell<T>,
-    pub(super) other:       RuleCell<T>,
+    pub(super) absent:         RuleCell<T>,
+    pub(super) text:           RuleCell<T>,
+    pub(super) date_serial:    RuleCell<T>,
+    pub(super) general:        RuleCell<T>,
+    pub(super) other:          RuleCell<T>,
+    pub(super) date:           RuleCell<T>,
+    pub(super) number:         RuleCell<T>,
+    pub(super) number_literal: RuleCell<T>,
+    pub(super) unmeasured:     RuleCell<T>,
 }
 
 impl<T> ByCategoryData<T> {
@@ -384,6 +401,10 @@ impl<T> ByCategoryData<T> {
             CategoryDataClass::DateSerialReference => &self.date_serial,
             CategoryDataClass::GeneralReference => &self.general,
             CategoryDataClass::Other => &self.other,
+            CategoryDataClass::Date => &self.date,
+            CategoryDataClass::Number => &self.number,
+            CategoryDataClass::NumberLiteral => &self.number_literal,
+            CategoryDataClass::Unmeasured => &self.unmeasured,
         }
     }
 }

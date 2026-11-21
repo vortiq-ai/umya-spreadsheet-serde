@@ -28,6 +28,10 @@ use super::{
 /// Three series of first-of-month categories, 2023-01-01 to 2023-06-01, in
 /// `Data!$AN$2:$AN$7`.
 const MONTHLY_RADAR: &str = "before/conversions5/monthly-dates/radar.chart.xml";
+/// The same categories formatted `mmm\-yy`, a code Excel was measured on only
+/// on firsts of consecutive months, so whether dates are such firsts decides
+/// whether they convert.
+const MONTH_YEAR_RADAR: &str = "before/conversions9/date-format/radar@bare-3s-date-mmmyy.chart.xml";
 const CATEGORY_COLUMN: u32 = 40;
 
 /// The chart as a typed value.
@@ -65,10 +69,10 @@ fn renumbered(series: &str, from: usize, to: usize) -> String {
     )
 }
 
-/// The monthly radar with its categories set to `serials`, in a workbook of
+/// The radar `fixture` with its categories set to `serials`, in a workbook of
 /// the 1904 date system when `date1904` holds.
-fn radar_with_categories(serials: [f64; 6], date1904: bool) -> Workbook {
-    let mut book = workbook_with(&part_xml(MONTHLY_RADAR));
+fn radar_with_categories(fixture: &str, serials: [f64; 6], date1904: bool) -> Workbook {
+    let mut book = workbook_with(&part_xml(fixture));
     book.set_date1904(date1904);
     book.sheet_mut(0).unwrap().chart_collection_mut()[0]
         .chart_space_mut()
@@ -107,39 +111,75 @@ fn daily_axis() -> String {
     )
 }
 
-/// 1904-01-01 to 1904-06-01, 1904 being a leap year, are serials 0, 31, 60,
-/// 91, 121 and 152 of the 1904 date system.
-#[test]
-fn a_1904_workbook_reads_its_dates_in_the_1904_system() {
-    let mut book = radar_with_categories([0.0, 31.0, 60.0, 91.0, 121.0, 152.0], true);
-    assert_eq!(line_date_axis(&mut book), monthly_axis());
+/// The axis Excel writes for the radar's dates a year or more apart: the
+/// same date axis by years.
+fn yearly_axis() -> String {
+    monthly_axis().replace(
+        r#"<c:baseTimeUnit val="months"/>"#,
+        r#"<c:baseTimeUnit val="years"/>"#,
+    )
 }
 
-/// Excel's 1900 system counts 1900-01-01 as 1 and keeps a 29 February 1900 at
-/// 60, so 1 March 1900 is 61. Categories with 60 in place of 61 are therefore
-/// not monthly, and their smallest gap is 28 days: Excel gives them months;
-/// the table does not hold that cell yet.
+/// The axis Excel writes for the `mmm\-yy` radar on a line: a date axis by
+/// months in that code
+/// (`before/conversions9/date-format/radar@bare-3s-date-mmmyy.chart.xml` into
+/// `line`).
+fn month_year_axis() -> String {
+    let axis = line_date_axis(&mut workbook_with(&part_xml(MONTH_YEAR_RADAR)));
+    assert!(axis.contains(r#"<c:baseTimeUnit val="months"/>"#), "{axis}");
+    assert!(axis.contains(r#"formatCode="mmm\-yy""#), "{axis}");
+    axis
+}
+
+/// 1904-01-01 to 1904-06-01, 1904 being a leap year, are serials 0, 31, 60,
+/// 91, 121 and 152 of the 1904 date system: firsts of consecutive months,
+/// where dates formatted `mmm\-yy` convert. Read in the 1900 system they are
+/// not, and wait.
 #[test]
-fn the_1900_date_system_keeps_29_february_1900() {
-    let mut book = radar_with_categories([1.0, 32.0, 61.0, 92.0, 122.0, 153.0], false);
-    assert_eq!(line_date_axis(&mut book), monthly_axis());
-    let mut book = radar_with_categories([1.0, 32.0, 60.0, 92.0, 122.0, 153.0], false);
+fn a_1904_workbook_reads_its_dates_in_the_1904_system() {
+    let serials = [0.0, 31.0, 60.0, 91.0, 121.0, 152.0];
+    let mut book = radar_with_categories(MONTH_YEAR_RADAR, serials, true);
+    assert_eq!(line_date_axis(&mut book), month_year_axis());
+    let mut book = radar_with_categories(MONTH_YEAR_RADAR, serials, false);
     assert_refused(&mut book);
 }
 
-/// A serial falls on the day its whole part names, the day the measured
-/// classes were filed by: 44926.999995 is the end of 31 December 2022, not
-/// 1 January 2023, so categories that start there are not monthly, and their
-/// smallest gap is 28 days: Excel gives them months; the table does not hold
-/// that cell yet.
+/// Excel's 1900 system counts 1900-01-01 as 1 and keeps a 29 February 1900 at
+/// 60, so 1 March 1900 is 61. As ISO dates both sets convert, since a
+/// smallest gap of 28 days or more gives a date axis by months (the radars
+/// `spacing-serials-1-32-61` and `spacing-serials-1-32-60` of
+/// `before/conversions9c/spacing` into `line`); formatted `mmm\-yy` they
+/// convert with 61 and wait with 60.
+#[test]
+fn the_1900_date_system_keeps_29_february_1900() {
+    let firsts = [1.0, 32.0, 61.0, 92.0, 122.0, 153.0];
+    let leap = [1.0, 32.0, 60.0, 92.0, 122.0, 153.0];
+    for serials in [firsts, leap] {
+        let mut book = radar_with_categories(MONTHLY_RADAR, serials, false);
+        assert_eq!(line_date_axis(&mut book), monthly_axis(), "{serials:?}");
+    }
+    let mut book = radar_with_categories(MONTH_YEAR_RADAR, firsts, false);
+    assert_eq!(line_date_axis(&mut book), month_year_axis());
+    let mut book = radar_with_categories(MONTH_YEAR_RADAR, leap, false);
+    assert_refused(&mut book);
+}
+
+/// A serial falls on the day its whole part names: 44926.999995 is the end of
+/// 31 December 2022, not 1 January 2023, so categories that start there are
+/// not firsts of months. As ISO dates their smallest gap in whole days, 28,
+/// gives months
+/// (`before/conversions9c/spacing/radar@bare-3s-spacing-late-start.chart.xml`
+/// into `line`); formatted `mmm\-yy` they wait.
 #[test]
 fn a_serial_falls_on_the_day_of_its_whole_part() {
     let months = [44927.0, 44958.0, 44986.0, 45017.0, 45047.0, 45078.0];
-    let mut book = radar_with_categories(months, false);
-    assert_eq!(line_date_axis(&mut book), monthly_axis());
     let mut late = months;
     late[0] = 44926.999995;
-    let mut book = radar_with_categories(late, false);
+    let mut book = radar_with_categories(MONTHLY_RADAR, late, false);
+    assert_eq!(line_date_axis(&mut book), monthly_axis());
+    let mut book = radar_with_categories(MONTH_YEAR_RADAR, months, false);
+    assert_eq!(line_date_axis(&mut book), month_year_axis());
+    let mut book = radar_with_categories(MONTH_YEAR_RADAR, late, false);
     assert_refused(&mut book);
 }
 
@@ -148,36 +188,60 @@ fn a_serial_falls_on_the_day_of_its_whole_part() {
 #[test]
 fn weekly_dates_get_a_date_axis_by_days() {
     let weeks = [44927.0, 44934.0, 44941.0, 44948.0, 44955.0, 44962.0];
-    let mut book = radar_with_categories(weeks, false);
+    let mut book = radar_with_categories(MONTHLY_RADAR, weeks, false);
     assert_eq!(line_date_axis(&mut book), daily_axis());
 }
 
-/// Dates a year apart have a smallest gap of 365 days or more, which Excel
-/// gives a base unit of years: no cell holds it yet, so they are refused.
+/// Dates whose smallest gap is 365 days or more get a date axis by years, and
+/// a gap of 364 days still one by months
+/// (`before/conversions9c/spacing/radar@bare-3s-spacing-year-1st.chart.xml`,
+/// `before/conversions9c/spacing/radar@bare-3s-spacing-gap-365.chart.xml` and
+/// `before/conversions9c/spacing/radar@bare-3s-spacing-gap-364.chart.xml` into
+/// `line`).
 #[test]
-fn yearly_dates_wait_for_a_measured_cell() {
-    let years = [44927.0, 45292.0, 45658.0, 46023.0, 46388.0, 46753.0];
-    let mut book = radar_with_categories(years, false);
-    assert_refused(&mut book);
+fn yearly_dates_get_a_date_axis_by_years() {
+    for (serials, expected) in [
+        (
+            [44927.0, 45292.0, 45658.0, 46023.0, 46388.0, 46753.0],
+            yearly_axis(),
+        ),
+        (
+            [45000.0, 45730.0, 46095.0, 47190.0, 47920.0, 49380.0],
+            yearly_axis(),
+        ),
+        (
+            [45000.0, 45728.0, 46092.0, 47184.0, 47912.0, 49368.0],
+            monthly_axis(),
+        ),
+    ] {
+        let mut book = radar_with_categories(MONTHLY_RADAR, serials, false);
+        assert_eq!(line_date_axis(&mut book), expected, "{serials:?}");
+    }
 }
 
-/// Dates that repeat a day have no gap Excel's base unit was measured on, so
-/// they are refused.
+/// Dates that repeat a day have no smallest gap Excel's base unit was
+/// measured on: no round converted them, and on a line, where the measured
+/// classes' axes differ, they wait.
 #[test]
 fn repeated_dates_wait_for_a_measured_cell() {
     let pairs = [44927.0, 44927.0, 44958.0, 44958.0, 44986.0, 44986.0];
-    let mut book = radar_with_categories(pairs, false);
+    let mut book = radar_with_categories(MONTHLY_RADAR, pairs, false);
     assert_refused(&mut book);
 }
 
 /// The gap rule reads the day a serial's whole part names: a time of day
 /// before the first date leaves a smallest gap of 28 whole days, which Excel
-/// gives months, so the categories are refused.
+/// gives months
+/// (`before/conversions9c/spacing/radar@bare-3s-spacing-gap-28.chart.xml` into
+/// `line`), not the 27.5 days that would give days, as 27 do
+/// (`before/conversions9c/spacing/radar@bare-3s-spacing-gap-27.chart.xml`).
+/// Both measured gaps are whole days: Excel was not measured on a time of day,
+/// so months here are inferred from whole days, not measured.
 #[test]
 fn a_time_of_day_does_not_shorten_the_smallest_gap() {
     let dates = [45000.5, 45028.0, 45056.0, 45084.0, 45112.0, 45140.0];
-    let mut book = radar_with_categories(dates, false);
-    assert_refused(&mut book);
+    let mut book = radar_with_categories(MONTHLY_RADAR, dates, false);
+    assert_eq!(line_date_axis(&mut book), monthly_axis());
 }
 
 /// Converting `book`'s radar to a line chart is refused and leaves it as it

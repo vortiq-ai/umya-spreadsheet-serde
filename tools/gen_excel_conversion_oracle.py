@@ -2,12 +2,12 @@
 """Writes the Excel-measured oracle that the chart-type conversion tests compare against.
 
 Excel was driven through COM to change the chart type of charts that had been saved and
-reopened first. Seven measurement files hold what it reported: the reopened chart type, a
+reopened first. Eight measurement files hold what it reported: the reopened chart type, a
 feature projection of every part and a path-level XML diff between each before and after part.
 Beside each file sits a directory with the XML parts Excel saved.
 
 This script
-  * accepts only the seven pinned measurement files (sha256 below); an unknown file is an error;
+  * accepts only the eight pinned measurement files (sha256 below); an unknown file is an error;
   * checks every recorded part hash against the saved part, and every recorded feature
     projection and path diff against a re-extraction from that part with the projection below;
   * asserts the 52-name chart type map against each file's own `method.names`;
@@ -61,7 +61,8 @@ Outputs, under tests/fixtures/chart_conversion/
       Added, Removed, Rewritten or MovedTo:<kind>, sorted chart level first, then by series,
       then in `PART_ORDER`. A `paint` value is [part, colour] for each series in series order.
   src/helper/chart_conversion/rules.rs
-      the fitted rule table, `KIND_RULES`, `CONVERSIONS`, `PAIR_RULES` and the created-axis
+      the fitted rule table, `KIND_RULES`, `CONVERSIONS`, `PAIR_RULES`, `FORMAT_CLASSES` (the
+      category format codes a round measured, with their class) and the created-axis
       templates (section 4.4's format).
 
 Slots are the feature projection Excel's driver recorded (`features`) plus the XML-only slots
@@ -108,9 +109,13 @@ PINS = (
     Pin("conversions6.json", "out6",
         "906cbfd0b54cb22ff9fdb8a345327660c7268fa652ca170bc3b81c0692d6d5f1", False),
     Pin("conversions9.json", "out9",
-        "a0801cbc65ec1850dc453060b7ee22105a16faeff5b5381229a1496eb1c4491b", False),
+        "a259d437ed47a90b62e80a433a112be19f46996f323792f34ac77233d01d9257", False),
+    Pin("conversions9c.json", "out9c",
+        "9019cf027704b0b49389ee060d995b93982cbe45df0c0ef58c3016b656721c01", False),
 )
 FIRST_PIN = PINS[0]
+# A measurement's position among the pins: of two equally rich witnesses, the later round's wins.
+PIN_ORDER = {pin.file[:-len(".json")]: n for n, pin in enumerate(PINS)}
 
 # The first measurement holds the 20 native before parts of a different era. Its manifest is
 # the 20 lines `<sha256>  <kind>.chart.xml`, sorted by file name, over the saved bytes.
@@ -1049,8 +1054,8 @@ def serial_date(serial):
 
 def date_spacing(values, general):
     """Daily: consecutive serials (General: exactly 1..N); monthly: consecutive first-of-month;
-    any other numbers by the smallest gap between their whole days, which Excel's base unit
-    follows: under 28 days other, from 28 days or a repeated day wide."""
+    other: any other distinct whole days, whatever their gap, since Excel's base time unit follows
+    the smallest gap (`time_unit`); wide: a repeated whole day, which no measurement covers."""
     if len(values) < 2:
         return "other"
     if general:
@@ -1062,8 +1067,7 @@ def date_spacing(values, general):
             b.year * 12 + b.month - a.year * 12 - a.month == 1 for a, b in zip(dates, dates[1:])):
         return "monthly"
     days = sorted(float(int(v)) for v in values)
-    gaps = [b - a for a, b in zip(days, days[1:])]
-    return "other" if all(g > 0 for g in gaps) and any(g < 28 for g in gaps) else "wide"
+    return "other" if all(a < b for a, b in zip(days, days[1:])) else "wide"
 
 
 def category_class(element):
@@ -1080,6 +1084,79 @@ def category_class(element):
     values = [float(p.find("c:v", NS).text) for p in cache.findall("c:pt", NS)]
     data = {DATE_CODE: "date_serial", "General": "general"}.get(code, "other")
     return data, date_spacing(values, code == "General")
+
+
+def date_code(code):
+    """Whether a number format shows dates: after quoted text, `\\` escapes and `[...]`
+    sections are removed, it holds `y` or `d`, or an `m` not next to `h` or `s`. The rule only
+    proposes a class; the fit confirms it, since every listed code shares its class's cells."""
+    plain = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", code).lower()
+    return bool(re.search(r"[yd]", plain) or re.search(r"(?<![hs:])m(?![s:])", plain))
+
+
+def category_numbers(element):
+    """The numbers of one series' categories: a number literal, which holds its own format code,
+    or a number reference's cache; None for any other categories."""
+    literal = element.find("c:numLit", NS)
+    return literal if literal is not None else element.find("c:numRef/c:numCache", NS)
+
+
+def category_data_class(element):
+    """(data class, spacing) of one series' categories: text in any string form; numbers by the
+    cache's format code as written. General, other number codes and number literals are spaced
+    by 1..N vs other; dates form one class whose unit comes from the smallest gap, so no spacing
+    selects their cells, and fewer than two dates have no gap: they are unmeasured, as is a
+    numeric reference without a cache."""
+    if element is None:
+        return "absent", "absent"
+    if any(element.find(form, NS) is not None
+           for form in ("c:strRef/c:strCache", "c:strLit", "c:multiLvlStrRef")):
+        return "text", "absent"
+    cache = category_numbers(element)
+    if cache is None:
+        return "unmeasured", "absent"
+    values = [float(p.find("c:v", NS).text) for p in cache.findall("c:pt", NS)]
+    counting = date_spacing(values, True)
+    if cache.tag == "{%s}numLit" % NS["c"]:
+        return "number_literal", counting
+    code = cache_code(cache)
+    if code == "General":
+        return "general", counting
+    if date_code(code):
+        return ("date" if time_unit(values) else "unmeasured"), "absent"
+    return "number", counting
+
+
+def cache_code(cache):
+    """A number cache's own format code as written, `""` when it has none."""
+    code = cache.find("c:formatCode", NS)
+    return "" if code is None or code.text is None else code.text
+
+
+def listed_spacing(element):
+    """How a category series' numbers are listed: (whether they are a literal, their format code
+    as written, their spacing), dates spaced by `date_spacing`, General, other numbers and
+    literals by 1..N vs other; `None` for categories that hold no numbers. A literal is listed
+    apart from a reference, since one code can class the two differently."""
+    cache = category_numbers(element) if element is not None else None
+    if cache is None:
+        return None
+    values = [float(p.find("c:v", NS).text) for p in cache.findall("c:pt", NS)]
+    code = cache_code(cache)
+    literal = cache.tag == "{%s}numLit" % NS["c"]
+    dated = not literal and code != "General" and date_code(code)
+    return literal, code, date_spacing(values, not dated)
+
+
+def time_unit(values):
+    """The base time unit Excel gives dates: the smallest gap between their whole days, at least
+    365 days years, at least 28 months, otherwise days; `None` for fewer than two."""
+    days = sorted(float(int(v)) for v in values)
+    gaps = [b - a for a, b in zip(days, days[1:])]
+    if not gaps:
+        return None
+    gap = min(gaps)
+    return "years" if gap >= 365 else "months" if gap >= 28 else "days"
 
 
 def axis_name(axis, primary_ids, xy):
@@ -1444,6 +1521,13 @@ def count_refusal(target, series):
     return None
 
 
+def decider(target, axis_set):
+    """The position of the series whose categories decide axis set `axis_set` of `target`: the
+    first series of the target group on that set. Only a volume stock has a second group, its
+    stock series from series 2 on the secondary set."""
+    return 1 if axis_set and target in VOLUME else 0
+
+
 class Source:
     """A before part with everything its classes need, shared by its observations."""
 
@@ -1481,24 +1565,33 @@ class Source:
         cats = [s.find("c:cat", NS) for s in m.elements.values()]
         xs = [s.find("c:xVal", NS) for s in m.elements.values()]
         self.has_x = all(c is None for c in cats) and any(x is not None for x in xs)
-        self.category = self.uniform([category_class(c) for c in cats])
         self.x_category = self.uniform([category_class(x) for x in xs])
-        # Every series' category data class, unfolded (a series without categories counts as
-        # absent): a pair admits a class only as Excel converted it.
-        self.category_join = "/".join(sorted({category_class(c)[0] for c in cats}))
+        # Every series' category class in series order (a series without categories counts as
+        # absent). Excel takes each category axis's class from the first series of the target
+        # group that uses it, and everything else from series 1's; each series keeps its own
+        # categories, so a pair admits a mixture when it admits every member.
+        self.series_categories = [category_data_class(s.find("c:cat", NS))
+                                  for s in m.elements.values()]
+        self.category_members = sorted({data for data, _ in self.series_categories})
+        self.listed = [listed_spacing(s.find("c:cat", NS)) for s in m.elements.values()]
 
     @staticmethod
     def uniform(classes):
         found = set(classes)
         return found.pop() if len(found) == 1 else ("other", "other")
 
-    def categories_for(self, target):
-        """Category data and spacing after data-role remapping (section 3.1)."""
+    def categories_for(self, target, axis_set=0):
+        """Category data and spacing after data-role remapping (section 3.1): that of the
+        series deciding axis set `axis_set` of `target`, the first series of the target group on
+        it (series 2 for a volume stock's secondary set, series 1 otherwise)."""
         if self.has_x and target not in XY:
             return self.x_category
         if self.has_x:
             return ("absent", "absent")
-        return self.category
+        position = decider(target, axis_set)
+        if position < len(self.series_categories):
+            return self.series_categories[position]
+        return ("absent", "absent")
 
     def x_guard(self, target):
         """Section 12's x-class guard: the refused class, or None."""
@@ -1551,6 +1644,11 @@ def pair_slot(slot):
     return slot.endswith(".gapWidth") or slot.endswith(".firstSliceAng")
 
 
+def axis_set_of(name):
+    """0 for an axis of the primary set, 1 for one of the secondary set."""
+    return 1 if name.endswith(".secondary1") else 0
+
+
 def category_field(slot):
     return slot.startswith("ax.cat") and slot.rsplit(".", 1)[1] in CATEGORY_FIELDS
 
@@ -1561,7 +1659,7 @@ def chart_class(slot, before, source, target):
         cls = before.get("ax.%s._type" % name, "absent")
         cls = "absent" if cls == "absent" else AXIS_CLASS[cls]
         if category_field(slot):
-            cls += "/%s/%s" % source.categories_for(target)
+            cls += "/%s/%s" % source.categories_for(target, axis_set_of(name))
         return cls
     cls = "absent" if before.get(slot) is None else "present"
     if slot.startswith("scene.") or slot == "chart.view3D":
@@ -1813,6 +1911,15 @@ def derived_candidates(source, target, after_root, after):
         if bands is not None and stable(band_slot(bands)) == after.get("g0.bandFmt"):
             out["g0.bandFmt"] = {"bands_from_points" if source.varied
                                  else "bands_from_first_series:%d" % count}
+    # A kept or retyped category axis takes the base time unit the smallest gap between the
+    # deciding categories gives, whatever unit the source axis had, as Excel does for dates
+    # 27 or 28 days, 364 or 365 days apart.
+    for name in AXIS_KEYS:
+        slot = "ax.%s.baseTimeUnit" % name
+        cache = deciding_cache(source, target, axis_set_of(name)) if name.startswith("cat") else None
+        if cache is not None and after.get(slot) == time_unit(
+                [float(p.text) for p in cache.findall("c:pt/c:v", NS)]):
+            out[slot] = {"source_unit"}
     return out
 
 
@@ -1842,6 +1949,57 @@ def joined_categories(root, target_is_xy):
     return "/".join(sorted({category_class(c)[0] for c in cats})) or "absent"
 
 
+def created_class(source, target, axis_set):
+    """The data class a created axis's template is selected by: that of the series deciding its
+    axis set; with x values and no categories, the classes the x values hold."""
+    if source.has_x:
+        return joined_categories(source.model.root, target in XY)
+    return source.categories_for(target, axis_set)[0]
+
+
+def deciding_cache(source, target, axis_set):
+    """The numbers of the categories deciding `axis_set` of `target` (`category_numbers`: a
+    literal's own format code is its code), or None."""
+    if source.has_x or not source.model.elements:
+        return None
+    series = list(source.model.elements.values())
+    position = decider(target, axis_set)
+    cat = series[position].find("c:cat", NS) if position < len(series) else None
+    return None if cat is None else category_numbers(cat)
+
+
+SOURCE_CODE, SOURCE_UNIT = "<source format code>", "<source time unit>"
+
+
+def abstract_source(axis, cache):
+    """A created axis with what Excel copies from the deciding categories marked: its number
+    format code when it equals theirs, its base time unit when it is the one their smallest gap
+    gives. A value that differs stays literal, so a mismatch is still a conflict."""
+    if cache is None:
+        return axis
+    code = cache_code(cache)
+    unit = time_unit([float(p.text) for p in cache.findall("c:pt/c:v", NS)])
+    fmt, base = axis.find("c:numFmt", NS), axis.find("c:baseTimeUnit", NS)
+    copies_code = fmt is not None and fmt.get("formatCode") == code
+    copies_unit = base is not None and unit is not None and base.get("val") == unit
+    if not (copies_code or copies_unit):
+        return axis
+    marked = copy.deepcopy(axis)
+    if copies_code:
+        marked.find("c:numFmt", NS).set("formatCode", SOURCE_CODE)
+    if copies_unit:
+        marked.find("c:baseTimeUnit", NS).set("val", SOURCE_UNIT)
+    return marked
+
+
+def source_values(cache):
+    """What a template's source placeholders take from the deciding categories' cache."""
+    if cache is None:
+        return {}
+    return {"SourceFormatCode": cache_code(cache),
+            "SourceTimeUnit": time_unit([float(p.text) for p in cache.findall("c:pt/c:v", NS)])}
+
+
 class CreatedAxes:
     """Section 4.6: every axis Excel created, its complete subtree and its selector cell."""
 
@@ -1852,8 +2010,11 @@ class CreatedAxes:
         self.conflicts = []
         self.examples = {}
         self.rows = {}
+        # Round 2's shapes as Excel wrote them (before what a category axis copies from its
+        # deciding categories is marked), which give the shapes their names.
         self.round_two = Counter()
         self.first_seen = {}
+        self.members = {}
 
     def add(self, stem, name, order, source, target, before_root, after_root):
         old = {val(a, "axId") for a in before_root.find("c:chart/c:plotArea", NS)
@@ -1875,21 +2036,29 @@ class CreatedAxes:
                 values = [float(p.text) for p in cache.findall("c:pt/c:v", NS)]
                 spacing = date_spacing([float(int(v)) for v in values], False)
             monthly = tag == "dateAx" and spacing == "monthly"
-            selector = (source.row, target, role, sets[val(axis, "axId")], source.styled, monthly,
-                        joined_categories(before_root, target in XY),
+            axis_set = sets[val(axis, "axId")]
+            selector = (source.row, target, role, axis_set, source.styled, monthly,
+                        created_class(source, target, axis_set),
                         "%dx%s" % source.shape if source.shape else None)
-            shape = template_canon(axis)
-            self.shapes.setdefault(shape, axis)
+            literal = template_canon(axis)
+            marked = axis
+            if role == "Category":
+                marked = abstract_source(axis, deciding_cache(source, target, axis_set))
+            shape = literal if marked is axis else template_canon(marked)
+            self.shapes.setdefault(shape, marked)
+            self.members.setdefault(shape, set()).add(literal)
             if selector in self.selected and self.selected[selector] != shape:
                 self.conflicts.append((selector, name))
             self.selected.setdefault(selector, shape)
             self.examples.setdefault(shape, name)
             self.by_round[stem] += 1
             if stem == "conversions2":
-                self.round_two[shape] += 1
+                self.round_two[literal] += 1
                 seen = (order, len(found))
-                self.first_seen[shape] = min(self.first_seen.get(shape, seen), seen)
-            found.append((selector, shape))
+                self.first_seen[literal] = min(self.first_seen.get(literal, seen), seen)
+            # The self-check fills the template with the deciding categories' values, so it
+            # holds the axis against Excel's own, not against the marked shape.
+            found.append((selector, literal))
         self.rows[(stem, name)] = found
 
 
@@ -1920,6 +2089,11 @@ def describe_template(axis):
         parts.append("PERCENT")
     if tag == "catAx" and "numFmt" in children and children["numFmt"].get("formatCode") == DATE_CODE:
         parts.append("ISO_DATES")
+    if "numFmt" in children and children["numFmt"].get("formatCode") == SOURCE_CODE:
+        parts.append("SOURCE_FORMAT")
+    # Excel writes a category axis it creates for absent categories with no number format.
+    if tag in ("catAx", "dateAx") and "numFmt" not in children:
+        parts.append("NO_NUMBER_FORMAT")
     if tag == "valAx":
         parts.append("MID_CATEGORY" if value("crossBetween") == "midCat"
                      else None if "PERCENT" in parts else "BETWEEN")
@@ -1931,18 +2105,32 @@ def describe_template(axis):
 
 
 def name_templates(created):
+    """A name for every created-axis shape. Round 2's shapes keep their names; a shape that marks
+    what round 2's axes copied takes the name of the best-ranked of them it replaces, and the
+    others are named from their subtree."""
     counts = created.round_two
     ranked = sorted(counts, key=lambda shape: (-counts[shape], created.first_seen[shape]))
-    names = dict(zip(ranked, ROUND_TWO_TEMPLATE_NAMES))
     if len(ranked) != len(ROUND_TWO_TEMPLATE_NAMES):
         raise Mismatch("round 2 created %d axis shapes, not %d"
                        % (len(ranked), len(ROUND_TWO_TEMPLATE_NAMES)))
+    given = dict(zip(ranked, ROUND_TWO_TEMPLATE_NAMES))
+    names = {shape: given[shape] for shape in created.shapes if shape in given}
+    taken = set(names.values())
+    for shape in created.shapes:
+        if shape in names:
+            continue
+        for member in ranked:
+            if member in created.members[shape] and given[member] not in taken:
+                names[shape] = given[member]
+                taken.add(given[member])
+                break
     for shape, axis in created.shapes.items():
         if shape not in names:
             name = describe_template(axis)
-            if name in names.values():
+            if name in taken:
                 raise Mismatch("two created-axis shapes named %s" % name)
             names[shape] = name
+            taken.add(name)
     return names
 
 
@@ -2046,7 +2234,7 @@ def open_witnesses(run, admission):
             facts[id(obs.source)] = witness_facts(obs.source)
         score, size, classes = facts[id(obs.source)]
         classes = classes | {"dates-" + joined_spacing(obs.source.model.root, obs.target)}
-        rich = (score, size, len(obs.source.info), int(obs.stem[len("conversions"):]), obs.name)
+        rich = (score, size, len(obs.source.info), PIN_ORDER[obs.stem], obs.name)
         eligible[(obs.source.row, obs.target)].append((rich, classes, obs))
     selected = {pair: max(rows, key=lambda r: r[0]) for pair, rows in eligible.items()}
     every = set().union(*(r[1] for rows in eligible.values() for r in rows))
@@ -2150,10 +2338,11 @@ class Fit:
         # The x values' class (section 12): a pair admits only the classes Excel was measured on.
         if src.has_x and not src.x_guard(target):
             yield ("PAIR", row, target, "x", "%s/%s" % src.x_category), {"keep"}
-        # The categories' classes: a pair admits only the joins Excel was measured on; a mixture
-        # is keyed by its own classes, so it never borrows the cell of one of them.
+        # The categories' classes: a pair admits a class only as Excel converted it, and a
+        # mixture through each of its members, every series keeping its own categories.
         if not src.has_x:
-            yield ("PAIR", row, target, "cat", src.category_join), {"keep"}
+            for data in src.category_members:
+                yield ("PAIR", row, target, "cat", data), {"keep"}
         # The plot area and the group trees follow the source's formatting as the scene sees it.
         scene = style_of(src.scene_styled)
         for slot in ["scene.plotArea"] + ["g%d.%s" % (n, a) for n in range(groups)
@@ -2228,24 +2417,29 @@ def band_point_constants(row, t):
             "bubble_3d": t == "Bubble3DEffect"}
 
 
-def band_copied(src, idx, band, kept_for_values):
-    """Whether a band gives its shape properties to its point: unless they are the series' own,
-    or, with `kept_for_values`, unless they are the series' own and its point holds no value."""
+def band_copied(src, idx, band, own_style):
+    """Whether a band gives its shape properties to its point: always when they are not the
+    series' own; when they are, as the `BandOwnStyle` variant `own_style` says (to the points
+    that hold a value, to the first point only, or to none)."""
     sp = band.find("c:spPr", NS)
     if canon(sp) != canon(src.model.elements[idx].find("c:spPr", NS)):
         return True
-    return kept_for_values and int(val(band, "idx")) < src.info[idx]["values"]
+    at = int(val(band, "idx"))
+    return {"KeptForValues": at < src.info[idx]["values"], "KeptForFirstPoint": at == 0,
+            "Elided": False}[own_style]
 
 
 def band_style_candidates(src, target, idx, after):
-    """Whether Excel gave a band's own-style shape properties to the points that hold a value:
-    `keep` when that reproduces Excel's points, `remove` when leaving them out does."""
+    """Which points Excel gave a band's own-style shape properties: `keep` when giving them to the
+    points that hold a value reproduces Excel's points, `keep_first_point` when giving them to the
+    first point only does (as Excel does for a styled surface whose first series has number
+    categories), `remove` when leaving them out does."""
     fmt = band_point_constants(src.row, target)
     names = ("idx", "fill", "line", "lnW", "dash", "bubble3D")
     count = len(after.get("dPt.idx") or [])
     excel = list(zip(*[after.get("dPt." + name) or [None] * count for name in names]))
-    return {action for action, kept in (("keep", True), ("remove", False))
-            if Replay.band_points(fmt, src, idx, kept) == excel}
+    return {action for action, own_style in BAND_OWN_STYLES.items()
+            if Replay.band_points(fmt, src, idx, own_style) == excel}
 
 
 def point_cells(source, target, idx, before, after, before_trees, after_trees):
@@ -2364,13 +2558,14 @@ def rule_census(run, fit, admission, witnesses):
 # ---------------------------------------------------------------------------------------
 
 # Section 4.3 step 4: the first matching action wins; ties within a prefix go alphabetically.
-ORDER = ("keep", "remove", "point_accent", "point_accent_alpha:", "accent", "accent_alpha:",
+ORDER = ("keep", "remove", "keep_first_point",
+         "point_accent", "point_accent_alpha:", "accent", "accent_alpha:",
          "copy:", "from_series", "contour_from_line", "one_per_value", "one_per_value_and_aggregate",
          "one_per_band",
          "ones_per_point", "bands_from_points", "bands_from_first_series:", "created",
          "keep_or_set:",
          "set_code_keep_link:", "keep_or_general_linked", "set_direction:",
-         "from_scene_rotation_y", "from_first_slice_angle", "set:")
+         "from_scene_rotation_y", "from_first_slice_angle", "source_unit", "set:")
 
 
 def choose(candidates):
@@ -2448,6 +2643,31 @@ def measured(value):
 
 def deref(value):
     return value.value if isinstance(value, Rf) else value
+
+
+def same(a, b):
+    """Whether two emitted Rust values are equal."""
+    if a is b:
+        return True
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, En):
+        return (a.path == b.path and len(a.args) == len(b.args) and a.named.keys() == b.named.keys()
+                and all(same(x, y) for x, y in zip(a.args, b.args))
+                and all(same(a.named[k], b.named[k]) for k in a.named))
+    if isinstance(a, St):
+        return (a.name == b.name and list(a.fields) == list(b.fields)
+                and all(same(a.fields[k], b.fields[k]) for k in a.fields))
+    if isinstance(a, Rf):
+        return a.type == b.type and same(a.value, b.value)
+    if isinstance(a, Sl):
+        return (a.array == b.array and len(a.items) == len(b.items)
+                and all(same(x, y) for x, y in zip(a.items, b.items)))
+    if isinstance(a, Sm):
+        return same(a.value, b.value)
+    if isinstance(a, Raw):
+        return a.text == b.text
+    return a == b
 
 
 class Refused(Exception):
@@ -2715,6 +2935,28 @@ class Carried:
         if rule.variant == "Remove":
             return None
         return self.payload.unparse(rule.args[0])
+
+
+class TimeUnitCodec:
+    """A category axis's base time unit: carried, or the unit the smallest gap between the
+    deciding categories gives (`TimeUnitRule::FromSource`)."""
+
+    carried = Carried(XmlEnum("TimeUnit"))
+
+    def action(self, action):
+        if action == "source_unit":
+            return En("TimeUnitRule::FromSource")
+        return En("TimeUnitRule::Carried", self.carried.action(action))
+
+    def apply(self, rule, before, unit=None):
+        if rule.variant == "FromSource":
+            if unit is None:
+                raise Refused()
+            return unit
+        return self.carried.apply(rule.args[0], before)
+
+
+TIME_UNIT = TimeUnitCodec()
 
 
 class RetainCodec:
@@ -2993,7 +3235,7 @@ AXIS_FIELDS = (("axis_type", "_type", None),
                ("label_align", "lblAlgn", Carried(XmlEnum("LabelAlignment"))),
                ("label_offset", "lblOffset", Carried(Int)),
                ("no_multi_level", "noMultiLvlLbl", Carried(Bool)),
-               ("base_time_unit", "baseTimeUnit", Carried(XmlEnum("TimeUnit"))),
+               ("base_time_unit", "baseTimeUnit", TIME_UNIT),
                ("major_ticks", "majorTickMark", Carried(XmlEnum("TickMark"))),
                ("minor_ticks", "minorTickMark", Carried(XmlEnum("TickMark"))),
                ("style", "style", RETAIN))
@@ -3027,7 +3269,11 @@ MARKER_CLASSES = ("absent", "hidden", "shown")
 ROLES = ("ordinary", "surface_first", "surface_remaining", "volume", "stock")
 COUNT_FIELDS = (("six", "6"), ("seven", "7"), ("twelve", "12"), ("sixteen", "16"),
                 ("twenty_four", "24"), ("fifty", "50"), ("other", "other"))
-DATA_CLASSES = ("absent", "text", "date_serial", "general", "other")
+# `date_serial` and `other` are x values' folded classes (`category_class`); categories take the
+# others (`category_data_class`). `unmeasured` holds the measured pattern of numeric classes.
+DATA_CLASSES = ("absent", "text", "date_serial", "general", "other", "date", "number",
+                "number_literal", "unmeasured")
+NUMERIC_DATA = ("general", "date", "number", "number_literal")
 SPACINGS = ("absent", "daily", "monthly", "other", "wide")
 FLAG_FIELDS = (("absent", "absent"), ("off", "0"), ("on", "1"))
 COMBO_GROUPS = (("combo_area", "areaChart"), ("combo_bar", "barChart"), ("combo_line", "lineChart"))
@@ -3074,6 +3320,74 @@ def count_field(values):
     return next(field for field, cls in COUNT_FIELDS if cls == found)
 
 
+def target_group(target):
+    """The group of targets a measured pattern is judged over."""
+    if target in PIE_FAMILY:
+        return "pie-family"
+    if target in STOCK_COUNTS:
+        return "stock"
+    if target in XY:
+        return "xy"
+    if target in SURFACE_TARGETS:
+        return "surface"
+    if target.endswith("3D"):
+        return "3d"
+    if target in ("Radar", "RadarWithMarkers", "FilledRadar"):
+        return "radar"
+    return "category-axis"
+
+
+def numeric_patterns(choices, selectors):
+    """The target groups where every measured numeric class gives the same cells, compared cell
+    by cell: each fitted cell keyed by a numeric class against the same cell of every other
+    numeric class, created axes included. An unmeasured numeric code converts in these groups
+    only, as that one cell (a measured pattern); the pie family must be one of them."""
+    families = defaultdict(set)
+    for key, choice in choices.items():
+        cls = key[4] if key[0] == "PAIR" and len(key) > 4 else key[3] if key[0] == "KIND" else None
+        parts = cls.split("/") if isinstance(cls, str) else []
+        hits = [n for n, part in enumerate(parts) if part in NUMERIC_DATA]
+        if len(hits) != 1:
+            continue
+        n = hits[0]
+        spaced = n + 1 < len(parts) and parts[n + 1] in SPACINGS
+        rest = parts[:n] + ["*"] + parts[n + (2 if spaced else 1):]
+        target = key[1] if key[0] == "KIND" else key[2]
+        family = key[:3] + (key[3] if key[0] == "PAIR" else (), "/".join(rest)) + key[5:]
+        families[(target, family)].add(frozenset(choice))
+    for (row, target, role, axis_set, styled, shape), cells in selectors.items():
+        for monthly in (False, True):
+            found = {cells[(monthly, d)] for d in NUMERIC_DATA if (monthly, d) in cells}
+            families[(target, (row, role, axis_set, styled, shape, monthly))] |= found
+    broken = {target_group(target) for (target, _), values in families.items()
+              if len(values) > 1}
+    groups = {target_group(t) for t in VARIANTS.values()} - broken
+    if "pie-family" not in groups:
+        raise Mismatch("the numeric classes differ on a pie-family target")
+    return groups
+
+
+def format_classes(rows):
+    """Every measured category format code, of a reference or of a literal, with its class and
+    the spacings measured: numbers convert only as listed (`FORMAT_CLASSES`)."""
+    formats = {}
+    for obs in rows:
+        if obs.outcome != "conversion" or obs.source.has_x:
+            continue
+        for (data, _), listed in zip(obs.source.series_categories, obs.source.listed):
+            if data == "unmeasured":
+                raise Mismatch("%s: a measured conversion holds an unmeasured class" % obs.name)
+            if listed is None:
+                continue
+            literal, code, spacing = listed
+            cls, spacings = formats.setdefault((literal, code), (data, set()))
+            if cls != data:
+                raise Mismatch("format code %r classes as %s and %s" % (code, cls, data))
+            spacings.add(spacing)
+    return sorted((literal, code, cls, tuple(s for s in SPACINGS if s in spacings))
+                  for (literal, code), (cls, spacings) in formats.items())
+
+
 class RuleModel:
     """The fitted cells as Rust values, with the class domain they declare."""
 
@@ -3096,6 +3410,8 @@ class RuleModel:
             if cell.get((monthly, data), shape) != shape:
                 raise Mismatch("created-axis cell %s holds two shapes" % (selector,))
             cell[(monthly, data)] = shape
+        self.patterns = numeric_patterns(choices, self.selectors)
+        self.formats = format_classes(rows)
         self.topology = {}
         for obs in rows:
             if obs.outcome == "conversion":
@@ -3149,26 +3465,37 @@ class RuleModel:
     def by_color(self, key, codec):
         return St("ByColor", **{c: self.cell(key(c), codec) for c in COLOR_CLASSES})
 
-    def by_category(self, key, codec):
-        """`ByCategoryData<ByDateSpacing<T>>`; `key(data, spacing)`."""
+    def by_category(self, key, codec, unmeasured=True):
+        """`ByCategoryData<ByDateSpacing<T>>`; `key(data, spacing)`. The unmeasured class takes,
+        at spacing absent, the one cell every measured numeric class gives, where its target
+        group holds the pattern; x values have no such class (`unmeasured=False`)."""
         fields = {}
         for data in DATA_CLASSES:
+            if data == "unmeasured":
+                continue
             spacing = St("ByDateSpacing", **{s: self.cell(key(data, s), codec) for s in SPACINGS})
             seen = any(c.variant == "Measured" for c in spacing.fields.values())
             fields[data] = measured(spacing) if seen else REJECTED
+        common = REJECTED
+        if unmeasured:
+            common = self.unmeasured(key("unmeasured", "absent"), [
+                cell for data in NUMERIC_DATA if fields[data].variant == "Measured"
+                for cell in fields[data].args[0].fields.values()])
+        spacing = St("ByDateSpacing", **{s: common if s == "absent" else REJECTED
+                                         for s in SPACINGS})
+        fields["unmeasured"] = measured(spacing) if common.variant == "Measured" else REJECTED
         return St("ByCategoryData", **fields)
 
-    def by_class_pair(self, key):
-        """`ByCategoryData<ByCategoryData<()>>` of two different classes, the first earlier in
-        `DATA_CLASSES`; `key(first, second)`."""
-        fields = {}
-        for n, first in enumerate(DATA_CLASSES):
-            second = St("ByCategoryData", **{
-                other: self.cell(key(first, other), MEASURED) if m > n else REJECTED
-                for m, other in enumerate(DATA_CLASSES)})
-            seen = any(c.variant == "Measured" for c in second.fields.values())
-            fields[first] = measured(second) if seen else REJECTED
-        return St("ByCategoryData", **fields)
+    def unmeasured(self, key, cells):
+        """The unmeasured numeric cell of `key`'s target: the cell every measured numeric class
+        gives when the target's group holds the pattern, otherwise rejected."""
+        target = key[1] if key[0] == "KIND" else key[2]
+        if target_group(target) not in self.patterns:
+            return REJECTED
+        found = [c for c in cells if c.variant == "Measured"]
+        if any(not same(found[0], c) for c in found[1:]):
+            raise Mismatch("%s: the numeric classes differ in a pattern group" % (key,))
+        return found[0] if found else REJECTED
 
     def plain(self, key, codec):
         """A field with no class of its own: its one cell must be measured."""
@@ -3281,13 +3608,15 @@ class RuleModel:
                 bands=bands, **self.styled_trees(row, t, "g%d." % n, GROUP_TREE_FIELDS)))
         positions = range(STOCK_COUNTS[t]) if t in STOCK_COUNTS else (None,)
         x_values = self.by_category(
-            lambda data, spacing: ("PAIR", row, t, "x", "%s/%s" % (data, spacing)), MEASURED)
-        categories = St("ByCategoryData", **{
-            data: self.cell(("PAIR", row, t, "cat", data), MEASURED) for data in DATA_CLASSES})
-        mixed = Rf("ByCategoryData<ByCategoryData<()>>", "CATEGORY_MIXTURES", self.by_class_pair(
-            lambda first, second: ("PAIR", row, t, "cat", "/".join(sorted((first, second))))))
+            lambda data, spacing: ("PAIR", row, t, "x", "%s/%s" % (data, spacing)), MEASURED,
+            unmeasured=False)
+        cat = {data: self.cell(("PAIR", row, t, "cat", data), MEASURED)
+               for data in DATA_CLASSES if data != "unmeasured"}
+        cat["unmeasured"] = self.unmeasured(("PAIR", row, t, "cat"),
+                                            [cat[d] for d in NUMERIC_DATA])
+        categories = St("ByCategoryData", **cat)
         return St(
-            "Conversion", scene=scene, x_values=x_values, category=categories, mixed=mixed,
+            "Conversion", scene=scene, x_values=x_values, category=categories,
             groups=array("GroupValuesRule", "GROUP_VALUES", groups),
             axes=array("AxisPairRule", "AXIS_PAIR_RULES", [self.axis_pair_rule(row, t, name, shape)
                                                            for name in AXIS_KEYS]),
@@ -3325,11 +3654,15 @@ class RuleModel:
                 created[field] = REJECTED
                 continue
             self.observed["PAIR"] += 1
-            created[field] = measured(St("ByMonthlyCreation", **{
-                kind: St("ByCategoryData", **{
-                    data: measured(self.template(cells[(monthly, data)]))
-                    if (monthly, data) in cells else REJECTED for data in DATA_CLASSES})
-                for kind, monthly in (("ordinary", False), ("monthly", True))}))
+            by_creation = {}
+            for kind, monthly in (("ordinary", False), ("monthly", True)):
+                templates = {data: measured(self.template(cells[(monthly, data)]))
+                             if (monthly, data) in cells else REJECTED
+                             for data in DATA_CLASSES if data != "unmeasured"}
+                templates["unmeasured"] = self.unmeasured(
+                    ("PAIR", row, t, "created"), [templates[d] for d in NUMERIC_DATA])
+                by_creation[kind] = St("ByCategoryData", **templates)
+            created[field] = measured(St("ByMonthlyCreation", **by_creation))
         prefix = "ax.%s." % name
         grid = self.styled_trees(row, t, prefix, (("major_grid", "majorGridlines", MAJOR_GRID),))
         rotation = St("ByPresence", **{p: self.title_rotation(
@@ -3525,17 +3858,21 @@ class PointsCodec:
         raise Mismatch("no DataPointsRule for %s" % action)
 
 
+# The fit's band-point actions and the `BandOwnStyle` variant each stands for.
+BAND_OWN_STYLES = {"keep": "KeptForValues", "keep_first_point": "KeptForFirstPoint",
+                   "remove": "Elided"}
+
+
 class BandOwnStyleCodec:
     @staticmethod
     def action(action):
-        return En({"keep": "BandOwnStyle::KeptForValues", "remove": "BandOwnStyle::Elided"}[action])
+        return En("BandOwnStyle::" + BAND_OWN_STYLES[action])
 
 
-def own_style_kept(fmt, src, t):
-    """Whether the format gives a band's own-style shape properties to the points that hold a
-    value, for the source's categories."""
+def own_style_of(fmt, src, t):
+    """The `BandOwnStyle` variant the format gives the source's categories."""
     data, spacing = src.categories_for(t)
-    return resolve(resolve(fmt["own_style"][data])[spacing]).variant == "KeptForValues"
+    return resolve(resolve(fmt["own_style"][data])[spacing]).variant
 
 
 def axis_node(el):
@@ -3551,6 +3888,10 @@ def axis_node(el):
             value = En("NodeValue::AxisId")
         elif el.tag == "{%s}crossAx" % NS["c"] and name == "val":
             value = En("NodeValue::CrossAxisId")
+        elif value == SOURCE_CODE:
+            value = En("NodeValue::SourceFormatCode")
+        elif value == SOURCE_UNIT:
+            value = En("NodeValue::SourceTimeUnit")
         else:
             value = En("NodeValue::Literal", value)
         attributes.append(St("NodeAttribute", name=name, value=value))
@@ -3706,11 +4047,14 @@ class Replay:
             if outcome.variant == "Absent":
                 continue
             if outcome.variant == "Created":
-                template = self.created_template(deref(pair["created"]), src, t)
+                axis_set = axis_set_of(name)
+                template = self.created_template(deref(pair["created"]), src, t, axis_set)
                 root = deref(template)["root"]
                 validate_axis_template(template.base, root)
                 own, crossing = axis_id_values(name)
-                axis = element_of(node_tree(root, {"AxisId": own, "CrossAxisId": crossing}))
+                values = {"AxisId": own, "CrossAxisId": crossing}
+                values.update(source_values(deciding_cache(src, t, axis_set)))
+                axis = element_of(node_tree(root, values))
                 created[name] = axis
                 for attr, value in template_slots(axis).items():
                     put("ax.%s.%s" % (name, attr), value)
@@ -3722,7 +4066,7 @@ class Replay:
                     grown["ax.%s.titleRotation" % name] = body.get("rot")
                 continue
             spec = deref(outcome.args[0])
-            data, spacing = src.categories_for(t)
+            data, spacing = src.categories_for(t, axis_set_of(name))
             for field, attr, codec in AXIS_FIELDS:
                 slot = "ax.%s.%s" % (name, attr)
                 value = before.get(slot)
@@ -3733,6 +4077,12 @@ class Replay:
                     rule = rule.value
                 elif attr in CATEGORY_FIELDS:
                     rule = resolve(resolve(rule[data])[spacing])
+                if codec is TIME_UNIT:
+                    cache = deciding_cache(src, t, axis_set_of(name))
+                    unit = time_unit([float(p.text) for p in cache.findall("c:pt/c:v", NS)]) if (
+                        cache is not None) else None
+                    put(slot, TIME_UNIT.apply(rule, value, unit))
+                    continue
                 put(slot, (codec or AxisTypeCodec).apply(rule, value))
             slot = "ax.%s.numFmt" % name
             rule = resolve(resolve(resolve(deref(pair["number_format"])[cls])[data])[spacing])
@@ -3750,9 +4100,9 @@ class Replay:
                 "yes" if "ax.%s.majorGridlines" % name in grown else None)
         return chart, series, grown, created
 
-    def created_template(self, created, src, t):
+    def created_template(self, created, src, t, axis_set):
         cell = resolve(created["present" if src.styled else "absent"])
-        data = joined_categories(src.model.root, t in XY)
+        data = created_class(src, t, axis_set)
         data = "other" if "/" in data else data
         if creation_spacing(src.model.root) == "monthly":
             monthly = cell["monthly"][data]
@@ -3877,7 +4227,7 @@ class Replay:
             return []
         if name == "FromSurfaceBands":
             fmt = deref(rule.args[0])
-            return self.band_points(fmt, src, idx, own_style_kept(fmt, src, t))
+            return self.band_points(fmt, src, idx, own_style_of(fmt, src, t))
         indices = kept
         if name == "CompletePerValue":
             indices = sorted(set(kept) | set(range(info["values"])))
@@ -3908,12 +4258,12 @@ class Replay:
         return out
 
     @staticmethod
-    def band_points(fmt, src, idx, kept_for_values):
+    def band_points(fmt, src, idx, own_style):
         out = []
         for band in src.bands:
             sp = band.find("c:spPr", NS)
             shape = {}
-            if band_copied(src, idx, band, kept_for_values):
+            if band_copied(src, idx, band, own_style):
                 shape = dict(shape_of(sp) or {})
                 if fmt["remove_line"]:
                     for key in ("line", "lnW", "dash", "cap", "join"):
@@ -4385,7 +4735,7 @@ class PathReplay:
         rule = resolve(deref(rules["points"])[role][count][presence(b.get("dPt"))])
         if rule.variant == "FromSurfaceBands":
             fmt = deref(rule.args[0])
-            return self.band_points(fmt, src, idx, own_style_kept(fmt, src, t))
+            return self.band_points(fmt, src, idx, own_style_of(fmt, src, t))
         kept = {int(val(p, "idx")): (n, p) for n, p in enumerate(src.model.elements[idx].findall(
             "c:dPt", NS))}
         values = pred.get("dPt.idx") or []
@@ -4436,7 +4786,7 @@ class PathReplay:
         return out
 
     @staticmethod
-    def band_points(fmt, src, idx, kept_for_values):
+    def band_points(fmt, src, idx, own_style):
         """Each band's shape properties, as `band_copied` gives them (FromSurfaceBands)."""
         out = []
         for band in src.bands:
@@ -4446,7 +4796,7 @@ class PathReplay:
                 set_value(p, "invertIfNegative", Bool.unparse(fmt["invert_if_negative"].value))
             set_value(p, "bubble3D", "1" if fmt["bubble_3d"] else "0")
             sp = band.find("c:spPr", NS)
-            if band_copied(src, idx, band, kept_for_values):
+            if band_copied(src, idx, band, own_style):
                 sp = copy.deepcopy(sp)
                 ln = outline(sp)
                 if fmt["remove_line"] and ln is not None:
@@ -4586,7 +4936,12 @@ IMPORTS = {
 SLOT_TYPES = frozenset(("RuleCell", "ByPresence", "ByShape3d", "BySeriesStyle", "ByColor",
                         "ByMarker", "ByAxis",
                         "BySourceRole", "BySmoothFlag", "BySourceGroup", "ByValueCount",
-                        "ByDateSpacing", "ByCategoryData", "ByMonthlyCreation"))
+                        "ByDateSpacing", "ByCategoryData", "ByMonthlyCreation",
+                        "CategoryDataClass", "DateSpacing"))
+DATA_VARIANTS = {"absent": "Absent", "text": "TextReference", "date_serial": "DateSerialReference",
+                 "general": "GeneralReference", "other": "Other", "date": "Date",
+                 "number": "Number", "number_literal": "NumberLiteral",
+                 "unmeasured": "Unmeasured"}
 
 
 def number(n):
@@ -4815,6 +5170,13 @@ def emit_rules(model):
     body += e.layout("pub(super) static PAIR_RULES: "
                      "[[PairRule; ChartSubtype::COUNT]; ChartSource::COUNT] = ",
                      Sl(table), 0, ";", top=True)
+    body.append("")
+    formats = Sl([St("FormatClass", literal=literal, code=code,
+                     data=En("CategoryDataClass::" + DATA_VARIANTS[data]),
+                     spacings=Sl([En("DateSpacing::" + s.title()) for s in spacings]))
+                  for literal, code, data, spacings in model.formats])
+    body += e.layout("pub(super) static FORMAT_CLASSES: [FormatClass; %d] = " % len(model.formats),
+                     formats, 0, ";", top=True)
     statics = []
     done = 0
     while done < len(e.items):
@@ -5131,7 +5493,7 @@ def write_outputs(run, zipped, rules):
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", action="append", default=[], metavar="JSON",
-                        help="a pinned measurement file; give all seven")
+                        help="a pinned measurement file; give all eight")
     parser.add_argument("--check", action="store_true",
                         help="compare with the checked-in files instead of writing them")
     parser.add_argument("--workers", type=int, default=8, metavar="N",

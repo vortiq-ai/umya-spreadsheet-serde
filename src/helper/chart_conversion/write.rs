@@ -134,7 +134,7 @@ pub(super) fn carried_node(
     match rule {
         Carried::Keep => (),
         Carried::Remove => owner.remove(name),
-        Carried::Set(node) => owner.put(instantiate(node, ids)),
+        Carried::Set(node) => owner.put(instantiate(node, ids, None)),
     }
 }
 

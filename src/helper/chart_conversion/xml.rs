@@ -560,8 +560,32 @@ pub(super) struct TemplateIds {
     pub(super) cross: u32,
 }
 
-/// A generated template as an element, its axis references filled in.
-pub(super) fn instantiate(node: &Node, ids: TemplateIds) -> Element {
+/// What a created axis copies from the categories deciding it: their format
+/// code as written and the base time unit their smallest gap gives.
+#[derive(Clone, Debug)]
+pub(super) struct SourceValues {
+    pub(super) code: String,
+    pub(super) unit: Option<&'static str>,
+}
+
+impl SourceValues {
+    /// Whether these values fill every source placeholder of `node`.
+    pub(super) fn fill(source: Option<&Self>, node: &Node) -> bool {
+        node.attributes
+            .iter()
+            .all(|attribute| match attribute.value {
+                NodeValue::SourceFormatCode => source.is_some(),
+                NodeValue::SourceTimeUnit => source.is_some_and(|source| source.unit.is_some()),
+                _ => true,
+            })
+            && node.children.iter().all(|child| Self::fill(source, child))
+    }
+}
+
+/// A generated template as an element, its axis references and the values it
+/// copies from the deciding categories filled in; a placeholder `source`
+/// cannot fill (see [`SourceValues::fill`]) is written empty.
+pub(super) fn instantiate(node: &Node, ids: TemplateIds, source: Option<&SourceValues>) -> Element {
     let prefix = match node.namespace {
         Namespace::Chart => "c",
         Namespace::Drawing => "a",
@@ -572,13 +596,20 @@ pub(super) fn instantiate(node: &Node, ids: TemplateIds) -> Element {
             NodeValue::Literal(text) => text.to_owned(),
             NodeValue::AxisId => ids.axis.to_string(),
             NodeValue::CrossAxisId => ids.cross.to_string(),
+            NodeValue::SourceFormatCode => {
+                source.map(|source| source.code.clone()).unwrap_or_default()
+            }
+            NodeValue::SourceTimeUnit => source
+                .and_then(|source| source.unit)
+                .unwrap_or_default()
+                .to_owned(),
         };
         element.attributes.push((attribute.name.to_owned(), value));
     }
     element.children = node
         .children
         .iter()
-        .map(|child| instantiate(child, ids))
+        .map(|child| instantiate(child, ids, source))
         .collect();
     element
 }

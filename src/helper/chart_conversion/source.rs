@@ -15,6 +15,7 @@ use super::{
         Step,
         Unresolved,
     },
+    rules::FORMAT_CLASSES,
     slots::{
         CategoryDataClass,
         ColorClass,
@@ -28,6 +29,7 @@ use super::{
     xml::{
         self,
         Element,
+        SourceValues,
     },
 };
 use crate::{
@@ -35,6 +37,7 @@ use crate::{
     helper::{
         address::{
             split_address,
+            split_reference_address,
             unescape_sheet_name,
         },
         coordinate::index_from_coordinate,
@@ -86,23 +89,32 @@ pub(super) struct Source {
     pub(super) scene:    SeriesStyleClass,
     /// Whether the series hold x values instead of categories.
     pub(super) has_x:    bool,
-    /// The class of the series' categories, and of their x values.
-    pub(super) category: (CategoryDataClass, DateSpacing),
+    /// The categories of every series, in series order, a series without
+    /// categories counting as absent. The plan takes each axis's class from
+    /// the series that decides it.
+    pub(super) joined:   Vec<Categories>,
+    /// The folded class of the series' x values.
     pub(super) x:        (CategoryDataClass, DateSpacing),
-    /// The data classes the series' categories hold, in class order, a
-    /// series without categories counting as absent.
-    pub(super) joined:   Vec<CategoryDataClass>,
     /// What a created axis' template is selected by.
     pub(super) creation: Creation,
 }
 
+/// One series' categories as the rule table classes them.
+#[derive(Clone, Debug)]
+pub(super) struct Categories {
+    pub(super) data:    CategoryDataClass,
+    pub(super) spacing: DateSpacing,
+    /// What a created axis copies from these categories; `None` unless they
+    /// are numbers whose format code is known.
+    pub(super) copied:  Option<SourceValues>,
+}
+
 /// Section 4.6's selector of a created axis' template, read as Excel's
-/// created axes are filed: the data class of the categories the series hold
-/// and of their x values (`Other` when they differ, `None` when no series
-/// holds any), and the spacing of the first numeric categories in whole days.
+/// created axes are filed: the folded data class of the x values (`Other`
+/// when they differ, `None` when no series holds any), and the spacing of the
+/// first numeric categories in whole days.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Creation {
-    categories:         Option<CategoryDataClass>,
     x:                  Option<CategoryDataClass>,
     pub(super) spacing: DateSpacing,
 }
@@ -283,10 +295,10 @@ fn exactly(number: f64, expected: f64) -> bool {
 
 /// Section 3.1's spacing of numeric categories: consecutive serials (General
 /// numbers only as exactly 1 to N) are daily, consecutive first days of a
-/// month monthly, in the workbook's date system. Other numbers are filed by
-/// the smallest gap between their whole days, which Excel's base unit
-/// follows: under 28 days other, from 28 days or a repeated day wide. Every
-/// comparison is exact.
+/// month monthly, in the workbook's date system. Any other distinct whole
+/// days are other, whatever their gap, since the base time unit follows the
+/// smallest gap (`time_unit`); a repeated whole day is wide, which no
+/// measurement covers. Every comparison is exact.
 fn spacing(numbers: &[f64], general: bool, date1904: bool) -> DateSpacing {
     if numbers.len() < 2 {
         return DateSpacing::Other;
@@ -315,15 +327,29 @@ fn spacing(numbers: &[f64], general: bool, date1904: bool) -> DateSpacing {
     if months.is_some_and(|months| months.windows(2).all(|pair| pair[1] - pair[0] == 1)) {
         return DateSpacing::Monthly;
     }
-    let mut days: Vec<f64> = numbers.iter().map(|number| number.trunc()).collect();
-    days.sort_by(f64::total_cmp);
-    let gaps = || days.windows(2).map(|pair| pair[1] - pair[0]);
-    if gaps().all(|gap| gap > 0.0) && gaps().any(|gap| gap < 28.0) {
+    let days = whole_days(numbers);
+    if days.windows(2).all(|pair| pair[0] < pair[1]) {
         DateSpacing::Other
     } else {
         DateSpacing::Wide
     }
 }
+
+/// The days the serials fall on, in order: a serial falls on the day its whole
+/// part names.
+fn whole_days(numbers: &[f64]) -> Vec<f64> {
+    let mut days: Vec<f64> = numbers.iter().map(|number| number.trunc()).collect();
+    days.sort_by(f64::total_cmp);
+    days
+}
+
+/// The number format of cells that hold none.
+const GENERAL: &str = "General";
+
+/// The built-in number format that shows a short date, and the code Excel's
+/// chart caches write for it.
+const BUILT_IN_SHORT_DATE: u32 = 14;
+const SHORT_DATE: &str = "m/d/yyyy";
 
 /// The number format of ISO dates.
 const DATE_CODE: &str = "yyyy\\-mm\\-dd";
@@ -338,8 +364,123 @@ fn numbers(cache: &Element) -> Option<Vec<f64>> {
         .collect()
 }
 
-/// The data and spacing class of one series' categories or x values, read
-/// from their cache in the workbook's date system.
+/// The format code Excel's cache holds for a reference that has none: that
+/// of the reference's first cell. A cell with no number format is General, and
+/// the built-in format 14 is `m/d/yyyy`; any other built-in format has no
+/// measured code, so it has none here.
+fn rebuilt_code(reference: &Element, workbook: &Workbook) -> Option<String> {
+    let (sheet, range) = split_reference_address(&reference.child("f")?.text);
+    let (column, row, ..) = index_from_coordinate(range.split(':').next()?);
+    let sheet = workbook.sheet_by_name(&unescape_sheet_name(sheet)).ok()?;
+    let Some(format) = sheet
+        .cell((column?, row?))
+        .and_then(|cell| cell.style().number_format())
+    else {
+        return Some(GENERAL.to_owned());
+    };
+    match (format.is_build_in(), format.number_format_id()) {
+        (true, 0) => Some(GENERAL.to_owned()),
+        (true, BUILT_IN_SHORT_DATE) => Some(SHORT_DATE.to_owned()),
+        (true, _) => None,
+        (false, _) => Some(format.format_code().to_owned()),
+    }
+}
+
+/// The format code of a number reference's cache, as Excel's cache holds it:
+/// the cache's own, or for a reference without one, `rebuilt_code`.
+fn cache_code(reference: &Element, cache: &Element, workbook: &Workbook) -> Option<String> {
+    match cache
+        .child("formatCode")
+        .map_or("", |code| code.text.as_str())
+    {
+        "" => rebuilt_code(reference, workbook),
+        code => Some(code.to_owned()),
+    }
+}
+
+/// The base time unit Excel gives dates: the smallest gap between their
+/// whole days, at least 365 days years, at least 28 months, otherwise days;
+/// `None` for fewer than two.
+fn time_unit(numbers: &[f64]) -> Option<&'static str> {
+    let gap = whole_days(numbers)
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .min_by(f64::total_cmp)?;
+    Some(if gap >= 365.0 {
+        "years"
+    } else if gap >= 28.0 {
+        "months"
+    } else {
+        "days"
+    })
+}
+
+/// One series' categories, read from their cache in the workbook's date
+/// system. Numbers convert as the class `FORMAT_CLASSES` lists their format
+/// code under, matched exactly as written (a literal's own code apart from a
+/// reference's), at a spacing it lists. Dates take their unit from their
+/// smallest gap, so no spacing selects their cells, and fewer than two dates
+/// have none; other numbers are filed by 1 to N or not. Numbers of a code or
+/// spacing no round measured are unmeasured but still copied; numbers whose
+/// format code is not known, and a reference with no numbers to read, copy
+/// nothing.
+fn categories_of(data: Option<&Element>, workbook: &Workbook) -> Categories {
+    let class = |data, spacing| Categories {
+        data,
+        spacing,
+        copied: None,
+    };
+    let Some(data) = data else {
+        return class(CategoryDataClass::Absent, DateSpacing::Absent);
+    };
+    let text = data
+        .child("strRef")
+        .is_some_and(|reference| reference.child("strCache").is_some())
+        || data.child("strLit").is_some()
+        || data.child("multiLvlStrRef").is_some();
+    if text {
+        return class(CategoryDataClass::TextReference, DateSpacing::Absent);
+    }
+    let read = if let Some(literal) = data.child("numLit") {
+        let code = literal
+            .child("formatCode")
+            .map_or("", |code| code.text.as_str());
+        (true, Some(code.to_owned()), numbers(literal))
+    } else if let Some((reference, cache)) = data
+        .child("numRef")
+        .and_then(|reference| Some((reference, reference.child("numCache")?)))
+    {
+        (
+            false,
+            cache_code(reference, cache, workbook),
+            numbers(cache),
+        )
+    } else {
+        return class(CategoryDataClass::Unmeasured, DateSpacing::Absent);
+    };
+    let (literal, Some(code), Some(values)) = read else {
+        return class(CategoryDataClass::Unmeasured, DateSpacing::Absent);
+    };
+    let unit = time_unit(&values);
+    let listed = FORMAT_CLASSES
+        .iter()
+        .find(|format| format.literal == literal && format.code == code)
+        .and_then(|format| {
+            let date = format.data == CategoryDataClass::Date;
+            let spaced = spacing(&values, !date, workbook.date1904());
+            (format.spacings.contains(&spaced) && (!date || unit.is_some()))
+                .then_some((format.data, if date { DateSpacing::Absent } else { spaced }))
+        });
+    let (found, spaced) = listed.unwrap_or((CategoryDataClass::Unmeasured, DateSpacing::Absent));
+    Categories {
+        data:    found,
+        spacing: spaced,
+        copied:  Some(SourceValues { code, unit }),
+    }
+}
+
+/// The folded data and spacing class of one series' x values, read from
+/// their cache in the workbook's date system.
 fn data_class(data: Option<&Element>, date1904: bool) -> (CategoryDataClass, DateSpacing) {
     let Some(data) = data else {
         return (CategoryDataClass::Absent, DateSpacing::Absent);
@@ -359,10 +500,10 @@ fn data_class(data: Option<&Element>, date1904: bool) -> (CategoryDataClass, Dat
     let code = cache.child("formatCode").map(|code| code.text.as_str());
     let class = match code {
         Some(DATE_CODE) => CategoryDataClass::DateSerialReference,
-        Some("General") => CategoryDataClass::GeneralReference,
+        Some(GENERAL) => CategoryDataClass::GeneralReference,
         _ => CategoryDataClass::Other,
     };
-    let general = code == Some("General");
+    let general = code == Some(GENERAL);
     let spaced = numbers(cache).map_or(DateSpacing::Other, |numbers| {
         spacing(&numbers, general, date1904)
     });
@@ -462,14 +603,10 @@ impl Source {
                 .iter()
                 .any(|entry| entry.element.child("xVal").is_some());
         let date1904 = workbook.date1904();
-        let categories: Vec<(CategoryDataClass, DateSpacing)> = series
+        let joined: Vec<Categories> = series
             .iter()
-            .map(|entry| data_class(entry.element.child("cat"), date1904))
+            .map(|entry| categories_of(entry.element.child("cat"), workbook))
             .collect();
-        let category = uniform(categories.iter().copied());
-        let mut joined: Vec<CategoryDataClass> = categories.iter().map(|class| class.0).collect();
-        joined.sort_unstable();
-        joined.dedup();
         let x = uniform(
             series
                 .iter()
@@ -491,9 +628,8 @@ impl Source {
                 .child("numCache")
         });
         let creation = Creation {
-            categories: held("cat"),
-            x:          held("xVal"),
-            spacing:    first_numbers.map_or(DateSpacing::Absent, |cache| {
+            x:       held("xVal"),
+            spacing: first_numbers.map_or(DateSpacing::Absent, |cache| {
                 numbers(cache).map_or(DateSpacing::Other, |numbers| {
                     let days: Vec<f64> = numbers.iter().map(|number| number.trunc()).collect();
                     spacing(&days, false, date1904)
@@ -507,33 +643,51 @@ impl Source {
             styled,
             scene: style_of(scene_styled),
             has_x,
-            category,
-            x,
             joined,
+            x,
             creation,
         })
     }
 
     /// The data class a created axis' template is selected by: that of the
-    /// categories, or of the x values when no series holds categories and the
-    /// target is not xy; absent when there is neither.
-    pub(super) fn creation_class(&self, xy_target: bool) -> CategoryDataClass {
-        let class = match self.creation.categories {
-            None if !xy_target => self.creation.x,
-            categories => categories,
-        };
-        class.unwrap_or(CategoryDataClass::Absent)
+    /// categories of series `decider`, or of the x values when the series
+    /// hold x values and the target is not xy; absent when there is neither.
+    pub(super) fn creation_class(&self, xy_target: bool, decider: usize) -> CategoryDataClass {
+        if self.has_x {
+            return if xy_target {
+                CategoryDataClass::Absent
+            } else {
+                self.creation.x.unwrap_or(CategoryDataClass::Absent)
+            };
+        }
+        self.categories(xy_target, decider).0
     }
 
-    /// The category data and spacing class of the categories after data-role
-    /// remapping: x values that become categories are classed as categories;
-    /// into an xy target x stays x and selects nothing.
-    pub(super) const fn categories(&self, xy_target: bool) -> (CategoryDataClass, DateSpacing) {
+    /// The category data and spacing class after data-role remapping, as
+    /// series `decider` gives it: x values that become categories are classed
+    /// as categories; into an xy target x stays x and selects nothing.
+    pub(super) fn categories(
+        &self,
+        xy_target: bool,
+        decider: usize,
+    ) -> (CategoryDataClass, DateSpacing) {
         match (self.has_x, xy_target) {
             (true, false) => self.x,
             (true, true) => (CategoryDataClass::Absent, DateSpacing::Absent),
-            (false, _) => self.category,
+            (false, _) => self.joined.get(decider).map_or(
+                (CategoryDataClass::Absent, DateSpacing::Absent),
+                |categories| (categories.data, categories.spacing),
+            ),
         }
+    }
+
+    /// What an axis copies from the categories of series `decider`: their
+    /// format code and the base time unit their smallest gap gives.
+    pub(super) fn copied(&self, decider: usize) -> Option<&SourceValues> {
+        if self.has_x {
+            return None;
+        }
+        self.joined.get(decider)?.copied.as_ref()
     }
 
     /// The style the axes' trees are selected by.

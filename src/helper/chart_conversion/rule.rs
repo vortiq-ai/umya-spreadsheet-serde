@@ -25,6 +25,8 @@ use super::{
         BySourceGroup,
         BySourceRole,
         ByValueCount,
+        CategoryDataClass,
+        DateSpacing,
     },
 };
 use crate::structs::{
@@ -320,6 +322,14 @@ pub(super) enum TimeUnit {
     Years,
 }
 
+/// A category axis's base time unit.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TimeUnitRule {
+    Carried(Carried<TimeUnit>),
+    /// The unit the smallest gap between the deciding categories gives.
+    FromSource,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum BarDirection {
     Bar,
@@ -511,7 +521,7 @@ pub(super) struct AxisSpec {
     pub(super) label_align:    ByCategoryData<ByDateSpacing<Carried<LabelAlignment>>>,
     pub(super) label_offset:   Carried<u16>,
     pub(super) no_multi_level: ByCategoryData<ByDateSpacing<Carried<bool>>>,
-    pub(super) base_time_unit: ByCategoryData<ByDateSpacing<Carried<TimeUnit>>>,
+    pub(super) base_time_unit: ByCategoryData<ByDateSpacing<TimeUnitRule>>,
     pub(super) major_ticks:    Carried<TickMark>,
     pub(super) minor_ticks:    Carried<TickMark>,
     pub(super) style:          Retain,
@@ -552,14 +562,10 @@ pub(super) struct Conversion {
     /// By the class of the source's x values: measured only for the classes
     /// Excel converted; a source without x values selects nothing.
     pub(super) x_values: ByCategoryData<ByDateSpacing<()>>,
-    /// By the data class every series' categories share: measured only for
-    /// the classes Excel converted. Categories of mixed classes are none of
-    /// them; a source with x values selects nothing.
+    /// By the data class of a series' categories: measured only for the
+    /// classes Excel converted. A mixture converts when every class it holds
+    /// does; a source with x values selects nothing.
     pub(super) category: ByCategoryData<()>,
-    /// By the two data classes the series' categories hold, the first one
-    /// earlier in `CategoryDataClass`: measured only for the mixtures Excel
-    /// converted.
-    pub(super) mixed:    &'static ByCategoryData<ByCategoryData<()>>,
     /// One entry for each target group.
     pub(super) groups:   &'static [GroupValuesRule],
     /// Keyed like the KIND rule's axes.
@@ -720,6 +726,9 @@ pub(super) enum BandOwnStyle {
     Elided,
     /// The properties, when the point holds a value; nothing otherwise.
     KeptForValues,
+    /// The properties to the first point only, as Excel gives them when the
+    /// first series' categories are numbers that are not dates.
+    KeptForFirstPoint,
 }
 
 #[derive(Debug)]
@@ -747,6 +756,22 @@ pub(super) enum NodeValue {
     AxisId,
     /// The id of the axis it crosses.
     CrossAxisId,
+    /// The format code of the categories deciding the axis, as written.
+    SourceFormatCode,
+    /// The base time unit the smallest gap between those categories gives.
+    SourceTimeUnit,
+}
+
+/// A measured category format code: the class it converts as, at the
+/// spacings a round measured it.
+#[derive(Debug)]
+pub(super) struct FormatClass {
+    /// Whether it is a number literal's own code, listed apart from a
+    /// reference's because one code can class the two differently.
+    pub(super) literal:  bool,
+    pub(super) code:     &'static str,
+    pub(super) data:     CategoryDataClass,
+    pub(super) spacings: &'static [DateSpacing],
 }
 
 #[derive(Clone, Copy, Debug)]

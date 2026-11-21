@@ -99,8 +99,10 @@ pub(super) enum Step {
     UngovernedSeriesPart,
     /// x values of a class no Excel round has converted for this pair yet.
     UnmeasuredXClass,
-    /// Categories of a class no Excel round has converted for this pair yet,
-    /// or of mixed classes.
+    /// Categories of a class no Excel round has converted for this pair yet:
+    /// a number format or spacing no round measured, on a target whose axes
+    /// differ between the measured number classes or whose created axis
+    /// copies a format code no round measured for them.
     UnmeasuredCategoryClass,
     /// A surface or of-pie source whose series and value counts no Excel
     /// round has converted yet.
@@ -409,8 +411,8 @@ fn admit(
 
 /// Section 12's x classes and the categories' data classes, as the pair's
 /// measurements admit them: x values or categories of a class no round
-/// converted wait for one, and so do categories of a mixture no round
-/// converted.
+/// converted wait for one. Each series keeps its own categories, so a mixture
+/// converts when every class it holds does.
 fn admit_data_classes(source: &Source, conversion: &Conversion) -> Result<(), Unresolved> {
     if source.has_x {
         let (data, spacing) = source.x;
@@ -422,13 +424,11 @@ fn admit_data_classes(source: &Source, conversion: &Conversion) -> Result<(), Un
         }
         return Ok(());
     }
-    let measured = match *source.joined.as_slice() {
-        [class] => cell(conversion.category.get(class)).is_ok(),
-        [first, second] => cell(conversion.mixed.get(first))
-            .and_then(|by_second| cell(by_second.get(second)))
-            .is_ok(),
-        _ => false,
-    };
+    let measured = !source.joined.is_empty()
+        && source
+            .joined
+            .iter()
+            .all(|categories| cell(conversion.category.get(categories.data)).is_ok());
     if !measured {
         return Err(Unresolved::Pending(Step::UnmeasuredCategoryClass));
     }

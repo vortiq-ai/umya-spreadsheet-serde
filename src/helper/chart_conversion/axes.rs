@@ -7,6 +7,7 @@ use super::{
     model,
     plan::{
         Replay,
+        Step,
         Unresolved,
         cell,
         presence,
@@ -19,7 +20,12 @@ use super::{
         AxisSpec,
         AxisTemplate,
         AxisType,
+        Carried,
         GroupRule,
+        KindRule,
+        SeriesSelection,
+        TimeUnit,
+        TimeUnitRule,
     },
     slots::{
         AxisClass,
@@ -33,6 +39,7 @@ use super::{
     xml::{
         self,
         Element,
+        SourceValues,
         TemplateIds,
         instantiate,
     },
@@ -118,6 +125,17 @@ fn class_of(axis: Option<&Element>) -> AxisClass {
     }
 }
 
+/// The position of the series deciding axis set `set` of the target: the
+/// first series of the target group on that set.
+fn decider(kind: &KindRule, set: AxisSet) -> usize {
+    kind.groups
+        .iter()
+        .find(|group| secondary(group.axes) == secondary(set))
+        .map_or(0, |group| {
+            usize::from(matches!(group.series, SeriesSelection::AfterFirst))
+        })
+}
+
 const fn secondary(set: AxisSet) -> bool {
     matches!(set, AxisSet::Secondary)
 }
@@ -147,8 +165,9 @@ pub(super) struct AxisCore {
 enum Origin {
     /// The source's axis, edited.
     Kept(Element),
-    /// Created from a generated template.
-    Created(&'static AxisTemplate),
+    /// Created from a generated template, with what it copies from the
+    /// deciding categories.
+    Created(&'static AxisTemplate, Option<SourceValues>),
 }
 
 impl AxisCore {
@@ -172,12 +191,13 @@ impl AxisCore {
                 }
                 element
             }
-            Origin::Created(template) => instantiate(
+            Origin::Created(template, source) => instantiate(
                 &template.root,
                 TemplateIds {
                     axis:  self.id,
                     cross: cross.unwrap_or_default(),
                 },
+                source.as_ref(),
             ),
         }
     }
@@ -241,7 +261,6 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
         replay.target.chart_type(),
         crate::structs::ChartType::ScatterChart | crate::structs::ChartType::BubbleChart
     );
-    let categories = source.categories(xy);
     let mut next = area
         .children
         .iter()
@@ -263,9 +282,11 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
             .filter(|pair| same_key(pair.key, rule.key))
             .ok_or(Unresolved::Rejected)?;
         // Category data selects only category-role fields; the others hold
-        // one rule in every category cell.
+        // one rule in every category cell. Each axis takes its class from the
+        // series deciding its set in the target.
+        let decider = decider(replay.kind, rule.key.set);
         let (data, spacing) = if matches!(rule.key.role, AxisRole::Category) {
-            categories
+            source.categories(xy, decider)
         } else {
             (CategoryDataClass::Absent, DateSpacing::Absent)
         };
@@ -273,7 +294,16 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
             AxisOutcome::Absent => continue,
             AxisOutcome::Present(spec) => {
                 let mut element = before.ok_or(Unresolved::Rejected)?.clone();
-                edit(&mut element, spec, pair, class, (data, spacing), replay)?;
+                let copied = source.copied(decider);
+                edit(
+                    &mut element,
+                    spec,
+                    pair,
+                    class,
+                    (data, spacing),
+                    copied,
+                    replay,
+                )?;
                 Origin::Kept(element)
             }
             AxisOutcome::Created => {
@@ -282,7 +312,7 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
                 // monthly tree only when Excel created a date axis for them;
                 // otherwise they are filed with the ordinary trees.
                 let by_creation = cell(pair.created.get(presence(source.styled)))?;
-                let created = source.creation_class(xy);
+                let created = source.creation_class(xy, decider);
                 let monthly = (source.creation.spacing == DateSpacing::Monthly)
                     .then(|| cell(by_creation.get(CreationClass::Monthly).get(created)).ok())
                     .flatten()
@@ -291,7 +321,17 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
                     Some(template) => template,
                     None => cell(by_creation.get(CreationClass::Ordinary).get(created))?,
                 };
-                Origin::Created(template)
+                let values = matches!(rule.key.role, AxisRole::Category)
+                    .then(|| source.copied(decider))
+                    .flatten()
+                    .cloned();
+                // A template that copies what no round measured of these
+                // categories, such as the code Excel rebuilds for cells in a
+                // built-in format with no measured code, waits for a round.
+                if !SourceValues::fill(values.as_ref(), &template.root) {
+                    return Err(Unresolved::Pending(Step::UnmeasuredCategoryClass));
+                }
+                Origin::Created(template, values)
             }
         };
         let id = match &origin {
@@ -299,7 +339,7 @@ pub(super) fn plan_axes(replay: &Replay<'_>) -> Result<AxisLayout, Unresolved> {
                 .val("axId")
                 .and_then(|id| id.parse().ok())
                 .ok_or(Unresolved::Rejected)?,
-            Origin::Created(_) => {
+            Origin::Created(..) => {
                 next = next.checked_add(1).ok_or(Unresolved::Rejected)?;
                 next
             }
@@ -351,6 +391,7 @@ fn edit(
     pair: &AxisPairRule,
     class: AxisClass,
     (data, spacing): (CategoryDataClass, DateSpacing),
+    copied: Option<&SourceValues>,
     replay: &Replay<'_>,
 ) -> Result<(), Unresolved> {
     AxisCore::retype(axis, by_categories(&spec.axis_type, data, spacing)?);
@@ -385,11 +426,20 @@ fn edit(
         axis,
         "noMultiLvlLbl",
     );
-    write::carried(
-        by_categories(&spec.base_time_unit, data, spacing)?,
-        axis,
-        "baseTimeUnit",
-    );
+    let unit = match by_categories(&spec.base_time_unit, data, spacing)? {
+        TimeUnitRule::Carried(rule) => rule,
+        TimeUnitRule::FromSource => Carried::Set(
+            match copied
+                .and_then(|copied| copied.unit)
+                .ok_or(Unresolved::Rejected)?
+            {
+                "years" => TimeUnit::Years,
+                "months" => TimeUnit::Months,
+                _ => TimeUnit::Days,
+            },
+        ),
+    };
+    write::carried(unit, axis, "baseTimeUnit");
     write::carried(spec.major_ticks, axis, "majorTickMark");
     write::carried(spec.minor_ticks, axis, "minorTickMark");
     write::retained(spec.style, axis, "spPr");
@@ -415,7 +465,7 @@ fn edit(
         return Err(Unresolved::Rejected);
     }
     match (rotation.action, title_body(axis)) {
-        (super::rule::Carried::Keep, _) => (),
+        (Carried::Keep, _) => (),
         (action, Some(body)) => write::carried_attribute(action, body, "rot"),
         (_, None) => return Err(Unresolved::Rejected),
     }

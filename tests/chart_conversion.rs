@@ -63,9 +63,9 @@ use projection::{
 };
 use workbook::workbook_with_cells;
 
-/// 2,817 native parts, 178 combination layouts, 10 combination probes and 3
+/// 8,775 native parts, 299 combination layouts, 10 combination probes and 3
 /// scatter parts the driver flagged invalid.
-const PARTS: usize = 3_008;
+const PARTS: usize = 9_087;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
