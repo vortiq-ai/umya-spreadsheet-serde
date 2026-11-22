@@ -1207,6 +1207,10 @@ pub(crate) struct SourceCacheSession {
     content_types: std::sync::Arc<crate::structs::content_types::PackageContentTypes>,
     pivot_cache_bindings:         std::sync::Arc<Vec<(String, String)>>,
     mode:                         SourceCacheSessionMode,
+    /// The reader reads every sheet still raw after this session
+    /// (`try_read_sheets_first`): a cache naming such a sheet is reduced as
+    /// if that sheet were read with this one.
+    raw_sheets_read_later:        bool,
     descriptors:                  Rc<RefCell<HashMap<usize, DeferredSource>>>,
     parts:                        Rc<RefCell<Vec<ChartPart>>>,
     current_part:                 Rc<StateCell<Option<usize>>>,
@@ -1312,6 +1316,7 @@ impl SourceCacheSession {
     pub(crate) fn for_sheet(&self) -> Self {
         let mut sheet = Self::deferred();
         sheet.mode = self.mode;
+        sheet.raw_sheets_read_later = self.raw_sheets_read_later;
         sheet.content_types = std::sync::Arc::clone(&self.content_types);
         sheet.pivot_cache_bindings = std::sync::Arc::clone(&self.pivot_cache_bindings);
         sheet
@@ -1453,6 +1458,7 @@ impl SourceCacheSession {
         Self {
             pivot_chart:                               false,
             mode:                                      SourceCacheSessionMode::Deferred,
+            raw_sheets_read_later:                     false,
             content_types:                             std::sync::Arc::default(),
             pivot_cache_bindings:                      std::sync::Arc::default(),
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
@@ -1481,6 +1487,7 @@ impl SourceCacheSession {
         Self {
             pivot_chart:                               false,
             mode:                                      SourceCacheSessionMode::Immediate,
+            raw_sheets_read_later:                     false,
             content_types:                             std::sync::Arc::default(),
             pivot_cache_bindings:                      std::sync::Arc::default(),
             descriptors:                               Rc::new(RefCell::new(HashMap::new())),
@@ -1508,6 +1515,7 @@ impl SourceCacheSession {
         Self {
             pivot_chart:                               self.pivot_chart,
             mode:                                      SourceCacheSessionMode::Immediate,
+            raw_sheets_read_later:                     self.raw_sheets_read_later,
             content_types:                             std::sync::Arc::clone(&self.content_types),
             pivot_cache_bindings:                      std::sync::Arc::clone(
                 &self.pivot_cache_bindings,
@@ -1531,6 +1539,11 @@ impl SourceCacheSession {
             #[cfg(test)]
             rejection_backing:                         Rc::clone(&self.rejection_backing),
         }
+    }
+
+    /// See `raw_sheets_read_later`.
+    pub(crate) fn set_raw_sheets_read_later(&mut self, value: bool) {
+        self.raw_sheets_read_later = value;
     }
 
     pub(crate) fn set_content_types(
@@ -2068,9 +2081,14 @@ pub(crate) fn capture_chart_source_caches(
                         report.dropped_caches += 1;
                         return Ok(());
                     }
-                    let retain_shape = request
-                        .sheet
-                        .is_some_and(|index| classes[index] & RAW_SHEET != 0);
+                    // A raw sheet may be written back raw, so the chart keeps
+                    // its cache's shape, unless the reader
+                    // reads that sheet next: then the cells will be there to
+                    // give the labels, as for a sheet read in this call.
+                    let retain_shape = !session.raw_sheets_read_later
+                        && request
+                            .sheet
+                            .is_some_and(|index| classes[index] & RAW_SHEET != 0);
                     let slot = match &source {
                         CapturedSource::Deferred(source) => {
                             slots.cover_source(source, &request, read_book, &classes, &streamed)

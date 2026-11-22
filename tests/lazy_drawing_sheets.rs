@@ -207,3 +207,83 @@ fn a_stale_cached_label_is_kept_by_the_eager_read_and_dropped_in_phases() {
         "read in phases, the stale label is dropped"
     );
 }
+
+/// Every sheet with a drawing first, together (`try_read_sheets_first`), while
+/// the others are still raw; then each other sheet alone, its cells dropped
+/// once read.
+fn read_drawing_sheets_first(bytes: &[u8]) -> umya_spreadsheet::Workbook {
+    let mut book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+    let drawing: Vec<usize> = book
+        .sheet_collection_no_check()
+        .iter()
+        .enumerate()
+        .filter(|(_, sheet)| sheet.has_drawing_part())
+        .map(|(index, _)| index)
+        .collect();
+    book.try_read_sheets_first(&drawing).unwrap();
+    for index in 0..book.sheet_collection_no_check().len() {
+        if drawing.contains(&index) {
+            continue;
+        }
+        book.try_read_sheet(index).unwrap();
+        let sheet = book.sheet_mut(index).unwrap();
+        let cells: Vec<(u32, u32)> = sheet
+            .cells()
+            .iter()
+            .map(|cell| (cell.coordinate().col_num(), cell.coordinate().row_num()))
+            .collect();
+        for cell in cells {
+            sheet.remove_cell(cell);
+        }
+    }
+    book
+}
+
+/// Read with the drawing sheets first, a chart naming a raw sheet is reduced as
+/// the whole-book read reduces it: the same charts on a clean cache.
+#[test]
+fn drawing_sheets_read_first_give_the_eager_charts() {
+    let bytes = chart_naming_another_sheet();
+    let eager =
+        umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes.clone()), true).unwrap();
+    assert_eq!(charts(&read_drawing_sheets_first(&bytes)), charts(&eager));
+    for fixture in ["issue_281.xlsx", "issue_298.xlsx", "aaa.xlsx"] {
+        let path = format!("{}/tests/test_files/{fixture}", env!("CARGO_MANIFEST_DIR"));
+        let bytes = std::fs::read(&path).unwrap();
+        let eager =
+            umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes.clone()), true).unwrap();
+        assert_eq!(
+            charts(&read_drawing_sheets_first(&bytes)),
+            charts(&eager),
+            "{fixture}"
+        );
+    }
+}
+
+/// And on a stale one: the cached label the cell no longer shows is kept as an
+/// exception, as the whole-book read keeps it, where reading the drawing sheets
+/// last drops it.
+#[test]
+fn drawing_sheets_read_first_keep_a_stale_cached_label_as_the_eager_read_does() {
+    let stale = with_chart_part(&chart_naming_another_sheet(), |xml| {
+        xml.replace("<c:v>Label 2</c:v>", "<c:v>Stale label</c:v>")
+    });
+    let eager =
+        umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(stale.clone()), true).unwrap();
+    let first = read_drawing_sheets_first(&stale);
+    assert!(
+        serde_json::to_string(&charts(&first))
+            .unwrap()
+            .contains("Stale label")
+    );
+    assert_eq!(charts(&first), charts(&eager));
+}
+
+#[test]
+fn reading_sheets_first_refuses_an_index_past_the_last_sheet() {
+    let bytes = chart_naming_another_sheet();
+    let mut book = umya_spreadsheet::reader::xlsx::read_reader(Cursor::new(bytes), false).unwrap();
+    let count = book.sheet_collection_no_check().len();
+    assert!(book.try_read_sheets_first(&[count]).is_err());
+    assert!(!book.sheet_collection_no_check()[0].has_drawing_object());
+}
