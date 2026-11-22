@@ -248,6 +248,8 @@ mod invalid_zip;
 mod iso_dates;
 #[path = "lazy_defined_names_adjustment.rs"]
 mod lazy_defined_names_adjustment;
+#[path = "lazy_drawing_sheets.rs"]
+mod lazy_drawing_sheets;
 #[path = "lazy_materialization_failures.rs"]
 mod lazy_materialization_failures;
 #[path = "legacy_workbook_access.rs"]

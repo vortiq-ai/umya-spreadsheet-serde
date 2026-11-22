@@ -359,6 +359,18 @@ impl ChartPartProvider for LazyChartPartProvider {
                     pending.0
                 }
             };
+            // The part is kept without its byte-order mark. The parse below
+            // records cache ranges on the bytes `visit` gets, which
+            // never carry the mark (`without_utf8_bom`), and
+            // `release_current` stores this buffer for `with_deferred_indices`
+            // to replay those ranges against. Stored with the mark,
+            // every range was three bytes early and the
+            // replay failed the sheet ("tag not closed"); the eager provider
+            // never stores parts.
+            let mut data = data;
+            if data.starts_with(b"\xEF\xBB\xBF") {
+                data.drain(..3);
+            }
             self.current = Some((part, data));
         }
         #[cfg(test)]
