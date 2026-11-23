@@ -42,40 +42,20 @@ impl std::fmt::Debug for SharedPackage {
     }
 }
 
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub(crate) struct RawFile {
     file_target:    StringValue,
     file_data:      Vec<u8>,
     source_file:    Option<PathBuf>,
     /// The in-memory package this part is read from when it is needed, when it
-    /// was not read at open (`set_attributes_deferred`). Never serialized:
-    /// it is a handle, not content.
+    /// was not read at open (`set_attributes_deferred`). Never serialized: it
+    /// is a handle, not content, so a part still deferred is written without
+    /// its bytes. Serialization stays derived (the consumers' serde schema
+    /// audit admits no manual `Serialize`): read the sheets of a book read with
+    /// `read_shared`, or load its parts, before serializing it.
     #[cfg_attr(feature = "serde", serde(skip))]
     source_package: Option<SharedPackage>,
-}
-/// The derived form: the same three fields, in order. A part still deferred in
-/// its package is written with its bytes read from the package, as the eager
-/// reader would have held them, not as an empty part.
-#[cfg(feature = "serde")]
-impl serde::Serialize for RawFile {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{
-            Error as _,
-            SerializeStruct as _,
-        };
-        let data: std::borrow::Cow<'_, [u8]> =
-            if self.file_data.is_empty() && self.source_package.is_some() {
-                std::borrow::Cow::Owned(self.read_data().map_err(S::Error::custom)?)
-            } else {
-                std::borrow::Cow::Borrowed(&self.file_data)
-            };
-        let mut state = serializer.serialize_struct("RawFile", 3)?;
-        state.serialize_field("file_target", &self.file_target)?;
-        state.serialize_field("file_data", &*data)?;
-        state.serialize_field("source_file", &self.source_file)?;
-        state.end()
-    }
 }
 
 impl RawFile {

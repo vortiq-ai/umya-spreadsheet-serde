@@ -372,6 +372,8 @@ pub fn read_reader<R: io::Read + io::Seek>(
 ///
 /// `package` is shared, never copied: the workbook keeps a reference to it
 /// until every sheet it was not asked to read now has been read or written.
+/// Serializing the workbook writes a sheet not yet read without its XML (the
+/// reference is not content): read its sheets first.
 /// # Arguments
 /// * `package` - the whole `.xlsx` file.
 /// * `with_sheet_read` - read every sheet now, as `read_reader` does.
@@ -1068,13 +1070,13 @@ mod read_shared_tests {
         assert_eq!(cells(&shared), cells(&from_reader));
     }
 
-    /// A sheet still deferred in its package serializes as the same sheet read
-    /// by `read_reader`, which holds its XML: the part's bytes are read
-    /// from the package when it is written, so nothing is lost, for every
-    /// sheet of every test workbook.
+    /// A sheet still deferred in its package is serialized without its XML (as
+    /// `read_shared` documents), and once its part is loaded it serializes
+    /// exactly as the same sheet read by `read_reader`, which holds its
+    /// XML: for every sheet of every test workbook.
     #[cfg(feature = "serde")]
     #[test]
-    fn a_deferred_sheet_serializes_as_the_held_one() {
+    fn a_deferred_sheet_once_loaded_serializes_as_the_held_one() {
         let mut paths: Vec<_> = std::fs::read_dir("tests/test_files")
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -1093,15 +1095,26 @@ mod read_shared_tests {
                 .iter()
                 .zip(deferred.sheet_collection_no_check())
             {
-                assert!(
-                    !deferred
-                        .raw_data_of_worksheet()
-                        .worksheet_file()
-                        .has_file_data()
-                );
+                let held_bytes = bincode::serialize(held.raw_data_of_worksheet()).unwrap();
+                let mut loaded = deferred.raw_data_of_worksheet().clone();
+                if held
+                    .raw_data_of_worksheet()
+                    .worksheet_file()
+                    .has_file_data()
+                {
+                    // As documented on `read_shared`: unread, the sheet is
+                    // written without its XML.
+                    assert_ne!(
+                        bincode::serialize(&loaded).unwrap(),
+                        held_bytes,
+                        "{path:?} {}",
+                        held.name()
+                    );
+                }
+                loaded.load_file_data_from_source().unwrap();
                 assert_eq!(
-                    bincode::serialize(deferred.raw_data_of_worksheet()).unwrap(),
-                    bincode::serialize(held.raw_data_of_worksheet()).unwrap(),
+                    bincode::serialize(&loaded).unwrap(),
+                    held_bytes,
                     "{path:?} {}",
                     held.name()
                 );
