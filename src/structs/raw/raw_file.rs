@@ -260,47 +260,6 @@ impl RawFile {
         Ok(())
     }
 
-    /// Whether the part's bytes contain `needle`. A part not in memory is
-    /// searched as it is decompressed, a chunk at a time, so a large sheet
-    /// is not held whole to be searched.
-    pub(crate) fn contains_bytes(&self, needle: &[u8]) -> Result<bool, XlsxError> {
-        fn found(haystack: &[u8], needle: &[u8]) -> bool {
-            !needle.is_empty()
-                && haystack
-                    .windows(needle.len())
-                    .any(|window| window == needle)
-        }
-        fn search(mut source: impl Read, needle: &[u8]) -> Result<bool, XlsxError> {
-            let keep = needle.len().saturating_sub(1);
-            let mut window = Vec::with_capacity(64 * 1024 + keep);
-            let mut chunk = vec![0u8; 64 * 1024];
-            loop {
-                let read = source.read(&mut chunk)?;
-                if read == 0 {
-                    return Ok(false);
-                }
-                window.extend_from_slice(&chunk[..read]);
-                if found(&window, needle) {
-                    return Ok(true);
-                }
-                let tail = window.len().saturating_sub(keep);
-                window.drain(..tail);
-            }
-        }
-        if !self.file_data.is_empty() {
-            return Ok(found(&self.file_data, needle));
-        }
-        if let Some(source_file) = self.source_file.as_ref() {
-            let mut archive = zip::read::ZipArchive::new(File::open(source_file)?)?;
-            return search(zip_by_name(&mut archive, self.file_target())?, needle);
-        }
-        if let Some(package) = self.source_package() {
-            let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
-            return search(zip_by_name(&mut archive, self.file_target())?, needle);
-        }
-        Ok(false)
-    }
-
     /// The part's bytes, from memory or read from the source file or package.
     pub(crate) fn read_data(&self) -> Result<Vec<u8>, XlsxError> {
         if !self.file_data.is_empty() {

@@ -68,52 +68,6 @@ pub(crate) use self::chart_cache::{
     register_parsed_string_cache,
 };
 
-/// The relationship ids named by the worksheet's `legacyDrawing` and
-/// `legacyDrawingHF` elements.
-fn legacy_drawing_ids(sheet_xml: &[u8]) -> Result<(Option<String>, Option<String>), XlsxError> {
-    use quick_xml::events::Event;
-
-    let mut reader = quick_xml::Reader::from_reader(sheet_xml);
-    let (mut legacy, mut header_footer) = (None, None);
-    loop {
-        let event = reader.read_event()?;
-        match &event {
-            Event::Start(e) | Event::Empty(e) => {
-                let slot = match e.local_name().as_ref() {
-                    b"legacyDrawing" => &mut legacy,
-                    b"legacyDrawingHF" => &mut header_footer,
-                    _ => continue,
-                };
-                let mut id = None;
-                for attribute in e.attributes() {
-                    let attribute = attribute.map_err(crate::xml::xml_error)?;
-                    if attribute.key.local_name().as_ref() == b"id" {
-                        id = Some(
-                            attribute
-                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                                .map_err(crate::xml::xml_error)?
-                                .into_owned(),
-                        );
-                    }
-                }
-                if slot
-                    .replace(id.ok_or_else(|| {
-                        crate::xml::xml_error("legacy drawing element has no relationship id")
-                    })?)
-                    .is_some()
-                {
-                    return Err(crate::xml::xml_error(
-                        "worksheet declares a legacy drawing element more than once",
-                    ));
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    Ok((legacy, header_footer))
-}
-
 #[cfg(test)]
 thread_local! {
     /// The worksheet parts scanned for metadata cells, in scan order.
@@ -680,7 +634,8 @@ pub(crate) fn prepare_worksheet_materialization(
         let shared_string_table = &*shared_string_table
             .read()
             .map_err(|error| crate::xml::xml_error(error.to_string()))?;
-        worksheet::read(&mut parsed, &raw, shared_string_table, stylesheet)?;
+        let legacy_drawing_ids =
+            worksheet::read(&mut parsed, &raw, shared_string_table, stylesheet)?;
         raw.load_relationship_file_data_from_source()?;
         slicer::read_worksheet_slicers(&mut parsed, &raw, &sheet_session)?;
         let mut chart_parts = std::collections::HashMap::new();
@@ -717,18 +672,10 @@ pub(crate) fn prepare_worksheet_materialization(
         chart_parts_added = true;
 
         // The `legacyDrawing` ids bind the sheet's VML parts (comments, header
-        // and footer pictures). A sheet deferred in a package was
-        // parsed as a stream and is not in memory: it is searched as it
-        // is decompressed, and read whole only when it names a legacy
-        // drawing, which a large data sheet rarely does.
-        let sheet_file = raw.worksheet_file();
-        let (legacy_id, header_footer_id) = if !sheet_file.contains_bytes(b"legacyDrawing")? {
-            (None, None)
-        } else if sheet_file.has_file_data() {
-            legacy_drawing_ids(sheet_file.file_data())?
-        } else {
-            legacy_drawing_ids(&sheet_file.read_data()?)?
-        };
+        // and footer pictures). They were taken as the sheet was parsed, so a
+        // sheet deferred in a package is decompressed once, not searched again.
+        let (legacy_id, header_footer_id) =
+            (legacy_drawing_ids.legacy, legacy_drawing_ids.header_footer);
         for (element, id) in [
             ("legacyDrawing", &legacy_id),
             ("legacyDrawingHF", &header_footer_id),

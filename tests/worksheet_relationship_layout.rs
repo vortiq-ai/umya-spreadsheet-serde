@@ -1549,17 +1549,126 @@ fn legacy_element_naming_no_vml_relationship_is_an_explicit_import_error() {
         ),
     ];
     for (name, source, expected) in cases {
-        for eager in [true, false] {
-            let message = reader::xlsx::read_reader(Cursor::new(&source), eager)
-                .and_then(|mut book| book.try_read_sheet(0).map(|_| ()))
-                .expect_err(name)
-                .to_string();
+        for (how, read) in read_each_way(&source) {
+            let Err(message) = read else {
+                panic!("{name} {how}: imported");
+            };
+            assert!(message.contains(expected), "{name} {how}: {message}");
+        }
+    }
+}
+
+/// A legacy drawing element without an r:id, or declared twice, is an import
+/// error on every read path, a sheet read from a shared package included (its
+/// ids are taken as the sheet is parsed, not by searching the part again).
+#[test]
+fn a_legacy_element_without_an_id_or_declared_twice_is_an_import_error_on_every_read_path() {
+    let cases = [
+        (
+            "legacyDrawingHF without an r:id",
+            package_with_two_vml_parts("<legacyDrawingHF/>", false),
+            "legacy drawing element has no relationship id",
+        ),
+        (
+            "legacyDrawing declared twice",
+            package_with_two_vml_parts(
+                &format!(r#"<legacyDrawing xmlns:r="{R}" r:id="vmlOne"/>"#),
+                false,
+            ),
+            "worksheet declares a legacy drawing element more than once",
+        ),
+    ];
+    for (name, source, expected) in cases {
+        for (how, read) in read_each_way(&source) {
+            let Err(message) = read else {
+                panic!("{name} {how}: imported");
+            };
+            assert!(message.contains(expected), "{name} {how}: {message}");
+        }
+    }
+}
+
+/// Both legacy drawing ids bind their VML parts on every read path, however the
+/// elements are spelled: empty, with a start and end tag, or with the main
+/// namespace under a prefix.
+#[test]
+fn legacy_drawing_ids_bind_their_vml_parts_on_every_read_path_and_spelling() {
+    let empty = package_with_two_vml_parts(HEADER_FOOTER_ELEMENT, false);
+    let sheet = part(&empty, "xl/worksheets/sheet1.xml");
+    let spellings = [
+        ("empty elements", sheet.clone()),
+        (
+            "start and end tags",
+            sheet
+                .replace(r#"r:id="vmlOne"/>"#, r#"r:id="vmlOne"></legacyDrawing>"#)
+                .replace(r#"r:id="vmlTwo"/>"#, r#"r:id="vmlTwo"></legacyDrawingHF>"#),
+        ),
+        (
+            "prefixed main namespace",
+            sheet
+                .replace(
+                    "<legacyDrawing ",
+                    &format!(r#"<x:legacyDrawing xmlns:x="{MAIN}" "#),
+                )
+                .replace(
+                    "<legacyDrawingHF ",
+                    &format!(r#"<x:legacyDrawingHF xmlns:x="{MAIN}" "#),
+                ),
+        ),
+    ];
+    for (spelling, sheet) in spellings {
+        let source = rewrite(&empty, &[("xl/worksheets/sheet1.xml", sheet.into_bytes())]);
+        for (how, read) in read_each_way(&source) {
+            let book = read.unwrap_or_else(|error| panic!("{spelling} {how}: {error}"));
+            let saved = write_book(&book);
+            let (legacy, legacy_rels) = vml_for(&saved, "legacyDrawing");
             assert!(
-                message.contains(expected),
-                "{name} eager={eager}: {message}"
+                legacy.contains("_x0000_s1025"),
+                "{spelling} {how}: {legacy}"
+            );
+            assert!(legacy_rels.contains("first.png"), "{spelling} {how}");
+            let (header_footer, header_footer_rels) = vml_for(&saved, "legacyDrawingHF");
+            assert!(
+                header_footer.contains("_x0000_s2049"),
+                "{spelling} {how}: {header_footer}"
+            );
+            assert!(
+                header_footer_rels.contains("second.png"),
+                "{spelling} {how}"
             );
         }
     }
+}
+
+const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+
+/// The package read eagerly, lazily from a reader, and lazily from a shared
+/// in-memory package, with its first sheet read.
+fn read_each_way(source: &[u8]) -> Vec<(&'static str, Result<Workbook, String>)> {
+    let read = |book: Result<Workbook, umya_spreadsheet::XlsxError>| {
+        book.and_then(|mut book| {
+            book.try_read_sheet(0)?;
+            Ok(book)
+        })
+        .map_err(|error| error.to_string())
+    };
+    vec![
+        (
+            "eager",
+            read(reader::xlsx::read_reader(Cursor::new(source), true)),
+        ),
+        (
+            "lazy",
+            read(reader::xlsx::read_reader(Cursor::new(source), false)),
+        ),
+        (
+            "shared",
+            read(reader::xlsx::read_shared(
+                std::sync::Arc::new(source.to_vec()),
+                false,
+            )),
+        ),
+    ]
 }
 
 /// Renames the r:id the sheet's `legacyDrawing` uses.
