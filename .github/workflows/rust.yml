@@ -14,6 +14,19 @@
 #
 # Rust 1.98.0, pinned: the version the consumers' build image (vq-builder) uses.
 #
+# THE HEAVY CHART CONVERSION TESTS RUN ONLY BY HAND. Of the chart conversion
+# tests (each conversion checked against Excel's output), 60 are heavy: 56 run
+# every conversion Excel was measured to make from one source chart, and four
+# replay every measured part (refusals, classification, guarded measurements,
+# round trip). In a debug build they keep `build` past its 30-minute limit: on 4
+# local CPUs, scaled to this runner, `build` took ~29 minutes with only the 56
+# left out (the refusals replay alone ran 1,332 s locally). So `build` (pull
+# requests, pushes to master, manual runs) skips exactly the 60 (HEAVY) and runs
+# every other test, ~16 minutes. `chart-conversion` runs only them, optimized
+# with debug assertions and overflow checks kept on, ~19 minutes, and only when
+# this workflow is run by hand (Actions tab, Run workflow). tools/ci-local.ps1
+# runs both and is run before each push to this repository.
+#
 # GATED SINCE 2026-10-02: rustfmt and clippy on the library. Both were red on
 # lines this fork added (14 rustfmt hunks, 3 clippy errors, measured 2026-09-30)
 # until 7eedccb7 and 3e3fdedc cleared them; master 29e0714b passes both, so the
@@ -31,7 +44,8 @@ on:
   pull_request:
   push:
     branches: [master]
-  # Run it by hand from the Actions tab, e.g. after a toolchain or runner change.
+  # Run it by hand from the Actions tab, e.g. after a toolchain or runner change;
+  # only a run by hand also runs the heavy chart conversion tests.
   workflow_dispatch:
 
 concurrency:
@@ -43,11 +57,27 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The heavy chart conversion tests, as libtest filters (a test whose name
+  # contains one): `build` skips them, `chart-conversion` runs only them.
+  HEAVY: >-
+    chart_conversion::admitted::every_admitted_conversion_matches_excel
+    chart_conversion::admitted::every_guarded_measurement_is_refused_with_its_listed_cause
+    chart_conversion::classification::every_before_part_classifies_as_its_subtype
+    chart_conversion::refusals::series_count_refusals_follow_excel_and_leave_the_chart_alone
+    chart_conversion::umya_round_trip_keeps_every_before_part
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # For the Slack report's "failed at".
+    outputs:
+      steps: >-
+        Install Rust 1.98.0=${{ steps.toolchain.conclusion }};
+        Check formatting=${{ steps.fmt.conclusion }};
+        Clippy=${{ steps.clippy.conclusion }};
+        Build=${{ steps.build.conclusion }};
+        Test=${{ steps.test.conclusion }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -82,30 +112,71 @@ jobs:
         run: cargo build --features serde
 
       # Not --all-targets: that skips the doc-tests, which are 79 of the 360.
+      # The heavy chart conversion tests run in `chart-conversion`.
       - name: Test
         id: test
-        run: cargo test --features serde
+        run: |
+          skips=()
+          for filter in $HEAVY; do skips+=(--skip "$filter"); done
+          cargo test --features serde -- "${skips[@]}"
 
-      # One message to the vortiq-ai CI/CD Slack channel, the same message the
-      # dev-tools slack-notify action posts for every other repository. Inline,
-      # because this repository is public and a public repository cannot use an
-      # action from a private one. Same rule: pushes and manual runs always,
-      # pull requests only when they fail, cancelled runs never. A pull request
-      # from a fork gets no secrets, so it skips. Nothing from the event is
-      # interpolated into the script: it reads the commit from GITHUB_EVENT_PATH.
-      # Best effort: it cannot fail this job.
+  chart-conversion:
+    name: Chart conversion tests
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # ~19 minutes; it runs only by hand, so a long limit holds up nobody.
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.98.0
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --no-self-update
+          rustup default 1.98.0
+
+      # A filter that matches no test would pass here with nothing run: fail
+      # instead.
+      - name: Chart conversion tests (each conversion checked against Excel's output)
+        run: |
+          cargo test --release --features serde --test integration -- $HEAVY --list > heavy-tests.txt
+          for filter in $HEAVY; do
+            grep -F -- "$filter" heavy-tests.txt | grep -q ': test$' || { echo "::error::no test matches $filter"; exit 1; }
+          done
+          echo "$(grep -c ': test$' heavy-tests.txt) chart conversion tests"
+          cargo test --release --features serde --test integration -- $HEAVY
+
+  # One message to the vortiq-ai CI/CD Slack channel, the same message the
+  # dev-tools slack-notify action posts for every other repository. Inline,
+  # because this repository is public and a public repository cannot use an
+  # action from a private one. Same rule: pushes and manual runs always,
+  # pull requests only when they fail, cancelled runs never. A pull request
+  # from a fork gets no secrets, so it skips. Nothing from the event is
+  # interpolated into the script: it reads the commit from GITHUB_EVENT_PATH.
+  # Best effort: it cannot fail the run. A job of its own after both test jobs,
+  # so a failure of the chart conversion tests is reported too.
+  report:
+    needs: [build, chart-conversion]
+    if: always() && !cancelled() && !contains(needs.*.result, 'cancelled') && (github.event_name != 'pull_request' || contains(needs.*.result, 'failure'))
+    runs-on: ubuntu-latest
+    steps:
+      # A manual run's subject comes from `git log`.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
       - name: Report to Slack
-        if: always() && job.status != 'cancelled' && (github.event_name != 'pull_request' || job.status == 'failure')
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: C0C5N5WQZCP
-          RESULT: ${{ job.status }}
+          RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
           STEPS: >-
-            Install Rust 1.98.0=${{ steps.toolchain.conclusion }};
-            Check formatting=${{ steps.fmt.conclusion }};
-            Clippy=${{ steps.clippy.conclusion }};
-            Build=${{ steps.build.conclusion }};
-            Test=${{ steps.test.conclusion }}
+            ${{ needs.build.outputs.steps }};
+            Chart conversion tests=${{ needs.chart-conversion.result }}
         run: |
           python3 - <<'PY' || echo "::warning::Slack report failed; ignored"
           import json, os, subprocess, urllib.request
