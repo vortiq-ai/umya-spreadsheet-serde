@@ -121,6 +121,24 @@ impl RawWorksheet {
         self.read_rawrelationships(arv, &base_path, &target, None, defer_chart_data)
     }
 
+    /// `read`, but the sheet's own XML stays in `package` until the sheet is
+    /// read; its relationships, drawings and charts are read now, as `read`
+    /// reads them.
+    pub(crate) fn read_deferred<R: io::Read + io::Seek>(
+        &mut self,
+        arv: &mut zip::read::ZipArchive<R>,
+        target: &str,
+        package: super::SharedPackage,
+        defer_chart_data: bool,
+    ) -> Result<(), XlsxError> {
+        self.worksheet_file_mut()
+            .set_attributes_deferred(arv, "xl", target, package);
+
+        let base_path = self.worksheet_file().path();
+        let target = self.worksheet_file().make_rel_name();
+        self.read_rawrelationships(arv, &base_path, &target, None, defer_chart_data)
+    }
+
     pub(crate) fn read_lazy<R: io::Read + io::Seek, P: AsRef<Path>>(
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,

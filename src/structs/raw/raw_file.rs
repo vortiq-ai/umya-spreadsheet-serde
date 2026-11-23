@@ -20,12 +20,39 @@ use crate::{
     },
 };
 
+/// A whole package held in memory, which a part can be read from again when it
+/// is needed: the buffer `reader::xlsx::read_shared` was given. Shared, never
+/// copied.
+#[derive(Clone)]
+pub(crate) struct SharedPackage(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>);
+
+impl SharedPackage {
+    pub(crate) fn new<T: AsRef<[u8]> + Send + Sync + 'static>(package: std::sync::Arc<T>) -> Self {
+        Self(package)
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        (*self.0).as_ref()
+    }
+}
+
+impl std::fmt::Debug for SharedPackage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SharedPackage({} bytes)", self.bytes().len())
+    }
+}
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub(crate) struct RawFile {
-    file_target: StringValue,
-    file_data:   Vec<u8>,
-    source_file: Option<PathBuf>,
+    file_target:    StringValue,
+    file_data:      Vec<u8>,
+    source_file:    Option<PathBuf>,
+    /// The in-memory package this part is read from when it is needed, when it
+    /// was not read at open (`set_attributes_deferred`). Never serialized:
+    /// it is a handle, not content.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    source_package: Option<SharedPackage>,
 }
 impl RawFile {
     #[inline]
@@ -101,6 +128,13 @@ impl RawFile {
     #[inline]
     pub(crate) fn source_file(&self) -> Option<&Path> {
         self.source_file.as_deref()
+    }
+
+    /// The in-memory package this part is still to be read from, if it was
+    /// deferred.
+    #[inline]
+    pub(crate) fn source_package(&self) -> Option<&[u8]> {
+        self.source_package.as_ref().map(SharedPackage::bytes)
     }
 
     #[inline]
@@ -183,6 +217,26 @@ impl RawFile {
         self.file_data = buf;
     }
 
+    /// Name the part without reading it: it is read from `package` when it is
+    /// needed. A sheet's XML is most of a large package, and reading every
+    /// sheet's at open held all of them at once (872 MB on a 13-sheet, 477
+    /// MB-of-XML workbook) until each sheet was read. A part the
+    /// package does not hold is named alone, as `set_attributes` does.
+    pub(crate) fn set_attributes_deferred<R: Read + io::Seek>(
+        &mut self,
+        arv: &mut zip::read::ZipArchive<R>,
+        base_path: &str,
+        target: &str,
+        package: SharedPackage,
+    ) {
+        let path_str = join_paths(base_path, target);
+        let present = zip_by_name(arv, &path_str).is_ok();
+        self.set_file_target(path_str);
+        if present {
+            self.source_package = Some(package);
+        }
+    }
+
     pub(crate) fn set_attributes_from_source<R: Read + io::Seek, P: AsRef<Path>>(
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,
@@ -202,10 +256,60 @@ impl RawFile {
         Ok(())
     }
 
-    /// The part's bytes, from memory or read from the source file.
+    /// Whether the part's bytes contain `needle`. A part not in memory is
+    /// searched as it is decompressed, a chunk at a time, so a large sheet
+    /// is not held whole to be searched.
+    pub(crate) fn contains_bytes(&self, needle: &[u8]) -> Result<bool, XlsxError> {
+        fn found(haystack: &[u8], needle: &[u8]) -> bool {
+            !needle.is_empty()
+                && haystack
+                    .windows(needle.len())
+                    .any(|window| window == needle)
+        }
+        fn search(mut source: impl Read, needle: &[u8]) -> Result<bool, XlsxError> {
+            let keep = needle.len().saturating_sub(1);
+            let mut window = Vec::with_capacity(64 * 1024 + keep);
+            let mut chunk = vec![0u8; 64 * 1024];
+            loop {
+                let read = source.read(&mut chunk)?;
+                if read == 0 {
+                    return Ok(false);
+                }
+                window.extend_from_slice(&chunk[..read]);
+                if found(&window, needle) {
+                    return Ok(true);
+                }
+                let tail = window.len().saturating_sub(keep);
+                window.drain(..tail);
+            }
+        }
+        if !self.file_data.is_empty() {
+            return Ok(found(&self.file_data, needle));
+        }
+        if let Some(source_file) = self.source_file.as_ref() {
+            let mut archive = zip::read::ZipArchive::new(File::open(source_file)?)?;
+            return search(zip_by_name(&mut archive, self.file_target())?, needle);
+        }
+        if let Some(package) = self.source_package() {
+            let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
+            return search(zip_by_name(&mut archive, self.file_target())?, needle);
+        }
+        Ok(false)
+    }
+
+    /// The part's bytes, from memory or read from the source file or package.
     pub(crate) fn read_data(&self) -> Result<Vec<u8>, XlsxError> {
         if !self.file_data.is_empty() {
             return Ok(self.file_data.clone());
+        }
+        if self.source_file.is_none() {
+            if let Some(package) = self.source_package() {
+                let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
+                let mut source = zip_by_name(&mut archive, self.file_target())?;
+                let mut buf = Vec::new();
+                source.read_to_end(&mut buf)?;
+                return Ok(buf);
+            }
         }
         let Some(source_file) = self.source_file.as_ref() else {
             return Ok(Vec::new());
@@ -226,6 +330,8 @@ impl RawFile {
             writer_mng.add_bin(target, self.file_data())?;
         } else if let Some(source_file) = self.source_file.as_ref() {
             writer_mng.add_raw_copy(target, source_file, self.file_target())?;
+        } else if self.source_package.is_some() {
+            writer_mng.add_bin(target, &self.read_data()?)?;
         }
         Ok(())
     }
