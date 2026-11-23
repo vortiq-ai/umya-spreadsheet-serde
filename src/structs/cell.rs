@@ -3,7 +3,11 @@ use std::{
     collections::HashMap,
     fmt::Write as _,
     io::Cursor,
-    sync::RwLock,
+    sync::{
+        Arc,
+        LazyLock,
+        RwLock,
+    },
 };
 
 use quick_xml::{
@@ -45,6 +49,7 @@ use crate::{
         RichText,
         SharedStringItem,
         SharedStringTable,
+        SharedStyles,
         Style,
         Stylesheet,
         UInt32Value,
@@ -61,14 +66,33 @@ use crate::{
     },
 };
 
+/// The style of a cell no format names, shared by every such cell.
+static DEFAULT_STYLE: LazyLock<Arc<Style>> = LazyLock::new(|| Arc::new(Style::default()));
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Default, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Cell {
     coordinate:            Coordinate,
     pub(crate) cell_value: Box<CellValue>,
-    style:                 Box<Style>,
+    /// Shared by the cells of one format (`SharedStyles`) and written as the style itself. A
+    /// copy per cell was 72 B, and a styled cell's font, fill and borders were boxed per cell too:
+    /// 372 B a cell on a sheet whose every cell is styled. Changed through `style_mut`, which
+    /// copies it first when it is shared, so a change reaches only this cell.
+    style:                 Arc<Style>,
     hyperlink:             Option<Box<Hyperlink>>,
     cell_meta_index:       UInt32Value,
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self {
+            coordinate:      Coordinate::default(),
+            cell_value:      Box::default(),
+            style:           Arc::clone(&DEFAULT_STYLE),
+            hyperlink:       None,
+            cell_meta_index: UInt32Value::default(),
+        }
+    }
 }
 
 /// A display borrowed from the cell, or held in the caller's reusable buffer.
@@ -139,7 +163,7 @@ impl Cell {
 
     #[inline]
     pub fn style_mut(&mut self) -> &mut Style {
-        &mut self.style
+        Arc::make_mut(&mut self.style)
     }
 
     #[inline]
@@ -150,7 +174,14 @@ impl Cell {
 
     #[inline]
     pub fn set_style(&mut self, value: Style) -> &mut Self {
-        *self.style = value;
+        self.style = Arc::new(value);
+        self
+    }
+
+    /// Give the cell a style other cells share (`SharedStyles`).
+    #[inline]
+    pub(crate) fn set_shared_style(&mut self, value: Arc<Style>) -> &mut Self {
+        self.style = value;
         self
     }
 
@@ -662,6 +693,7 @@ impl Cell {
         self
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
@@ -670,6 +702,7 @@ impl Cell {
         stylesheet: &Stylesheet,
         empty_flag: bool,
         formula_shared_list: &mut HashMap<u32, (String, Vec<FormulaToken>)>,
+        styles: &mut SharedStyles,
     ) {
         let mut type_value: String = String::new();
         let mut cell_reference: String = String::new();
@@ -681,8 +714,7 @@ impl Cell {
 
         if let Some(v) = get_attribute(e, b"s") {
             if let Ok(id) = v.parse::<usize>() {
-                let style = stylesheet.style(id);
-                self.set_style(style);
+                self.set_shared_style(styles.get(stylesheet, id));
             }
         }
 
@@ -1001,7 +1033,7 @@ mod tests {
                 Some("general"),
                 Some("GENERAL"),
             ] {
-                cell.style = Box::new(Style::default());
+                cell.set_style(Style::default());
                 if let Some(code) = code {
                     cell.style_mut().number_format_mut().set_format_code(code);
                 }
@@ -1053,7 +1085,7 @@ mod tests {
                 Some("general"),
                 Some("GENERAL"),
             ] {
-                cell.style = Box::new(Style::default());
+                cell.set_style(Style::default());
                 if let Some(code) = code {
                     cell.style_mut().number_format_mut().set_format_code(code);
                 }
@@ -1094,7 +1126,7 @@ mod tests {
                 Some("GENERAL"),
                 Some("0.00"),
             ] {
-                cell.style = Box::new(Style::default());
+                cell.set_style(Style::default());
                 if let Some(code) = code {
                     cell.style_mut().number_format_mut().set_format_code(code);
                 }
@@ -1156,6 +1188,7 @@ mod tests {
             &Stylesheet::default(),
             false,
             &mut formula_shared_list,
+            &mut SharedStyles::default(),
         );
 
         assert_eq!(cell.value(), "0050");
@@ -1183,6 +1216,7 @@ mod tests {
             &Stylesheet::default(),
             false,
             &mut formula_shared_list,
+            &mut SharedStyles::default(),
         );
 
         assert_eq!(cell.formula(), "IF(TRUE,\"\",\"x\")");
@@ -1191,5 +1225,145 @@ mod tests {
         // the empty-string result is not silently downgraded to a
         // blank/untyped cell.
         assert_eq!(cell.data_type_crate(), "str");
+    }
+
+    fn test_workbooks() -> Vec<std::path::PathBuf> {
+        let mut paths: Vec<_> = std::fs::read_dir("tests/test_files")
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "xlsx"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// A cell's shared style is written as the boxed style was: every cell of every test
+    /// workbook serializes to the same bytes as the same cell laid out the old way, the style in
+    /// a `Box` of its own.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn every_cell_is_written_as_with_a_boxed_style() {
+        #[derive(serde::Serialize)]
+        struct Boxed<'a> {
+            coordinate:      &'a Coordinate,
+            cell_value:      &'a CellValue,
+            style:           Box<Style>,
+            hyperlink:       &'a Option<Box<Hyperlink>>,
+            cell_meta_index: &'a UInt32Value,
+        }
+        let mut compared = 0usize;
+        for path in test_workbooks() {
+            let Ok(book) = crate::reader::xlsx::read(&path) else {
+                continue;
+            };
+            for sheet in book.sheet_collection_no_check() {
+                for cell in sheet.cells() {
+                    let boxed = Boxed {
+                        coordinate:      &cell.coordinate,
+                        cell_value:      &cell.cell_value,
+                        style:           Box::new(Style::clone(&cell.style)),
+                        hyperlink:       &cell.hyperlink,
+                        cell_meta_index: &cell.cell_meta_index,
+                    };
+                    assert_eq!(
+                        bincode::serialize(cell).unwrap(),
+                        bincode::serialize(&boxed).unwrap(),
+                        "{path:?} {}",
+                        cell.coordinate
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 10_000, "only {compared} cells compared");
+    }
+
+    /// Cells read with one format share one style, and a change to one cell's style (font, fill
+    /// or border) reaches that cell only: read, and again after a write and read back.
+    #[test]
+    fn a_style_change_reaches_only_the_cell_it_is_made_on() {
+        let mut book = crate::new_file();
+        for row in 1..=4 {
+            let cell = book.sheet_mut(0).unwrap().cell_mut((1, row));
+            cell.set_value("x");
+            cell.style_mut().font_mut().set_italic(true);
+        }
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut bytes)).unwrap();
+        let mut book = crate::reader::xlsx::read_reader(Cursor::new(&bytes), true).unwrap();
+        {
+            let sheet = book.sheet(0).unwrap();
+            let first = sheet.cell((1, 1)).unwrap();
+            for row in 2..=4 {
+                assert!(
+                    Arc::ptr_eq(&first.style, &sheet.cell((1, row)).unwrap().style),
+                    "A1 and A{row} were read with one format and must share its style"
+                );
+            }
+        }
+        {
+            let sheet = book.sheet_mut(0).unwrap();
+            sheet.cell_mut((1, 1)).style_mut().font_mut().set_bold(true);
+            sheet.cell_mut((1, 2)).style_mut().set_background_color("FFFF0000");
+            sheet
+                .cell_mut((1, 3))
+                .style_mut()
+                .borders_mut()
+                .bottom_mut()
+                .set_border_style(crate::Border::BORDER_THIN);
+        }
+        let check = |book: &crate::Workbook, when: &str| {
+            let sheet = book.sheet(0).unwrap();
+            let style = |row: u32| sheet.cell((1, row)).unwrap().style().clone();
+            let bold = |row: u32| style(row).font().is_some_and(crate::Font::bold);
+            let filled = |row: u32| style(row).background_color().is_some();
+            let bordered = |row: u32| {
+                style(row)
+                    .borders()
+                    .is_some_and(|borders| borders.bottom().border_style() == "thin")
+            };
+            assert_eq!(
+                (1..=4).map(bold).collect::<Vec<_>>(),
+                [true, false, false, false],
+                "bold, {when}"
+            );
+            assert_eq!(
+                (1..=4).map(filled).collect::<Vec<_>>(),
+                [false, true, false, false],
+                "fill, {when}"
+            );
+            assert_eq!(
+                (1..=4).map(bordered).collect::<Vec<_>>(),
+                [false, false, true, false],
+                "border, {when}"
+            );
+            for row in 1..=4 {
+                assert!(
+                    style(row).font().is_some_and(crate::Font::italic),
+                    "A{row} keeps its italic, {when}"
+                );
+            }
+        };
+        check(&book, "after the change");
+
+        // Cells with no format share one static default style; making one bold copies it, so
+        // the other and every new cell keep the default.
+        {
+            let sheet = book.sheet_mut(0).unwrap();
+            sheet.cell_mut((2, 1)).set_value("plain");
+            sheet.cell_mut((2, 2)).set_value("plain");
+            assert!(Arc::ptr_eq(
+                &sheet.cell((2, 1)).unwrap().style,
+                &sheet.cell((2, 2)).unwrap().style
+            ));
+            sheet.cell_mut((2, 1)).style_mut().font_mut().set_bold(true);
+            assert!(sheet.cell((2, 1)).unwrap().style().font().is_some_and(crate::Font::bold));
+            assert!(!sheet.cell((2, 2)).unwrap().style().font().is_some_and(crate::Font::bold));
+        }
+        assert_eq!(Cell::default().style(), &Style::default(), "the shared default changed");
+        let mut written = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut Cursor::new(&mut written)).unwrap();
+        let reread = crate::reader::xlsx::read_reader(Cursor::new(&written), true).unwrap();
+        check(&reread, "written and read back");
     }
 }

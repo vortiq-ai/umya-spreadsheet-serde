@@ -33,6 +33,7 @@ use crate::{
         OleObjects,
         Row,
         SharedStringTable,
+        SharedStyles,
         SheetProtection,
         Stylesheet,
         Worksheet,
@@ -138,6 +139,7 @@ fn read_from_reader<R: io::BufRead>(
     );
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
+    let mut styles = SharedStyles::default();
     worksheet.cells_crate_mut().reserve(65536);
     try_xml_read_loop!(
         reader,
@@ -182,6 +184,7 @@ fn read_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     false,
+                    &mut styles,
                 );
                 worksheet.set_row_dimension(obj);
             }
@@ -328,6 +331,7 @@ fn read_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     true,
+                    &mut styles,
                 );
                 worksheet.set_row_dimension(obj);
             }
@@ -449,6 +453,7 @@ fn read_lite_from_reader<R: io::BufRead>(
     let mut cells = Cells::default();
     cells.reserve(65536);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
+    let mut styles = SharedStyles::default();
     try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
@@ -462,6 +467,7 @@ fn read_lite_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     false,
+                    &mut styles,
                 );
             }
         },
@@ -476,6 +482,7 @@ fn read_lite_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     true,
+                    &mut styles,
                 );
             }
         },
@@ -548,6 +555,7 @@ where
         Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(data)?);
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
+    let mut styles = SharedStyles::default();
 
     try_xml_read_loop!(
         reader,
@@ -558,6 +566,7 @@ where
                     shared_string_table,
                     stylesheet,
                     &mut formula_shared_list,
+                    &mut styles,
                     &mut callback,
                 )?;
             }
@@ -573,6 +582,7 @@ fn read_row_cells_stream<R, F>(
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
     formula_shared_list: &mut HashMap<u32, (String, Vec<FormulaToken>)>,
+    styles: &mut SharedStyles,
     callback: &mut F,
 ) -> Result<(), XlsxError>
 where
@@ -591,6 +601,7 @@ where
                     stylesheet,
                     true,
                     formula_shared_list,
+                    styles,
                 );
                 callback(&obj);
             }
@@ -605,6 +616,7 @@ where
                     stylesheet,
                     false,
                     formula_shared_list,
+                    styles,
                 );
                 callback(&obj);
             }

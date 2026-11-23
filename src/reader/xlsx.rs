@@ -1067,4 +1067,47 @@ mod read_shared_tests {
         };
         assert_eq!(cells(&shared), cells(&from_reader));
     }
+
+    /// A sheet still deferred in its package serializes as the same sheet read
+    /// by `read_reader`, which holds its XML: the part's bytes are read
+    /// from the package when it is written, so nothing is lost, for every
+    /// sheet of every test workbook.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_deferred_sheet_serializes_as_the_held_one() {
+        let mut paths: Vec<_> = std::fs::read_dir("tests/test_files")
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "xlsx"))
+            .collect();
+        paths.sort();
+        let mut compared = 0;
+        for path in paths {
+            let bytes = std::fs::read(&path).unwrap();
+            let Ok(held) = super::read_reader(std::io::Cursor::new(&bytes), false) else {
+                continue;
+            };
+            let deferred = super::read_shared(std::sync::Arc::new(bytes), false).unwrap();
+            for (held, deferred) in held
+                .sheet_collection_no_check()
+                .iter()
+                .zip(deferred.sheet_collection_no_check())
+            {
+                assert!(
+                    !deferred
+                        .raw_data_of_worksheet()
+                        .worksheet_file()
+                        .has_file_data()
+                );
+                assert_eq!(
+                    bincode::serialize(deferred.raw_data_of_worksheet()).unwrap(),
+                    bincode::serialize(held.raw_data_of_worksheet()).unwrap(),
+                    "{path:?} {}",
+                    held.name()
+                );
+                compared += 1;
+            }
+        }
+        assert!(compared >= 50, "only {compared} sheets compared");
+    }
 }
