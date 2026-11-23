@@ -254,6 +254,8 @@ mod invalid_zip;
 mod iso_dates;
 #[path = "lazy_defined_names_adjustment.rs"]
 mod lazy_defined_names_adjustment;
+#[path = "lazy_drawing_sheets.rs"]
+mod lazy_drawing_sheets;
 #[path = "lazy_materialization_failures.rs"]
 mod lazy_materialization_failures;
 #[path = "legacy_workbook_access.rs"]
@@ -310,6 +312,8 @@ mod pivot_table_chart_bindings;
 mod preserved_extensions_structural;
 #[path = "range_operations.rs"]
 mod range_operations;
+#[path = "read_shared.rs"]
+mod read_shared;
 #[path = "retained_pivot_cache.rs"]
 mod retained_pivot_cache;
 #[path = "row_height_fidelity.rs"]

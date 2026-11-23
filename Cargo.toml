@@ -32,7 +32,8 @@ phf = { version = "0.14", features = ["macros"] }
 quick-xml = { version = "0.41", features = ["serialize"] }
 rand = "0.10"
 rgb = "0.8"
-serde = { version = "1.0", optional = true, features = ["derive"] }
+# `rc`: a cell's shared `Arc<Style>` is written as the style itself, as a `Box` was.
+serde = { version = "1.0", optional = true, features = ["derive", "rc"] }
 sha2 = "0.11"
 thousands = "0.2.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }

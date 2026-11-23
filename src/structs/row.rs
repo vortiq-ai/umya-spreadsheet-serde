@@ -18,6 +18,7 @@ use super::{
     Cells,
     DoubleValue,
     SharedStringTable,
+    SharedStyles,
     Style,
     Stylesheet,
     UInt32Value,
@@ -276,6 +277,7 @@ impl Row {
         stylesheet: &Stylesheet,
         formula_shared_list: &mut HashMap<u32, (String, Vec<FormulaToken>)>,
         empty_flag: bool,
+        styles: &mut SharedStyles,
     ) {
         set_string_from_xml!(self, e, row_num, "r");
         set_string_from_xml!(self, e, height, "ht");
@@ -311,7 +313,8 @@ impl Row {
                         shared_string_table,
                         stylesheet,
                         true,
-                        formula_shared_list
+                        formula_shared_list,
+                        styles
                     );
                     cells.add_fast(obj);
                 }
@@ -325,7 +328,8 @@ impl Row {
                         shared_string_table,
                         stylesheet,
                         false,
-                        formula_shared_list
+                        formula_shared_list,
+                        styles
                     );
                     cells.add_fast(obj);
                 }

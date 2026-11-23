@@ -1941,6 +1941,24 @@ impl Worksheet {
         self.worksheet_drawing = value;
     }
 
+    /// Whether the sheet's part names a drawing (charts, pictures, shapes), answered from its
+    /// relationships while the sheet is still raw (`read_reader(.., false)`), before anything in
+    /// it is built. A lazy reader can then build the sheets with drawings together, in one
+    /// `try_read_sheet_collection`, so their chart caches are reduced as an eager read reduces
+    /// them. Once the sheet is read this is [`Self::has_drawing_object`].
+    #[must_use]
+    pub fn has_drawing_part(&self) -> bool {
+        match &self.raw_data_of_worksheet {
+            Some(raw) => raw.relationships_list().iter().any(|relationships| {
+                relationships
+                    .relationship_list()
+                    .iter()
+                    .any(|relationship| relationship.get_type() == crate::helper::const_str::DRAWINGS_NS)
+            }),
+            None => self.has_drawing_object(),
+        }
+    }
+
     /// Has `WorksheetDrawing`.
     #[inline]
     #[must_use]

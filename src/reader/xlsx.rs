@@ -26,7 +26,10 @@ use crate::{
         Workbook,
         Worksheet,
         drawing::Theme,
-        raw::RawWorksheet,
+        raw::{
+            RawWorksheet,
+            SharedPackage,
+        },
     },
 };
 
@@ -358,13 +361,40 @@ pub fn read_reader<R: io::Read + io::Seek>(
     reader: R,
     with_sheet_read: bool,
 ) -> Result<Workbook, XlsxError> {
-    read_reader_with_source(reader, with_sheet_read, None)
+    read_reader_with_source(reader, with_sheet_read, None, None)
+}
+
+/// Read a package that is held in memory, reading each sheet's XML from it only
+/// when that sheet is read, and then as it is decompressed. `read_reader(..,
+/// false)` decompresses every sheet's XML at open and holds it until the sheet
+/// is read (872 MB on a 13-sheet workbook with 477 MB of XML), and parses a
+/// sheet from that whole copy.
+///
+/// `package` is shared, never copied: the workbook keeps a reference to it
+/// until every sheet it was not asked to read now has been read or written.
+/// Serializing the workbook writes a sheet not yet read without its XML (the
+/// reference is not content): read its sheets first.
+/// # Arguments
+/// * `package` - the whole `.xlsx` file.
+/// * `with_sheet_read` - read every sheet now, as `read_reader` does.
+pub fn read_shared<T: AsRef<[u8]> + Send + Sync + 'static>(
+    package: std::sync::Arc<T>,
+    with_sheet_read: bool,
+) -> Result<Workbook, XlsxError> {
+    let package = SharedPackage::new(package);
+    read_reader_with_source(
+        io::Cursor::new(package.bytes()),
+        with_sheet_read,
+        None,
+        Some(&package),
+    )
 }
 
 fn read_reader_with_source<R: io::Read + io::Seek>(
     reader: R,
     with_sheet_read: bool,
     source_file: Option<&Path>,
+    package: Option<&SharedPackage>,
 ) -> Result<Workbook, XlsxError> {
     let mut arv = zip::read::ZipArchive::new(reader)?;
 
@@ -441,9 +471,17 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
             // Like Excel, a package without a styles part drops the row
             // styles it ignores when the sheet is written.
             raw_worksheet.set_drops_row_styles(!has_styles_part);
-            match source_file {
-                Some(source_file) => raw_worksheet.read_lazy(&mut arv, rel_target, source_file)?,
-                None => raw_worksheet.read(&mut arv, rel_target, with_sheet_read)?,
+            match (source_file, package) {
+                (Some(source_file), _) => {
+                    raw_worksheet.read_lazy(&mut arv, rel_target, source_file)?;
+                }
+                (None, Some(package)) => raw_worksheet.read_deferred(
+                    &mut arv,
+                    rel_target,
+                    package.clone(),
+                    with_sheet_read,
+                )?,
+                (None, None) => raw_worksheet.read(&mut arv, rel_target, with_sheet_read)?,
             }
             sheet.set_raw_data_of_worksheet(raw_worksheet);
         }
@@ -488,7 +526,7 @@ pub fn read<P: AsRef<Path>>(path: P) -> Result<Workbook, XlsxError> {
 #[inline]
 pub fn lazy_read(path: &Path) -> Result<Workbook, XlsxError> {
     let file = File::open(path)?;
-    read_reader_with_source(file, false, Some(path))
+    read_reader_with_source(file, false, Some(path), None)
 }
 
 /// Stream cells from a worksheet without deserializing the worksheet into
@@ -678,14 +716,18 @@ pub(crate) fn prepare_worksheet_materialization(
         provider.add_pending(chart_parts);
         chart_parts_added = true;
 
-        let sheet_xml = raw.worksheet_file().file_data();
-        let (legacy_id, header_footer_id) = if sheet_xml
-            .windows(b"legacyDrawing".len())
-            .any(|window| window == b"legacyDrawing")
-        {
-            legacy_drawing_ids(sheet_xml)?
-        } else {
+        // The `legacyDrawing` ids bind the sheet's VML parts (comments, header
+        // and footer pictures). A sheet deferred in a package was
+        // parsed as a stream and is not in memory: it is searched as it
+        // is decompressed, and read whole only when it names a legacy
+        // drawing, which a large data sheet rarely does.
+        let sheet_file = raw.worksheet_file();
+        let (legacy_id, header_footer_id) = if !sheet_file.contains_bytes(b"legacyDrawing")? {
             (None, None)
+        } else if sheet_file.has_file_data() {
+            legacy_drawing_ids(sheet_file.file_data())?
+        } else {
+            legacy_drawing_ids(&sheet_file.read_data()?)?
         };
         for (element, id) in [
             ("legacyDrawing", &legacy_id),
@@ -945,5 +987,140 @@ mod metadata_scan_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod read_shared_tests {
+    /// A package read with `read_shared` holds no sheet's XML until that sheet
+    /// is read: each sheet keeps only a reference to the package, and
+    /// reading one sheet reads only that one.
+    #[test]
+    fn a_shared_package_reads_no_sheet_xml_until_the_sheet_is_read() {
+        let bytes = std::fs::read("tests/test_files/aaa.xlsx").unwrap();
+        let mut book = super::read_shared(std::sync::Arc::new(bytes), false).unwrap();
+        assert!(book.sheet_count() > 1, "the test needs several sheets");
+        for sheet in book.sheet_collection_no_check() {
+            let file = sheet.raw_data_of_worksheet().worksheet_file();
+            assert!(!file.has_file_data(), "{}: XML read at open", sheet.name());
+            assert!(
+                file.source_package().is_some(),
+                "{}: no package to read from",
+                sheet.name()
+            );
+        }
+        book.try_read_sheet(0).unwrap();
+        assert!(book.sheet_collection_no_check()[0].is_deserialized());
+        for sheet in &book.sheet_collection_no_check()[1..] {
+            assert!(
+                !sheet.is_deserialized(),
+                "{} was read with sheet 0",
+                sheet.name()
+            );
+            assert!(
+                !sheet
+                    .raw_data_of_worksheet()
+                    .worksheet_file()
+                    .has_file_data()
+            );
+        }
+    }
+
+    /// A sheet's cells streamed from the package while the sheet is unread (as
+    /// a chart naming an unread sheet streams them,
+    /// `worksheet::read_cells_stream`) leave its part in the package:
+    /// the sheet still reads whole afterwards, as the same package read with
+    /// `read_reader` does.
+    #[test]
+    fn a_sheet_streamed_from_a_shared_package_still_reads_whole_after() {
+        let mut book = crate::new_file();
+        book.new_sheet("Sheet2").unwrap();
+        for (row, value) in ["first", "second", "third"].into_iter().enumerate() {
+            book.sheet_mut(1)
+                .unwrap()
+                .cell_mut((1, u32::try_from(row).unwrap() + 1))
+                .set_value(value);
+        }
+        let mut bytes = Vec::new();
+        crate::writer::xlsx::write_writer(&book, &mut std::io::Cursor::new(&mut bytes)).unwrap();
+
+        let mut shared = super::read_shared(std::sync::Arc::new(bytes.clone()), false).unwrap();
+        let strings = shared.shared_string_table();
+        let mut streamed = Vec::new();
+        super::worksheet::read_cells_stream(
+            shared.sheet_collection_no_check()[1].raw_data_of_worksheet(),
+            &strings.read().unwrap(),
+            shared.stylesheet(),
+            |cell: &crate::Cell| streamed.push(cell.value().to_string()),
+        )
+        .unwrap();
+        assert_eq!(streamed, ["first", "second", "third"]);
+        assert!(!shared.sheet_collection_no_check()[1].is_deserialized());
+
+        shared.try_read_sheet(1).unwrap();
+        let mut from_reader = super::read_reader(std::io::Cursor::new(bytes), false).unwrap();
+        from_reader.try_read_sheet(1).unwrap();
+        let cells = |book: &crate::Workbook| -> Vec<String> {
+            book.sheet_collection_no_check()[1]
+                .cells_sorted()
+                .iter()
+                .map(|cell| format!("{cell:?}"))
+                .collect()
+        };
+        assert_eq!(cells(&shared), cells(&from_reader));
+    }
+
+    /// A sheet still deferred in its package is serialized without its XML (as
+    /// `read_shared` documents), and once its part is loaded it serializes
+    /// exactly as the same sheet read by `read_reader`, which holds its
+    /// XML: for every sheet of every test workbook.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_deferred_sheet_once_loaded_serializes_as_the_held_one() {
+        let mut paths: Vec<_> = std::fs::read_dir("tests/test_files")
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "xlsx"))
+            .collect();
+        paths.sort();
+        let mut compared = 0;
+        for path in paths {
+            let bytes = std::fs::read(&path).unwrap();
+            let Ok(held) = super::read_reader(std::io::Cursor::new(&bytes), false) else {
+                continue;
+            };
+            let deferred = super::read_shared(std::sync::Arc::new(bytes), false).unwrap();
+            for (held, deferred) in held
+                .sheet_collection_no_check()
+                .iter()
+                .zip(deferred.sheet_collection_no_check())
+            {
+                let held_bytes = bincode::serialize(held.raw_data_of_worksheet()).unwrap();
+                let mut loaded = deferred.raw_data_of_worksheet().clone();
+                if held
+                    .raw_data_of_worksheet()
+                    .worksheet_file()
+                    .has_file_data()
+                {
+                    // As documented on `read_shared`: unread, the sheet is
+                    // written without its XML.
+                    assert_ne!(
+                        bincode::serialize(&loaded).unwrap(),
+                        held_bytes,
+                        "{path:?} {}",
+                        held.name()
+                    );
+                }
+                loaded.load_file_data_from_source().unwrap();
+                assert_eq!(
+                    bincode::serialize(&loaded).unwrap(),
+                    held_bytes,
+                    "{path:?} {}",
+                    held.name()
+                );
+                compared += 1;
+            }
+        }
+        assert!(compared >= 50, "only {compared} sheets compared");
     }
 }

@@ -1507,6 +1507,59 @@ impl Workbook {
         Ok(self)
     }
 
+    /// Deserialize the worksheets at `indices` together, in one session, for a reader that reads
+    /// every other worksheet afterwards.
+    ///
+    /// A lazy importer can read the sheets with drawings first (`Worksheet::has_drawing_part`)
+    /// and then the rest one at a time, letting each go once it is converted. Read this way, a
+    /// chart's cache naming a sheet that is still raw is reduced as if that sheet were read with
+    /// it, which is how a whole-book read reduces it (exceptions where the cells cannot reproduce
+    /// the cached text, nothing where they can), instead of keeping its shape for a sheet that
+    /// might be written back raw. The caller must read the remaining sheets before writing.
+    ///
+    /// # Errors
+    /// Returns [`XlsxErrorKind::NotFound`] for an index past the last sheet, or the first
+    /// worksheet read error; sheets already read keep their baselines.
+    pub fn try_read_sheets_first(&mut self, indices: &[usize]) -> Result<&mut Self, XlsxError> {
+        if indices
+            .iter()
+            .any(|&index| index >= self.work_sheet_collection.len())
+        {
+            return Err(XlsxError::new(XlsxErrorKind::NotFound));
+        }
+        let shared_string_table = self.shared_string_table();
+        let stylesheet = self.stylesheet().clone();
+        let mut session = SourceCacheSession::deferred();
+        session.set_content_types(self.package_content_types());
+        session.set_pivot_cache_bindings(self.pivot_cache_bindings());
+        session.set_raw_sheets_read_later(true);
+        let mut provider = LazyChartPartProvider::new(std::collections::HashMap::default());
+        let mut staged = Vec::new();
+        let mut result = Ok(());
+        for (index, worksheet) in self.work_sheet_collection.iter_mut().enumerate() {
+            if !indices.contains(&index) || worksheet.is_deserialized() {
+                continue;
+            }
+            match prepare_worksheet_materialization(
+                worksheet,
+                &shared_string_table,
+                &stylesheet,
+                &mut session,
+                &mut provider,
+            ) {
+                Ok(Some(transaction)) => staged.push((index, transaction)),
+                Ok(None) => (),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        finish_worksheet_materializations(self, staged, &mut session, &mut provider)?;
+        result?;
+        Ok(self)
+    }
+
     /// Deserialize one worksheet.
     ///
     /// # Panics
