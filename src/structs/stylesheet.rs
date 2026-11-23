@@ -753,3 +753,18 @@ impl Stylesheet {
         Ok(())
     }
 }
+
+/// One style per cell format (`cellXfs` index), shared by the cells one read gives that format:
+/// a cell keeps a reference to it, not a copy (`Cell::set_shared_style`).
+#[derive(Default)]
+pub(crate) struct SharedStyles(std::collections::HashMap<usize, std::sync::Arc<Style>>);
+
+impl SharedStyles {
+    pub(crate) fn get(&mut self, stylesheet: &Stylesheet, id: usize) -> std::sync::Arc<Style> {
+        std::sync::Arc::clone(
+            self.0
+                .entry(id)
+                .or_insert_with(|| std::sync::Arc::new(stylesheet.style(id))),
+        )
+    }
+}

@@ -33,6 +33,7 @@ use crate::{
         OleObjects,
         Row,
         SharedStringTable,
+        SharedStyles,
         SheetProtection,
         Stylesheet,
         Worksheet,
@@ -57,6 +58,15 @@ fn check_part_text(raw_data_of_worksheet: &RawWorksheet) -> Result<(), XlsxError
             )?);
         }
     }
+    if let Some(package) = file.source_package() {
+        if !file.has_file_data() {
+            let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
+            let source = zip_by_name(&mut archive, file.file_target())?;
+            return Ok(crate::reader::spreadsheet_xml::validate_part_text(
+                io::BufReader::new(source),
+            )?);
+        }
+    }
     Ok(crate::reader::spreadsheet_xml::validate_part_text(
         io::Cursor::new(file.file_data()),
     )?)
@@ -73,6 +83,25 @@ pub(crate) fn read(
         if !raw_data_of_worksheet.worksheet_file().has_file_data() {
             let file = File::open(source_file)?;
             let mut archive = zip::read::ZipArchive::new(file)?;
+            let source = zip_by_name(
+                &mut archive,
+                raw_data_of_worksheet.worksheet_file().file_target(),
+            )?;
+            let reader = io::BufReader::new(source);
+            return read_from_reader(
+                worksheet,
+                reader,
+                raw_data_of_worksheet,
+                shared_string_table,
+                stylesheet,
+            );
+        }
+    }
+    // A sheet deferred in an in-memory package is parsed as it is decompressed,
+    // never held whole.
+    if let Some(package) = raw_data_of_worksheet.worksheet_file().source_package() {
+        if !raw_data_of_worksheet.worksheet_file().has_file_data() {
+            let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
             let source = zip_by_name(
                 &mut archive,
                 raw_data_of_worksheet.worksheet_file().file_target(),
@@ -110,6 +139,7 @@ fn read_from_reader<R: io::BufRead>(
     );
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
+    let mut styles = SharedStyles::default();
     worksheet.cells_crate_mut().reserve(65536);
     try_xml_read_loop!(
         reader,
@@ -154,6 +184,7 @@ fn read_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     false,
+                    &mut styles,
                 );
                 worksheet.set_row_dimension(obj);
             }
@@ -300,6 +331,7 @@ fn read_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     true,
+                    &mut styles,
                 );
                 worksheet.set_row_dimension(obj);
             }
@@ -393,6 +425,17 @@ pub(crate) fn read_lite(
             return read_lite_from_reader(reader, shared_string_table, stylesheet);
         }
     }
+    if let Some(package) = raw_data_of_worksheet.worksheet_file().source_package() {
+        if !raw_data_of_worksheet.worksheet_file().has_file_data() {
+            let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
+            let source = zip_by_name(
+                &mut archive,
+                raw_data_of_worksheet.worksheet_file().file_target(),
+            )?;
+            let reader = io::BufReader::new(source);
+            return read_lite_from_reader(reader, shared_string_table, stylesheet);
+        }
+    }
 
     let data = io::Cursor::new(raw_data_of_worksheet.worksheet_file().file_data());
     read_lite_from_reader(data, shared_string_table, stylesheet)
@@ -410,6 +453,7 @@ fn read_lite_from_reader<R: io::BufRead>(
     let mut cells = Cells::default();
     cells.reserve(65536);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
+    let mut styles = SharedStyles::default();
     try_xml_read_loop!(
         reader,
         Event::Start(ref e) => {
@@ -423,6 +467,7 @@ fn read_lite_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     false,
+                    &mut styles,
                 );
             }
         },
@@ -437,6 +482,7 @@ fn read_lite_from_reader<R: io::BufRead>(
                     stylesheet,
                     &mut formula_shared_list,
                     true,
+                    &mut styles,
                 );
             }
         },
@@ -474,6 +520,22 @@ where
             );
         }
     }
+    if let Some(package) = raw_data_of_worksheet.worksheet_file().source_package() {
+        if !raw_data_of_worksheet.worksheet_file().has_file_data() {
+            let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
+            let source = zip_by_name(
+                &mut archive,
+                raw_data_of_worksheet.worksheet_file().file_target(),
+            )?;
+            let reader = io::BufReader::new(source);
+            return read_cells_stream_from_reader(
+                reader,
+                shared_string_table,
+                stylesheet,
+                callback,
+            );
+        }
+    }
 
     let data = io::Cursor::new(raw_data_of_worksheet.worksheet_file().file_data());
     read_cells_stream_from_reader(data, shared_string_table, stylesheet, callback)
@@ -493,6 +555,7 @@ where
         Reader::from_reader(crate::reader::spreadsheet_xml::SpreadsheetXml::open(data)?);
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
+    let mut styles = SharedStyles::default();
 
     try_xml_read_loop!(
         reader,
@@ -503,6 +566,7 @@ where
                     shared_string_table,
                     stylesheet,
                     &mut formula_shared_list,
+                    &mut styles,
                     &mut callback,
                 )?;
             }
@@ -518,6 +582,7 @@ fn read_row_cells_stream<R, F>(
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
     formula_shared_list: &mut HashMap<u32, (String, Vec<FormulaToken>)>,
+    styles: &mut SharedStyles,
     callback: &mut F,
 ) -> Result<(), XlsxError>
 where
@@ -536,6 +601,7 @@ where
                     stylesheet,
                     true,
                     formula_shared_list,
+                    styles,
                 );
                 callback(&obj);
             }
@@ -550,6 +616,7 @@ where
                     stylesheet,
                     false,
                     formula_shared_list,
+                    styles,
                 );
                 callback(&obj);
             }

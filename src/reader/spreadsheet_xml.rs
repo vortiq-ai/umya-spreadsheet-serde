@@ -349,6 +349,11 @@ fn decode_utf16<R: BufRead>(
 /// naming an encoding the parsers cannot read is an error too. The declaration
 /// is read through its terminator however the source hands out bytes.
 pub(crate) fn utf8_source<R: BufRead>(mut source: R) -> io::Result<Utf8Source<R>> {
+    // At most this many bytes are taken per `fill_buf` while looking for the
+    // declaration: a `Cursor` over a whole part hands all of it out at
+    // once, and copying it into the prefix held the part twice (220 MB of a
+    // 268 MB sheet). What is taken is chained back in front.
+    const PREFIX_STEP: usize = 512;
     let mut prefix = Vec::new();
     let mut searched = 0;
     // Enough bytes to tell a UTF-16 part from the others.
@@ -357,8 +362,8 @@ pub(crate) fn utf8_source<R: BufRead>(mut source: R) -> io::Result<Utf8Source<R>
         if buffered.is_empty() {
             break;
         }
-        let length = buffered.len();
-        prefix.extend_from_slice(buffered);
+        let length = buffered.len().min(PREFIX_STEP);
+        prefix.extend_from_slice(&buffered[..length]);
         source.consume(length);
     }
     if let Some(order) = utf16_order(&prefix) {
@@ -385,8 +390,8 @@ pub(crate) fn utf8_source<R: BufRead>(mut source: R) -> io::Result<Utf8Source<R>
                 ))
             };
         }
-        let length = buffered.len();
-        prefix.extend_from_slice(buffered);
+        let length = buffered.len().min(PREFIX_STEP);
+        prefix.extend_from_slice(&buffered[..length]);
         source.consume(length);
     };
     let Some(label) = parse_declaration(&prefix[start..end]).map_err(invalid)? else {

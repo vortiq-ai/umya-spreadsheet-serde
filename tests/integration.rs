@@ -306,6 +306,8 @@ mod pivot_table_chart_bindings;
 mod preserved_extensions_structural;
 #[path = "range_operations.rs"]
 mod range_operations;
+#[path = "read_shared.rs"]
+mod read_shared;
 #[path = "retained_pivot_cache.rs"]
 mod retained_pivot_cache;
 #[path = "row_height_fidelity.rs"]
