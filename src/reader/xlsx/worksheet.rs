@@ -7,7 +7,10 @@ use std::{
 use quick_xml::{
     Reader,
     escape,
-    events::Event,
+    events::{
+        BytesStart,
+        Event,
+    },
 };
 
 use super::{
@@ -72,12 +75,57 @@ fn check_part_text(raw_data_of_worksheet: &RawWorksheet) -> Result<(), XlsxError
     )?)
 }
 
+/// The relationship ids named by a worksheet's `legacyDrawing` and
+/// `legacyDrawingHF` elements, taken as the worksheet is parsed, so a sheet is
+/// decompressed once: they bind the sheet's VML parts (comments, header and
+/// footer pictures).
+#[derive(Default)]
+pub(crate) struct LegacyDrawingIds {
+    pub(crate) legacy:        Option<String>,
+    pub(crate) header_footer: Option<String>,
+}
+
+impl LegacyDrawingIds {
+    /// Record `element` when it is a `legacyDrawing` or `legacyDrawingHF`: its
+    /// relationship id is required, and each element may appear once.
+    fn capture(&mut self, element: &BytesStart<'_>) -> Result<(), XlsxError> {
+        let slot = match element.local_name().as_ref() {
+            b"legacyDrawing" => &mut self.legacy,
+            b"legacyDrawingHF" => &mut self.header_footer,
+            _ => return Ok(()),
+        };
+        let mut id = None;
+        for attribute in element.attributes() {
+            let attribute = attribute.map_err(crate::xml::xml_error)?;
+            if attribute.key.local_name().as_ref() == b"id" {
+                id = Some(
+                    attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(crate::xml::xml_error)?
+                        .into_owned(),
+                );
+            }
+        }
+        if slot
+            .replace(id.ok_or_else(|| {
+                crate::xml::xml_error("legacy drawing element has no relationship id")
+            })?)
+            .is_some()
+        {
+            return Err(crate::xml::xml_error(
+                "worksheet declares a legacy drawing element more than once",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn read(
     worksheet: &mut Worksheet,
     raw_data_of_worksheet: &RawWorksheet,
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
-) -> Result<(), XlsxError> {
+) -> Result<LegacyDrawingIds, XlsxError> {
     check_part_text(raw_data_of_worksheet)?;
     if let Some(source_file) = raw_data_of_worksheet.worksheet_file().source_file() {
         if !raw_data_of_worksheet.worksheet_file().has_file_data() {
@@ -133,13 +181,14 @@ fn read_from_reader<R: io::BufRead>(
     raw_data_of_worksheet: &RawWorksheet,
     shared_string_table: &SharedStringTable,
     stylesheet: &Stylesheet,
-) -> Result<(), XlsxError> {
+) -> Result<LegacyDrawingIds, XlsxError> {
     let mut reader = Reader::from_reader(
         crate::reader::spreadsheet_xml::SpreadsheetXml::open_with_all_extensions(data)?,
     );
     reader.config_mut().trim_text(true);
     let mut formula_shared_list: HashMap<u32, (String, Vec<FormulaToken>)> = HashMap::new();
     let mut styles = SharedStyles::default();
+    let mut legacy_drawing_ids = LegacyDrawingIds::default();
     worksheet.cells_crate_mut().reserve(65536);
     try_xml_read_loop!(
         reader,
@@ -283,6 +332,7 @@ fn read_from_reader<R: io::BufRead>(
                     .column_breaks_mut()
                     .set_attributes(&mut reader, e);
             }
+            b"legacyDrawing" | b"legacyDrawingHF" => legacy_drawing_ids.capture(e)?,
             _ => (),
         },
         Event::Empty(ref e) => match e.name().into_inner() {
@@ -397,6 +447,7 @@ fn read_from_reader<R: io::BufRead>(
                 );
                 worksheet.set_sheet_protection(obj);
             }
+            b"legacyDrawing" | b"legacyDrawingHF" => legacy_drawing_ids.capture(e)?,
             _ => (),
         },
         Event::Eof => break,
@@ -404,7 +455,7 @@ fn read_from_reader<R: io::BufRead>(
 
     worksheet.cells_crate_mut().build_indexes();
 
-    Ok(())
+    Ok(legacy_drawing_ids)
 }
 
 pub(crate) fn read_lite(
@@ -636,7 +687,7 @@ where
 }
 
 fn get_hyperlink(
-    e: &quick_xml::events::BytesStart<'_>,
+    e: &BytesStart<'_>,
     raw_relationships: Option<&RawRelationships>,
 ) -> Result<(String, Hyperlink), XlsxError> {
     let mut hyperlink = Hyperlink::default();
