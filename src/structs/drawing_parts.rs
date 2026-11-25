@@ -236,10 +236,12 @@ impl PreparedDrawingParts {
             let edge =
                 &mut raw.relationships_list_mut()[list_index].relationship_list_mut()[edge_index];
             let mut file = std::mem::take(edge.raw_file_mut());
-            // A part the sheet keeps holds its bytes, as when it was read at open: an image left
-            // in its package (`RawRelationship::set_attributes`) is read now, so nothing the
-            // sheet keeps refers to the package. Only images no picture models reach here; a
-            // modelled picture took its own copy. One that cannot be read stays as it was.
+            // A part the sheet keeps holds its bytes, as when it was read at
+            // open: an image left in its package
+            // (`RawRelationship::set_attributes`) is read now, so nothing the
+            // sheet keeps refers to the package. Only images no picture models
+            // reach here; a modelled picture took its own copy. One
+            // that cannot be read stays as it was.
             if file.source_package().is_some() {
                 file.load_and_detach_package().unwrap_or_default();
             }
@@ -874,9 +876,13 @@ impl DrawingParts {
         field(&self.files.len().to_le_bytes());
         for file in &self.files {
             field(file.file_target().as_bytes());
-            // A part still in its package (an image, `RawRelationship::set_attributes`) is
-            // fingerprinted by its bytes, as it is when it was read at open.
-            if file.has_file_data() || file.source_file().is_some() || file.source_package().is_none() {
+            // A part still in its package (an image,
+            // `RawRelationship::set_attributes`) is fingerprinted
+            // by its bytes, as it is when it was read at open.
+            if file.has_file_data()
+                || file.source_file().is_some()
+                || file.source_package().is_none()
+            {
                 field(file.file_data());
             } else {
                 field(&file.data_or_empty());

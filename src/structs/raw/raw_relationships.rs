@@ -194,14 +194,28 @@ impl RawRelationships {
                 }
                 if is_relationship {
                     let mut obj = RawRelationship::default();
-                    obj.set_attributes(e, arv, base_path, source_file, defer_chart_data, media_package)?;
+                    obj.set_attributes(
+                        e,
+                        arv,
+                        base_path,
+                        source_file,
+                        defer_chart_data,
+                        media_package,
+                    )?;
                     self.add_relationship_list(obj);
                 }
             },
             Event::Empty(ref e) => {
                 if open_relationship_depth == 0 && is_relationship(&reader, e) {
                     let mut obj = RawRelationship::default();
-                    obj.set_attributes(e, arv, base_path, source_file, defer_chart_data, media_package)?;
+                    obj.set_attributes(
+                        e,
+                        arv,
+                        base_path,
+                        source_file,
+                        defer_chart_data,
+                        media_package,
+                    )?;
                     self.add_relationship_list(obj);
                 }
             },

@@ -136,7 +136,14 @@ impl RawWorksheet {
 
         let base_path = self.worksheet_file().path();
         let target = self.worksheet_file().make_rel_name();
-        self.read_rawrelationships(arv, &base_path, &target, None, defer_chart_data, Some(&package))
+        self.read_rawrelationships(
+            arv,
+            &base_path,
+            &target,
+            None,
+            defer_chart_data,
+            Some(&package),
+        )
     }
 
     pub(crate) fn read_lazy<R: io::Read + io::Seek, P: AsRef<Path>>(
@@ -154,7 +161,14 @@ impl RawWorksheet {
 
         let base_path = self.worksheet_file().path();
         let target = self.worksheet_file().make_rel_name();
-        self.read_rawrelationships(arv, &base_path, &target, Some(source_file.as_ref()), false, None)
+        self.read_rawrelationships(
+            arv,
+            &base_path,
+            &target,
+            Some(source_file.as_ref()),
+            false,
+            None,
+        )
     }
 
     pub(crate) fn read_rawrelationships<R: io::Read + io::Seek>(
@@ -194,7 +208,14 @@ impl RawWorksheet {
             return Ok(());
         }
         let mut obj = RawRelationships::default();
-        if obj.set_attributes(arv, base_path, target, source_file, defer_chart_data, media_package)? {
+        if obj.set_attributes(
+            arv,
+            base_path,
+            target,
+            source_file,
+            defer_chart_data,
+            media_package,
+        )? {
             for relationship in obj.relationship_list() {
                 let target = relationship.target();
                 let last_segment = target.rsplit('/').next().unwrap_or_default();
@@ -242,9 +263,10 @@ impl RawWorksheet {
         self.load_relationship_parts(false)
     }
 
-    /// [`Self::load_relationship_file_data_from_source`] for a sheet being read: an image left
-    /// in its package (`read_shared`) stays there, as its readers take it when they keep it
-    /// (`RawFile::data_or_empty`, `read_data`). Loaded here, every image of the sheets read
+    /// [`Self::load_relationship_file_data_from_source`] for a sheet being
+    /// read: an image left in its package (`read_shared`) stays there, as
+    /// its readers take it when they keep it (`RawFile::data_or_empty`,
+    /// `read_data`). Loaded here, every image of the sheets read
     /// together was held at once, beside the pictures' own copies.
     pub(crate) fn load_relationship_file_data_for_read(&mut self) -> Result<(), XlsxError> {
         self.load_relationship_parts(true)

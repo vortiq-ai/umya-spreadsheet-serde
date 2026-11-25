@@ -973,9 +973,10 @@ mod read_shared_tests {
         }
     }
 
-    /// A package read with `read_shared` holds no image at open, nor while a sheet is read: each
-    /// image a sheet reaches keeps only a reference to the package, and a picture takes its
-    /// bytes when the sheet is read, as `read_reader` gives them.
+    /// A package read with `read_shared` holds no image at open, nor while a
+    /// sheet is read: each image a sheet reaches keeps only a reference to
+    /// the package, and a picture takes its bytes when the sheet is read,
+    /// as `read_reader` gives them.
     #[test]
     fn a_shared_package_holds_no_image_until_a_picture_takes_it() {
         let images = |book: &crate::Workbook| -> Vec<(String, bool, bool)> {
@@ -997,7 +998,11 @@ mod read_shared_tests {
         let bytes = std::fs::read("tests/test_files/issue_188_2.xlsx").unwrap();
         let book = super::read_shared(std::sync::Arc::new(bytes.clone()), false).unwrap();
         let at_open = images(&book);
-        assert!(at_open.len() > 100, "the test needs many images: {}", at_open.len());
+        assert!(
+            at_open.len() > 100,
+            "the test needs many images: {}",
+            at_open.len()
+        );
         for (target, held, deferred) in &at_open {
             assert!(!held && *deferred, "{target}: read at open");
         }
@@ -1010,8 +1015,17 @@ mod read_shared_tests {
             let want = eager.sheet(index).unwrap().image_collection();
             assert_eq!(read.len(), want.len());
             for (read, want) in read.iter().zip(want) {
-                assert!(!read.image_data().is_empty(), "{}: a picture without its image", read.image_name());
-                assert_eq!(read.image_data(), want.image_data(), "{}", read.image_name());
+                assert!(
+                    !read.image_data().is_empty(),
+                    "{}: a picture without its image",
+                    read.image_name()
+                );
+                assert_eq!(
+                    read.image_data(),
+                    want.image_data(),
+                    "{}",
+                    read.image_name()
+                );
             }
         }
     }

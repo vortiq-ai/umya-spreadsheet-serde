@@ -81,8 +81,8 @@ fn sheets(book: &Workbook) -> Vec<String> {
             sheet.chart_collection().len(),
             sheet.image_collection().len()
         ));
-        // Each picture's image, by its bytes: an image a shared package reads only when a
-        // picture takes it is the same image.
+        // Each picture's image, by its bytes: an image a shared package reads
+        // only when a picture takes it is the same image.
         out.extend(sheet.image_collection().iter().map(|image| {
             format!(
                 "image {} {} bytes, {:016x}",
@@ -95,17 +95,19 @@ fn sheets(book: &Workbook) -> Vec<String> {
     out
 }
 
-/// FNV-1a over `bytes`: a fingerprint for comparing images, not a hash to trust.
+/// FNV-1a over `bytes`: a fingerprint for comparing images, not a hash to
+/// trust.
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
 }
 
-/// A chart's picture fill is read from the package into the chart when its sheet is read, and
-/// then the chart holds its image itself: nothing in it keeps the package. A chart stored
-/// after an import outlives the file it came from (the engine maps the upload and deletes it
-/// once the import returns), and a deferred image in it would be written without its bytes.
+/// A chart's picture fill is read from the package into the chart when its
+/// sheet is read, and then the chart holds its image itself: nothing in it
+/// keeps the package. A chart stored after an import outlives the file it came
+/// from (the engine maps the upload and deletes it once the import returns),
+/// and a deferred image in it would be written without its bytes.
 #[test]
 fn a_chart_picture_fill_is_read_into_the_chart_and_keeps_no_package() {
     use umya_spreadsheet::{
@@ -125,7 +127,10 @@ fn a_chart_picture_fill_is_read_into_the_chart_and_keeps_no_package() {
         .collect();
     let mut book = new_file();
     for row in 1..=3 {
-        book.sheet_mut(0).unwrap().cell_mut((2, row)).set_value_number(row * 10);
+        book.sheet_mut(0)
+            .unwrap()
+            .cell_mut((2, row))
+            .set_value_number(row * 10);
     }
     let (mut from, mut to) = (MarkerType::default(), MarkerType::default());
     from.set_coordinate("E1");
@@ -133,7 +138,10 @@ fn a_chart_picture_fill_is_read_into_the_chart_and_keeps_no_package() {
     let mut chart = Chart::default();
     chart.new_chart(&ChartType::LineChart, from, to, vec!["Sheet1!B1:B3"]);
     let mut fill = BlipFill::default();
-    fill.blip_mut().image_mut().set_image_name("fill.png").set_image_data(image.clone());
+    fill.blip_mut()
+        .image_mut()
+        .set_image_name("fill.png")
+        .set_image_data(image.clone());
     let mut shape = ShapeProperties::default();
     shape.set_blip_fill(fill);
     chart.chart_space_mut().set_shape_properties(shape);
@@ -150,14 +158,22 @@ fn a_chart_picture_fill_is_read_into_the_chart_and_keeps_no_package() {
             .unwrap_or_default()
     };
     let eager = read_reader(Cursor::new(&written), true).unwrap();
-    assert_eq!(fill_of(&eager.sheet(0).unwrap().chart_collection()[0]), image, "read_reader");
+    assert_eq!(
+        fill_of(&eager.sheet(0).unwrap().chart_collection()[0]),
+        image,
+        "read_reader"
+    );
 
     let package = Arc::new(written);
     let mut shared = read_shared(Arc::clone(&package), false).unwrap();
     shared.try_read_sheet(0).unwrap();
     let kept = shared.sheet(0).unwrap().chart_collection()[0].clone();
     drop(shared);
-    assert_eq!(Arc::strong_count(&package), 1, "the chart keeps a handle to the package");
+    assert_eq!(
+        Arc::strong_count(&package),
+        1,
+        "the chart keeps a handle to the package"
+    );
     assert_eq!(fill_of(&kept), image, "read_shared, the package gone");
 }
 
