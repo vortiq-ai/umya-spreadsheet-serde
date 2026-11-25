@@ -157,7 +157,8 @@ impl PreparedDrawingParts {
                                     .find(|file| {
                                         file.file_target() == target
                                             && (!file.file_data().is_empty()
-                                                || file.source_file().is_some())
+                                                || file.source_file().is_some()
+                                                || file.source_package().is_some())
                                     })
                                     .ok_or_else(|| {
                                         part_error(format!(
@@ -234,7 +235,17 @@ impl PreparedDrawingParts {
         for (list_index, edge_index) in self.locations {
             let edge =
                 &mut raw.relationships_list_mut()[list_index].relationship_list_mut()[edge_index];
-            self.value.files.push(std::mem::take(edge.raw_file_mut()));
+            let mut file = std::mem::take(edge.raw_file_mut());
+            // A part the sheet keeps holds its bytes, as when it was read at
+            // open: an image left in its package
+            // (`RawRelationship::set_attributes`) is read now, so nothing the
+            // sheet keeps refers to the package. Only images no picture models
+            // reach here; a modelled picture took its own copy. One
+            // that cannot be read stays as it was.
+            if file.source_package().is_some() {
+                file.load_and_detach_package().unwrap_or_default();
+            }
+            self.value.files.push(file);
         }
         Box::new(self.value)
     }
@@ -467,7 +478,10 @@ impl DrawingParts {
                 if file_targets.contains(file.file_target())
                     && !retained_targets.contains(file.file_target())
                 {
-                    if file.file_data().is_empty() && file.source_file().is_none() {
+                    if file.file_data().is_empty()
+                        && file.source_file().is_none()
+                        && file.source_package().is_none()
+                    {
                         if matches!(
                             edge.get_type(),
                             crate::helper::const_str::CHART_NS
@@ -862,7 +876,17 @@ impl DrawingParts {
         field(&self.files.len().to_le_bytes());
         for file in &self.files {
             field(file.file_target().as_bytes());
-            field(file.file_data());
+            // A part still in its package (an image,
+            // `RawRelationship::set_attributes`) is fingerprinted
+            // by its bytes, as it is when it was read at open.
+            if file.has_file_data()
+                || file.source_file().is_some()
+                || file.source_package().is_none()
+            {
+                field(file.file_data());
+            } else {
+                field(&file.data_or_empty());
+            }
             field(&[u8::from(file.source_file().is_some())]);
             if let Some(path) = file.source_file() {
                 field(path.to_string_lossy().as_bytes());
@@ -943,7 +967,9 @@ fn chart_style_bundle(
             )
             .find(|file| {
                 file.file_target() == target
-                    && (!file.file_data().is_empty() || file.source_file().is_some())
+                    && (!file.file_data().is_empty()
+                        || file.source_file().is_some()
+                        || file.source_package().is_some())
             })
             .ok_or_else(|| part_error(format!("chart style part has no bytes: {target}")))?
             .read_data()?;

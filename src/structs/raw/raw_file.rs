@@ -252,12 +252,34 @@ impl RawFile {
         self.set_source_file(source_file);
     }
 
+    /// Read a part still in its package into memory and let go of the package:
+    /// what is kept after a read then refers to nothing it was read from.
+    pub(crate) fn load_and_detach_package(&mut self) -> Result<(), XlsxError> {
+        if self.source_package.is_some() {
+            self.load_file_data_from_source()?;
+            self.source_package = None;
+        }
+        Ok(())
+    }
+
     pub(crate) fn load_file_data_from_source(&mut self) -> Result<(), XlsxError> {
         if !self.file_data.is_empty() || self.file_target().is_empty() {
             return Ok(());
         }
         self.file_data = self.read_data()?;
         Ok(())
+    }
+
+    /// The part's bytes as a reader that keeps them takes them: a copy of what
+    /// it holds, or, for a part still in its package (an image, until
+    /// something reads it), read now and handed over, not held here too.
+    /// Empty when it cannot be read, as a part missing from the package is
+    /// at open.
+    pub(crate) fn data_or_empty(&self) -> Vec<u8> {
+        if !self.file_data.is_empty() {
+            return self.file_data.clone();
+        }
+        self.read_data().unwrap_or_default()
     }
 
     /// The part's bytes, from memory or read from the source file or package.
@@ -269,7 +291,12 @@ impl RawFile {
             if let Some(package) = self.source_package() {
                 let mut archive = zip::read::ZipArchive::new(io::Cursor::new(package))?;
                 let mut source = zip_by_name(&mut archive, self.file_target())?;
-                let mut buf = Vec::new();
+                // Sized to the part as its entry declares it, not grown by
+                // doubling (which held up to twice an image
+                // while it was read); never more than 1 GiB on the
+                // declaration's word, past which it grows as it reads.
+                let declared = usize::try_from(source.size()).unwrap_or(usize::MAX);
+                let mut buf = Vec::with_capacity(declared.min(1 << 30));
                 source.read_to_end(&mut buf)?;
                 return Ok(buf);
             }

@@ -165,6 +165,7 @@ impl RawRelationships {
         target: &str,
         source_file: Option<&Path>,
         defer_chart_data: bool,
+        media_package: Option<&super::SharedPackage>,
     ) -> Result<bool, XlsxError> {
         let data = {
             let path_str = join_paths(base_path, target);
@@ -193,14 +194,28 @@ impl RawRelationships {
                 }
                 if is_relationship {
                     let mut obj = RawRelationship::default();
-                    obj.set_attributes(e, arv, base_path, source_file, defer_chart_data)?;
+                    obj.set_attributes(
+                        e,
+                        arv,
+                        base_path,
+                        source_file,
+                        defer_chart_data,
+                        media_package,
+                    )?;
                     self.add_relationship_list(obj);
                 }
             },
             Event::Empty(ref e) => {
                 if open_relationship_depth == 0 && is_relationship(&reader, e) {
                     let mut obj = RawRelationship::default();
-                    obj.set_attributes(e, arv, base_path, source_file, defer_chart_data)?;
+                    obj.set_attributes(
+                        e,
+                        arv,
+                        base_path,
+                        source_file,
+                        defer_chart_data,
+                        media_package,
+                    )?;
                     self.add_relationship_list(obj);
                 }
             },

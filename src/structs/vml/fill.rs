@@ -155,7 +155,7 @@ impl Fill {
                 let mut obj = MediaObject::default();
                 obj.set_image_title(get_attribute(e, b"o:title").unwrap());
                 obj.set_image_name(relationship.raw_file().file_name());
-                obj.set_image_data(relationship.raw_file().file_data());
+                obj.set_image_data(relationship.raw_file().data_or_empty());
                 self.set_image(obj);
             }
         }

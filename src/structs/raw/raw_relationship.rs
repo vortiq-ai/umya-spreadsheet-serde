@@ -127,6 +127,7 @@ impl RawRelationship {
         base_path: &str,
         source_file: Option<&Path>,
         defer_chart_data: bool,
+        media_package: Option<&super::SharedPackage>,
     ) -> Result<(), XlsxError> {
         let mut attributes = std::collections::HashMap::new();
         for attribute in e.attributes() {
@@ -171,6 +172,23 @@ impl RawRelationship {
                 self.raw_file_mut()
                     .set_file_target(crate::reader::driver::join_paths(base_path, &target));
                 return Ok(());
+            }
+            // An image stays in the package until something reads it
+            // (`RawFile::read_data`): read at open, every image a
+            // sheet reaches was held at once, before any sheet was
+            // read, and in a buffer grown by doubling (an 800 MiB-of-images
+            // workbook peaked at 2.4 times its images). A reader
+            // that keeps an image takes it then.
+            if let Some(package) = media_package {
+                if self.get_type() == crate::helper::const_str::IMAGE_NS {
+                    self.raw_file_mut().set_attributes_deferred(
+                        arv,
+                        base_path,
+                        &target,
+                        package.clone(),
+                    );
+                    return Ok(());
+                }
             }
             match source_file {
                 Some(source_file) => self.raw_file_mut().set_attributes_from_source(

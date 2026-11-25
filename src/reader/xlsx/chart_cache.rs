@@ -5416,7 +5416,7 @@ mod tests {
                     .iter()
                     .flat_map(|list| list.relationship_list().iter().map(|edge| edge.raw_file())),
             )
-            .map(|file| (file.file_target().to_owned(), file.file_data().to_vec()))
+            .map(|file| (file.file_target().to_owned(), file.data_or_empty()))
             .collect()
     }
 
