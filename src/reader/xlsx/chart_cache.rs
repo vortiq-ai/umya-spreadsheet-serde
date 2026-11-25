@@ -854,6 +854,7 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> Result<CacheShape, Xl
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     let mut skipped = Vec::new();
+    let mut opened = false;
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer)? {
@@ -877,7 +878,15 @@ fn deferred_shape(data: &[u8], remaining_points: usize) -> Result<CacheShape, Xl
                     shape.point_count = try_attribute_u32(&e, b"val")
                         .map_err(|error| crate::xml::xml_error(error.to_string()))?;
                 }
-                _ => (),
+                b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache" if !opened => {
+                    opened = true;
+                }
+                // Only the cache's own children are its data, as the first
+                // pass reads them: its extension list is passed over.
+                _ => {
+                    skipped.clear();
+                    reader.read_to_end_into(e.name(), &mut skipped)?;
+                }
             },
             Event::Empty(e) => match local_name(e.name().into_inner()) {
                 b"pt" => {
@@ -1007,6 +1016,8 @@ fn reduce_cache<'a>(
     });
     let mut display_scratch = String::new();
     let mut decoded = String::new();
+    let mut opened = false;
+    let mut skipped = Vec::new();
     loop {
         let point = if let Some(bytes) = &mut bytes {
             let Ok(point) = bytes.next() else {
@@ -1048,6 +1059,23 @@ fn reduce_cache<'a>(
                     try_attribute_u32(&e, b"idx")
                         .map_err(|error| crate::xml::xml_error(error.to_string()))?
                         .map(|index| (index, None))
+                }
+                Event::Start(e)
+                    if !opened
+                        && matches!(
+                            local_name(e.name().into_inner()),
+                            b"strCache" | b"dlblRangeCache" | b"dlblFieldTableCache"
+                        ) =>
+                {
+                    opened = true;
+                    None
+                }
+                // Only the cache's own children are its data, as the first
+                // pass reads them: its extension list is passed over.
+                Event::Start(e) => {
+                    skipped.clear();
+                    reader.read_to_end_into(e.name(), &mut skipped)?;
+                    None
                 }
                 Event::Empty(e)
                     if matches!(
@@ -4258,7 +4286,7 @@ mod tests {
                      val=\"1\"/></c:ext></c:extLst>",
                     pt("0", "1")
                 )),
-                None,
+                Some(1),
                 Some("1"),
                 NO_REPORT,
                 None,
@@ -4270,10 +4298,10 @@ mod tests {
                     pt("0", "1"),
                     pt("5", "z")
                 )),
-                None,
+                Some(1),
                 Some("1"),
-                (1, 3, 1, 0, 0, 0, 0, 0),
-                Some(facts(Some(1), &[(0, 1), (5, 1)], &[(5, Some("z"), None)])),
+                NO_REPORT,
+                None,
             ),
             (
                 "label and point count after a nested empty cache",
@@ -4305,7 +4333,17 @@ mod tests {
         ];
         for (name, cache, summary, cached, report, source) in cases {
             let session = SourceCacheSession::deferred();
-            let reference = deferred_reference(&session, &string_reference_xml(&cache));
+            // The reference is read with the chart's namespace index, as a
+            // chart part is.
+            let xml = string_reference_xml(&cache).replacen(
+                "<c:strRef>",
+                "<c:strRef xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\">",
+                1,
+            );
+            session
+                .prepare_chart_namespaces(xml.as_bytes(), "deferred.xml")
+                .unwrap();
+            let reference = deferred_reference(&session, &xml);
             assert_eq!(
                 descriptor_summary(&session, &reference),
                 summary.map(|point_count| DenseSummary { point_count }),
@@ -4336,8 +4374,9 @@ mod tests {
         }
     }
 
-    // A point inside a point ends at the first point end, so the label after
-    // it is still the cached name and the cache takes the scanning path.
+    // A point inside a point is not a point of the cache: the outer point has
+    // no value of its own, so there is no cached name, and the cache takes the
+    // scanning path.
     #[test]
     fn nested_points_keep_the_cached_name_and_the_scanning_replay() {
         for inner in ["c:pt", "x:pt"] {
@@ -4347,7 +4386,7 @@ mod tests {
             );
             let session = SourceCacheSession::deferred();
             let reference = deferred_reference(&session, &string_reference_xml(&cache));
-            assert_eq!(reference.cached_value(), Some("X"), "{inner}");
+            assert_eq!(reference.cached_value(), None, "{inner}");
             assert_eq!(descriptor_summary(&session, &reference), None, "{inner}");
             strict::SCANS.with(|seen| seen.set((0, 0)));
             let (book, _, parsed, captured) = capture_with_work(&cache, 0);
@@ -4355,22 +4394,18 @@ mod tests {
             // Without a summary, the strict shape pass starts but rejects the
             // nested point where it expects v, before any decode pass/value.
             // Fallback adds one shape pass and one decode pass: totals 2/1.
-            // Pass 1 keeps X once; fallback ends the valueless outer point at
-            // the inner point's end, then keeps X once: 1 + 0 + 1 = 2 values.
+            // Neither pass reads X: it sits in a point nested in the outer one,
+            // which both pass over, so no value is kept.
             // capture_with_work resets counters before pass 1, so the earlier
             // standalone reference parse contributes nothing to these totals.
             assert_eq!(captured.shape_scans, 2, "{inner}");
             assert_eq!(captured.decode_scans, 1, "{inner}");
-            assert_eq!(parsed.kept_values, 1, "{inner}");
-            assert_eq!(captured.kept_values, 2, "{inner}");
-            assert_eq!(report_of(&book), (1, 3, 2, 0, 0, 0, 0, 0), "{inner}");
+            assert_eq!(parsed.kept_values, 0, "{inner}");
+            assert_eq!(captured.kept_values, 0, "{inner}");
+            assert_eq!(report_of(&book), (1, 2, 0, 0, 0, 0, 0, 0), "{inner}");
             assert_eq!(
                 category_source(&book).map(facts_of),
-                Some(facts(
-                    Some(2),
-                    &[(1, 1)],
-                    &[(1, None, None), (0, Some("X"), Some("1"))],
-                )),
+                Some(facts(Some(2), &[(1, 1)], &[(1, None, None)])),
                 "{inner}"
             );
         }

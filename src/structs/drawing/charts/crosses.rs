@@ -16,7 +16,11 @@ use crate::writer::driver::write_start_tag;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct Crosses {
-    val: EnumValue<CrossesValues>,
+    val:    EnumValue<CrossesValues>,
+    /// The axis had neither `c:crosses` nor `c:crossesAt`, so neither is
+    /// written until the crossing is edited.
+    #[cfg_attr(feature = "serde", serde(default))]
+    absent: bool,
 }
 impl Crosses {
     #[must_use]
@@ -32,7 +36,12 @@ impl Crosses {
 
     pub fn set_val(&mut self, value: CrossesValues) -> &mut Crosses {
         self.val.set_value(value);
+        self.absent = false;
         self
+    }
+
+    pub(crate) fn set_absent(&mut self, value: bool) {
+        self.absent = value;
     }
 
     pub(crate) fn set_attributes<R: std::io::BufRead>(
@@ -48,6 +57,9 @@ impl Crosses {
     }
 
     pub(crate) fn write_to(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        if self.absent {
+            return;
+        }
         // c:crosses
         write_start_tag(
             writer,

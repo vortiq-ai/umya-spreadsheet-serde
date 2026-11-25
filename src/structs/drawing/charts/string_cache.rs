@@ -94,10 +94,14 @@ use quick_xml::{
     },
 };
 
-use super::chart_source_caches::SourceCache;
+use super::{
+    chart_source_caches::SourceCache,
+    extension_registry::NS_C,
+};
 use crate::{
     Cell,
     drawing::charts::{
+        ExtensionList,
         Formula,
         NumericValue,
     },
@@ -114,13 +118,16 @@ use crate::{
         try_attribute_u32,
     },
     structs::{
+        CacheDisplay,
         Cells,
         Workbook,
     },
     writer::driver::{
+        PointEscape,
+        write_cache_point,
+        write_cache_text,
         write_end_tag,
         write_start_tag,
-        write_text_node,
     },
 };
 
@@ -315,6 +322,40 @@ impl<'a> DisplaySource<'a> {
             Self::Unavailable => None,
         }
     }
+
+    /// `display(index)` without a new string: borrowed from the cell, the
+    /// literal or the streamed values, or written into `scratch`.
+    fn display_in<'s>(&'s self, index: u32, scratch: &'s mut String) -> Option<&'s str> {
+        match self {
+            Self::Literal(text) => (index == 0).then_some(text.as_str()),
+            Self::Cells { cells, range } => {
+                let coordinate = range.as_ref()?.coordinate(index)?;
+                let Some(cell) = cells.get(coordinate) else {
+                    return Some("");
+                };
+                Some(match cell.cache_display(scratch) {
+                    CacheDisplay::Borrowed(text) => text,
+                    CacheDisplay::Scratch => scratch.as_str(),
+                })
+            }
+            Self::Streamed { values, range } => {
+                let coordinate = range.as_ref()?.coordinate(index)?;
+                Some(values.get(&coordinate).map_or("", String::as_str))
+            }
+            Self::Unavailable => None,
+        }
+    }
+
+    /// The borrowed runs of the string or rich text cell the point `index`
+    /// shows, when the sheet's cells are loaded.
+    fn text_runs(&self, index: u32) -> Option<impl Iterator<Item = &str>> {
+        let Self::Cells { cells, range } = self else {
+            return None;
+        };
+        cells
+            .get(range.as_ref()?.coordinate(index)?)?
+            .chart_text_runs()
+    }
 }
 
 impl StringCache {
@@ -384,19 +425,24 @@ impl StringCache {
         reader: &mut Reader<R>,
         formula: String,
     ) -> Result<(Option<String>, Self, Option<DenseSummary>), crate::XlsxError> {
-        Self::read_deferred_named(reader, formula, b"strCache", false)
+        Self::read_deferred_named(reader, formula, b"strCache", false, None, &mut None)
     }
 
+    /// With a `session`, the cache's own extension list is read into
+    /// `extensions`; without one it is passed over.
     pub(crate) fn read_deferred_named<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         formula: String,
         end: &[u8],
         exact: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+        extensions: &mut Option<Box<ExtensionList>>,
     ) -> Result<(Option<String>, Self, Option<DenseSummary>), crate::XlsxError> {
         let mut cached_value = None;
         let mut proof = DenseProof::default();
         let mut scratch = PointScratch::default();
         let mut buffer = Vec::new();
+        let mut skipped = Vec::new();
         loop {
             buffer.clear();
             match reader.read_event_into(&mut buffer)? {
@@ -417,8 +463,13 @@ impl StringCache {
                         }
                     }
                     b"ptCount" => proof.count(&e),
-                    b"strCache" => proof.broken = true,
-                    _ => (),
+                    b"extLst" => read_own_extensions(reader, &e, false, session, extensions)?,
+                    // Only the cache's own children are its data.
+                    other => {
+                        proof.broken |= other == b"strCache";
+                        skipped.clear();
+                        reader.read_to_end_into(e.name(), &mut skipped)?;
+                    }
                 },
                 Event::Empty(e) => match local_name(e.name().into_inner()) {
                     b"pt" => match try_attribute_u32(&e, b"idx") {
@@ -427,6 +478,7 @@ impl StringCache {
                     },
                     b"ptCount" => proof.count(&e),
                     b"strCache" => proof.broken = true,
+                    b"extLst" => read_own_extensions(reader, &e, true, session, extensions)?,
                     _ => (),
                 },
                 Event::End(e)
@@ -451,13 +503,23 @@ impl StringCache {
 
     /// Reads a `c:strCache` of the reference `formula`: the label at index
     /// zero, which series names use, and every point the file stored.
+    /// With a `session`, the cache's own extension list is read into
+    /// `extensions`; without one it is passed over.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         reader: &mut Reader<R>,
         owner: &BytesStart,
         formula: String,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+        extensions: &mut Option<Box<ExtensionList>>,
     ) -> Result<(Option<String>, Self), crate::XlsxError> {
-        let (cached_value, source) =
-            Self::read_source_named(reader, formula, owner.name().into_inner(), true)?;
+        let (cached_value, source) = Self::read_source_named(
+            reader,
+            formula,
+            owner.name().into_inner(),
+            true,
+            session,
+            extensions,
+        )?;
         Ok((
             cached_value,
             Self {
@@ -474,7 +536,7 @@ impl StringCache {
         reader: &mut Reader<R>,
         formula: String,
     ) -> Result<(Option<String>, SourceCache), crate::XlsxError> {
-        Self::read_source_named(reader, formula, b"strCache", false)
+        Self::read_source_named(reader, formula, b"strCache", false, None, &mut None)
     }
 
     fn read_source_named<R: std::io::BufRead>(
@@ -482,6 +544,8 @@ impl StringCache {
         formula: String,
         end: &[u8],
         exact: bool,
+        session: Option<&crate::reader::xlsx::SourceCacheSession>,
+        extensions: &mut Option<Box<ExtensionList>>,
     ) -> Result<(Option<String>, SourceCache), crate::XlsxError> {
         let mut cached_value = None;
         let mut point_count = None;
@@ -502,7 +566,9 @@ impl StringCache {
                         points.push((index, value));
                     }
                 }
-                _ => (),
+                b"extLst" => read_own_extensions(reader, e, false, session, extensions)?,
+                // Only the cache's own children are its data.
+                _ => crate::reader::driver::skip_element(reader, e)?,
             },
             Event::Empty(ref e) => match local_name(e.name().into_inner()) {
                 b"ptCount" => {
@@ -515,6 +581,7 @@ impl StringCache {
                         points.push((index, None));
                     }
                 }
+                b"extLst" => read_own_extensions(reader, e, true, session, extensions)?,
                 _ => (),
             },
             Event::End(ref e) => {
@@ -612,7 +679,36 @@ impl StringCache {
         self.write_to_as(writer, formula, wb, "c:strCache");
     }
 
+    /// Writes the cache as `write_to` does, closing it with `extensions`, the
+    /// list it was read with.
+    pub(crate) fn write_closing_with(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        formula: &Formula,
+        wb: &Workbook,
+        extensions: Option<&ExtensionList>,
+    ) -> Result<(), crate::XlsxError> {
+        self.write_points(writer, formula, wb, "c:strCache");
+        if let Some(ext) = extensions {
+            ext.write_for_owner(writer, None, "strCache", None)?;
+        }
+        write_end_tag(writer, "c:strCache");
+        Ok(())
+    }
+
     pub(crate) fn write_to_as(
+        &self,
+        writer: &mut Writer<Cursor<Vec<u8>>>,
+        formula: &Formula,
+        wb: &Workbook,
+        name: &str,
+    ) {
+        self.write_points(writer, formula, wb, name);
+        write_end_tag(writer, name);
+    }
+
+    /// Writes the cache's start tag, point count and points.
+    fn write_points(
         &self,
         writer: &mut Writer<Cursor<Vec<u8>>>,
         formula: &Formula,
@@ -646,11 +742,10 @@ impl StringCache {
         } else {
             let address = formula.address();
             match wb.sheet_by_name(&unescape_sheet_name(address.sheet_name())) {
-                Ok(sheet) => sheet
-                    .cells_crate()
-                    .iter_all_cells_by_range_sorted_by_row(&address.range().range())
-                    .map(|cell| cell.map_or_else(String::new, Cell::formatted_chart_value))
-                    .collect(),
+                Ok(sheet) => {
+                    Self::write_cells(writer, name, sheet.cells_crate(), &address.range().range());
+                    return;
+                }
                 Err(_) => vec![],
             }
         };
@@ -667,18 +762,38 @@ impl StringCache {
         );
 
         for (idx, cell_value) in cell_value_list.into_iter().enumerate() {
-            // c:pt
-            write_start_tag(writer, "c:pt", vec![("idx", idx.to_string()).into()], false);
-
-            // c:v
-            write_start_tag(writer, "c:v", vec![], false);
-            write_text_node(writer, cell_value);
-            write_end_tag(writer, "c:v");
-
-            write_end_tag(writer, "c:pt");
+            write_cache_point(writer, idx, Some(&cell_value), PointEscape::Text);
         }
+    }
 
-        write_end_tag(writer, name);
+    /// Writes the start tag, the point count and one point per cell of
+    /// `range`, each from the cell's own text where it has one, without a new
+    /// string per point.
+    fn write_cells(writer: &mut Writer<Cursor<Vec<u8>>>, name: &str, cells: &Cells, range: &str) {
+        write_start_tag(writer, name, vec![], false);
+        let count = cells.iter_all_cells_by_range_sorted_by_row(range).count();
+        write_start_tag(
+            writer,
+            "c:ptCount",
+            vec![("val", count.to_string()).into()],
+            true,
+        );
+        let mut scratch = String::new();
+        for (idx, cell) in cells
+            .iter_all_cells_by_range_sorted_by_row(range)
+            .enumerate()
+        {
+            let Some(cell) = cell else {
+                write_cache_point(writer, idx, Some(""), PointEscape::Text);
+                continue;
+            };
+            if let Some(runs) = cell.chart_text_runs() {
+                write_cache_text(writer, idx, runs);
+                continue;
+            }
+            let display = cell.cache_display(&mut scratch);
+            write_cache_point(writer, idx, Some(display.text(&scratch)), PointEscape::Text);
+        }
     }
 
     /// Writes the stored points in file order. A point the cells reproduce gets
@@ -708,19 +823,43 @@ impl StringCache {
         }
 
         let mut exceptions = cache.exceptions().iter().peekable();
+        let mut scratch = String::new();
         for index in cache.indices() {
-            let display = current.display(index);
-            let value = match exceptions.next_if(|exception| exception.index() == index) {
-                Some(exception) if display.as_deref() == exception.loaded_display() => {
-                    exception.value().map(str::to_string)
+            let exception = exceptions.next_if(|exception| exception.index() == index);
+            if exception.is_none() {
+                if let Some(runs) = current.text_runs(index) {
+                    write_cache_text(writer, index as usize, runs);
+                    continue;
                 }
+            }
+            let display = current.display_in(index, &mut scratch);
+            let value = match exception {
+                Some(exception) if display == exception.loaded_display() => exception.value(),
                 _ => Some(display.unwrap_or_default()),
             };
-            write_point(writer, &index.to_string(), value.as_deref());
+            write_cache_point(writer, index as usize, value, PointEscape::Text);
         }
-
-        write_end_tag(writer, name);
     }
+}
+
+/// Reads `e`, an `extLst` child of a string cache, into `extensions` as the
+/// cache's own list when `session` holds the chart's namespace context and
+/// the list is in the chart namespace; any other is passed over.
+fn read_own_extensions<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    e: &BytesStart,
+    empty: bool,
+    session: Option<&crate::reader::xlsx::SourceCacheSession>,
+    extensions: &mut Option<Box<ExtensionList>>,
+) -> Result<(), crate::XlsxError> {
+    match session {
+        Some(session) if session.accepts_child_namespace(e, NS_C)? => {
+            *extensions = Some(Box::new(ExtensionList::read(reader, e, empty, session)?));
+        }
+        _ if !empty => crate::reader::driver::skip_element(reader, e)?,
+        _ => (),
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_point_count(e: &BytesStart) -> Result<Option<u32>, crate::XlsxError> {
@@ -739,6 +878,9 @@ pub(crate) fn read_point_value<R: std::io::BufRead>(
                 let mut text = NumericValue::default();
                 text.set_attributes(reader, e)?;
                 value = Some(text.text().to_string());
+            } else {
+                // A value is the point's own `v`, never one nested deeper.
+                crate::reader::driver::skip_element(reader, e)?;
             }
         },
         Event::Empty(ref e) => {
@@ -895,7 +1037,13 @@ fn scan_point<R: std::io::BufRead>(
                     let text = reader.read_text_into(element.name(), text_buffer)?;
                     value(Some(&text))?;
                 } else {
+                    // A value is the point's own `v`, never one nested deeper.
+                    // The child is skipped through the event buffer: the
+                    // text buffer still holds the value a borrowing reader
+                    // returns.
                     flat = false;
+                    let end = element.name().as_ref().to_vec();
+                    reader.read_to_end_into(quick_xml::name::QName(&end), events)?;
                 }
             }
             Event::Empty(ref element) => {
@@ -928,6 +1076,7 @@ pub(crate) fn visit_deferred_indices(
     note_work(|counts| counts.index_scans += 1);
     let mut buffer = Vec::new();
     let mut skipped = Vec::new();
+    let mut opened = false;
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer)? {
@@ -937,6 +1086,16 @@ pub(crate) fn visit_deferred_indices(
                 {
                     visit(index);
                 }
+                skipped.clear();
+                reader.read_to_end_into(e.name(), &mut skipped)?;
+            }
+            Event::Start(e)
+                if !opened && is_string_cache_name(local_name(e.name().into_inner())) =>
+            {
+                opened = true;
+            }
+            // Only the cache's own children are its data.
+            Event::Start(e) => {
                 skipped.clear();
                 reader.read_to_end_into(e.name(), &mut skipped)?;
             }
@@ -983,6 +1142,8 @@ pub(crate) fn materialize_deferred_cache(
                     formula,
                     e.name().into_inner(),
                     true,
+                    None,
+                    &mut None,
                 )?
                 .1);
             }
@@ -998,20 +1159,6 @@ pub(crate) fn materialize_deferred_cache(
             _ => (),
         }
     }
-}
-
-fn write_point(writer: &mut Writer<Cursor<Vec<u8>>>, index: &str, value: Option<&str>) {
-    // c:pt
-    write_start_tag(writer, "c:pt", vec![("idx", index).into()], false);
-
-    // c:v
-    if let Some(value) = value {
-        write_start_tag(writer, "c:v", vec![], false);
-        write_text_node(writer, value);
-        write_end_tag(writer, "c:v");
-    }
-
-    write_end_tag(writer, "c:pt");
 }
 
 #[cfg(test)]

@@ -343,11 +343,11 @@ fn family_limits_report_every_excess_occurrence_without_changing_storage() {
         (ChartType::Area3DChart, 2),
         (ChartType::ScatterChart, 2),
         (ChartType::BubbleChart, 2),
-        (ChartType::PieChart, 0),
-        (ChartType::Pie3DChart, 0),
-        (ChartType::OfPieChart, 0),
-        (ChartType::DoughnutChart, 0),
-        (ChartType::RadarChart, 0),
+        (ChartType::PieChart, 1),
+        (ChartType::Pie3DChart, 1),
+        (ChartType::OfPieChart, 1),
+        (ChartType::DoughnutChart, 1),
+        (ChartType::RadarChart, 1),
     ] {
         let book = source(&kind, &DEFAULTS.repeat(3), "c");
         witness(&format!("family-{kind:?}"), &book);

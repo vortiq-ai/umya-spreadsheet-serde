@@ -687,6 +687,14 @@ impl Chart {
         self
     }
 
+    /// Removes the 3-D view, the floor and both walls.
+    pub(crate) fn remove_3d_scene(&mut self) {
+        self.view_3d = None;
+        self.floor = None;
+        self.side_wall = None;
+        self.back_wall = None;
+    }
+
     #[must_use]
     pub fn plot_area(&self) -> &PlotArea {
         &self.plot_area

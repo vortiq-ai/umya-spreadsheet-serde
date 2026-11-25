@@ -256,7 +256,6 @@ fn line_group_lines_follow_the_schema_order() {
         "<c:dropLines>",
         "<c:hiLowLines>",
         "<c:upDownBars>",
-        "<c:marker val",
         "<c:smooth val",
         "<c:axId ",
     ];

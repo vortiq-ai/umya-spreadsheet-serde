@@ -51,6 +51,9 @@ pub struct BarChart {
     series_lines:           Vec<ChartLines>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
+    /// The part had no `c:overlap`, so none is written until it is edited.
+    #[cfg_attr(feature = "serde", serde(default))]
+    overlap_absent:         bool,
 }
 
 impl BarChart {
@@ -311,6 +314,7 @@ impl BarChart {
     }
 
     pub fn overlap_mut(&mut self) -> &mut Overlap {
+        self.overlap_absent = false;
         &mut self.overlap
     }
 
@@ -321,6 +325,7 @@ impl BarChart {
 
     pub fn set_overlap(&mut self, value: Overlap) -> &mut BarChart {
         self.overlap = value;
+        self.overlap_absent = false;
         self
     }
 
@@ -363,6 +368,7 @@ impl BarChart {
         let owner_end = owner.name().as_ref().to_vec();
         let _scope_guard = session.enter_child_scope(owner)?;
         self.data_labels.mark_group_absent();
+        self.overlap_absent = true;
         try_xml_read_loop!(
             reader,
             Event::Start(ref e) => {
@@ -379,6 +385,11 @@ impl BarChart {
                     }
                     b"serLines" => {
                         self.series_lines.push(ChartLines::read(reader, e, false, session)?);
+                    }
+                    b"overlap" => {
+                        self.overlap.set_attributes(reader, e)?;
+                        self.overlap_absent = false;
+                        skip_element(reader, e)?;
                     }
                     _ => skip_element(reader, e)?,
                 }
@@ -401,6 +412,7 @@ impl BarChart {
                     }
                     b"overlap" => {
                         self.overlap.set_attributes(reader, e)?;
+                        self.overlap_absent = false;
                     }
                     b"serLines" => {
                         self.series_lines.push(ChartLines::read(reader, e, true, session)?);
@@ -451,7 +463,9 @@ impl BarChart {
         self.gap_width.write_to(writer);
 
         // c:overlap
-        self.overlap.write_to(writer);
+        if !self.overlap_absent {
+            self.overlap.write_to(writer);
+        }
 
         // c:serLines
         for line in &self.series_lines {

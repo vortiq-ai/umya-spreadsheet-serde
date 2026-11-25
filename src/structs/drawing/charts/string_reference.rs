@@ -31,22 +31,28 @@ use crate::{
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default, Debug)]
 pub struct StringReference {
-    formula:      Formula,
-    string_cache: StringCache,
+    formula:          Formula,
+    string_cache:     StringCache,
     #[cfg_attr(feature = "serde", serde(default))]
-    cached_value: Option<String>,
+    cached_value:     Option<String>,
     #[cfg_attr(feature = "serde", serde(default))]
-    extensions:   Option<Box<super::ExtensionList>>,
+    extensions:       Option<Box<super::ExtensionList>>,
+    /// The extension list the string cache closes with.
+    #[cfg_attr(feature = "serde", serde(default))]
+    cache_extensions: Option<Box<super::ExtensionList>>,
 }
 
 impl StringReference {
     pub(crate) fn restore_export_parts(&mut self, previous: &Self) -> usize {
-        let previous = if self.formula.address_str() == previous.formula.address_str() {
-            previous.extensions.as_ref()
-        } else {
-            None
-        };
-        super::chart_metadata_restoration::replace_hidden_parts(&mut self.extensions, previous)
+        let previous =
+            (self.formula.address_str() == previous.formula.address_str()).then_some(previous);
+        super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.extensions,
+            previous.and_then(|previous| previous.extensions.as_ref()),
+        ) + super::chart_metadata_restoration::replace_hidden_parts(
+            &mut self.cache_extensions,
+            previous.and_then(|previous| previous.cache_extensions.as_ref()),
+        )
     }
 
     // A retaining Formula projection must consume these disjoint fields once.
@@ -63,6 +69,7 @@ impl StringReference {
 
     pub(crate) fn projection_extensions_mut(&mut self) -> Option<&mut super::ExtensionList> {
         self.extensions = None;
+        self.cache_extensions = None;
         None
     }
 
@@ -203,6 +210,16 @@ impl StringReference {
                     name if name == cache_name => {
                         ordered &= counts.0 > 0;
                         counts.1 += 1;
+                        // Only a chart-namespace string cache owns an
+                        // extension list; it is read within the cache's scope.
+                        let own_list = cache_name == b"strCache";
+                        let _cache_scope = if own_list {
+                            session.enter_child_scope(&e)?
+                        } else {
+                            None
+                        };
+                        let list_session = own_list.then_some(session);
+                        self.cache_extensions = None;
                         if session.is_deferred() {
                             let summary;
                             (self.cached_value, self.string_cache, summary) =
@@ -211,6 +228,8 @@ impl StringReference {
                                     self.formula.address_str(),
                                     e.name().into_inner(),
                                     true,
+                                    list_session,
+                                    &mut self.cache_extensions,
                                 )?;
                             register_parsed_string_cache(
                                 session,
@@ -223,6 +242,8 @@ impl StringReference {
                                 reader,
                                 &e,
                                 self.formula.address_str(),
+                                list_session,
+                                &mut self.cache_extensions,
                             )?;
                             register_parsed_string_cache(
                                 session,
@@ -300,7 +321,12 @@ impl StringReference {
         self.formula.write_to(writer);
 
         // c:strCache
-        self.string_cache.write_to(writer, self.formula(), wb);
+        self.string_cache.write_closing_with(
+            writer,
+            self.formula(),
+            wb,
+            self.cache_extensions.as_deref(),
+        )?;
 
         if let Some(ext) = self.extensions() {
             ext.write_for_owner(writer, Some(wb), "strRef", None)?;

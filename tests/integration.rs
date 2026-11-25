@@ -13,6 +13,8 @@ mod chart_axis_options;
 mod chart_binary_round_trip;
 #[path = "chart_category_literal_conflicts.rs"]
 mod chart_category_literal_conflicts;
+#[path = "chart_conversion.rs"]
+mod chart_conversion;
 #[path = "chart_data_labels.rs"]
 mod chart_data_labels;
 #[path = "chart_data_points.rs"]
@@ -73,6 +75,8 @@ mod chart_ex_scalar_values;
 mod chart_ex_sheet_deletion;
 #[path = "chart_ex_string_expressions.rs"]
 mod chart_ex_string_expressions;
+#[path = "chart_extension_checks.rs"]
+mod chart_extension_checks;
 #[path = "chart_extension_content.rs"]
 mod chart_extension_content;
 #[path = "chart_extensions.rs"]
@@ -133,6 +137,8 @@ mod chart_reference_roles;
 mod chart_restoration_structural;
 #[path = "chart_root_extensions.rs"]
 mod chart_root_extensions;
+#[path = "chart_round_trip.rs"]
+mod chart_round_trip;
 #[path = "chart_series_cache_text.rs"]
 mod chart_series_cache_text;
 // #[path = "chart_series_family_output.rs"]

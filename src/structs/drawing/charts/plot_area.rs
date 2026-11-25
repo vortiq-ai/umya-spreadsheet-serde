@@ -95,6 +95,20 @@ pub struct PlotArea {
     extensions:        Option<ExtensionList>,
     #[cfg_attr(feature = "serde", serde(default))]
     chart_group_order: Vec<ChartGroupEntry>,
+    /// The axis kinds in the order the part wrote them; empty when that is the
+    /// grouped order, for a plot area built here and for one persisted before
+    /// this field.
+    #[cfg_attr(feature = "serde", serde(default))]
+    axis_order:        Vec<AxisKind>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AxisKind {
+    Category,
+    Date,
+    Value,
+    Series,
 }
 
 // Resolve malformed markers identically for borrowed views and owned repair.
@@ -438,6 +452,95 @@ impl PlotArea {
         self.push_chart_group(group);
         self.normalize_chart_groups();
         self
+    }
+
+    /// Sets the order the axes are written in, one element name (`catAx`,
+    /// `dateAx`, `valAx` or `serAx`) per axis. An unknown name returns `false`
+    /// and changes nothing.
+    pub(crate) fn set_axis_order_by_tags(&mut self, tags: &[&str]) -> bool {
+        let mut order = Vec::with_capacity(tags.len());
+        for tag in tags {
+            order.push(match *tag {
+                "catAx" => AxisKind::Category,
+                "dateAx" => AxisKind::Date,
+                "valAx" => AxisKind::Value,
+                "serAx" => AxisKind::Series,
+                _ => return false,
+            });
+        }
+        // The grouped order is what an empty list writes, as the reader keeps
+        // it.
+        if order.is_sorted() {
+            order.clear();
+        }
+        self.axis_order = order;
+        true
+    }
+
+    /// Takes every plot group out, in document order, and leaves the plot area
+    /// with none.
+    pub(crate) fn take_chart_groups(&mut self) -> Vec<ChartGroup> {
+        // Boxed, as in `normalize_chart_groups`.
+        let first = [
+            self.line_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::LineChart(chart))),
+            self.line_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Line3DChart(chart))),
+            self.pie_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::PieChart(chart))),
+            self.pie_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Pie3DChart(chart))),
+            self.doughnut_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::DoughnutChart(chart))),
+            self.scatter_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::ScatterChart(chart))),
+            self.bar_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::BarChart(chart))),
+            self.bar_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Bar3DChart(chart))),
+            self.radar_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::RadarChart(chart))),
+            self.bubble_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::BubbleChart(chart))),
+            self.area_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::AreaChart(chart))),
+            self.area_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Area3DChart(chart))),
+            self.of_pie_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::OfPieChart(chart))),
+            self.stock_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::StockChart(*chart))),
+            self.surface_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::SurfaceChart(*chart))),
+            self.surface_3d_chart
+                .take()
+                .map(|chart| Box::new(ChartGroup::Surface3DChart(*chart))),
+        ];
+        let entries = std::mem::take(&mut self.chart_group_order)
+            .into_iter()
+            .map(|entry| match entry {
+                ChartGroupEntry::First(kind) => (kind, None),
+                ChartGroupEntry::Additional(group) => (group.kind(), Some(group)),
+            });
+        order_chart_groups(first, entries)
+            .into_iter()
+            .map(|group| *group)
+            .collect()
     }
 
     /// Repairs markers and promotes first containers without changing
@@ -1293,21 +1396,25 @@ impl PlotArea {
                     let mut obj = CategoryAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_category_axis(obj);
+                    self.axis_order.push(AxisKind::Category);
                 }
                 b"dateAx" => {
                     let mut obj = DateAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_date_axis(obj);
+                    self.axis_order.push(AxisKind::Date);
                 }
                 b"valAx" => {
                     let mut obj = ValueAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_value_axis(obj);
+                    self.axis_order.push(AxisKind::Value);
                 }
                 b"serAx" => {
                     let mut obj = SeriesAxis::default();
                     obj.set_attributes(reader, e, session)?;
                     self.add_series_axis(obj);
+                    self.axis_order.push(AxisKind::Series);
                 }
                 b"dTable" => {
                     let mut obj = DataTable::default();
@@ -1338,6 +1445,10 @@ impl PlotArea {
             Event::End(ref e) => {
                 if e.name().as_ref() == owner_end {
                     self.normalize_chart_groups();
+                    // The grouped order is what an empty list writes.
+                    if self.axis_order.is_sorted() {
+                        self.axis_order.clear();
+                    }
                     return Ok(());
                 }
             },
@@ -1360,23 +1471,30 @@ impl PlotArea {
             group.write_to(writer, wb)?;
         }
 
-        // c:catAx
-        for v in &self.category_axis {
+        // c:catAx, c:dateAx, c:valAx, c:serAx: in the part's order, then any
+        // axis added since, grouped by kind.
+        let mut category = self.category_axis.iter();
+        let mut date = self.date_axis.iter();
+        let mut value = self.value_axis.iter();
+        let mut series = self.series_axis.iter();
+        for kind in &self.axis_order {
+            match kind {
+                AxisKind::Category => category.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+                AxisKind::Date => date.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+                AxisKind::Value => value.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+                AxisKind::Series => series.next().map_or(Ok(()), |v| v.write_to(writer, wb)),
+            }?;
+        }
+        for v in category {
             v.write_to(writer, wb)?;
         }
-
-        // c:dateAx
-        for v in &self.date_axis {
+        for v in date {
             v.write_to(writer, wb)?;
         }
-
-        // c:valAx
-        for v in &self.value_axis {
+        for v in value {
             v.write_to(writer, wb)?;
         }
-
-        // c:serAx
-        for v in &self.series_axis {
+        for v in series {
             v.write_to(writer, wb)?;
         }
 

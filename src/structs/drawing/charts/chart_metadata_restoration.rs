@@ -977,6 +977,7 @@ fn restore_plot(
         .chart_groups()
         .map(ChartGroupRef::series_family)
         .collect();
+    let kinds: Vec<_> = current.chart_groups().map(ChartGroupRef::kind).collect();
     let groups = match_groups(current, &old_groups, &correspondence, report);
     let group_extensions: Vec<_> = current
         .chart_groups()
@@ -1107,7 +1108,14 @@ fn restore_plot(
                         .into_reference_role_parts()
                         .series[old_position.series];
                     restore_series(series, old, report)?;
-                    if families[group_position] != old_groups[old_position.group].series_family() {
+                    // A new family drops what its series type cannot hold.
+                    // Inside a family, Excel still drops every error bar on a
+                    // type change when the schema gives that family none.
+                    let old_group = old_groups[old_position.group];
+                    if families[group_position] != old_group.series_family()
+                        || (kinds[group_position] != old_group.kind()
+                            && super::error_bars::error_bar_limit(families[group_position]) == 0)
+                    {
                         let removed = series.remove_parts_not_allowed_in(families[group_position]);
                         report.removed_incompatible_parts += removed.len();
                         for (kind, occurrence) in removed {

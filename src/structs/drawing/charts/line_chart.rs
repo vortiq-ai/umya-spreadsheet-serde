@@ -61,6 +61,12 @@ pub struct LineChart {
     axis_id:                Vec<AxisId>,
     #[cfg_attr(feature = "serde", serde(default))]
     extensions:             Option<Box<super::ExtensionList>>,
+    /// The part had no `c:marker`, so none is written until it is edited.
+    #[cfg_attr(feature = "serde", serde(default))]
+    marker_absent:          bool,
+    /// The part had no `c:smooth`, so none is written until it is edited.
+    #[cfg_attr(feature = "serde", serde(default))]
+    smooth_absent:          bool,
 }
 
 impl LineChart {
@@ -274,6 +280,7 @@ impl LineChart {
     }
 
     pub fn show_marker_mut(&mut self) -> &mut ShowMarker {
+        self.marker_absent = false;
         &mut self.show_marker
     }
 
@@ -284,6 +291,7 @@ impl LineChart {
 
     pub fn set_show_marker(&mut self, value: ShowMarker) -> &mut Self {
         self.show_marker = value;
+        self.marker_absent = false;
         self
     }
 
@@ -299,6 +307,7 @@ impl LineChart {
     }
 
     pub fn smooth_mut(&mut self) -> &mut Smooth {
+        self.smooth_absent = false;
         &mut self.smooth
     }
 
@@ -309,6 +318,7 @@ impl LineChart {
 
     pub fn set_smooth(&mut self, value: Smooth) -> &mut Self {
         self.smooth = value;
+        self.smooth_absent = false;
         self
     }
 
@@ -351,6 +361,8 @@ impl LineChart {
         let owner_end = owner.name().as_ref().to_vec();
         let _scope_guard = session.enter_child_scope(owner)?;
         self.data_labels.mark_group_absent();
+        self.marker_absent = true;
+        self.smooth_absent = true;
         try_xml_read_loop!(
             reader,
             Event::Start(ref e) => match if session.accepts_child_namespace(e,super::extension_registry::NS_C)?{local_name(e.name().into_inner())}else{b""} {
@@ -375,6 +387,16 @@ impl LineChart {
                 b"upDownBars" => {
                     let value = UpDownBars::read(reader, e, false, session)?;
                     store_once(&mut self.up_down_bars, value, "c:upDownBars")?;
+                }
+                b"marker" => {
+                    self.show_marker.set_attributes(reader, e)?;
+                    self.marker_absent = false;
+                    skip_element(reader, e)?;
+                }
+                b"smooth" => {
+                    self.smooth.set_attributes(reader, e)?;
+                    self.smooth_absent = false;
+                    skip_element(reader, e)?;
                 }
                 _ => skip_element(reader, e)?,
             },
@@ -401,9 +423,11 @@ impl LineChart {
                 }
                 b"marker" => {
                     self.show_marker.set_attributes(reader, e)?;
+                    self.marker_absent = false;
                 }
                 b"smooth" => {
                     self.smooth.set_attributes(reader, e)?;
+                    self.smooth_absent = false;
                 }
                 b"axId" => {
                     let mut obj = AxisId::default();
@@ -459,10 +483,14 @@ impl LineChart {
         }
 
         // c:marker
-        self.show_marker.write_to(writer);
+        if !self.marker_absent {
+            self.show_marker.write_to(writer);
+        }
 
         // c:smooth
-        self.smooth.write_to(writer);
+        if !self.smooth_absent {
+            self.smooth.write_to(writer);
+        }
 
         // c:axId
         for v in &self.axis_id {

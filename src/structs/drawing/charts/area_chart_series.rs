@@ -219,6 +219,19 @@ impl AreaChartSeries {
         self.parts_mut().error_bars_mut()
     }
 
+    /// The positions of the stored error bars a `family` series writes, in
+    /// order: the writer takes the schema's saved count from the front and
+    /// leaves the invalid ones out.
+    pub(crate) fn written_error_bars(&self, family: SeriesFamily) -> Vec<usize> {
+        self.error_bars()
+            .iter()
+            .take(super::error_bars::saved_error_bar_limit(family))
+            .enumerate()
+            .filter(|(_, bars)| bars.is_valid())
+            .map(|(occurrence, _)| occurrence)
+            .collect()
+    }
+
     #[must_use]
     pub fn parts(&self) -> Option<&SeriesParts> {
         self.parts.as_deref()
@@ -859,6 +872,36 @@ impl AreaChartSeries {
         );
     }
 
+    /// Removes each of `parts` the series holds and returns them as (kind,
+    /// occurrence), the way `remove_parts_not_allowed_in` does.
+    pub(crate) fn remove_parts(
+        &mut self,
+        parts: &[SeriesPartKind],
+    ) -> Vec<(SeriesPartKind, usize)> {
+        let mut removed = Vec::new();
+        for &part in parts {
+            if !self.has_part(part) {
+                continue;
+            }
+            let occurrences = match part {
+                SeriesPartKind::DataPoints => self.data_points().len(),
+                SeriesPartKind::Trendlines => self.trendlines().len(),
+                SeriesPartKind::ErrorBars => self.error_bars().len(),
+                _ => 1,
+            };
+            removed.extend((0..occurrences).map(|occurrence| (part, occurrence)));
+            self.clear_part(part);
+        }
+        removed
+    }
+
+    /// Removes the series' shape properties, as Excel drops shape properties
+    /// a chart type change leaves empty.
+    pub(crate) fn remove_shape_properties(&mut self) -> &mut Self {
+        self.shape_properties = None;
+        self
+    }
+
     fn has_part(&self, part: SeriesPartKind) -> bool {
         match part {
             SeriesPartKind::Explosion => self.explosion.is_some(),
@@ -915,11 +958,19 @@ impl AreaChartSeries {
         }
     }
 
-    /// The stored parts `family`'s series type cannot hold, as (kind,
+    /// The stored parts the writer leaves out of a `family` series, as (kind,
     /// occurrence, reason). Every modeled part is stored at most once.
     pub(crate) fn part_conflicts(
         &self,
         family: SeriesFamily,
+    ) -> Vec<(SeriesPartKind, usize, SeriesPartConflictReason)> {
+        self.part_conflicts_within(family, super::error_bars::saved_error_bar_limit(family))
+    }
+
+    fn part_conflicts_within(
+        &self,
+        family: SeriesFamily,
+        error_bar_limit: usize,
     ) -> Vec<(SeriesPartKind, usize, SeriesPartConflictReason)> {
         let mut conflicts: Vec<_> = SeriesPartKind::ALL
             .into_iter()
@@ -1039,11 +1090,10 @@ impl AreaChartSeries {
                 conflicts.push((SeriesPartKind::Trendlines, occurrence, reason));
             }
         }
-        let limit = super::error_bars::error_bar_limit(family);
         for (occurrence, bars) in self.error_bars().iter().enumerate() {
-            let reason = if limit == 0 {
+            let reason = if error_bar_limit == 0 {
                 Some(SeriesPartConflictReason::NotAllowed)
-            } else if occurrence >= limit {
+            } else if occurrence >= error_bar_limit {
                 Some(SeriesPartConflictReason::TooMany)
             } else {
                 bars.conflict()
@@ -1057,13 +1107,16 @@ impl AreaChartSeries {
 
     /// Removes the parts `family`'s series type cannot hold and returns them
     /// as (kind, occurrence). Everything else, including the index, order,
-    /// name, formatting, data labels and data references, stays.
+    /// name, formatting, data labels and data references, stays. Error bars
+    /// keep the schema's limit: Excel drops every one when it converts a chart
+    /// into a type that has none.
     pub(crate) fn remove_parts_not_allowed_in(
         &mut self,
         family: SeriesFamily,
     ) -> Vec<(SeriesPartKind, usize)> {
+        let limit = super::error_bars::error_bar_limit(family);
         let mut removed: Vec<_> = self
-            .part_conflicts(family)
+            .part_conflicts_within(family, limit)
             .into_iter()
             .filter(|(part, _, reason)| {
                 *part != SeriesPartKind::Extensions
@@ -1082,7 +1135,6 @@ impl AreaChartSeries {
                     .map(|occurrence| (SeriesPartKind::Extensions, occurrence)),
             );
         }
-        let limit = super::error_bars::error_bar_limit(family);
         if limit > 0 {
             removed.extend(
                 (limit..self.error_bars().len())
@@ -1195,7 +1247,7 @@ impl AreaChartSeries {
         for bars in self
             .error_bars()
             .iter()
-            .take(super::error_bars::error_bar_limit(family))
+            .take(super::error_bars::saved_error_bar_limit(family))
         {
             bars.write_to(writer, wb)?;
         }

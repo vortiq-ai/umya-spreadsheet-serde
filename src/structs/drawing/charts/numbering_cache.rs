@@ -4,18 +4,18 @@ use std::io::Cursor;
 use quick_xml::{
     Reader,
     Writer,
-    events::{
-        BytesStart,
-        Event,
-    },
+    events::BytesStart,
 };
 
-use super::FormatCode;
+use super::{
+    FormatCode,
+    extension_registry::NS_C,
+};
 use crate::{
     CellErrorType,
-    reader::driver::{
-        local_name,
-        try_xml_read_loop,
+    reader::{
+        driver::local_name,
+        xlsx::SourceCacheSession,
     },
     structs::{
         Address,
@@ -23,9 +23,11 @@ use crate::{
         Workbook,
     },
     writer::driver::{
+        PointEscape,
+        write_cache_number,
+        write_cache_point,
         write_end_tag,
         write_start_tag,
-        write_text_node,
     },
 };
 
@@ -61,26 +63,43 @@ impl NumberingCache {
         self
     }
 
+    /// Only the cache's own `formatCode` is its code: content inside its
+    /// extension list may use the same name. With a `session`, the list
+    /// itself is read through the chart's namespace context and returned.
     pub(crate) fn set_attributes<R: std::io::BufRead>(
         &mut self,
         reader: &mut Reader<R>,
         source_owner: &BytesStart,
-    ) -> Result<(), crate::XlsxError> {
-        let owner_end = source_owner.name().as_ref().to_vec();
-        try_xml_read_loop!(
-            reader,
-            Event::Start(ref e) => {
-                if local_name(e.name().0) == b"formatCode" {
-                    self.format_code.set_attributes(reader, e)?;
+        session: Option<&SourceCacheSession>,
+    ) -> Result<Option<Box<super::ExtensionList>>, crate::XlsxError> {
+        let mut extensions = None;
+        let _scope_guard = session
+            .map(|session| session.enter_child_scope(source_owner))
+            .transpose()?
+            .flatten();
+        super::numeric_data::children(reader, source_owner, false, |reader, child, empty| {
+            let name = local_name(child.name().into_inner());
+            if !matches!(name, b"formatCode" | b"extLst") {
+                return Ok(false);
+            }
+            if let Some(session) = session {
+                if !session.accepts_child_namespace(child, NS_C)? {
+                    return Ok(false);
                 }
-            },
-            Event::End(ref e) => {
-               if e.name().as_ref() == owner_end {
-                   return Ok(());
-               }
-            },
-            Event::Eof => return Err(crate::xml::xml_error(format!("Error: Could not find {} end element", "c:numCache"))),
-        );
+                if name == b"extLst" {
+                    extensions = Some(Box::new(super::ExtensionList::read(
+                        reader, child, empty, session,
+                    )?));
+                    return Ok(true);
+                }
+            }
+            if empty || name != b"formatCode" {
+                return Ok(false);
+            }
+            self.format_code.set_attributes(reader, child)?;
+            Ok(true)
+        })?;
+        Ok(extensions)
     }
 
     pub(crate) fn write_to(
@@ -88,7 +107,8 @@ impl NumberingCache {
         writer: &mut Writer<Cursor<Vec<u8>>>,
         address: &Address,
         wb: &Workbook,
-    ) {
+        extensions: Option<&super::ExtensionList>,
+    ) -> Result<(), crate::XlsxError> {
         let cell_value_list = wb.cell_value_by_address_crate(address);
         let coll_value_count = cell_value_list.len().to_string();
         // c:numCache
@@ -106,11 +126,9 @@ impl NumberingCache {
         );
 
         for (idx, cell_value) in cell_value_list.into_iter().enumerate() {
-            // c:pt
-            write_start_tag(writer, "c:pt", vec![("idx", idx.to_string()).into()], false);
-
-            // c:v
-            write_start_tag(writer, "c:v", vec![], false);
+            if write_cache_number(writer, idx, cell_value) {
+                continue;
+            }
             match cell_value.raw_value() {
                 CellRawValue::Error(
                     CellErrorType::Div0
@@ -122,15 +140,21 @@ impl NumberingCache {
                 ) => {
                     // Excel saves these worksheet errors as zero in numeric
                     // caches.
-                    write_text_node(writer, "0");
+                    write_cache_point(writer, idx, Some("0"), PointEscape::Text);
                 }
-                _ => write_text_node(writer, cell_value.value_for_xml()),
+                _ => write_cache_point(
+                    writer,
+                    idx,
+                    Some(&cell_value.value_for_xml()),
+                    PointEscape::Text,
+                ),
             }
-            write_end_tag(writer, "c:v");
-
-            write_end_tag(writer, "c:pt");
         }
 
+        if let Some(ext) = extensions {
+            ext.write_for_owner(writer, None, "numCache", None)?;
+        }
         write_end_tag(writer, "c:numCache");
+        Ok(())
     }
 }

@@ -31,6 +31,11 @@ use super::{
         known_uri,
         registered,
     },
+    opaque_element::{
+        StartView,
+        TapeCheck,
+        TapeItem,
+    },
 };
 use crate::{
     reader::xlsx::SourceCacheSession,
@@ -126,7 +131,8 @@ impl Extension {
         self.nodes.iter().find_map(node_conflict)
     }
 
-    fn as_opaque(&self) -> OpaqueElement {
+    /// The entry's start tag as an element with no children.
+    fn opaque_root(&self) -> OpaqueElement {
         let mut attributes = self.attributes.clone();
         if let Some(uri) = &self.uri {
             attributes.insert(
@@ -141,46 +147,79 @@ impl Extension {
                 ),
             );
         }
-        let mut root = OpaqueElement {
+        OpaqueElement {
             name: self.name.clone(),
             namespaces: self.namespaces.clone(),
             attributes,
             children: Vec::new(),
-        };
+        }
+    }
+
+    /// The entry's tape checked in place: the start tag with `uri` first,
+    /// then every node but the typed payloads, which are checked after.
+    fn validate_namespaces(&self) -> Result<(), String> {
+        let uri = self.uri.as_ref().map(|_| QName {
+            namespace_uri:    String::new(),
+            local_name:       "uri".into(),
+            preferred_prefix: None,
+        });
+        let mut check = TapeCheck::new(
+            &StartView {
+                name:       &self.name,
+                namespaces: &self.namespaces,
+                first:      uri.as_ref(),
+                attributes: &self.attributes,
+            },
+            &NamespaceScope::default(),
+        )?;
         for node in &self.nodes {
             match node {
                 ExtensionNode::Known(_) => (),
-                ExtensionNode::Unknown(value) => append_element(&mut root, value.as_ref().clone()),
-                ExtensionNode::Text(value) => root.children.push(OpaqueToken::Text(value.clone())),
-                ExtensionNode::CData(value) => {
-                    root.children.push(OpaqueToken::CData(value.clone()));
+                ExtensionNode::Unknown(value) => {
+                    check.item(TapeItem::Start(value.view()))?;
+                    for token in &value.children {
+                        check.item(token.into())?;
+                    }
+                    check.item(TapeItem::End)?;
                 }
-                ExtensionNode::Comment(value) => {
-                    root.children.push(OpaqueToken::Comment(value.clone()));
+                ExtensionNode::Text(_) => check.item(TapeItem::Text)?,
+                ExtensionNode::CData(value) => check.item(TapeItem::CData(value))?,
+                ExtensionNode::Comment(value) => check.item(TapeItem::Comment(value))?,
+                ExtensionNode::ProcessingInstruction(value) => {
+                    check.item(TapeItem::ProcessingInstruction(value))?;
                 }
-                ExtensionNode::ProcessingInstruction(value) => root
-                    .children
-                    .push(OpaqueToken::ProcessingInstruction(value.clone())),
             }
         }
-        root
-    }
-
-    fn validate_namespaces(&self) -> Result<(), String> {
-        self.as_opaque().validate(&NamespaceScope::default())?;
-        let scope = NamespaceScope::with_bindings(self.namespaces.clone());
+        check.finish()?;
+        let mut scope = None;
         for node in &self.nodes {
             if let ExtensionNode::Known(payload) = node {
-                payload.validate_namespaces(&scope)?;
+                payload.validate_namespaces(scope.get_or_insert_with(|| {
+                    NamespaceScope::with_bindings(self.namespaces.clone())
+                }))?;
             }
         }
         Ok(())
     }
 
+    /// Whether the scopes the writer builds from this entry are the ones
+    /// its checks used: each binding reads back from a start tag unchanged
+    /// (no tab, carriage return or line feed in its URI), and each unknown
+    /// child's tape closes what it opens.
+    fn writes_as_checked(&self) -> bool {
+        self.namespaces
+            .iter()
+            .all(|(_, uri)| !uri.contains(['\t', '\r', '\n']))
+            && self.nodes.iter().all(|node| match node {
+                ExtensionNode::Unknown(value) => value.balanced(),
+                _ => true,
+            })
+    }
+
+    /// The entry as one opaque element, its typed payloads written. The
+    /// caller has validated the entry (`omission_reason`).
     fn materialized(&self, wb: Option<&Workbook>) -> Result<OpaqueElement, String> {
-        self.validate_namespaces()?;
-        let mut root = self.as_opaque();
-        root.children.clear();
+        let mut root = self.opaque_root();
         for node in &self.nodes {
             match node {
                 ExtensionNode::Known(value) => {
@@ -453,7 +492,13 @@ impl ExtensionList {
             let reason = self.omission_reason(entry, owner, family).or_else(|| {
                 entry
                     .materialized(wb)
-                    .and_then(|root| root.materialized_in(wb, &NamespaceScope::default()))
+                    .and_then(|root| {
+                        if entry.writes_as_checked() {
+                            root.with_references_rendered(wb, &NamespaceScope::default())
+                        } else {
+                            root.materialized_in(wb, &NamespaceScope::default())
+                        }
+                    })
                     .err()
             });
             if let Some(reason) = reason {
@@ -548,10 +593,23 @@ impl ExtensionList {
             if self.omission_reason(entry, owner, family).is_some() {
                 continue;
             }
+            // `omission_reason` validated the entry; what follows checks
+            // only content it did not see.
             let element = entry
                 .materialized(wb)
-                .and_then(|root| root.with_native_root(namespace, "ext"))
-                .and_then(|entry| entry.materialized_in(wb, &NamespaceScope::default()))
+                .and_then(|root| {
+                    if entry.writes_as_checked() {
+                        root.with_native_root(namespace, "ext")?
+                            .with_references_rendered(wb, &NamespaceScope::default())
+                    } else {
+                        // Its scopes are not the ones its checks used, so the
+                        // entry's checks do not imply the written form is
+                        // valid: check the tree itself.
+                        root.validate(&NamespaceScope::default())?;
+                        root.with_native_root(namespace, "ext")?
+                            .materialized_in(wb, &NamespaceScope::default())
+                    }
+                })
                 .map_err(crate::xml::xml_error)?;
             append_element(&mut root, element);
         }
@@ -566,8 +624,8 @@ impl ExtensionList {
             .map_err(crate::xml::xml_error)?;
         // Stage the validated list before appending it to the chart.
         let mut staged = Writer::new(Cursor::new(Vec::new()));
-        root.write_to(&mut staged, inherited)
-            .map_err(crate::xml::xml_error)?;
+        // `compact_namespaces` has validated and compacted the tree.
+        root.emit(&mut staged).map_err(crate::xml::xml_error)?;
         writer
             .get_mut()
             .write_all(&staged.into_inner().into_inner())?;

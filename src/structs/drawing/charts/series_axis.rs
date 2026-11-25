@@ -391,12 +391,22 @@ impl SeriesAxis {
 
     pub fn set_crosses_at(&mut self, value: f64) -> &mut Self {
         self.crosses_at = Some(value);
+        self.crosses.set_absent(false);
         self
     }
 
     /// Back to the `c:crosses` position.
     pub fn remove_crosses_at(&mut self) -> &mut Self {
         self.crosses_at = None;
+        self.crosses.set_absent(false);
+        self
+    }
+
+    /// Writes neither `c:crosses` nor `c:crossesAt`, as Excel saves the series
+    /// axis of some 3-D charts. Each crossing setter writes one again.
+    pub fn remove_crosses(&mut self) -> &mut Self {
+        self.crosses_at = None;
+        self.crosses.set_absent(true);
         self
     }
 
@@ -572,6 +582,7 @@ impl SeriesAxis {
 
     pub fn crosses_mut(&mut self) -> &mut Crosses {
         self.crosses_at = None;
+        self.crosses.set_absent(false);
         &mut self.crosses
     }
 
@@ -735,6 +746,7 @@ impl SeriesAxis {
                             "c:serAx holds both c:crosses and c:crossesAt",
                         ));
                     }
+                    self.crosses.set_absent(!crosses_seen && self.crosses_at.is_none());
                     return Ok(());
                 }
             },

@@ -23,6 +23,16 @@ $work = Join-Path (Split-Path $repo) "umya-ci-$($sha.Substring(0, 8))"
 if (-not $LogDir) { $LogDir = Join-Path ([IO.Path]::GetTempPath()) "umya-ci-$($sha.Substring(0, 8))" }
 New-Item -ItemType Directory -Force $LogDir | Out-Null
 
+# rust.yml's HEAVY: the test step skips the heavy chart conversion tests and the
+# chart-conversion step, rust.yml's job run by hand, runs only them. Both run here.
+$heavy = @(
+    'chart_conversion::admitted::every_admitted_conversion_matches_excel'
+    'chart_conversion::admitted::every_guarded_measurement_is_refused_with_its_listed_cause'
+    'chart_conversion::classification::every_before_part_classifies_as_its_subtype'
+    'chart_conversion::refusals::series_count_refusals_follow_excel_and_leave_the_chart_alone'
+    'chart_conversion::umya_round_trip_keeps_every_before_part'
+)
+$skips = $heavy | ForEach-Object { '--skip'; $_ }
 $steps = [ordered]@{
     toolchain = {
         rustup toolchain install 1.98.0 --profile minimal -c clippy --no-self-update &&
@@ -31,7 +41,24 @@ $steps = [ordered]@{
     fmt       = { cargo +nightly-2026-10-01 fmt --all -- --check }
     clippy    = { cargo +1.98.0 clippy --features serde -- -D warnings }
     build     = { cargo +1.98.0 build --features serde }
-    test      = { cargo +1.98.0 test --features serde }
+    test      = { cargo +1.98.0 test --features serde -- $skips }
+    'chart-conversion' = {
+        $env:CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS = 'true'
+        $env:CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS = 'true'
+        try {
+            $list = cargo +1.98.0 test --release --features serde --test integration -- $heavy --list
+            if ($LASTEXITCODE) { return }
+            $tests = @($list | Where-Object { $_ -match ': test$' })
+            "$($tests.Count) chart conversion tests"
+            # A filter that matches no test would pass with nothing run: fail instead.
+            $unmatched = @($heavy | Where-Object { $filter = $_; -not ($tests | Where-Object { $_.Contains($filter) }) })
+            if ($unmatched) { "no test matches $($unmatched -join ', ')"; $global:LASTEXITCODE = 1; return }
+            cargo +1.98.0 test --release --features serde --test integration -- $heavy
+        }
+        finally {
+            Remove-Item Env:CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS, Env:CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS
+        }
+    }
 }
 
 $failed = @()
