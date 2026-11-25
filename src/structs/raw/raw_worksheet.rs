@@ -128,7 +128,7 @@ impl RawWorksheet {
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,
         target: &str,
-        package: super::SharedPackage,
+        package: &super::SharedPackage,
         defer_chart_data: bool,
     ) -> Result<(), XlsxError> {
         self.worksheet_file_mut()
@@ -142,7 +142,7 @@ impl RawWorksheet {
             &target,
             None,
             defer_chart_data,
-            Some(&package),
+            Some(package),
         )
     }
 
@@ -193,6 +193,8 @@ impl RawWorksheet {
     }
 
     /// Each relationships part is read once, so cyclic relationships end.
+    // The walk's own state (`visited`) beside the six inputs every level passes on unchanged.
+    #[allow(clippy::too_many_arguments)]
     fn read_rawrelationships_once<R: io::Read + io::Seek>(
         &mut self,
         arv: &mut zip::read::ZipArchive<R>,
