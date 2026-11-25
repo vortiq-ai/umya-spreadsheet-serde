@@ -430,7 +430,7 @@ fn read_reader_with_source<R: io::Read + io::Seek>(
                     raw_worksheet.read_lazy(&mut arv, rel_target, source_file)?;
                 }
                 (None, Some(package)) => {
-                    raw_worksheet.read_deferred(&mut arv, rel_target, package, with_sheet_read)?
+                    raw_worksheet.read_deferred(&mut arv, rel_target, package, with_sheet_read)?;
                 }
                 (None, None) => raw_worksheet.read(&mut arv, rel_target, with_sheet_read)?,
             }
