@@ -199,7 +199,7 @@ impl EmbeddedObjectProperties {
         value
             .image_mut()
             .set_image_name(attached_file.file_name())
-            .set_image_data(attached_file.file_data());
+            .set_image_data(attached_file.data_or_empty());
         if let Some(text) = attribute(element, "", "defaultSize")? {
             value.set_default_size(crate::xml::parse_bool(text)?);
         }

@@ -84,7 +84,7 @@ impl ImageData {
                 let relationship = rel.relationship_by_rid(&relid);
                 let mut obj = MediaObject::default();
                 obj.set_image_name(relationship.raw_file().file_name());
-                obj.set_image_data(relationship.raw_file().file_data());
+                obj.set_image_data(relationship.raw_file().data_or_empty());
                 self.set_image(obj);
             }
         }

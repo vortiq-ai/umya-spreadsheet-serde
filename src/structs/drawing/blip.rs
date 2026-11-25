@@ -392,7 +392,7 @@ impl Blip {
                 }
                 self.image
                     .set_image_name(relationship.raw_file().file_name())
-                    .set_image_data(relationship.raw_file().file_data());
+                    .set_image_data(relationship.raw_file().data_or_empty());
             }
         }
         if empty {

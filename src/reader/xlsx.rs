@@ -636,7 +636,7 @@ pub(crate) fn prepare_worksheet_materialization(
             .map_err(|error| crate::xml::xml_error(error.to_string()))?;
         let legacy_drawing_ids =
             worksheet::read(&mut parsed, &raw, shared_string_table, stylesheet)?;
-        raw.load_relationship_file_data_from_source()?;
+        raw.load_relationship_file_data_for_read()?;
         slicer::read_worksheet_slicers(&mut parsed, &raw, &sheet_session)?;
         let mut chart_parts = std::collections::HashMap::new();
         for (list_index, relationships) in raw.relationships_list_mut().iter_mut().enumerate() {
@@ -970,6 +970,49 @@ mod read_shared_tests {
                     .worksheet_file()
                     .has_file_data()
             );
+        }
+    }
+
+    /// A package read with `read_shared` holds no image at open, nor while a sheet is read: each
+    /// image a sheet reaches keeps only a reference to the package, and a picture takes its
+    /// bytes when the sheet is read, as `read_reader` gives them.
+    #[test]
+    fn a_shared_package_holds_no_image_until_a_picture_takes_it() {
+        let images = |book: &crate::Workbook| -> Vec<(String, bool, bool)> {
+            book.sheet_collection_no_check()
+                .iter()
+                .flat_map(|sheet| sheet.raw_data_of_worksheet().relationships_list())
+                .flat_map(|list| list.relationship_list())
+                .filter(|edge| edge.get_type() == crate::helper::const_str::IMAGE_NS)
+                .map(|edge| {
+                    let file = edge.raw_file();
+                    (
+                        file.file_target().to_owned(),
+                        file.has_file_data(),
+                        file.source_package().is_some(),
+                    )
+                })
+                .collect()
+        };
+        let bytes = std::fs::read("tests/test_files/issue_188_2.xlsx").unwrap();
+        let book = super::read_shared(std::sync::Arc::new(bytes.clone()), false).unwrap();
+        let at_open = images(&book);
+        assert!(at_open.len() > 100, "the test needs many images: {}", at_open.len());
+        for (target, held, deferred) in &at_open {
+            assert!(!held && *deferred, "{target}: read at open");
+        }
+
+        let mut book = book;
+        let eager = super::read_reader(std::io::Cursor::new(&bytes), true).unwrap();
+        for index in 0..book.sheet_count() {
+            book.try_read_sheet(index).unwrap();
+            let read = book.sheet_collection_no_check()[index].image_collection();
+            let want = eager.sheet(index).unwrap().image_collection();
+            assert_eq!(read.len(), want.len());
+            for (read, want) in read.iter().zip(want) {
+                assert!(!read.image_data().is_empty(), "{}: a picture without its image", read.image_name());
+                assert_eq!(read.image_data(), want.image_data(), "{}", read.image_name());
+            }
         }
     }
 
